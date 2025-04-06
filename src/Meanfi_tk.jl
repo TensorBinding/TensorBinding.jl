@@ -285,7 +285,7 @@ function get_ldos(mus_up, mus_down, num_frag,en_num)
     ldos_matrix = ldos_matrix_up + ldos_matrix_down 
 
     nor = maximum(ldos_matrix) 
-    ldos_matrix=  10.*(ldos_matrix/nor)#normalize
+    ldos_matrix=  ldos_matrix/nor #normalize
     #plot ldos
     
     quantity = floor(log10(2^(L - 1)))
@@ -309,7 +309,7 @@ function get_ldos(mus_up, mus_down, num_frag,en_num)
     plot(size=(800, 400))
     p = contourf(
         xvals,
-        yvals ,
+        yvals.*10 ,
         real.(ldos_matrix),
         xlabel="site",
         ylabel="Energy",
