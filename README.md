@@ -6,7 +6,7 @@
 [![Build Status](https://github.com/YITAOSUN42/MyPackageName.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/YITAOSUN42/MyPackageName.jl/actions/workflows/CI.yml?query=branch%3Amaster)
 [![Coverage](https://codecov.io/gh/YITAOSUN42/MyPackageName.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/YITAOSUN42/MyPackageName.jl)
  
-**CMTensor.jl** is a Julia package for solving condensed matter physics problems using tensor network methods. At its core, it applys **Quantics Tensor Cross Interpolation (QTCI)** algorithm to achieve exponential compression of quantum systems:  
+**CMTensor.jl** is a Julia package for solving condensed matter physics problems using tensor network methods. At its core, it applies the **Quantics Tensor Cross Interpolation (QTCI)** algorithm to achieve exponential compression of quantum systems:  
 - Converts matrix-form tight-binding Hamiltonians into compressed **Matrix Product Operator (MPO)** representations  
 - Reduces a system of *2<sup>L</sup>* sites to an effective *L*-site pseudo-spin system  
 - Enables efficient simulation of ultra-large real-space systems with boosted computational performance   
