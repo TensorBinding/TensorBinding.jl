@@ -6,11 +6,11 @@
 [![Build Status](https://github.com/TiagoAntao2/TensorBinding/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/TiagoAntao2/TensorBinding/actions/workflows/CI.yml?query=branch%3Amaster)
 [![Coverage](https://codecov.io/gh/TiagoAntao2/TensorBinding/branch/master/graph/badge.svg)](https://codecov.io/gh/TiagoAntao2/TensorBinding)
  
-**TensorBinding.jl** is a Julia package for solving condensed matter physics problems using tensor network methods. At its core, it applies the **Quantics Tensor Cross Interpolation (QTCI)** algorithm to achieve exponential compression of quantum systems:  
-- Converts matrix-form tight-binding Hamiltonians into compressed **Matrix Product Operator (MPO)** representations  
-- Reduces a system of *2<sup>L</sup>* sites to an effective *L*-site pseudo-spin system  
-- Enables efficient simulation of ultra-large real-space systems with boosted computational performance   
-QTCI is also further applied to accelerate calculations of physical observables.
+**TensorBinding.jl** is a Julia package for solving condensed matter physics problems using tensor network methods. It compresses tight-binding Hamiltonians into **Matrix Product Operator (MPO)** representations using two complementary approaches:
+- **Quantics Tensor Cross Interpolation (QTCI)** — exponential compression via a quantics grid encoding
+- **Exact MPO construction** — direct analytical MPO building for structured Hamiltonians
+
+Both reduce a system of *2<sup>L</sup>* sites to an effective *L*-site pseudo-spin system, enabling efficient simulation of ultra-large real-space systems. The MPO framework is then leveraged to accelerate a broad range of physical observables and many-body calculations.
 
 ---
 
@@ -20,7 +20,19 @@ QTCI is also further applied to accelerate calculations of physical observables.
 
 ✅ **Topological analysis**  
 - Computation of topological invariants for selected systems
-  
+
+✅ **Kernel Polynomial Method (KPM)**  
+- Chebyshev expansion of spectral quantities for large-scale systems
+
+✅ **Random Phase Approximation (RPA)**  
+- Susceptibility calculations for interacting systems
+
+✅ **Time evolution**  
+- Real- and imaginary-time evolution via the TDVP algorithm
+
+✅ **Purification**  
+- Finite-temperature density matrix purification
+
 ---
 
 ### **Why TensorBinding.jl?**  
