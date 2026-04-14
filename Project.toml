@@ -1,9 +1,15 @@
-name = "MyPackageName"
+name = "TensorBinding"
 uuid = "3b6805fc-d418-45a2-b1ea-024139a4a543"
 authors = ["YTS2223 <yitao.sun@aalto.fi> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+Arpack = "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"
+HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
+
 [compat]
+Arpack = "0.5.4"
+HDF5 = "0.17.2"
 julia = "1.6.7"
 
 [extras]
