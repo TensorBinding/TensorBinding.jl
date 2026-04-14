@@ -26,6 +26,7 @@ ITensors.op(::OpName"sigma_d",::SiteType"Qubit") =
 
 function test_break(x_start, L_chain, num_sites, sites) 
     L = Int(log2(num_sites))
+    Id_op = MPO(sites, "Id")
     L_row_log = Int(L - Int(log2(L_chain)))
     
     os = OpSum()
@@ -130,7 +131,7 @@ suppressed by `break_chain`.
 """
 function intrachain_hopping(L_chain, num_site, sites;
                             hopping=MPO(sites, "Id"), t=1)
-    break_mpo  = break_chain(L_chain, L_chain, num_site, sites)
+    break_mpo  = test_break(L_chain, L_chain, num_site, sites)
     k_mpo_2    = generate_kin_d(sites, num_site)
     true_hop_2 = apply(apply(hopping, k_mpo_2), break_mpo)
     k_mpo_1    = generate_kin_u(sites, num_site)
@@ -164,7 +165,7 @@ square lattice.
 """
 function interchain_hopping_square_2nd_plus(L_chain, num_site, sites;
                                             hopping=MPO(sites, "Id"), t2=1)
-    break_mpo    = break_chain(L_chain, L_chain, num_site, sites)
+    break_mpo    = test_break(L_chain, L_chain, num_site, sites)
     K_mpo_1      = generate_kin_u(sites, num_site)
     K_mpo_1_true = apply(arbitarty_offline(K_mpo_1, L_chain + 1 - 1),
                          apply(hopping, apply(break_mpo, K_mpo_1)))
@@ -183,7 +184,7 @@ square lattice.
 """
 function interchain_hopping_square_2nd_minus(L_chain, num_site, sites;
                                              hopping=MPO(sites, "Id"), t2=1)
-    break_mpo    = break_chain(1, L_chain, num_site, sites)
+    break_mpo    = test_break(1, L_chain, num_site, sites)
     K_mpo_1      = generate_kin_u(sites, num_site)
     K_mpo_1_true = apply(apply(hopping, apply(break_mpo, K_mpo_1)),
                          arbitarty_offline(K_mpo_1, L_chain - 1 - 1))
