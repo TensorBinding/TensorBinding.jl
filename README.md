@@ -74,7 +74,7 @@ Supported: Ising SOC, Rashba SOC, uniform or site-dependent Zeeman, singlet *s*-
 
 **Topological invariants**
 - Chern number and local Chern marker for Haldane and general 2D models
-- Winding number for SSH
+- Winding number for SSH and general 1D models
 
 
 The package is under active development. A full function reference is available in `TensorBinding_overview.txt` and example notebooks are in `examples/`.
