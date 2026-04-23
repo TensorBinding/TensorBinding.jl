@@ -13,6 +13,7 @@ import TensorCrossInterpolation as TCI
 using PyCall
 using PyPlot
 using Plots
+using FFTW
 using Base.Threads
 
 export MPO, MPS, OpSum, expect, inner, siteinds
@@ -42,6 +43,7 @@ include("Meanfi_tk.jl")
 include("RPA_tk.jl")
 include("Timeev_tk.jl")
 include("twisted_tk.jl")
+include("bilayer_tk.jl")
 include("Supercond_tk.jl")
 include("DMRG_tk.jl")
 

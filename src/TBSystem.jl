@@ -37,6 +37,9 @@ mutable struct TBHamiltonian
     mpo      :: MPO
     geometry :: Union{Nothing, Matrix{Float64}}
     scale    :: Float64
+    # ---- auxiliary prepended indices (nothing until add_spin!/add_superconductivity!) ----
+    spin_s   :: Union{Nothing, Index}
+    nambu_s  :: Union{Nothing, Index}
     # ---- lazy caches (invalidated whenever mpo changes) ----
     _tn_cache      :: Union{Nothing, Vector{MPO}}
     _tn_Ncheb      :: Int
@@ -148,7 +151,7 @@ function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     geom = reshape(Float64.(1:N), N, 1)
     sc   = something(scale, 2.2 * abs(t))   # 1D chain bandwidth = 4|t|, half = 2|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -167,7 +170,7 @@ function _build_square_2d(t, L, N, sites;
         geom[i, 2] = Float64(div(i - 1, Lx) + 1)
     end
     sc = something(scale, 4.4 * abs(t))   # 2D square bandwidth ≈ 8|t|, half = 4|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -184,7 +187,7 @@ function _build_haldane(params, L, N, sites;
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     # bandwidth ≈ 2*(3*t1 + 6*t2) + 2*M where t1=1; conservative upper bound
     sc  = something(scale, (1.0 + abs(t2) + abs(M)) * 4.0)
-    return TBHamiltonian(L, N, sites, mpo, Float64.(rs), sc, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, Float64.(rs), sc, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -197,7 +200,7 @@ function _build_custom(f, L, N, sites;
     @assert !isnothing(scale) "`scale` must be provided for geometry=\"custom\"."
     mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    return TBHamiltonian(L, N, sites, mpo, geometry, Float64(scale), nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geometry, Float64(scale), nothing, nothing, nothing, 0, nothing)
 end
 
 function _build_preset(geometry, params, L, N, sites;
@@ -239,7 +242,7 @@ function _build_preset(geometry, params, L, N, sites;
     # created at the top of get_Hamiltonian (which would be a different set).
     mpo_sites = getindex.(siteinds(mpo), 2)
     sc = something(scale, _estimate_scale(geometry, params))
-    return TBHamiltonian(L, N, mpo_sites, mpo, nothing, Float64(sc), nothing, 0, nothing)
+    return TBHamiltonian(L, N, mpo_sites, mpo, nothing, Float64(sc), nothing, nothing, nothing, 0, nothing)
 end
 
 # Rough scale estimates for known geometries (used when scale=nothing)
@@ -320,6 +323,9 @@ add_hopping!(H, (i, j) -> ...; type=ComplexF64)
 """
 function add_hopping!(H::TBHamiltonian, f;
                       maxdim=15, tol=1e-8, type=ComplexF64)
+    H.spin_s === nothing && H.nambu_s === nothing ||
+        error("add_hopping! must be called before add_spin!/add_superconductivity!. " *
+              "Build the full normal-state Hamiltonian first.")
     new_term = hopping2MPO(f, H.N, H.sites; tol=tol, type=type)
     H.mpo    = +(H.mpo, new_term; maxdim=maxdim, cutoff=tol)
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
@@ -345,22 +351,274 @@ add_onsite!(H, i -> V * cos(2π * α * i))
 ```
 """
 function add_onsite!(H::TBHamiltonian, f; tol=1e-8)
-    new_term = get_diagonal_mpo(H.L, H.sites, f)
+    new_term = get_diagonal_mpo(H.L, _pos_sites(H), f)
     H.mpo    = +(H.mpo, new_term; cutoff=tol)
     _invalidate_cache!(H)
     return H
 end
+
+
+# ============================================================
+# Position-site accessor
+# ============================================================
+
+"""
+    _pos_sites(H) -> Vector{<:Index}
+
+Return the L position-qubit indices.  These are always the last L entries of
+`H.sites`; spin and Nambu indices (if any) are prepended in front of them.
+"""
+_pos_sites(H::TBHamiltonian) = H.sites[end - H.L + 1 : end]
+
+
+# ============================================================
+# Spin extension
+# ============================================================
+
+"""
+    add_spin!(H; cutoff=1e-8, maxdim=200) -> H
+
+Extend `H` to a spin-½ degenerate system by prepending a spin-½ index.
+The resulting Hamiltonian is `I_spin ⊗ H` (both spin sectors identical).
+
+No-op if `H` is already spinful (`H.spin_s !== nothing`).
+Invalidates all caches.
+"""
+function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200)
+    H.spin_s === nothing || return H
+    spin_s   = spin_index()
+    H.mpo    = prepend_spin(H.mpo, spin_s, :Id)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cutoff)
+    H.sites  = [spin_s; H.sites]
+    H.spin_s = spin_s
+    _invalidate_cache!(H)
+    return H
+end
+
+
+# ============================================================
+# Zeeman coupling
+# ============================================================
+
+"""
+    add_zeeman!(H, h; direction=:z, tol=1e-8, maxdim=200) -> H
+
+Add a Zeeman coupling `h · Sα` to `H`.  Calls `add_spin!` automatically if
+`H` is not yet spinful.
+
+`h` can be:
+- a `Number`    — uniform field amplitude `h₀`
+- a `Function`  — spatially varying `h(i)`, `i ∈ {1, …, N}` (1-indexed)
+
+`direction`: `:x`, `:y`, or `:z` (default).
+
+If `add_superconductivity!` was already called, the Zeeman term is wrapped in
+`τ_z` so it enters with opposite sign in the hole sector, as required in BdG.
+
+Examples
+--------
+```julia
+add_zeeman!(H, 0.1)                         # uniform h = 0.1 along z
+add_zeeman!(H, i -> 0.05 * sin(2π*i/H.N))  # oscillating field
+add_zeeman!(H, 0.05; direction=:x)          # in-plane
+```
+"""
+function add_zeeman!(H::TBHamiltonian, h;
+                     direction::Symbol = :z,
+                     tol::Real  = 1e-8,
+                     maxdim::Int = 200)
+    direction in (:x, :y, :z) ||
+        error("direction must be :x, :y, or :z; got :$direction")
+    add_spin!(H; cutoff=tol, maxdim=maxdim)
+
+    spin_op = direction == :z ? :Sz : direction == :x ? :Sx : :Sy
+    pos_s   = _pos_sites(H)
+    h_mpo   = h isa Number ? h * MPO(pos_s, "Id") :
+                             get_diagonal_mpo(H.L, pos_s, h)
+
+    H_Z = prepend_spin(h_mpo, H.spin_s, spin_op)
+    if H.nambu_s !== nothing
+        # BdG already present: Zeeman is τ_z ⊗ S_α ⊗ h(r)
+        H_Z = prepend_nambu(H_Z, H.nambu_s, :tz)
+    end
+
+    H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
+    _invalidate_cache!(H)
+    return H
+end
+
+
+# ============================================================
+# Superconducting pairing (BdG extension)
+# ============================================================
+
+"""
+    add_superconductivity!(H, Δ; type=:swave, tol=1e-8, maxdim=200) -> H
+
+Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending a
+Nambu (particle–hole) index.
+
+The BdG structure is:
+    H_BdG = τ_z ⊗ H_kin  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
+
+- **Spinless** (default): simple spinless BdG; `H_pair = Δ(r) · I`.
+- **Spinful** (`add_spin!` called first): singlet pairing;
+  `H_pair = (i·σ_y)_spin ⊗ Δ(r)`, the standard BCS Cooper-pair operator.
+
+`Δ` can be:
+- a `Number`   — uniform on-site gap (s-wave, `type=:swave`)
+- a `Function` `Δ(i)` — spatially varying diagonal gap (`type=:swave`)
+- a `Function` `Δ(i,j)` — general pairing matrix compressed via TCI (`type=:custom`)
+
+`type`:
+- `:swave`  (default) — diagonal pairing, `H_pair = diag(Δ(1),…,Δ(N))`
+- `:custom` — off-diagonal (p-wave, d-wave …); pass a 2-arg function `Δ(i,j)`
+
+Errors if BdG has already been applied.  Invalidates all caches.
+
+Examples
+--------
+```julia
+add_superconductivity!(H, 0.1)                      # uniform s-wave
+add_superconductivity!(H, i -> i < N÷2 ? 0.1 : 0.0) # half-system gap
+add_superconductivity!(H, (i,j) -> ...; type=:custom) # p-wave
+```
+"""
+function add_superconductivity!(H::TBHamiltonian, Δ;
+                                type::Symbol = :swave,
+                                tol::Real    = 1e-8,
+                                maxdim::Int  = 200)
+    H.nambu_s === nothing ||
+        error("BdG already applied (H.nambu_s is set). Cannot apply twice.")
+
+    pos_s = _pos_sites(H)
+
+    # ── Build the pairing MPO in position space ──────────────────────────────
+    H_pair_pos = if type === :swave
+        Δ isa Number   ? Δ * MPO(pos_s, "Id")            :
+        Δ isa Function ? get_diagonal_mpo(H.L, pos_s, Δ) :
+        error("For type=:swave, Δ must be a Number or a 1-arg Function.")
+    elseif type === :custom
+        Δ isa Function ||
+            error("For type=:custom, Δ must be a 2-arg Function Δ(i,j).")
+        hopping2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
+    else
+        error("Unknown pairing type :$type.  Use :swave or :custom.")
+    end
+
+    # ── Lift pairing to full site space ──────────────────────────────────────
+    H_pair = H.spin_s !== nothing ?
+             prepend_spin(H_pair_pos, H.spin_s, :iSy) :   # singlet: (iσ_y) ⊗ Δ
+             H_pair_pos
+
+    H_pair_adj = swapprime(dag(H_pair), 0, 1)
+
+    # ── BdG assembly ─────────────────────────────────────────────────────────
+    nambu_s = nambu_index()
+    H_bdg   = +(+(prepend_nambu(H.mpo,      nambu_s, :tz),
+                  prepend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
+                  prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+    ITensorMPS.truncate!(H_bdg; maxdim=maxdim, cutoff=tol)
+
+    Δ_scale   = Δ isa Number ? abs(Δ) : 1.0
+    H.mpo     = H_bdg
+    H.sites   = [nambu_s; H.sites]
+    H.nambu_s = nambu_s
+    H.scale   = H.scale + Δ_scale * 1.1   # rough update; user can override
+    _invalidate_cache!(H)
+    return H
+end
+
+
+# ============================================================
+# Spin-orbit coupling
+# ============================================================
+
+"""
+    add_soc!(H, λ; type=:rashba, direction=:z, tol=1e-8, maxdim=200) -> H
+
+Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed.
+
+`type`:
+- `:rashba` — nearest-neighbour Rashba SOC on the position chain:
+              `λ · (S_y ⊗ K_u − S_y ⊗ K_d)` where `K_u/K_d` are the ±1 shift
+              operators.  `λ` must be a scalar.  Breaks SU(2) spin symmetry
+              while preserving time-reversal.
+- `:ising`  — diagonal Ising SOC `λ(i) · S_z` (equivalent to a position-dependent
+              Zeeman along z; useful for Kane–Mele type models).
+- `:custom` — arbitrary position-space MPO `λ_mpo` tensor-producted with the
+              spin operator given by `direction` (`:x`, `:y`, or `:z`).
+              `λ` may be a Number, a 1-arg `Function λ(i)`, or a 2-arg
+              `Function λ(i,j)` (the last compressed via TCI).
+
+Examples
+--------
+```julia
+add_soc!(H, 0.05)                             # Rashba λ=0.05
+add_soc!(H, i -> 0.1*cos(2π*i/H.N); type=:ising)
+add_soc!(H, (i,j)->...; type=:custom, direction=:y)
+```
+"""
+function add_soc!(H::TBHamiltonian, λ;
+                  type::Symbol      = :rashba,
+                  direction::Symbol = :z,
+                  tol::Real         = 1e-8,
+                  maxdim::Int       = 200)
+    add_spin!(H; cutoff=tol, maxdim=maxdim)
+    pos_s = _pos_sites(H)
+
+    H_soc = if type === :ising
+        λ_mpo = λ isa Number ? λ * MPO(pos_s, "Id") :
+                               get_diagonal_mpo(H.L, pos_s, λ)
+        prepend_spin(λ_mpo, H.spin_s, :Sz)
+
+    elseif type === :rashba
+        λ isa Number || error("Rashba SOC requires a scalar λ; got $(typeof(λ)).")
+        K_u = generate_kin_u(pos_s, H.N)
+        K_d = generate_kin_d(pos_s, H.N)
+        +(prepend_spin( λ * K_u, H.spin_s, :Sy),
+          prepend_spin(-λ * K_d, H.spin_s, :Sy); cutoff=tol)
+
+    elseif type === :custom
+        direction in (:x, :y, :z) ||
+            error("direction must be :x, :y, or :z; got :$direction")
+        spin_op = direction == :z ? :Sz : direction == :x ? :Sx : :Sy
+        λ_mpo = if λ isa Number
+            λ * MPO(pos_s, "Id")
+        elseif λ isa Function && applicable(λ, 1)
+            get_diagonal_mpo(H.L, pos_s, λ)
+        elseif λ isa Function
+            hopping2MPO(λ, H.N, pos_s; tol=tol, type=ComplexF64)
+        else
+            error("λ must be a Number or a Function.")
+        end
+        prepend_spin(λ_mpo, H.spin_s, spin_op)
+
+    else
+        error("Unknown SOC type :$type.  Use :rashba, :ising, or :custom.")
+    end
+
+    H.mpo = +(H.mpo, H_soc; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
+    _invalidate_cache!(H)
+    return H
+end
+
 
 # ============================================================
 # Display
 # ============================================================
 
 function Base.show(io::IO, H::TBHamiltonian)
-    tn_str = H._tn_cache !== nothing ?
-             "Tn cached (Ncheb = $(H._tn_Ncheb))" : "no Tn cache"
+    tn_str   = H._tn_cache !== nothing ?
+               "Tn cached (Ncheb = $(H._tn_Ncheb))" : "no Tn cache"
     geom_str = isnothing(H.geometry) ? "implicit 1D" :
                "$(size(H.geometry, 1)) sites, $(size(H.geometry, 2))D"
-    print(io, "TBHamiltonian | L=$(H.L), N=$(H.N), scale=$(H.scale), " *
+    aux_str  = ""
+    H.spin_s  !== nothing && (aux_str *= " +spin")
+    H.nambu_s !== nothing && (aux_str *= " +BdG")
+    print(io, "TBHamiltonian | L=$(H.L), N=$(H.N)$(aux_str), scale=$(H.scale), " *
               "maxlinkdim=$(ITensorMPS.maxlinkdim(H.mpo)) | " *
               "geometry: $geom_str | $tn_str")
 end
