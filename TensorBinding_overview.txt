@@ -57,9 +57,10 @@ bond dimension of many physically relevant Hamiltonians small (typically $\leq
   \item Spin-$\frac{1}{2}$ and Nambu (BdG) extensions via a prepend-core pattern.
   \item Kernel Polynomial Method (KPM) for density of states, density matrices,
         spectral functions, and Green's functions.
-  \item Density-matrix purification (McWeeny, SP2).
+  \item Density-matrix purification (McWeeny, SP2) with \kw{TBHamiltonian}-aware API.
   \item Quantum Fourier Transform conjugation for band structure $A(k,\omega)$.
-  \item Topological invariants (Chern number, winding number).
+  \item Topological invariants: real-space Chern marker and winding-number density
+        via quenched or flat position operators, compatible with any lattice geometry.
   \item DMRG ground state and spectral DMRG.
   \item Real-time evolution: TDVP (fixed and time-dependent $H$), RK4 for density matrices.
   \item Random Phase Approximation (RPA) for susceptibility.
@@ -73,7 +74,7 @@ bond dimension of many physically relevant Hamiltonians small (typically $\leq
         binary string $b_1\cdots b_L$, big-endian.
   \item \emph{Extended systems}: auxiliary indices are \emph{prepended}.
         For a spinful bilayer BdG system the site chain is
-        \texttt{[nambu\_s, spin\_s, pos\_qubits\ldots]}.
+        \texttt{[nambu\_s, spin\_s, layer\_s, pos\_qubits\ldots]}.
   \item \emph{2D lattices}: row-major flattening, linear index
         $i = i_x + i_y \cdot 2^{L_x}$, $i_x \in \{0,\ldots,2^{L_x}-1\}$,
         $i_y \in \{0,\ldots,2^{L_y}-1\}$.
@@ -89,27 +90,34 @@ bond dimension of many physically relevant Hamiltonians small (typically $\leq
 Defined in \texttt{src/TBSystem.jl}.
 
 \begin{center}
-\begin{tabular}{L{3cm} L{2.5cm} L{8cm}}
+\begin{tabular}{L{3.5cm} L{3cm} L{7cm}}
 \toprule
 \textbf{Field} & \textbf{Type} & \textbf{Description} \\
 \midrule
 \kw{L}          & \kw{Int}    & Number of position qubits; $N = 2^L$ sites. \\
-\kw{N}          & \kw{Int}    & Number of physical sites per spin/Nambu sector. \\
+\kw{N}          & \kw{Int}    & Number of physical sites per spin/Nambu/layer sector. \\
 \kw{sites}      & \kw{Vector\{<:Index\}} & All ITensor site indices (includes auxiliary
-                                           \kw{spin\_s}/\kw{nambu\_s} if prepended). \\
+                                           \kw{layer\_s}/\kw{spin\_s}/\kw{nambu\_s} if prepended). \\
 \kw{mpo}        & \kw{MPO}   & The accumulated Hamiltonian MPO. \\
 \kw{geometry}   & \kw{Matrix\{Float64\}} or \kw{Nothing} & $N\times d$ real-space positions. \\
-\kw{scale}      & \kw{Float64} & Energy half-bandwidth; \kw{H/scale} has spectrum in $[-1,1]$. \\
+\kw{scale}      & \kw{Float64} & Energy half-bandwidth; \kw{H/scale} has spectrum $\subseteq [-1,1]$.
+                                 Set to 0 for lazy DMRG estimation on first KPM call. \\
+\kw{center}     & \kw{Float64} & Spectral center $(E_\text{max}+E_\text{min})/2$.
+                                 0 for particle-hole symmetric spectra. \\
 \kw{spin\_s}    & \kw{Index} or \kw{Nothing} & Spin-$\frac{1}{2}$ index (set by \fn{add\_spin!}). \\
 \kw{nambu\_s}   & \kw{Index} or \kw{Nothing} & Nambu index (set by \fn{add\_superconductivity!}). \\
-\kw{\_tn\_cache} & \kw{Vector\{MPO\}} or \kw{Nothing} & Cached Chebyshev polynomial list. \\
-\kw{\_density\_cache} & \kw{MPO} or \kw{Nothing} & Cached density matrix. \\
+\kw{layer\_s}   & \kw{Index} or \kw{Nothing} & Layer index (set by bilayer/multilayer constructors). \\
+\kw{\_tn\_cache}      & \kw{Vector\{MPO\}} or \kw{Nothing} & Cached Chebyshev polynomial list $T_0\ldots T_N$. \\
+\kw{\_tn\_Ncheb}      & \kw{Int} & Order $N$ of cached Chebyshev list. \\
+\kw{\_density\_cache} & \kw{MPO} or \kw{Nothing} & Cached density matrix from purification. \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 Do not construct directly; use \fn{get\_Hamiltonian}.
-Caches are invalidated automatically by all \fn{add\_*!} functions.
+Caches are invalidated automatically by all \fn{add\_*!} functions and \fn{truncate!}.
+The \kw{center} field is set together with \kw{scale} during spectral-bounds estimation
+and is needed to correctly rescale energies: $\tilde\omega = (\omega - \mathrm{center})/\mathrm{scale}$.
 
 % ============================================================
 \section{Hamiltonian Construction (\texttt{TBSystem.jl})}
@@ -150,38 +158,54 @@ Caches are invalidated automatically by all \fn{add\_*!} functions.
 \end{tabular}
 \end{center}
 
-\subsection{Incremental Hamiltonian Modification}
-
-All functions below mutate \kw{H} in place and invalidate the Chebyshev cache.
+\subsection{Cache and Truncation Helpers}
 
 \begin{longtable}{L{6.5cm} L{8.5cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{add\_hopping!(H, f; maxdim, tol, type)}
+\sig{\_invalidate\_cache!(H)} $\to$ \sig{H}
+  & Clear all cached results (\kw{\_tn\_cache}, \kw{\_density\_cache}, scale/center).
+    Called automatically by all \fn{add\_*!} functions. \\[4pt]
+\sig{truncate!(H; cutoff=1e-10, maxdim=nothing)} $\to$ \sig{H}
+  & Truncate \kw{H.mpo} in-place with given cutoff/maxdim; invalidates caches. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Incremental Hamiltonian Modification}
+
+All functions below mutate \kw{H} in place and invalidate the Chebyshev cache.
+\fn{add\_hopping!} and \fn{add\_onsite!} must be called before \fn{add\_spin!} or
+\fn{add\_superconductivity!}.
+
+\begin{longtable}{L{6.5cm} L{8.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{add\_hopping!(H, f; maxdim=15, tol=1e-8, type=ComplexF64)}
   & Add an arbitrary hopping $f(i,j)$ to \kw{H.mpo}.
     Compressed via QTCI.
-    Must be called before \fn{add\_spin!} or \fn{add\_superconductivity!}. \\[4pt]
-\sig{add\_onsite!(H, f; tol)}
+    Errors if spin/Nambu/layer index is already present. \\[4pt]
+\sig{add\_onsite!(H, f; tol=1e-8)}
   & Add a diagonal on-site term $f(i)$ (1-indexed) via \fn{get\_diagonal\_mpo}. \\[4pt]
-\sig{add\_spin!(H; cutoff, maxdim)}
+\sig{add\_spin!(H; cutoff=1e-8, maxdim=200)}
   & Prepend a spin-$\frac{1}{2}$ index.  Result: $\mathbf{I}_\text{spin} \otimes H$.
     No-op if already spinful. \\[4pt]
-\sig{add\_zeeman!(H, h; direction, tol, maxdim)}
-  & Add Zeeman $h \cdot S_\alpha$.  Calls \fn{add\_spin!} automatically.
-    \kw{h} is a Number or function $h(i)$.
+\sig{add\_zeeman!(H, h; direction=:z, tol=1e-8, maxdim=200)}
+  & Add Zeeman coupling $h \cdot S_\alpha$.  \kw{h} is a Number or function $h(i)$.
     \kw{direction} $\in \{$\kw{:x, :y, :z}$\}$.
+    Calls \fn{add\_spin!} automatically.
     If BdG is already applied, wraps in $\tau_z$. \\[4pt]
-\sig{add\_superconductivity!(H, \(\Delta\); type, tol, maxdim)}
+\sig{add\_superconductivity!(H, \(\Delta\); type=:swave, tol=1e-8, maxdim=200)}
   & BdG extension: prepend Nambu index and build
     $\tau_z \otimes H_\text{kin} + \tau_+ \otimes H_\text{pair} + \tau_- \otimes H_\text{pair}^\dagger$.
     Spinless or singlet $(i\sigma_y \otimes \Delta)$ depending on whether spin is present.
     \kw{type=:swave}: $\Delta(i)$ diagonal; \kw{type=:custom}: $\Delta(i,j)$ via TCI.
     Errors if called twice. \\[4pt]
-\sig{add\_soc!(H, \(\lambda\); type, direction, tol, maxdim)}
+\sig{add\_soc!(H, \(\lambda\); type=:rashba, direction=:z, tol=1e-8, maxdim=200)}
   & Spin-orbit coupling.
-    \kw{type=:rashba}: $\lambda(S_y \otimes K_u - S_y \otimes K_d)$ (nearest-neighbour).
-    \kw{type=:ising}: $\lambda(i) \cdot S_z$.
+    \kw{type=:rashba}: NN Rashba $\lambda(S_y K_u - S_y K_d)$.
+    \kw{type=:ising}: $\lambda(i) \cdot S_z$ (Ising SOC).
     \kw{type=:custom}: arbitrary position MPO $\times$ spin operator. \\
 \bottomrule
 \end{longtable}
@@ -202,16 +226,15 @@ add_superconductivity!(H, 0.2)       # s-wave BdG
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{honeycomb\_positions(L)} $\to$ \sig{Matrix}
-  & Return $N\times 2$ real-space positions for a honeycomb patch.
-    Site $2k-1$ = sublattice A, $2k$ = sublattice B.
-    Requires $N/2$ to be a perfect square. \\[4pt]
-\sig{lattice\_positions(lattice, Lx, Ly; angle\_deg)} $\to$ \sig{Matrix}
-  & Positions for \kw{:square}, \kw{:triangular}, or \kw{:honeycomb}.
-    Optional rotation by \kw{angle\_deg} degrees.
+\sig{honeycomb\_positions(L)} $\to$ \sig{Matrix\{Float64\}}
+  & Return $N\times 2$ real-space positions for a honeycomb patch with $\sqrt{N/2}\times\sqrt{N/2}$
+    unit cells.  Site $2k-1$ = sublattice A, $2k$ = sublattice B. \\[4pt]
+\sig{lattice\_positions(lattice, Lx, Ly; angle\_deg=0.0)} $\to$ \sig{Matrix\{Float64\}}
+  & Positions for \kw{:square}, \kw{:triangular}, or \kw{:honeycomb} on a
+    $2^{L_x}\times 2^{L_y}$ patch, optionally rotated by \kw{angle\_deg} degrees.
     (\texttt{twisted\_tk.jl}) \\[4pt]
 \sig{\_pos\_sites(H)} $\to$ \sig{Vector}
-  & Last $L$ entries of \kw{H.sites}: position qubits only. \\
+  & Last $L$ entries of \kw{H.sites}: position qubits, skipping all auxiliary indices. \\
 \bottomrule
 \end{longtable}
 
@@ -231,14 +254,14 @@ These functions build MPOs directly on a provided \kw{sites} vector.
   & Uniform NN hopping $\sum_i (|i+1\rangle\langle i| + \text{h.c.})$
     via \kw{sigma\_plus}/\kw{sigma\_minus} binary increment/decrement operators. \\[4pt]
 \sig{kinetic\_1d\_nn\_custom(L, sites, hopping)} $\to$ \sig{MPO}
-  & Spatially varying NN hopping; \kw{hopping} is a diagonal MPO. \\[4pt]
+  & Spatially varying NN hopping; \kw{hopping} is a diagonal MPO of amplitudes. \\[4pt]
 \sig{kineticNNN(L, sites, hopping, nn)} $\to$ \sig{MPO}
-  & $n$-th-neighbour 1D hopping.
+  & 1D chain with $n$-th-nearest-neighbour hopping and site-varying amplitude.
     \kw{nn=1} = NN; larger \kw{nn} built via \fn{compose\_power}. \\[4pt]
 \sig{generate\_kin\_u(sites, N)} $\to$ \sig{MPO}
-  & Shift MPO $|n+1\rangle\langle n|$ (up-shift). \\[4pt]
+  & Shift MPO $|n+1\rangle\langle n|$ (up-shift / right hopping). \\[4pt]
 \sig{generate\_kin\_d(sites, N)} $\to$ \sig{MPO}
-  & Shift MPO $|n-1\rangle\langle n|$ (down-shift). \\
+  & Shift MPO $|n-1\rangle\langle n|$ (down-shift / left hopping). \\
 \bottomrule
 \end{longtable}
 
@@ -254,16 +277,16 @@ These functions build MPOs directly on a provided \kw{sites} vector.
 \sig{kineticintra2DNNhex(Lx, Ly, sites, hopping, nn)} $\to$ \sig{MPO}
   & Intra-row hopping for honeycomb; applies checkerboard A/B mask. \\[4pt]
 \sig{kineticinterNNNSWNE(Lx, Ly, sites, hopping, nn)} $\to$ \sig{MPO}
-  & SW$\nearrow$NE diagonal inter-row hopping (square lattice). \\[4pt]
+  & SW$\nearrow$NE diagonal inter-row hopping (square lattice, \kw{:xplus} mask). \\[4pt]
 \sig{kineticinterNNNSENW(Lx, Ly, sites, hopping, nn)} $\to$ \sig{MPO}
-  & SE$\nwarrow$NW diagonal inter-row hopping. \\[4pt]
+  & SE$\nwarrow$NW diagonal inter-row hopping (\kw{:xplain} mask). \\[4pt]
 \sig{kineticinterNNNtriSWNE(Lx, Ly, sites, hopping, nn)} $\to$ \sig{MPO}
-  & SW$\nearrow$NE diagonal for triangular lattice; also applies even-row mask. \\[4pt]
+  & SW$\nearrow$NE diagonal for triangular lattice; adds even-row selection mask. \\[4pt]
 \sig{kineticinterNNNtriSENW(Lx, Ly, sites, hopping, nn)} $\to$ \sig{MPO}
-  & SE$\nwarrow$NW diagonal for triangular lattice. \\[4pt]
-\sig{intrachain\_hopping(L\_chain, N, sites; hopping, t)} $\to$ \sig{MPO}
-  & NN x-direction hopping on a 2D lattice with row-break mask. \\[4pt]
-\sig{interchain\_hopping\_square(L\_chain, N, sites; hopping, t)} $\to$ \sig{MPO}
+  & SE$\nwarrow$NW diagonal for triangular lattice; adds odd-row selection mask. \\[4pt]
+\sig{intrachain\_hopping(L\_chain, N, sites; hopping=Id, t=1)} $\to$ \sig{MPO}
+  & NN x-direction hopping on a 2D lattice with row-break mask applied. \\[4pt]
+\sig{interchain\_hopping\_square(L\_chain, N, sites; hopping=Id, t=1)} $\to$ \sig{MPO}
   & NN y-direction hopping on a square lattice. \\[4pt]
 \sig{interchain\_hopping\_triangle(L\_chain, N, sites)} $\to$ \sig{MPO}
   & Both diagonal inter-row bonds on a triangular lattice. \\
@@ -272,22 +295,22 @@ These functions build MPOs directly on a provided \kw{sites} vector.
 
 \subsection{Diagonal Mask MPOs}
 
-Used internally as connectivity filters; all return diagonal MPOs.
+Used internally as connectivity filters; all return diagonal 0/1 MPOs.
 
 \begin{longtable}{L{7cm} L{8cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{\_row\_break\_mpo(Lx, Ly, sites; which)} $\to$ \sig{MPO}
+\sig{\_row\_break\_mpo(Lx, Ly, sites; which::Symbol)} $\to$ \sig{MPO}
   & Mask 0 at row boundaries.
     \kw{which=:xplus}: last column; \kw{:xplain}: first column. \\[4pt]
-\sig{\_row\_select\_mpo(Lx, Ly, sites; keep)} $\to$ \sig{MPO}
-  & Retain only even or odd rows (\kw{keep=:even} or \kw{:odd}). \\[4pt]
-\sig{\_col\_select\_mpo(Lx, Ly, sites; keep)} $\to$ \sig{MPO}
+\sig{\_row\_select\_mpo(Lx, Ly, sites; keep=:even)} $\to$ \sig{MPO}
+  & Retain only even or odd rows (\kw{keep=:even} or \kw{:odd}, 1-based). \\[4pt]
+\sig{\_col\_select\_mpo(Lx, Ly, sites; keep=:even)} $\to$ \sig{MPO}
   & Retain only even or odd columns. \\[4pt]
 \sig{\_row\_checker\_mpo(Lx, Ly, sites)} $\to$ \sig{MPO}
   & Checkerboard: 1 where $(i_x + i_y)$ is even, 0 otherwise. \\[4pt]
-\sig{test\_break(x\_start, L\_chain, N, sites)} $\to$ \sig{MPO}
+\sig{break\_chain(x\_start, L\_chain, N, sites)} $\to$ \sig{MPO}
   & 0 at sites $x_\text{start}, x_\text{start}+L_\text{chain},\ldots$; 1 elsewhere. \\
 \bottomrule
 \end{longtable}
@@ -298,18 +321,19 @@ Used internally as connectivity filters; all return diagonal MPOs.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{hopping2MPO(f, N, sites; tol, initial\_positions, type, unfoldingscheme)} $\to$ \sig{MPO}
+\sig{hopping2MPO(f, N, sites; tol=1e-8, initial\_positions=[], type=Float64, unfoldingscheme=:interleaved)} $\to$ \sig{MPO}
   & Compress $N\times N$ matrix $H[i,j]=f(i,j)$ into an MPO via QTCI.
     \kw{unfoldingscheme=:interleaved} (default) or \kw{:fused}. \\[4pt]
-\sig{qtt\_mpo(L, xvals, sites, func; tol, maxbonddim)} $\to$ \sig{MPO}
-  & Diagonal MPO $\mathrm{diag}(f(0),f(1),\ldots)$ via 1D QTCI.
-    Used for hopping amplitudes and on-site potentials. \\[4pt]
-\sig{get\_diagonal\_mpo(L, sites, f; type)} $\to$ \sig{MPO}
-  & Diagonal MPO with entry $f(x)$ at site $x \in \{1,\ldots,2^L\}$ (1-indexed). \\[4pt]
-\sig{compose\_power(base, nn; side, apply\_kwargs)} $\to$ \sig{MPO}
-  & $\text{base}^{nn}$ by exponentiation-by-squaring in $O(\log n)$ applies. \\[4pt]
-\sig{qtci\_matrix\_to\_MPO(A\_fun, L, sites; tol, type)} $\to$ \sig{MPO}
-  & Like \fn{hopping2MPO} with extra truncation; uses interleaved grid. \\
+\sig{qtci\_matrix\_to\_MPO(A\_fun, L, sites; tol=1e-8, type=Float64)} $\to$ \sig{MPO}
+  & Like \fn{hopping2MPO} for $2^L\times 2^L$ matrix functions; applies extra truncation. \\[4pt]
+\sig{get\_diagonal\_mpo(L, sites, f; type=Float64)} $\to$ \sig{MPO}
+  & Diagonal MPO with entry $f(x)$ at site $x \in \{1,\ldots,2^L\}$ (1-indexed).
+    Compressed via 1D QTCI. \\[4pt]
+\sig{qtt\_mpo(L, xvals, sites, func; tol=1e-8, maxbonddim=50)} $\to$ \sig{MPO}
+  & Compress scalar function \kw{func(x)} on grid \kw{xvals} into diagonal MPO via QTCI. \\[4pt]
+\sig{compose\_power(base, nn; side=:right, apply\_kwargs)} $\to$ \sig{MPO}
+  & $\text{base}^{nn}$ by exponentiation-by-squaring in $O(\log n)$ applies.
+    Returns identity if \kw{nn=0}. \\
 \bottomrule
 \end{longtable}
 
@@ -319,16 +343,17 @@ Used internally as connectivity filters; all return diagonal MPOs.
 \toprule
 \textbf{Function} & \textbf{Description} \\
 \midrule
-\sig{HUniform(L, t; v, nn)} & Uniform 1D chain. \\
-\sig{HSSH(L, t, d; nn)} & SSH dimerized chain: hopping $t\pm d$ on alternating bonds. \\
-\sig{HAAH(L, V, phi, t; b)} & Aubry--Andr\'e--Harper: $H=-t\sum c^\dagger_{i+1}c_i + V\cos(2\pi b i+\phi)n_i$. \\
-\sig{HUniform2Dsquare(Lx, Ly, t)} & Uniform square lattice. \\
+\sig{HUniform(L, t; v=1e-6, nn=1)} & Uniform 1D chain with optional uniform on-site potential \kw{v}. \\
+\sig{HSSH(L, t, d; nn=1)} & SSH dimerized chain: hopping $t\pm d$ on alternating bonds. \\
+\sig{HAAH(L, V, phi, t; b=(1+\(\sqrt{5}\))/2)} & Aubry--Andr\'e--Harper: $H=-t\sum c^\dagger_{i+1}c_i + V\cos(2\pi b i+\phi)n_i$. \\
+\sig{HUniform2Dsquare(Lx, Ly, t)} & Uniform square lattice tight-binding. \\
 \sig{HUniform2Dhex(Lx, Ly, t)} & Uniform honeycomb lattice. \\
-\sig{HUniform2Dtri(Lx, Ly, t)} & Uniform triangular lattice. \\
-\sig{HChern8(Lx, Ly, V, t)} & 8-fold Chern mosaic on square lattice. \\
-\sig{H2DChernhex(Lx, Ly, t, t2, ms)} & Haldane Chern insulator on honeycomb; domain wall in $t_2$ and $M_s$. \\
+\sig{HUniform2Dtri(Lx, Ly, t)} & Uniform triangular lattice (three kinetic terms). \\
+\sig{HChern8(Lx, Ly, V, t)} & 8-fold Chern mosaic with spatially-varying on-site modulation. \\
+\sig{H2DChernhex(Lx, Ly, t, t2, ms)} & Haldane Chern insulator on honeycomb; domain walls in $t_2$ and Semenoff mass. \\
 \sig{HQC2Dsquare(Lx, Ly, t)} & Quasicrystal-modulated square lattice. \\
-\sig{build\_hamiltonian(model, L; mparams)} & Dispatch via \kw{MODEL\_REGISTRY}; accepts parameter string or dict. \\
+\sig{build\_hamiltonian(model, L; mparams)} & Dispatch via \kw{MODEL\_REGISTRY}: build 1D MPO from model name and parameter string. \\
+\sig{build\_hamiltonian(model, Lx, Ly; mparams)} & 2D variant. \\
 \bottomrule
 \end{longtable}
 
@@ -338,26 +363,29 @@ Used internally as connectivity filters; all return diagonal MPOs.
 
 \subsection{Commensurate Stacking (\texttt{bilayer\_tk.jl})}
 
-Site encoding: site 1 = layer qubit (Qubit, dim 2 or $n_\text{layers}$);
+Site encoding: site 1 = layer qubit (Index of dim $n_\text{layers}$);
 sites $2\ldots L+1$ = position qubits.
+Constructors return a \kw{TBHamiltonian} with \kw{H.layer\_s} set.
 
 \begin{longtable}{L{7.5cm} L{7.5cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{bilayer\_hamiltonian(lattice, Lx, Ly; stacking, t\_intra, t\_inter, cutoff, maxdim)}
+\sig{bilayer\_hamiltonian(lattice, Lx, Ly; stacking=:AA, t\_intra=1.0, t\_inter=0.3, cutoff=1e-8, maxdim=200)}
+  $\to$ \sig{TBHamiltonian}
   & Two-layer Hamiltonian: $\sum_k P_k\otimes H_\text{mono} + (|1\rangle\langle 2|+|2\rangle\langle 1|)\otimes V$.
-    \kw{stacking=:AA} or \kw{:Bernal}.
-    Returns \kw{(H\_total, ext\_sites)}. \\[4pt]
-\sig{multilayer\_hamiltonian(lattice, Lx, Ly, n\_layers; stacking, t\_intra, t\_inter, cutoff, maxdim)}
-  & Generalises to $n_\text{layers}$ layers; NN coupling between adjacent layers only. \\[4pt]
-\sig{interlayer\_mpo(lattice, stacking, Lx, Ly, sites; t\_inter, cutoff)}
-  & Build the position-space interlayer coupling MPO $V$. \\[4pt]
-\sig{\_bernal\_interlayer\_mpo(L, sites; t\_inter, cutoff)}
+    \kw{stacking=:AA} (on-site) or \kw{:Bernal} (exact A$_1$--B$_2$, honeycomb only). \\[4pt]
+\sig{multilayer\_hamiltonian(lattice, Lx, Ly, n\_layers; stacking=:AA, t\_intra=1.0, t\_inter=0.3, cutoff=1e-8, maxdim=200)}
+  $\to$ \sig{TBHamiltonian}
+  & Generalises to $n_\text{layers}$ layers; interlayer coupling between adjacent pairs only. \\[4pt]
+\sig{interlayer\_mpo(lattice, stacking, Lx, Ly, sites; t\_inter=1.0, cutoff=1e-8)} $\to$ \sig{MPO}
+  & Build the position-space interlayer coupling MPO $V$.
+    Routes to \fn{\_bernal\_interlayer\_mpo} or \fn{\_aa\_interlayer\_mpo}. \\[4pt]
+\sig{\_bernal\_interlayer\_mpo(L, sites; t\_inter=1.0, cutoff=1e-8)} $\to$ \sig{MPO}
   & Exact Bernal A$_1$--B$_2$ coupling: $V = t_\perp(K_u D_A + D_A K_d)$.
     $D_A$ projects onto odd (A) sites; $K_{u/d}$ are $\pm 1$ shifts. \\[4pt]
-\sig{\_aa\_interlayer\_mpo(sites; t\_inter)}
-  & AA stacking: $V = t_\perp \mathbf{I}$ (on-site). \\
+\sig{\_aa\_interlayer\_mpo(sites; t\_inter=1.0)} $\to$ \sig{MPO}
+  & AA stacking: on-site coupling $V = t_\perp \mathbf{I}$. \\
 \bottomrule
 \end{longtable}
 
@@ -367,21 +395,23 @@ sites $2\ldots L+1$ = position qubits.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{twisted\_multilayer\_hamiltonian(lattice, Lx, Ly, angles\_deg; t\_intra, t\_inter, \(\alpha\)\_decay, tol, cutoff, maxdim)}
+\sig{twisted\_multilayer\_hamiltonian(lattice, Lx, Ly, angles\_deg; t\_intra=1.0, t\_inter=0.3, \(\alpha\)\_decay=1/16, tol=1e-6, cutoff=1e-8, maxdim=200)}
+  $\to$ \sig{TBHamiltonian}
   & Twisted multilayer: each layer $k$ rotated to \kw{angles\_deg[k]}.
     Interlayer coupling $V_{kl}(i,j) = t_\perp e^{-\alpha|\mathbf{r}_k^{(i)}-\mathbf{r}_l^{(j)}|}$
-    compressed via QTCI. Returns \kw{(H\_total, ext\_sites)}. \\[4pt]
+    compressed via QTCI. \\[4pt]
 \sig{twisted\_bilayer\_hamiltonian(lattice, Lx, Ly, \(\theta\)\_deg; \ldots)}
-  & Convenience wrapper: layer 1 at $0^\circ$, layer 2 at $\theta$. \\[4pt]
-\sig{monolayer\_hamiltonian(lattice, Lx, Ly, sites; t, cutoff)}
-  & Single-layer NN Hamiltonian MPO for square, triangular, or honeycomb. \\
+  $\to$ \sig{TBHamiltonian}
+  & Convenience wrapper: layer 1 at $0^\circ$, layer 2 at $\theta_\text{deg}$. \\[4pt]
+\sig{monolayer\_hamiltonian(lattice, Lx, Ly, sites; t=1.0, cutoff=1e-8)} $\to$ \sig{MPO}
+  & Single-layer NN Hamiltonian MPO for \kw{:square}, \kw{:triangular}, or \kw{:honeycomb}. \\
 \bottomrule
 \end{longtable}
 
 \subsection{Layer-Core Prepend Helpers}
 
 These functions extend an $L$-site MPO to an $(L+1)$-site MPO by prepending a
-one-site operator.
+single-site layer operator.
 
 \begin{longtable}{L{6.5cm} L{8.5cm}}
 \toprule
@@ -392,7 +422,7 @@ one-site operator.
 \sig{prepend\_layer\_hopping(H, layer\_s, k, l)} $\to$ \sig{MPO}
   & Prepend $|k\rangle\langle l|$. Used for interlayer $|k\rangle\langle l|\otimes V$. \\[4pt]
 \sig{\_prepend\_layer\_core(H, layer\_s, op\_entries)} $\to$ \sig{MPO}
-  & Internal: accepts a list of \kw{(bra, ket, val)} triples. \\
+  & Internal: accepts a list of \kw{(bra, ket, val)} triples and builds the prepend. \\
 \bottomrule
 \end{longtable}
 
@@ -418,7 +448,7 @@ one-site operator.
 \textbf{Signature} & \textbf{Description} \\
 \midrule
 \sig{prepend\_core\_op(H, s, mat)} $\to$ \sig{MPO}
-  & General prepend: extends $H$ by prepending the $2\times2$ matrix \kw{mat} on site \kw{s}. \\[4pt]
+  & General prepend: extends $H$ by prepending the matrix \kw{mat} (any size) on site \kw{s}. \\[4pt]
 \sig{prepend\_spin(H, spin\_s, op)} $\to$ \sig{MPO}
   & Prepend a spin-$\frac{1}{2}$ operator.  \kw{op} is a \kw{Symbol} or $2\times2$ matrix.
     Built-in ops: \kw{:Id, :Pup, :Pdn, :Sz, :Sp, :Sm, :Sx, :Sy, :iSy, :miSy}. \\[4pt]
@@ -434,13 +464,13 @@ one-site operator.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{spin\_hamiltonian(H\_up, H\_dn, spin\_s; H\_Zeeman, cutoff)} $\to$ \sig{MPO}
-  & $P_\uparrow\otimes H_\uparrow + P_\downarrow\otimes H_\downarrow + S_z\otimes H_\text{Zeeman}$. \\[4pt]
-\sig{bdg\_hamiltonian(H\_kin, H\_pair, nambu\_s; cutoff)} $\to$ \sig{MPO}
+\sig{spin\_hamiltonian(H\_up, H\_dn, spin\_s; H\_Zeeman=nothing, cutoff=1e-8)} $\to$ \sig{MPO}
+  & $P_\uparrow\otimes H_\uparrow + P_\downarrow\otimes H_\downarrow [+ S_z\otimes H_\text{Zeeman}]$. \\[4pt]
+\sig{bdg\_hamiltonian(H\_kin, H\_pair, nambu\_s; cutoff=1e-8)} $\to$ \sig{MPO}
   & Spinless BdG: $\tau_z\otimes H_\text{kin} + \tau_+\otimes H_\text{pair} + \tau_-\otimes H_\text{pair}^\dagger$. \\[4pt]
-\sig{bdg\_spin\_hamiltonian(H\_up, H\_dn, H\_pair, spin\_s, nambu\_s; H\_soc, cutoff)} $\to$ \sig{MPO}
+\sig{bdg\_spin\_hamiltonian(H\_up, H\_dn, H\_pair, spin\_s, nambu\_s; H\_soc=nothing, cutoff=1e-8)} $\to$ \sig{MPO}
   & Spin-$\frac{1}{2}$ singlet BdG in Nambu--spin space.
-    Pairing term: $\tau_+\otimes(i\sigma_y)\otimes H_\text{pair} + \text{h.c.}$.
+    Pairing: $\tau_+\otimes(i\sigma_y)\otimes H_\text{pair} + \text{h.c.}$.
     Optional Ising SOC $\tau_z\otimes S_z\otimes H_\text{soc}$. \\
 \bottomrule
 \end{longtable}
@@ -450,46 +480,67 @@ one-site operator.
 % ============================================================
 
 The KPM expands spectral quantities in Chebyshev polynomials
-$T_n(\tilde{H})$ where $\tilde{H} = (H - c)/s \in [-1,1]$.
+$T_n(\tilde{H})$ where $\tilde{H} = (H - \mathrm{center})/\mathrm{scale} \in [-1,1]$.
 Supported kernels: \kw{:jackson} (default), \kw{:lorentz}, \kw{:fejer}, \kw{:dirichlet}, \kw{:hodc}.
 
-\subsection{Building the Chebyshev List}
+\subsection{Spectral Bounds Estimation}
 
 \begin{longtable}{L{7cm} L{8cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{KPM\_Tn(H, N, sites; scale, maxdim, cutoff, dmrg\_*)} $\to$ \sig{(Tn\_list, scale, center)}
-  & Build Chebyshev MPOs $T_n(\tilde{H})$ for $n=0\ldots N$.
-    If \kw{scale=nothing} (default), spectral bounds estimated via DMRG.
-    \textbf{Returns} \kw{(Tn\_list, scale, center)}.
-    Use $\tilde\omega = (\omega - \text{center})/\text{scale}$ for all KPM calls. \\
+\sig{\_estimate\_spectral\_bounds(H\_mpo, sites; dmrg\_nsweeps=5, dmrg\_maxdim=[10,20,40], dmrg\_linkdim=4)}
+  $\to$ \sig{(scale, center)}
+  & Run DMRG to minimise $H$ and $-H$, yielding $E_\text{min}/E_\text{max}$.
+    Returns \kw{scale}$=(E_\text{max}-E_\text{min})\cdot 0.55$ and \kw{center}$=(E_\text{max}+E_\text{min})/2$. \\[4pt]
+\sig{\_ensure\_scale!(H::TBHamiltonian; \ldots)}
+  & If \kw{H.scale==0}, call \fn{\_estimate\_spectral\_bounds} and store in \kw{H.scale}/\kw{H.center}.
+    No-op otherwise. Called lazily by all high-level KPM functions. \\
 \bottomrule
 \end{longtable}
 
-\textbf{Important:} The return order is \kw{(Tn\_list, scale, center)}.
-A common bug is writing \kw{Tn, \_, scale = KPM\_Tn(\ldots)}, which assigns \kw{center}
-(not \kw{scale}) to \kw{scale}.  The correct pattern is:
+\subsection{Building the Chebyshev List}
+
+\begin{longtable}{L{7.5cm} L{7.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{KPM\_Tn(H\_mpo, N, sites; scale=nothing, center=0.0, maxdim=40, cutoff=1e-8, \ldots)}
+  $\to$ \sig{(Tn\_list, scale, center)}
+  & Low-level form. Build Chebyshev MPOs $T_n(\tilde{H})$ for $n=0\ldots N$.
+    If \kw{scale=nothing}, bounds estimated via DMRG. \\[4pt]
+\sig{KPM\_Tn(H::TBHamiltonian, Ncheb; maxdim=40, cutoff=1e-8, \ldots)}
+  $\to$ \sig{(Tn\_list, scale, center)}
+  & High-level form. Calls \fn{\_ensure\_scale!} lazily.
+    Caches result in \kw{H.\_tn\_cache} / \kw{H.\_tn\_Ncheb}. \\
+\bottomrule
+\end{longtable}
+
+\textbf{Important --- return order:} The return tuple is \kw{(Tn\_list, scale, center)}.
+A common bug is \kw{Tn, \_, scale = KPM\_Tn(\ldots)}, which assigns \kw{center} to \kw{scale}.
+The correct pattern is:
 \begin{verbatim}
 Tn, scale, center = KPM_Tn(H, Ncheb, sites)
 omega_r = (omega - center) / scale   # rescaled energy in (-1, 1)
 \end{verbatim}
+When using the \kw{TBHamiltonian} overload, \kw{H.scale} and \kw{H.center} are updated
+automatically and can be read directly.
 
 \subsection{Spectral Observables}
 
-\begin{longtable}{L{7cm} L{8cm}}
+\begin{longtable}{L{7.5cm} L{7.5cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{get\_ldos\_w\_from\_Tn(Tn\_list, N, \(\omega\); maxdim, kernel, \ldots)} $\to$ \sig{MPO}
+\sig{get\_ldos\_w\_from\_Tn(Tn\_list, N, \(\omega\); maxdim=40, kernel=:jackson, \ldots)} $\to$ \sig{MPO}
   & Spectral MPO $\delta(\omega - H)$ at rescaled energy $\omega\in(-1,1)$.
     $\text{DoS}(\omega) = \mathrm{Tr}[\delta(\omega-H)]$. \\[4pt]
-\sig{get\_Green\_retarded\_from\_Tn(Tn\_list, N, \(\omega\); \(\eta\), maxdim, kernel, \ldots)} $\to$ \sig{MPO}
-  & Retarded Green's function MPO $G^R(\omega) = (\omega+i\eta-H)^{-1}$. \\[4pt]
-\sig{get\_density\_from\_Tn(Tn\_list, N; fermi, maxdim, kernel, \ldots)} $\to$ \sig{MPO}
+\sig{get\_Green\_retarded\_from\_Tn(Tn\_list, N, \(\omega\); \(\eta\)=1e-2, maxdim=40, kernel=:jackson, \ldots)} $\to$ \sig{MPO}
+  & Retarded Green's function MPO $G^R(\omega+i\eta) = (\omega+i\eta-H)^{-1}$. \\[4pt]
+\sig{get\_density\_from\_Tn(Tn\_list, N; fermi=0.0, maxdim=40, kernel=:jackson, \ldots)} $\to$ \sig{MPO}
   & Density matrix $\rho = \theta(\mu - H)$ at rescaled Fermi level \kw{fermi}. \\[4pt]
-\sig{get\_PH\_from\_Tn(Tn\_list, N, \(\omega\); maxdim, kernel, \ldots)} $\to$ \sig{MPO}
-  & Particle--hole spectral function (same structure as \fn{get\_ldos\_w\_from\_Tn}). \\
+\sig{get\_PH\_from\_Tn(Tn\_list, N, \(\omega\); maxdim=40, kernel=:jackson, \ldots)} $\to$ \sig{MPO}
+  & Particle--hole spectral function MPO. \\
 \bottomrule
 \end{longtable}
 
@@ -499,8 +550,8 @@ omega_r = (omega - center) / scale   # rescaled energy in (-1, 1)
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{compute\_hodc\_params(m)} $\to$ \sig{(zl, wl)}
-  & Compute the $m$ quadrature nodes \kw{zl} and weights \kw{wl} for the HODC kernel.
+\sig{compute\_hodc\_params(m=6)} $\to$ \sig{(zl, wl)}
+  & Compute $m$ quadrature nodes \kw{zl} and weights \kw{wl} for the HODC kernel.
     Call once; pass to KPM functions as \kw{kernel=:hodc, zl=zl, wl=wl}. \\
 \bottomrule
 \end{longtable}
@@ -512,13 +563,12 @@ omega_r = (omega - center) / scale   # rescaled energy in (-1, 1)
 \textbf{Signature} & \textbf{Description} \\
 \midrule
 \sig{get\_mus\_combine(tn\_folder, mps\_folder, sites, L, num\_frag, N)} $\to$ \sig{mus}
-  & Load pre-computed Chebyshev MPOs and random MPS from disk;
-    compute stochastic Chebyshev moments $\mu_n^r = \langle r|T_n|r\rangle$
-    and apply Jackson kernel.  Suited for large moiré systems. \\[4pt]
+  & Load Chebyshev MPOs and random MPS from disk; compute stochastic Chebyshev moments
+    $\mu_n^r = \langle r|T_n|r\rangle$ with Jackson kernel. \\[4pt]
 \sig{get\_mus\_small(tn\_folder, sites, L, N)} $\to$ \sig{mus}
   & Like above but evaluates at 100 central sites directly (no random vectors). \\[4pt]
 \sig{get\_ldos(mus\_up, mus\_dn, num\_frag, en\_num)}
-  & Reconstruct the LDoS heatmap from stochastic moments for spin-up/down channels. \\[4pt]
+  & Reconstruct LDoS heatmap from stochastic moments for spin-up/down channels. \\[4pt]
 \sig{get\_dos(ldos\_matrix)}
   & Sum LDoS over sites to get the total DoS. \\
 \bottomrule
@@ -532,19 +582,49 @@ Iterative methods that drive eigenvalues of an approximate density matrix to
 exactly 0 or 1, refining the zero-temperature projector $\theta(\mu-H)$ without
 Gibbs ringing.
 
+\subsection{Initial Guess}
+
 \begin{longtable}{L{7.5cm} L{7.5cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{purification\_initial\_guess(H\_mpo, scale, sites; maxdim, cutoff)} $\to$ \sig{MPO}
-  & Build $\rho_0 = (\mathbf{I} - H/s)/2$ with spectrum in $[0,1]$.
-    Required initial guess for both purification algorithms. \\[4pt]
-\sig{mcweeny\_purify(\(\rho_0\); maxiters, maxdim, cutoff, tol, verbose)} $\to$ \sig{MPO}
-  & McWeeny iteration: $\rho_{n+1} = 3\rho_n^2 - 2\rho_n^3$.
+\sig{purification\_initial\_guess(H\_mpo, scale, sites; maxdim=40, cutoff=1e-8)} $\to$ \sig{MPO}
+  & Low-level form. Build $\rho_0 = \tfrac{1}{2}I - \tfrac{1}{2s}H$ with spectrum in $[0,1]$.
+    Works only for center-symmetric spectra. \\[4pt]
+\sig{purification\_initial\_guess(H::TBHamiltonian; maxdim=40, cutoff=1e-8)} $\to$ \sig{MPO}
+  & High-level form. Calls \fn{\_ensure\_scale!} automatically.
+    Uses corrected formula accounting for nonzero center:
+    $\rho_0 = \left(\tfrac{1}{2}+\tfrac{\mathrm{center}}{2\,\mathrm{scale}}\right)I - \tfrac{H}{2\,\mathrm{scale}}$. \\
+\bottomrule
+\end{longtable}
+
+\subsection{McWeeny Purification}
+
+\begin{longtable}{L{7.5cm} L{7.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{mcweeny\_purify(\(\rho_0\); maxiters=30, maxdim=40, cutoff=1e-8, tol=1e-5, verbose=false)} $\to$ \sig{MPO}
+  & Iterate $\rho_{n+1} = 3\rho_n^2 - 2\rho_n^3$ until $\|\rho^2-\rho\|/\|\rho\| < \kw{tol}$.
     Quadratic convergence; 2 MPO products per step. \\[4pt]
-\sig{sp2\_purify(\(\rho_0\), Nel; maxiters, maxdim, cutoff, tol, verbose)} $\to$ \sig{MPO}
-  & SP2 iteration: $\rho_{n+1} = \rho_n^2$ or $2\rho_n - \rho_n^2$ based on $\mathrm{Tr}(\rho_n^2)$ vs $N_\text{el}$.
-    1 MPO product per step; \kw{Nel} = target electron number. \\
+\sig{mcweeny\_purify(H::TBHamiltonian; maxiters=30, maxdim=40, cutoff=1e-8, tol=1e-5, verbose=false)} $\to$ \sig{MPO}
+  & High-level form. Builds initial guess from \kw{H}, runs McWeeny,
+    caches result in \kw{H.\_density\_cache}. \\
+\bottomrule
+\end{longtable}
+
+\subsection{SP2 Purification}
+
+\begin{longtable}{L{7.5cm} L{7.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{sp2\_purify(\(\rho_0\), Nel; maxiters=40, maxdim=40, cutoff=1e-8, tol=1e-5, verbose=false)} $\to$ \sig{MPO}
+  & Iterate: if $\mathrm{Tr}(\rho^2)\geq N_\text{el}$: $\rho_{n+1}=\rho^2$; else $\rho_{n+1}=2\rho-\rho^2$.
+    Drives $\mathrm{Tr}(\rho)\to N_\text{el}$; 1 MPO product per step. \\[4pt]
+\sig{sp2\_purify(H::TBHamiltonian; Nel=H.N\(\div\)2, maxiters=40, maxdim=40, cutoff=1e-8, tol=1e-5, verbose=false)} $\to$ \sig{MPO}
+  & High-level form. \kw{Nel} defaults to half-filling.
+    Caches result in \kw{H.\_density\_cache}. \\
 \bottomrule
 \end{longtable}
 
@@ -556,17 +636,21 @@ Gibbs ringing.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{conjugate\_by\_qft(W; tol, maxdim)} $\to$ \sig{MPO}
+\sig{conjugate\_by\_qft(W; tol=1e-9, maxdim=100)} $\to$ \sig{MPO}
   & Returns $U W U^\dagger$ where $U$ is the QFT MPO.
     Maps any real-space MPO to momentum space. \\[4pt]
-\sig{get\_spect\_k(W; tol, maxdim)} $\to$ \sig{Vector}
-  & Momentum-space spectrum $\langle k|\tilde{W}|k\rangle$ for a 1D system. \\[4pt]
-\sig{get\_spect\_k\_doubled(W; tol, maxdim)} $\to$ \sig{Vector}
-  & Same for a doubled system (e.g.\ two-band or spin-resolved on $2L$ sites). \\[4pt]
-\sig{get\_bands(Tn\_list, Ncheb, sites, \(\omega\)\_vals; tol, maxdim)} $\to$ \sig{Matrix}
-  & Compute $A(k,\omega) = \langle k|U\,\delta(\omega-H)\,U^\dagger|k\rangle$.
+\sig{get\_spect\_k(W; tol=1e-9, maxdim=100)} $\to$ \sig{Vector}
+  & Momentum-space diagonal $\langle k|\tilde{W}|k\rangle$ for a single-band 1D system.
+    Returns length-$N$ vector. \\[4pt]
+\sig{get\_spect\_k\_doubled(W; tol=1e-9, maxdim=100)} $\to$ \sig{Vector}
+  & Same for a doubled ($2L$-site) system (two-band or spin-resolved). \\[4pt]
+\sig{get\_bands(Tn\_list, Ncheb, sites, \(\omega\)\_vals; tol=1e-9, maxdim=100)} $\to$ \sig{Matrix\{Float64\}}
+  & Low-level form. Compute $A(k,\omega) = \langle k|U\,\delta(\omega-H)\,U^\dagger|k\rangle$.
     Returns $(N_k\times N_\omega)$ matrix.
-    \kw{\(\omega\)\_vals} must be in rescaled units, strictly inside $(-1,1)$. \\
+    \kw{\(\omega\)\_vals} must be in \emph{rescaled} units $\in (-1,1)$. \\[4pt]
+\sig{get\_bands(H::TBHamiltonian, \(\omega\)\_phys\_vals; tol=1e-9, maxdim=100)} $\to$ \sig{Matrix\{Float64\}}
+  & High-level form. Pass \kw{TBHamiltonian} and physical energies; rescaling and Tn cache
+    used automatically.  Errors if spin or Nambu indices are present. \\
 \bottomrule
 \end{longtable}
 
@@ -574,50 +658,110 @@ Gibbs ringing.
 \section{Topological Invariants (\texttt{Topology\_tk.jl})}
 % ============================================================
 
+Real-space topological invariants (Chern number and winding number) for general lattice
+geometries.  All functions accept user-supplied coordinate functions \kw{xfunc(i, L\_chain)}
+and \kw{yfunc(i, L\_chain)} where \kw{i} is a 0-indexed site number and \kw{L\_chain=$2^{l}$}
+is the relevant lattice length.
+
+\textbf{Key concept --- quenching}:
+Periodic boundary conditions would make $\hat{x}$ discontinuous.  With
+\kw{quenched=true} the position operators are replaced by
+$\sin(x/\Lambda)$ and $\cos(x/\Lambda)$, which are bounded and smooth.
+The identity $x \approx \Lambda\sin(x/\Lambda)$ for small arguments means
+the quenched Chern marker recovers physical units via a factor $\Lambda^2$.
+The winding-number density recovers via $\Lambda$.
+
+\subsection{Projector Retrieval}
+
+\begin{longtable}{L{8cm} L{7cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{\_get\_projector(H; method=:KPM, fermi=0.0, Nchebychev=300, maxdim=40, cutoff=1e-8, Nel=nothing)} $\to$ \sig{MPO}
+  & Compute or retrieve the zero-temperature projector $P=\theta(\mu-H)$.
+    \kw{method=:KPM}: uses cached \kw{H.\_tn\_cache} or runs KPM; \kw{fermi} in physical units.
+    \kw{method=:mcweeny}: uses \kw{H.\_density\_cache} or calls \fn{mcweeny\_purify}.
+    \kw{method=:sp2}: uses \kw{H.\_density\_cache} or calls \fn{sp2\_purify} with target \kw{Nel}. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Quenched Position Operators}
+
+These build diagonal MPOs for the trigonometric quenching functions.
+The argument to \kw{get\_diagonal\_mpo} is 1-indexed; these builders convert internally
+with \kw{xfunc(i-1, L\_chain)}.
+
 \begin{longtable}{L{7cm} L{8cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{haldane\_hoppingf(r1, r2, i, j; t2, phi, M)} $\to$ \sig{Number}
-  & Hopping function for the Haldane model: NN hopping $-1$, NNN $t_2 e^{\pm i\phi\nu}$,
-    on-site Semenoff mass $M(-1)^i$. \\[4pt]
-\sig{get\_C\_op\_MPO\_SSH(L, sites, t1, t2; Ncheb, maxdim)} $\to$ \sig{MPO}
-  & Build the SSH winding-number MPO $\hat{C} = S_z(PxQ + QxP)$ via KPM.\\[4pt]
-\sig{W1D(L, sites, t1, t2, i; Ncheb, maxbonddim)} $\to$ \sig{Number}
-  & Winding-number marker at unit cell $i$ for the SSH model. \\[4pt]
-\sig{get\_C\_op\_MPO\_Haldane(L, sites, rs, t2, M)} $\to$ \sig{MPO}
-  & Chern marker MPO $\hat{C} = 2\pi i(Q x P y Q - P x Q y P)$ for the Haldane model. \\[4pt]
-\sig{get\_C\_op\_MPO\_2D(H, L, sites, L\_chain; fermi, Ncheb, maxbonddim)} $\to$ \sig{MPO}
-  & Chern marker MPO for a general 2D Hamiltonian. \\[4pt]
-\sig{get\_C\_op\_MPO\_from\_P(P, L, sites, L\_chain; maxbonddim)} $\to$ \sig{qtt}
-  & Spatially-resolved Chern marker using a pre-computed projector $P$; uses TCI. \\[4pt]
-\sig{C2D\_Haldane(L, sites, rs, t2, M, i)} $\to$ \sig{Number}
-  & Chern marker at site $i$ for the Haldane model. \\[4pt]
-\sig{C\_2D\_avg\_around\_center(L, sites, rs, C\_op, radius)} $\to$ \sig{Number}
-  & Average Chern marker over sites within \kw{radius} of the origin. \\[4pt]
-\sig{get\_Vortex\_op\_MPO\_Haldane(L, sites, rs, t2, M)} $\to$ \sig{MPO}
-  & Vortex charge operator $\hat{V} = P\bar{z}Qz P$ for the Haldane model. \\
+\sig{get\_sinx\_op(L, sites, L\_chain, \(\Lambda\), xfunc)} $\to$ \sig{MPO}
+  & Diagonal MPO for $\sin(x_i/\Lambda)$ where $x_i = \kw{xfunc}(i, L_\text{chain})$. \\[4pt]
+\sig{get\_cosx\_op(L, sites, L\_chain, \(\Lambda\), xfunc)} $\to$ \sig{MPO}
+  & Diagonal MPO for $\cos(x_i/\Lambda)$. \\[4pt]
+\sig{get\_siny\_op(L, sites, L\_chain, \(\Lambda\), yfunc)} $\to$ \sig{MPO}
+  & Diagonal MPO for $\sin(y_i/\Lambda)$. \\[4pt]
+\sig{get\_cosy\_op(L, sites, L\_chain, \(\Lambda\), yfunc)} $\to$ \sig{MPO}
+  & Diagonal MPO for $\cos(y_i/\Lambda)$. \\
 \bottomrule
 \end{longtable}
 
-\textbf{Position operator helpers:}
+\subsection{1D Winding Number}
 
-\begin{longtable}{L{7cm} L{8cm}}
+\begin{longtable}{L{8cm} L{7cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{get\_pos\_opND\_quantics(L, sites, rs, d)} $\to$ \sig{MPO}
-  & Diagonal MPO encoding coordinate $d$ from position matrix \kw{rs}. \\
-\sig{get\_x\_op\_square(x\_mid, L, sites, L\_chain)} $\to$ \sig{MPO}
-  & $x - x_\text{mid}$ operator for a square lattice. \\
-\sig{get\_y\_op\_square(y\_mid, L, sites, L\_chain)} $\to$ \sig{MPO}
-  & $y - y_\text{mid}$ operator. \\
-\sig{get\_x\_op\_SSH\_quantics(L, sites)} $\to$ \sig{MPO}
-  & Centred $x$ operator for the SSH model. \\
-\sig{get\_sz\_quantics(L, sites)} $\to$ \sig{MPO}
-  & Sublattice operator $(-1)^i$ (SSH Zak phase). \\
+\sig{get\_W(H, xfunc, sz\_func; method=:KPM, fermi=0.0, Nchebychev=300, maxdim=15, cutoff=1e-8, Nel=nothing, quenched=true, l=nothing, \(\Lambda\)=10)} $\to$ \sig{Function}
+  & Compute the winding-number density operator.
+    Pre-computes one or two MPOs ($W_1$, $W_2$ for \kw{quenched=true}).
+    Returns a closure \kw{calculate\_winding(alpha::Int) -> ComplexF64} that
+    evaluates the local winding density centred at site \kw{alpha} (1-indexed). \\
 \bottomrule
 \end{longtable}
+
+\textbf{Quenched case} (\kw{quenched=true}):
+Uses the 2-term decomposition
+$\langle\alpha|\hat{W}|\alpha\rangle = \Lambda[\cos(x_\alpha/\Lambda)\langle\alpha|W_1|\alpha\rangle
+- \sin(x_\alpha/\Lambda)\langle\alpha|W_2|\alpha\rangle]$
+where $W_1 = \sigma_z(P\sin\hat{X}Q + Q\sin\hat{X}P)$,
+$W_2 = \sigma_z(P\cos\hat{X}Q + Q\cos\hat{X}P)$.
+
+\textbf{Flat case} (\kw{quenched=false}): builds $W = \sigma_z(P\hat{x}Q + Q\hat{x}P)$ once;
+the closure simply evaluates $\langle\alpha|W|\alpha\rangle$.
+
+\subsection{2D Real-Space Chern Marker}
+
+\begin{longtable}{L{8cm} L{7cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{get\_C\_op\_MPO\_from\_P(P, L, sites, xfunc, yfunc; l=nothing, \(\Lambda\)=10, maxdim=500, cutoff=1e-8, quenched=true)} $\to$ \sig{Function}
+  & Build real-space Chern marker from pre-computed projector $P$.
+    Returns closure \kw{calculate\_chern\_number(alpha::Int) -> ComplexF64}. \\[4pt]
+\sig{get\_C(H, xfunc, yfunc; method=:KPM, fermi=0.0, l=nothing, \(\Lambda\)=10, Nchebychev=300, maxdim=500, cutoff=1e-8, Nel=nothing, quenched=true)} $\to$ \sig{Function}
+  & High-level wrapper: calls \fn{\_get\_projector} then \fn{get\_C\_op\_MPO\_from\_P}.
+    Returns same \kw{calculate\_chern\_number} closure. \\
+\bottomrule
+\end{longtable}
+
+\textbf{Quenched case} (\kw{quenched=true}): uses the 4-term decomposition
+\begin{align*}
+\langle\alpha|\hat{C}|\alpha\rangle =
+  2\pi i\Lambda^2 \bigl[
+  &\cos\tfrac{x_\alpha}{\Lambda}\cos\tfrac{y_\alpha}{\Lambda}\langle\alpha|C_1|\alpha\rangle
+  +\sin\tfrac{x_\alpha}{\Lambda}\sin\tfrac{y_\alpha}{\Lambda}\langle\alpha|C_2|\alpha\rangle \\
+  -&\cos\tfrac{x_\alpha}{\Lambda}\sin\tfrac{y_\alpha}{\Lambda}\langle\alpha|C_3|\alpha\rangle
+  -\sin\tfrac{x_\alpha}{\Lambda}\cos\tfrac{y_\alpha}{\Lambda}\langle\alpha|C_4|\alpha\rangle\bigr]
+\end{align*}
+where $C_1$--$C_4$ are pre-computed $\alpha$-independent MPOs.
+Only scalar trig evaluations are needed per site, avoiding $O(2^L)$ MPO products.
+
+\textbf{Flat case} (\kw{quenched=false}): $\hat{C} = 2\pi i (Q\hat{x}P\hat{y}Q - P\hat{x}Q\hat{y}P)$;
+no $\Lambda^2$ prefactor.
+
+\textbf{Indexing note}: \kw{xfunc} and \kw{yfunc} receive a 0-indexed site \kw{i}; the closures
+receive 1-indexed \kw{alpha} and pass \kw{alpha-1} to both \fn{binary\_to\_MPS} and \kw{xfunc}/\kw{yfunc}.
 
 % ============================================================
 \section{DMRG (\texttt{DMRG\_tk.jl})}
@@ -627,16 +771,17 @@ Gibbs ringing.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{dmrg\_gs(H, sites; nsweeps, maxdim, cutoff, noise, linkdim\_init)} $\to$ \sig{(E, \(\psi\))}
+\sig{dmrg\_gs(H, sites; nsweeps=10, maxdim=[10,20,50,100,200], cutoff=1e-8, noise=[...], linkdim\_init=10)} $\to$ \sig{(E, \(\psi\))}
   & Ground state and energy of \kw{H} via DMRG. \\[4pt]
-\sig{build\_K(H, sites, \(\omega\), \(\eta\); maxdim\_K, cutoff\_K)} $\to$ \sig{MPO}
+\sig{build\_K(H, sites, \(\omega\), \(\eta\); maxdim\_K=200, cutoff\_K=1e-8)} $\to$ \sig{MPO}
   & Resolvent-squared MPO $K(\omega,\eta) = (H-\omega I)^2 + \eta^2 I$.
-    Ground state energy $\geq \eta^2$; coincides with $\eta^2$ at spectral peaks. \\[4pt]
-\sig{dmrg\_spectral(H, sites, \(\omega\), \(\eta\); \(\psi_0\), maxdim\_K, \ldots)} $\to$ \sig{(E\_K, \(\psi\))}
+    Ground-state energy $E_K \geq \eta^2$; $E_K \to \eta^2$ at spectral peaks. \\[4pt]
+\sig{dmrg\_spectral(H, sites, \(\omega\), \(\eta\); \(\psi_0\)=nothing, \ldots)} $\to$ \sig{(E\_K, \(\psi\))}
   & DMRG ground state of $K(\omega,\eta)$.
     Output $|\psi(\omega)\rangle$ concentrates on the eigenstate of $H$ nearest $\omega$. \\[4pt]
 \sig{local\_weight(\(\psi\), i, L, sites)} $\to$ \sig{Float64}
-  & $|\langle i|\psi\rangle|^2$: LDoS proxy at site $i$ (0-indexed, big-endian). \\
+  & $|\langle i|\psi\rangle|^2$: LDoS proxy at site $i$ (0-indexed, big-endian).
+    Use with \kw{dmrg\_spectral} output. \\
 \bottomrule
 \end{longtable}
 
@@ -650,20 +795,20 @@ Gibbs ringing.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{evolve\_with\_tdvp(H, \(\psi_0\), nsteps, dt; normalize, maxdim, cutoff, nsite)}
+\sig{evolve\_with\_tdvp(H, \(\psi_0\), nsteps, dt; normalize=true, maxdim=200, cutoff=1e-10, nsite=2)}
   $\to$ \sig{Vector\{MPS\}}
   & Fixed-$H$ TDVP trajectory: returns $\{|\psi(t_n)\rangle\}_{n=0}^{\text{nsteps}}$. \\[4pt]
 \sig{evolve\_with\_tdvp\_timedep(H(t), \(\psi_0\), nsteps, dt; \ldots)}
   $\to$ \sig{Vector\{MPS\}}
   & Time-dependent TDVP; $H$ frozen at midpoint $H(t+\Delta t/2)$ each step. \\[4pt]
-\sig{tdvp\_evolve(H, \(\psi\), dt; maxdim, cutoff, normalize, nsite)}
+\sig{tdvp\_evolve(H, \(\psi\), dt; maxdim=200, cutoff=1e-10, normalize=true, nsite=2)}
   $\to$ \sig{MPS}
   & Single TDVP step; thin wrapper around \kw{ITensorMPS.tdvp}. \\[4pt]
-\sig{build\_tdvp\_propagator\_mpo(H, dt, L, sites; maxdim, cross\_tol, \ldots)}
+\sig{build\_tdvp\_propagator\_mpo(H, dt, L, sites; maxdim=50, cross\_tol=1e-8, \ldots)}
   $\to$ \sig{MPO}
   & Compress $U(\Delta t) = e^{-iH\Delta t}$ into an MPO via QTCI on matrix elements
     $\langle i|U|j\rangle$ evaluated by TDVP. \\[4pt]
-\sig{evolve\_with\_propagator(U, \(\psi_0\), nsteps; normalize, cutoff, maxdim)}
+\sig{evolve\_with\_propagator(U, \(\psi_0\), nsteps; normalize=true, cutoff=1e-8, maxdim=10000)}
   $\to$ \sig{Vector\{MPS\}}
   & Apply fixed propagator MPO $U$ repeatedly for \kw{nsteps}. \\
 \bottomrule
@@ -675,44 +820,46 @@ Gibbs ringing.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{evolve\_rk4\_dm\_timedep(H(t), \(\rho_0\), nsteps, dt; maxdim, cutoff, verbose)}
+\sig{evolve\_rk4\_dm\_timedep(H(t), \(\rho_0\), nsteps, dt; maxdim=200, cutoff=1e-10, verbose=false)}
   $\to$ \sig{Vector\{MPO\}}
   & RK4 integration of $\dot\rho = -i[H(t),\rho]$; returns full trajectory. \\[4pt]
-\sig{rk4\_step\_dm\_timedep(H(t), \(\rho\), t, dt; maxdim, cutoff)}
+\sig{rk4\_step\_dm\_timedep(H(t), \(\rho\), t, dt; maxdim=200, cutoff=1e-10)}
   $\to$ \sig{MPO}
   & Single RK4 step; evaluates $H$ at $t$, $t+\Delta t/2$, $t+\Delta t$. \\[4pt]
 \sig{dm\_expect(O, \(\rho\))} $\to$ \sig{Float64}
-  & $\mathrm{Tr}(O\rho)$ for Hermitian operator MPO $O$. \\[4pt]
+  & $\mathrm{Tr}(O\rho) = \mathrm{real}(\kw{inner}(O, \rho))$. \\[4pt]
 \sig{observables\_trajectory(ops, states)} $\to$ \sig{Dict}
-  & Measure a collection of MPO observables along an MPO trajectory. \\[4pt]
+  & Measure a named collection of MPO observables along an MPO trajectory. \\[4pt]
 \sig{timedep\_observable\_trajectory(O(t), states, dt)} $\to$ \sig{Vector}
   & Measure time-dependent $\langle O(t)\rangle$ along a trajectory. \\[4pt]
 \sig{purity(\(\rho\))} $\to$ \sig{Float64}
-  & $\mathrm{Tr}(\rho^2) = \kw{inner}(\rho,\rho)$. \\[4pt]
-\sig{purity\_trajectory(states)} $\to$ \sig{Vector}
+  & $\mathrm{Tr}(\rho^2) = \kw{inner}(\rho,\rho)$. Equals 1 for a pure state. \\[4pt]
+\sig{purity\_trajectory(states)} $\to$ \sig{Vector\{Float64\}}
   & Purity at each step of an MPO trajectory. \\
 \bottomrule
 \end{longtable}
 
-\subsection{Diagnostics and Current}
+\subsection{Diagnostics and Currents}
 
 \begin{longtable}{L{7.5cm} L{7.5cm}}
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
 \sig{compute\_basis\_overlaps(states, L, sites)}
-  & Compute $\langle x|\psi(t)\rangle$ for all basis states along MPS trajectory.
+  & Compute $\langle x|\psi(t)\rangle$ for all $2^L$ basis states along MPS trajectory.
     Returns \kw{(overlaps, abs\_overlaps, probabilities, norms)}. \\[4pt]
-\sig{bond\_current\_x(\(\rho\), j, t\_x, L, sites)} $\to$ \sig{Number}
-  & x-direction bond current $J_j = it_x(\rho_{j,j+1}-\rho_{j+1,j})$. \\[4pt]
-\sig{bond\_current\_x\_trajectory(states, j, t\_x, L, sites; dt)} $\to$ \sig{Vector}
-  & $J_j(t)$ along a density-matrix trajectory; \kw{t\_x} may be a function $t\mapsto t_x(t)$. \\[4pt]
-\sig{central\_x\_bond(L; Nx)} $\to$ \sig{Int}
-  & 0-indexed site of the central x-bond (1D or 2D row-major). \\[4pt]
+\sig{bond\_current\_x(\(\rho\), j, t\_x, L, sites)} $\to$ \sig{ComplexF64}
+  & x-direction bond current $J_j^x = it_x(\rho_{j,j+1}-\rho_{j+1,j})$. \\[4pt]
+\sig{bond\_current\_x\_trajectory(states, j, t\_x, L, sites; dt=1.0)} $\to$ \sig{Vector}
+  & $J_j(t)$ along a density-matrix trajectory.
+    \kw{t\_x} may be a Number or callable $t\mapsto t_x(t)$. \\[4pt]
+\sig{central\_x\_bond(L; Nx=nothing)} $\to$ \sig{Int}
+  & 0-indexed site of the central x-bond.
+    1D: $2^L/2-1$. 2D row-major: $(N_y/2)\cdot N_x + N_x/2 - 1$. \\[4pt]
 \sig{check\_tdvp\_vs\_U\_mpo(H, U, dt, L, sites; \ldots)}
   & Validate a propagator MPO against direct TDVP on a set of basis states. \\[4pt]
 \sig{phase\_aligned\_distance(\(\psi_a\), \(\psi_b\))} $\to$ \sig{Float64}
-  & $\sqrt{2 - 2|\langle\hat{a}|\hat{b}\rangle|}$: phase-insensitive distance between states. \\
+  & $\sqrt{2-2|\langle\hat{a}|\hat{b}\rangle|}$: phase-insensitive distance between normalised states. \\
 \bottomrule
 \end{longtable}
 
@@ -726,11 +873,11 @@ $(1 - \Pi_0 V)\chi = \Pi_0$, where $\Pi_0$ is the Lindhard (bubble) function.
 \subsection{Pipeline}
 
 \begin{enumerate}
-  \item \fn{get\_Tnlists} — build Chebyshev lists for system 1, system 2, and the effective
+  \item \fn{get\_Tnlists} --- build Chebyshev lists for system 1, system 2, and the effective
         combined Hamiltonian $H_\text{eff} = \mathbf{I}\otimes H_2 - H_1\otimes\mathbf{I}$.
-  \item \fn{get\_bublle\_expanded\_from\_Tn} — compute $\Pi_0(\omega)$ as a $2L$-site MPO.
-  \item \fn{build\_bubble\_mpo} — collapse to an $L$-site MPO.
-  \item \fn{rpa\_from\_bubble\_diag} — solve the Dyson equation via DMRG linear solver.
+  \item \fn{get\_bublle\_expanded\_from\_Tn} --- compute $\Pi_0(\omega)$ as a $2L$-site MPO.
+  \item \fn{build\_bubble\_mpo} --- collapse to an $L$-site MPO.
+  \item \fn{rpa\_from\_bubble\_diag} --- solve the Dyson equation via DMRG linear solver.
 \end{enumerate}
 
 \subsection{Functions}
@@ -739,16 +886,16 @@ $(1 - \Pi_0 V)\chi = \Pi_0$, where $\Pi_0$ is the Lindhard (bubble) function.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{get\_Tnlists(H, H2, sites, sites2, N; a, maxdim)}
+\sig{get\_Tnlists(H, H2, sites, sites2, N; a=6, maxdim=100)}
   $\to$ \sig{(Tn1, Tn2, Tn\_eff)}
   & Build 3 Chebyshev lists: individual and effective. \\[4pt]
-\sig{get\_bublle\_expanded\_from\_Tn(Tn1, Tn2, Tn\_eff, s1, s2, N, \(\omega\), \(\varepsilon_F\); a, maxdim)}
+\sig{get\_bublle\_expanded\_from\_Tn(Tn1, Tn2, Tn\_eff, s1, s2, N, \(\omega\), \(\varepsilon_F\); a=6, maxdim=200)}
   $\to$ \sig{MPO}
   & Lindhard bubble $\Pi_0(\omega)$ as a $2L$-site MPO. \\[4pt]
-\sig{build\_bubble\_mpo(\(\omega\); Tn1, Tn2, Tn\_eff, sites, sites2, \ldots)}
+\sig{build\_bubble\_mpo(\(\omega\); Tn1, Tn2, Tn\_eff, sites, sites2, finalsites, finalfinalsites, \ldots)}
   $\to$ \sig{MPO}
   & Collapse $2L$-site bubble to $L$-site MPO. \\[4pt]
-\sig{rpa\_from\_bubble\_diag(\(\Pi\), V, finalsites, finalfinalsites; nsweeps, maxdim, cutoff)}
+\sig{rpa\_from\_bubble\_diag(\(\Pi\), V, finalsites, finalfinalsites; nsweeps=20, maxdim=400, cutoff=1e-8)}
   $\to$ \sig{MPS}
   & Solve $(I-\Pi_0 V)\chi=\Pi_0$ via DMRG linear solver. \\
 \bottomrule
@@ -765,17 +912,18 @@ $(1 - \Pi_0 V)\chi = \Pi_0$, where $\Pi_0$ is the Lindhard (bubble) function.
 \sig{mps\_kron(A, B)} $\to$ \sig{MPS}
   & Concatenate two MPS. \\
 \sig{replace\_sites(MPO, newsites)} $\to$ \sig{MPO}
-  & Remap physical indices of an MPO to \kw{newsites}. \\
+  & Remap physical indices of an MPO to \kw{newsites}, preserving prime levels. \\
 \sig{interleave\_mpo(mpo, phys\_sites, n)} $\to$ \sig{MPO}
-  & Embed $L$-site MPO into $2L$-site space by interleaving with identity. \\
+  & Embed $L$-site MPO into $2L$-site space by interleaving with identity (\kw{n=0}: odd positions). \\
 \sig{collapse\_mpo\_pairs(mpo2L, out\_sites)} $\to$ \sig{MPO}
   & Merge consecutive site pairs $(2n-1,2n)$ to single site: $2L\to L$. \\
 \sig{extract\_diagonal\_to\_mps(M)} $\to$ \sig{MPS}
-  & Extract diagonal of an MPO as an MPS. \\
+  & Extract diagonal of an MPO as an MPS by projecting bra$=$ket. \\
 \sig{merge\_mps\_to\_mpo(mps)} $\to$ \sig{MPO}
   & Contract consecutive pairs of an MPS into MPO tensors. \\
-\sig{apply\_interleave\_swaps(W, sites; \ldots)} $\to$ \sig{MPO}
-  & Reorder sites from block order $[1\ldots N, N+1\ldots 2N]$ to interleaved via SWAP gates. \\
+\sig{apply\_interleave\_swaps(W, sites; cutoff=1e-16, maxdim=200)} $\to$ \sig{MPO}
+  & Reorder sites from block order $[1\ldots N, N+1\ldots 2N]$ to interleaved $[1,N+1,2,N+2,\ldots]$
+    via SWAP gates. \\
 \bottomrule
 \end{longtable}
 
@@ -787,13 +935,14 @@ $(1 - \Pi_0 V)\chi = \Pi_0$, where $\Pi_0$ is the Lindhard (bubble) function.
 \toprule
 \textbf{Signature} & \textbf{Description} \\
 \midrule
-\sig{SCF\_Hubbard(L, sites, U, k\_mpo, max\_iter, N, threshold, \ldots)}
+\sig{SCF\_Hubbard(L, sites, U, k\_mpo, max\_iter, N, threshold, mpo\_guess\_up, mpo\_guess\_dn, mps\_guess\_up, mps\_guess\_dn, qtt\_den\_old\_up, qtt\_den\_old\_dn, mix)}
   & Hartree--Fock SCF loop for the Hubbard model.
-    Iterates $H_\uparrow = H_\text{kin} + U\rho_\downarrow - U/(2L)$ and vice versa
+    Iterates $H_\uparrow = H_\text{kin} + U\rho_\downarrow$ and vice versa
     until $\|\rho_\text{new}-\rho_\text{old}\| < \text{threshold}$.
-    Accepts linear mixing parameter \kw{mix}. \\[4pt]
-\sig{generate\_mps\_list(L, \ldots, num\_frag, sites, r\_num, rr)}
-  & Generate stochastic random MPS for KPM trace estimation on large systems;
+    Accepts linear mixing parameter \kw{mix}.
+    Returns \kw{(qtt\_new\_up, qtt\_new\_dn, Tn\_up, Tn\_dn, conv\_error)}. \\[4pt]
+\sig{generate\_mps\_list(L, num\_frag, sites, r\_num, rr)} $\to$ \sig{Vector\{Vector\{MPS\}\}}
+  & Generate random MPS superpositions for stochastic KPM trace estimation;
     uses multi-threading. \\
 \bottomrule
 \end{longtable}
@@ -813,34 +962,17 @@ $(1 - \Pi_0 V)\chi = \Pi_0$, where $\Pi_0$ is the Lindhard (bubble) function.
 \sig{matrix\_checker(mpo, L, sites, i, j)} $\to$ \sig{Number}
   & Matrix element $\langle i|\text{mpo}|j\rangle$ by contracting basis MPS (small systems only). \\
 \sig{get\_matrix(mpo, L, sites)} $\to$ \sig{Matrix}
-  & Full $2^L\times 2^L$ dense matrix representation of \kw{mpo} (feasible for $L\lesssim 8$). \\
+  & Full $2^L\times 2^L$ dense matrix of \kw{mpo} (feasible for $L\lesssim 8$). \\
 \sig{fix\_sites(mpo, sites)} $\to$ \sig{MPO}
   & Replace site indices of an MPO (e.g.\ from TCI) with target \kw{sites}. \\
 \sig{custom\_mpo(mps, new\_sites)} $\to$ \sig{MPO}
-  & Convert a $2N$-site MPS from interleaved QTCI into an $N$-site MPO. \\
+  & Convert a $2N$-site MPS (interleaved QTCI) into an $N$-site MPO. \\
 \sig{fused\_mpo(mps, new\_sites)} $\to$ \sig{MPO}
   & Convert an $N$-site MPS with dim-4 physical indices (fused grid) into an $N$-site MPO. \\
 \sig{mps2mpo(L, sites, density\_mps)} $\to$ \sig{MPO}
   & Promote a diagonal MPS to a diagonal MPO via \kw{\_asdiagonal}. \\
 \sig{custom\_mps(qtt, sites)} $\to$ \sig{MPS}
   & Replace site indices of a TCI MPS with target \kw{sites}. \\
-\bottomrule
-\end{longtable}
-
-\subsection{Initial-Guess Density Matrices}
-
-\begin{longtable}{L{7cm} L{8cm}}
-\toprule
-\textbf{Signature} & \textbf{Description} \\
-\midrule
-\sig{initial\_guess\_trivial\_up\_1D(L, sites)} $\to$ \sig{(MPO, MPS)}
-  & 1D N\'eel spin-up seed: occupation $x\%2$ at site $x$. \\
-\sig{initial\_guess\_trivial\_down\_1D(L, sites)} $\to$ \sig{(MPO, MPS)}
-  & 1D N\'eel spin-down seed. \\
-\sig{initial\_guess\_Neel\_up(Lx, Ly, sites)} $\to$ \sig{(MPO, MPS)}
-  & 2D checkerboard spin-up: occupation 1 where $(i_x+i_y)$ is even. \\
-\sig{initial\_guess\_Neel\_dn(Lx, Ly, sites)} $\to$ \sig{(MPO, MPS)}
-  & 2D checkerboard spin-down. \\
 \bottomrule
 \end{longtable}
 
@@ -855,18 +987,18 @@ Defined in \texttt{utils.jl} and \texttt{2D\_lattice.jl}:
 \toprule
 \textbf{Name} & \textbf{Site type} & \textbf{Matrix} \\
 \midrule
-\kw{sigma\_plus}  & \kw{Qubit} & $\begin{pmatrix}0&1\\0&0\end{pmatrix}$ — binary increment (up-shift) \\
-\kw{sigma\_minus} & \kw{Qubit} & $\begin{pmatrix}0&0\\1&0\end{pmatrix}$ — binary decrement (down-shift) \\
-\kw{sigma\_d}     & \kw{Qubit} & $\begin{pmatrix}0&0\\0&1\end{pmatrix}$ — projector onto $|1\rangle$ \\
+\kw{sigma\_plus}  & \kw{Qubit} & $\begin{pmatrix}0&1\\0&0\end{pmatrix}$ --- binary increment (up-shift) \\
+\kw{sigma\_minus} & \kw{Qubit} & $\begin{pmatrix}0&0\\1&0\end{pmatrix}$ --- binary decrement (down-shift) \\
+\kw{sigma\_d}     & \kw{Qubit} & $\begin{pmatrix}0&0\\0&1\end{pmatrix}$ --- projector onto $|1\rangle$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 \medskip
-\textbf{Built-in spin-$\frac{1}{2}$ operators} (2-state basis, 1-indexed; used by \fn{prepend\_spin}):
+\textbf{Built-in spin-$\frac{1}{2}$ operators} (used by \fn{prepend\_spin}):
 
 \begin{center}
-\begin{tabular}{L{2cm} L{4cm} L{4cm} L{4.5cm}}
+\begin{tabular}{L{2cm} L{4cm} L{2cm} L{4.5cm}}
 \toprule
 \textbf{Symbol} & \textbf{Matrix} & \textbf{Symbol} & \textbf{Matrix} \\
 \midrule
@@ -895,27 +1027,86 @@ Defined in \texttt{utils.jl} and \texttt{2D\_lattice.jl}:
 \end{center}
 
 % ============================================================
-\section{Quick-Reference: KPM Workflow}
+\section{Quick-Reference Workflows}
 % ============================================================
 
-\begin{enumerate}
-  \item \textbf{Build Hamiltonian:}
-    \verb|H, sites = bilayer_hamiltonian(:honeycomb, Lx, Ly; ...)|
-    or \verb|H = get_Hamiltonian("square_2d", t; L=8)|.
-  \item \textbf{Run KPM:}
-    \verb|Tn, scale, center = KPM_Tn(H_mpo, Ncheb, sites; maxdim=100)|
-  \item \textbf{Sweep in energy:}\\
-    \verb|omega_r = (omega_phys - center) / scale   # must be in (-1,1)|
-  \item \textbf{Observables:}
-    \begin{itemize}
-      \item DoS: \verb|A = get_ldos_w_from_Tn(Tn, Ncheb, omega_r)|; \verb|dos = real(tr(A))|
-      \item Green's function: \verb|G = get_Green_retarded_from_Tn(Tn, Ncheb, omega_r; eta=0.01)|
-      \item Density matrix: \verb|rho = get_density_from_Tn(Tn, Ncheb; fermi=0.0)|
-      \item Band structure: \verb|Akw = get_bands(Tn, Ncheb, sites, omega_r_vals)|
-    \end{itemize}
-  \item \textbf{Purify (optional):}\\
-    \verb|rho0 = purification_initial_guess(H_mpo, scale, sites)|\\
-    \verb|rho  = mcweeny_purify(rho0; maxdim=200)|
-\end{enumerate}
+\subsection{KPM Density of States and Band Structure}
+
+\begin{verbatim}
+# 1. Build Hamiltonian (scale=0 means lazy DMRG estimation)
+H = get_Hamiltonian("square_2d", 1.0; L=8)
+
+# 2. Build Chebyshev list (caches in H._tn_cache / H.scale / H.center)
+Tn, scale, center = KPM_Tn(H, Ncheb; maxdim=100)
+
+# 3. Sweep in energy (always rescale before calling KPM functions)
+omega_r = (omega_phys - center) / scale   # must be in (-1, 1)
+
+# 4. Observables
+A = get_ldos_w_from_Tn(Tn, Ncheb, omega_r; maxdim=100) # δ(ω−H)
+dos   = real(tr(A))                        # density of states
+G     = get_Green_retarded_from_Tn(Tn, Ncheb, omega_r; eta=0.02)
+rho   = get_density_from_Tn(Tn, Ncheb; fermi=omega_r_fermi)
+
+# 5. Band structure A(k,ω) via QFT (uses H's cached Tn list)
+Akw = get_bands(H, omega_phys_vals; maxdim=100)
+\end{verbatim}
+
+\subsection{Density Matrix Purification}
+
+\begin{verbatim}
+# McWeeny: one-liner (initial guess built and cached internally)
+rho_mc = mcweeny_purify(H; maxiters=30, maxdim=200, tol=1e-5, verbose=true)
+
+# SP2: one-liner with explicit electron count
+rho_sp = sp2_purify(H; Nel=H.N÷2, maxiters=40, maxdim=200)
+
+# Low-level form (for non-standard center or external MPO):
+rho0 = purification_initial_guess(H; maxdim=100, cutoff=1e-8)
+rho  = mcweeny_purify(rho0; maxiters=30, maxdim=200)
+\end{verbatim}
+
+\subsection{Topological Invariants}
+
+\begin{verbatim}
+# Define coordinate functions (0-indexed site i, 0-indexed length L_chain)
+xfunc(i, L) = i % Int(sqrt(L))           # x-coordinate on square lattice
+yfunc(i, L) = i ÷ Int(sqrt(L))           # y-coordinate
+sz_func(i)  = isodd(i) ? 1.0 : -1.0     # sublattice/sigma_z
+
+# 1D winding number (returns a closure; pre-computes 2 MPOs once)
+winding = get_W(H, xfunc, sz_func; quenched=true, Lambda=10.0, maxdim=40)
+nu = sum(real(winding(alpha)) for alpha in 1:H.N) / H.N
+
+# 2D Chern marker (returns a closure; pre-computes C1-C4 MPOs once)
+chern = get_C(H, xfunc, yfunc; quenched=true, Lambda=10.0, maxdim=500)
+C_local = real(chern(H.N ÷ 2))      # evaluate at central site
+C_avg   = sum(real(chern(a)) for a in 1:H.N) / H.N
+\end{verbatim}
+
+\subsection{Bilayer and Twisted Multilayer}
+
+\begin{verbatim}
+# Bernal bilayer graphene (exact interlayer, no TCI)
+H_bg = bilayer_hamiltonian(:honeycomb, 4, 3;
+    stacking=:Bernal, t_intra=1.0, t_inter=0.3)
+# H_bg.sites = [layer_s, pos_qubits...]
+
+# Twisted bilayer at 5 degrees
+H_tbg = twisted_bilayer_hamiltonian(:triangular, 4, 4, 5.0;
+    t_intra=1.0, t_inter=0.3, alpha_decay=1/16)
+\end{verbatim}
+
+\subsection{Spinful Superconductor (BdG)}
+
+\begin{verbatim}
+H = get_Hamiltonian("square_2d", 1.0; L=8)
+add_onsite!(H, _ -> -2.0)              # chemical potential
+add_zeeman!(H, 0.1; direction=:z)      # spin-splitting
+add_soc!(H, 0.05; type=:rashba)        # Rashba SOC
+add_superconductivity!(H, 0.3)         # singlet pairing
+# H.sites = [nambu_s, spin_s, pos_qubits...]
+# H.N is unchanged; the MPO now spans 2×2×N = 4N states
+\end{verbatim}
 
 \end{document}

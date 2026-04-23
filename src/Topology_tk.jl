@@ -168,10 +168,10 @@ function get_W(H::TBHamiltonian, xfunc, sz_func;
         T2c = apply(Q, apply(cosX_op, P; maxdim, cutoff); maxdim, cutoff)
         W2  = apply(sz, +(T1c, T2c; maxdim, cutoff); maxdim, cutoff)
 
-        function calculate_winding(alpha)
-            α   = binary_to_MPS(alpha - 1, H.L, H.sites)
-            x   = xfunc(alpha - 1, L_chain)
-            return Λ * (cos(x / Λ) * inner(α', W1, α) - sin(x / Λ) * inner(α', W2, α))
+        calculate_winding = alpha -> begin
+            α = binary_to_MPS(alpha - 1, H.L, H.sites)
+            x = xfunc(alpha - 1, L_chain)
+            Λ * (cos(x / Λ) * inner(α', W1, α) - sin(x / Λ) * inner(α', W2, α))
         end
 
     else
@@ -180,9 +180,9 @@ function get_W(H::TBHamiltonian, xfunc, sz_func;
         T2   = apply(Q, apply(x_op, P; maxdim, cutoff); maxdim, cutoff)
         W_op = apply(sz, +(T1, T2; maxdim, cutoff); maxdim, cutoff)
 
-        function calculate_winding(alpha)
+        calculate_winding = alpha -> begin
             α = binary_to_MPS(alpha - 1, H.L, H.sites)
-            return inner(α', W_op, α)
+            inner(α', W_op, α)
         end
     end
 
@@ -382,7 +382,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
         println("C4 done")
 
-        function calculate_chern_number(alpha)
+        calculate_chern_number = alpha -> begin
             α      = binary_to_MPS(alpha - 1, L, sites)
             x      = xfunc(alpha - 1, L_chain)
             y      = yfunc(alpha - 1, L_chain)
@@ -392,7 +392,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             ch +=  sin_x * sin_y * inner(α', C2, α)
             ch -=  cos_x * sin_y * inner(α', C3, α)
             ch -=  sin_x * cos_y * inner(α', C4, α)
-            return ch * 2im * π * Λ^2
+            ch * 2im * π * Λ^2
         end
 
     else
@@ -409,9 +409,9 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         C_op = 2im * π * +(T1, -1.0 * T2; maxdim=maxdim, cutoff=cutoff)
         ITensorMPS.truncate!(C_op; maxdim=maxdim, cutoff=cutoff)
 
-        function calculate_chern_number(alpha)
+        calculate_chern_number = alpha -> begin
             α = binary_to_MPS(alpha - 1, L, sites)
-            return inner(α', C_op, α)
+            inner(α', C_op, α)
         end
     end
 
