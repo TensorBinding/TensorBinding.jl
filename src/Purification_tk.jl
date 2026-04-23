@@ -157,15 +157,17 @@ end
 
 """
     purification_initial_guess(H_mpo, scale, sites; maxdim=40, cutoff=1e-8) -> MPO
+    purification_initial_guess(H::TBHamiltonian; maxdim=40, cutoff=1e-8) -> MPO
 
 Construct the simplest valid initial guess for purification:
 
-    ρ₀ = (I - H/scale) / 2
+    ρ₀ = (I - (H − center·I)/scale) / 2
 
-This maps the spectrum of H/scale ∈ [-1, 1] to ρ₀ eigenvalues ∈ [0, 1],
-which is the required input range for both `mcweeny_purify` and `sp2_purify`.
+This maps the rescaled spectrum ∈ [-1, 1] to ρ₀ eigenvalues ∈ [0, 1],
+the required input range for both `mcweeny_purify` and `sp2_purify`.
 
-Pass `scale = H.scale` from a `TBHamiltonian`.
+The `TBHamiltonian` overload calls `_ensure_scale!` automatically and
+accounts for a non-zero spectral center.
 """
 function purification_initial_guess(H_mpo::MPO, scale::Float64, sites; maxdim::Int= 40,
                                     cutoff::Float64 = 1e-8)
@@ -173,4 +175,56 @@ function purification_initial_guess(H_mpo::MPO, scale::Float64, sites; maxdim::I
     ρ0  = +(0.5 * Id, (-0.5 / scale) * H_mpo; cutoff)
     ITensorMPS.truncate!(ρ0; maxdim=maxdim, cutoff)
     return ρ0
+end
+
+function purification_initial_guess(H::TBHamiltonian; maxdim::Int=40, cutoff::Float64=1e-8)
+    _ensure_scale!(H)
+    Id       = MPO(H.sites, "Id")
+    coeff_I  = 0.5 + H.center / (2 * H.scale)
+    coeff_H  = -0.5 / H.scale
+    ρ0       = +(coeff_I * Id, coeff_H * H.mpo; cutoff)
+    ITensorMPS.truncate!(ρ0; maxdim=maxdim, cutoff)
+    return ρ0
+end
+
+
+"""
+    mcweeny_purify(H::TBHamiltonian; Nel, maxiters, maxdim, cutoff, tol, verbose) -> MPO
+
+High-level overload: builds the initial guess from `H`, runs McWeeny purification,
+caches the result in `H._density_cache`, and returns the purified density matrix.
+"""
+function mcweeny_purify(H::TBHamiltonian;
+                        maxiters::Int   = 30,
+                        maxdim::Int     = 40,
+                        cutoff::Float64 = 1e-8,
+                        tol::Float64    = 1e-5,
+                        verbose::Bool   = false)
+    ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
+    ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                            tol=tol, verbose=verbose)
+    H._density_cache = ρ
+    return ρ
+end
+
+
+"""
+    sp2_purify(H::TBHamiltonian; Nel, maxiters, maxdim, cutoff, tol, verbose) -> MPO
+
+High-level overload: builds the initial guess from `H`, runs SP2 purification,
+caches the result in `H._density_cache`, and returns the purified density matrix.
+`Nel` defaults to half-filling (`H.N ÷ 2`).
+"""
+function sp2_purify(H::TBHamiltonian;
+                    Nel::Int        = H.N ÷ 2,
+                    maxiters::Int   = 40,
+                    maxdim::Int     = 40,
+                    cutoff::Float64 = 1e-8,
+                    tol::Float64    = 1e-5,
+                    verbose::Bool   = false)
+    ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
+    ρ  = sp2_purify(ρ0, Nel; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                              tol=tol, verbose=verbose)
+    H._density_cache = ρ
+    return ρ
 end
