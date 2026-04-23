@@ -1,26 +1,84 @@
 """
-    KPM_Tn(H_mpo, N, sites; scale=nothing, maxdim=40,
+    _estimate_spectral_bounds(H_mpo, sites; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+        -> (scale, center)
+
+Run two short DMRG sweeps (minimising H and −H) to find the spectral edges
+E_min and E_max, then return:
+    center = (E_max + E_min) / 2
+    scale  = (E_max − E_min) / 2 × 1.1   (10 % buffer)
+"""
+function _estimate_spectral_bounds(H_mpo::MPO, sites;
+                                    dmrg_nsweeps::Int = 5,
+                                    dmrg_maxdim       = [10, 20, 40],
+                                    dmrg_linkdim::Int = 4)
+    println("KPM_Tn: estimating spectral bounds via DMRG…")
+    E_min, _ = dmrg_gs(H_mpo, sites;
+                        nsweeps      = dmrg_nsweeps,
+                        maxdim       = dmrg_maxdim,
+                        linkdim_init = dmrg_linkdim,
+                        noise        = [1e-6, 1e-7, 0.0],
+                        outputlevel  = 0)
+    E_max_neg, _ = dmrg_gs((-1.0) * H_mpo, sites;
+                             nsweeps      = dmrg_nsweeps,
+                             maxdim       = dmrg_maxdim,
+                             linkdim_init = dmrg_linkdim,
+                             noise        = [1e-6, 1e-7, 0.0],
+                             outputlevel  = 0)
+    E_max  = -E_max_neg
+    center = (E_max + E_min) / 2
+    scale  = (E_max - E_min) / 2 * 1.1
+    println("  E_min = $(round(E_min; digits=4)),  E_max = $(round(E_max; digits=4))")
+    println("  center = $(round(center; digits=4)),  scale = $(round(scale; digits=4))")
+    return scale, center
+end
+
+
+"""
+    _ensure_scale!(H::TBHamiltonian; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+
+If `H.scale == 0` (sentinel meaning "not yet determined"), run
+`_estimate_spectral_bounds` and store the results in `H.scale` and `H.center`.
+No-op if `H.scale > 0` (analytic estimate already set at construction or
+a previous KPM call already ran DMRG).
+"""
+function _ensure_scale!(H::TBHamiltonian;
+                         dmrg_nsweeps::Int = 5,
+                         dmrg_maxdim       = [10, 20, 40],
+                         dmrg_linkdim::Int = 4)
+    H.scale > 0.0 && return H
+    H.scale, H.center = _estimate_spectral_bounds(H.mpo, H.sites;
+                             dmrg_nsweeps = dmrg_nsweeps,
+                             dmrg_maxdim  = dmrg_maxdim,
+                             dmrg_linkdim = dmrg_linkdim)
+    return H
+end
+
+
+"""
+    KPM_Tn(H_mpo, N, sites; scale=nothing, center=0.0, maxdim=40,
            dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim) -> (Tn_list, scale, center)
 
 Build the list of Chebyshev MPOs `T_n((H−center·I)/scale)` for `n = 0…N`.
 
-## Scale argument
-- If `scale` is provided the spectrum is assumed centered at zero and `H/scale`
-  is used directly (backward-compatible path).
-- If `scale` is `nothing` the spectral bounds are estimated automatically by
-  running a short DMRG minimisation of H (ground state, E_min) and −H (maximum,
-  E_max).  The scale and center are then:
-      center = (E_max + E_min) / 2
-      scale  = (E_max − E_min) / 2 × 1.1    ← 10 % buffer on each side
+## Scale / center arguments
+- If `scale=nothing` (default): spectral bounds estimated automatically via
+  `_estimate_spectral_bounds` (two short DMRG runs).
+- If `scale` is provided: used directly; `center` defaults to `0.0` but can be
+  set explicitly for non-symmetric spectra.
+
+## High-level overload
+Pass a `TBHamiltonian` as the first argument to skip manual rescaling entirely:
+    Tn, scale, center = KPM_Tn(H, Ncheb; maxdim=100)
+`H.scale` and `H.center` are computed lazily on the first call and cached.
 
 ## Return value
-Returns `(Tn_list, scale, center)`.  To convert a physical energy ω to the
-scaled argument passed to `get_ldos_w_from_Tn`:
+Returns `(Tn_list, scale, center)`.  To convert a physical energy ω:
     ω_r = (ω − center) / scale  ∈ (−1, 1)
 """
 function KPM_Tn(H_mpo::MPO, N::Int, sites;
                 scale::Union{Real, Nothing} = nothing,
-                maxdim::Int   = 40,
+                center::Real       = 0.0,
+                maxdim::Int        = 40,
                 dmrg_nsweeps::Int  = 5,
                 dmrg_maxdim        = [10, 20, 40],
                 dmrg_linkdim::Int  = 4,
@@ -28,26 +86,10 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
-        println("KPM_Tn: estimating spectral bounds via DMRG…")
-        E_min, _ = dmrg_gs(H_mpo, sites;
-                           nsweeps      = dmrg_nsweeps,
-                           maxdim       = dmrg_maxdim,
-                           linkdim_init = dmrg_linkdim,
-                           noise        = [1e-6, 1e-7, 0.0],
-                           outputlevel  = 0)
-        E_max_neg, _ = dmrg_gs((-1.0) * H_mpo, sites;
-                                nsweeps      = dmrg_nsweeps,
-                                maxdim       = dmrg_maxdim,
-                                linkdim_init = dmrg_linkdim,
-                                noise        = [1e-6, 1e-7, 0.0],
-                                outputlevel  = 0)
-        E_max  = -E_max_neg
-        center = (E_max + E_min) / 2
-        scale  = (E_max - E_min) / 2 * 1.1
-        println("  E_min = $(round(E_min; digits=4)),  E_max = $(round(E_max; digits=4))")
-        println("  center = $(round(center; digits=4)),  scale = $(round(scale; digits=4))")
-    else
-        center = 0.0
+        scale, center = _estimate_spectral_bounds(H_mpo, sites;
+                             dmrg_nsweeps = dmrg_nsweeps,
+                             dmrg_maxdim  = dmrg_maxdim,
+                             dmrg_linkdim = dmrg_linkdim)
     end
 
     # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
@@ -71,6 +113,43 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
 
     return Tn_list, scale, center
 end
+
+
+"""
+    KPM_Tn(H::TBHamiltonian, Ncheb; maxdim=40, cutoff=1e-8,
+           dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim) -> (Tn_list, scale, center)
+
+High-level overload: accepts a `TBHamiltonian` directly.
+
+- Calls `_ensure_scale!` to lazily determine `H.scale` and `H.center` via DMRG
+  if not already set (i.e. when `H.scale == 0`).
+- Builds the rescaled Chebyshev list `T_n((H−center·I)/scale)`.
+- Caches the result in `H._tn_cache` / `H._tn_Ncheb`.
+- Returns `(Tn_list, H.scale, H.center)` — same tuple as the low-level method.
+
+Usage:
+    Tn, scale, center = KPM_Tn(H, 200; maxdim=100)
+    ω_r = (ω_phys - center) / scale   # rescaled energy in (-1, 1)
+"""
+function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
+                maxdim::Int        = 40,
+                cutoff::Real       = 1e-8,
+                dmrg_nsweeps::Int  = 5,
+                dmrg_maxdim        = [10, 20, 40],
+                dmrg_linkdim::Int  = 4)
+    _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
+                      dmrg_maxdim=dmrg_maxdim,
+                      dmrg_linkdim=dmrg_linkdim)
+    Tn, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
+                       scale  = H.scale,
+                       center = H.center,
+                       maxdim = maxdim,
+                       cutoff = cutoff)
+    H._tn_cache = Tn
+    H._tn_Ncheb = Ncheb
+    return Tn, H.scale, H.center
+end
+
 
 # All kernels are unnormalized (max ≈ N at n=0) so caller's existing /N stays correct.
 # Supported: :jackson (default), :lorentz (param lambda), :fejer, :dirichlet

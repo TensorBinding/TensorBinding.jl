@@ -87,6 +87,7 @@ end
 
 """
     get_bands(Tn_list, Ncheb, sites, ω_vals; tol=1e-9, maxdim=100) -> Matrix{Float64}
+    get_bands(H::TBHamiltonian, Tn_list, Ncheb, ω_phys_vals; tol=1e-9, maxdim=100) -> Matrix{Float64}
 
 Compute the k-resolved spectral function
 
@@ -95,20 +96,21 @@ Compute the k-resolved spectral function
 by conjugating the KPM spectral MPO `δ(ω−H)` with the QFT for each ω.
 
 Returns a `(N_k × N_ω)` matrix where `N_k = 2^L` and `N_ω = length(ω_vals)`.
-`ω_vals` must be in **rescaled** units (i.e. divided by the energy scale used
-in `KPM_Tn`), with values strictly inside `(−1, 1)`.
 
-Typical usage
--------------
+**Low-level form**: `ω_vals` must be in **rescaled** units `∈ (−1, 1)`.
+
+**High-level form**: pass a `TBHamiltonian` as the first argument and supply
+`ω_phys_vals` in **physical** energy units.  The Chebyshev list and order are
+taken from the cache set by a prior `KPM_Tn(H, Ncheb; ...)` call; the energy
+conversion `ω_resc = (ω_phys .- H.center) ./ H.scale` is done internally.
+Errors if no cache exists or if spin/Nambu DOF are present.
+
+Typical usage (high-level)
+--------------------------
 ```julia
-Tn_list = KPM_Tn(H.mpo / H.scale, Ncheb, H.sites; maxdim=40)
-ω_resc  = range(-0.95, 0.95; length=120)
-Ak_w    = get_bands(Tn_list, Ncheb, H.sites, ω_resc)
-
-# Plot as a heatmap (k on x-axis, ω on y-axis)
-k_phys = (2π / 2^L) .* (0:2^L-1) .- π
-heatmap(k_phys, ω_resc .* H.scale, Ak_w';
-        xlabel="k", ylabel="ω", title="A(k,ω)")
+KPM_Tn(H, Ncheb; maxdim=40)          # builds and caches the Tn list
+ω_phys = range(-4.0, 4.0; length=120)
+Ak_w   = get_bands(H, ω_phys)
 ```
 """
 function get_bands(Tn_list, Ncheb::Int, sites, ω_vals;
@@ -146,4 +148,19 @@ function get_bands(Tn_list, Ncheb::Int, sites, ω_vals;
     end
 
     return Ak_w
+end
+
+
+function get_bands(H::TBHamiltonian, ω_phys_vals;
+                   tol=1e-9, maxdim::Int=100)
+    (H.spin_s !== nothing || H.nambu_s !== nothing) &&
+        error("get_bands does not support spinful or BdG Hamiltonians: the QFT " *
+              "must act only on position qubits while the spectral MPO spans all " *
+              "sites.  Trace out the auxiliary DOF first or implement a partial QFT.")
+    H._tn_cache === nothing &&
+        error("No Chebyshev cache found.  Call KPM_Tn(H, Ncheb; ...) first.")
+    n_aux     = (H.layer_s !== nothing)
+    pos_sites = H.sites[(n_aux + 1):end]
+    ω_resc    = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    return get_bands(H._tn_cache, H._tn_Ncheb, pos_sites, ω_resc; tol=tol, maxdim=maxdim)
 end

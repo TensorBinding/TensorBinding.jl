@@ -161,8 +161,8 @@ function bilayer_hamiltonian(
 
     H_total = +(H_intra, H_inter; cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
-    # scale=1.0 placeholder — use KPM_Tn with auto DMRG detection (pass H.mpo directly)
-    return TBHamiltonian(L, 2^L, ext_sites, H_total, nothing, 1.0,
+    # scale=0.0 → lazy DMRG estimation on first KPM_Tn call
+    return TBHamiltonian(L, 2^L, ext_sites, H_total, nothing, 0.0, 0.0,
                          nothing, nothing, layer_s, nothing, 0, nothing)
 end
 
@@ -218,7 +218,7 @@ function multilayer_hamiltonian(
 
     H_total = +(H_intra, H_inter; cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
-    # scale=1.0 placeholder — use KPM_Tn with auto DMRG detection (pass H.mpo directly)
-    return TBHamiltonian(L, 2^L, ext_sites, H_total, nothing, 1.0,
+    # scale=0.0 → lazy DMRG estimation on first KPM_Tn call
+    return TBHamiltonian(L, 2^L, ext_sites, H_total, nothing, 0.0, 0.0,
                          nothing, nothing, layer_s, nothing, 0, nothing)
 end

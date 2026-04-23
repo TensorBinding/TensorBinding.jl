@@ -36,7 +36,8 @@ mutable struct TBHamiltonian
     sites    :: Vector{<:Index}
     mpo      :: MPO
     geometry :: Union{Nothing, Matrix{Float64}}
-    scale    :: Float64
+    scale    :: Float64    # energy half-bandwidth; 0.0 = not yet determined (triggers lazy DMRG)
+    center   :: Float64    # spectral center; 0.0 for symmetric spectra
     # ---- auxiliary prepended indices (nothing until add_spin!/add_superconductivity!) ----
     spin_s   :: Union{Nothing, Index}
     nambu_s  :: Union{Nothing, Index}
@@ -61,6 +62,26 @@ function _invalidate_cache!(H::TBHamiltonian)
     H._tn_cache      = nothing
     H._tn_Ncheb      = 0
     H._density_cache = nothing
+    # Spectrum changed — force re-estimation of scale/center on next KPM call.
+    # Analytic constructors re-set scale immediately; layered/custom start at 0.
+    H.scale  = 0.0
+    H.center = 0.0
+    return H
+end
+
+"""
+    truncate!(H::TBHamiltonian; cutoff=1e-10, maxdim=nothing) -> H
+
+Truncate the Hamiltonian MPO in-place using `ITensorMPS.truncate!`.
+Invalidates all caches (Chebyshev list, density matrix, scale/center).
+
+Useful after a series of `add_hopping!` / `add_onsite!` calls that may
+have inflated the bond dimension.
+"""
+function truncate!(H::TBHamiltonian; cutoff::Real = 1e-10, maxdim = nothing)
+    kwargs = maxdim === nothing ? (cutoff=cutoff,) : (cutoff=cutoff, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; kwargs...)
+    _invalidate_cache!(H)
     return H
 end
 
@@ -152,7 +173,7 @@ function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     geom = reshape(Float64.(1:N), N, 1)
     sc   = something(scale, 2.2 * abs(t))   # 1D chain bandwidth = 4|t|, half = 2|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geom, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -171,7 +192,7 @@ function _build_square_2d(t, L, N, sites;
         geom[i, 2] = Float64(div(i - 1, Lx) + 1)
     end
     sc = something(scale, 4.4 * abs(t))   # 2D square bandwidth ≈ 8|t|, half = 4|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geom, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -188,7 +209,7 @@ function _build_haldane(params, L, N, sites;
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     # bandwidth ≈ 2*(3*t1 + 6*t2) + 2*M where t1=1; conservative upper bound
     sc  = something(scale, (1.0 + abs(t2) + abs(M)) * 4.0)
-    return TBHamiltonian(L, N, sites, mpo, Float64.(rs), sc, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, Float64.(rs), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -201,7 +222,7 @@ function _build_custom(f, L, N, sites;
     @assert !isnothing(scale) "`scale` must be provided for geometry=\"custom\"."
     mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    return TBHamiltonian(L, N, sites, mpo, geometry, Float64(scale), nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geometry, Float64(scale), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 function _build_preset(geometry, params, L, N, sites;
@@ -243,7 +264,7 @@ function _build_preset(geometry, params, L, N, sites;
     # created at the top of get_Hamiltonian (which would be a different set).
     mpo_sites = getindex.(siteinds(mpo), 2)
     sc = something(scale, _estimate_scale(geometry, params))
-    return TBHamiltonian(L, N, mpo_sites, mpo, nothing, Float64(sc), nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, mpo_sites, mpo, nothing, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 # Rough scale estimates for known geometries (used when scale=nothing)
@@ -620,7 +641,10 @@ function Base.show(io::IO, H::TBHamiltonian)
     H.layer_s !== nothing && (aux_str *= " +$(ITensors.dim(H.layer_s))layers")
     H.spin_s  !== nothing && (aux_str *= " +spin")
     H.nambu_s !== nothing && (aux_str *= " +BdG")
-    print(io, "TBHamiltonian | L=$(H.L), N=$(H.N)$(aux_str), scale=$(H.scale), " *
+    sc_str = H.scale == 0.0 ? "scale=auto" :
+             H.center == 0.0 ? "scale=$(H.scale)" :
+             "scale=$(H.scale), center=$(H.center)"
+    print(io, "TBHamiltonian | L=$(H.L), N=$(H.N)$(aux_str), $sc_str, " *
               "maxlinkdim=$(ITensorMPS.maxlinkdim(H.mpo)) | " *
               "geometry: $geom_str | $tn_str")
 end
