@@ -68,7 +68,7 @@ Supported: Ising SOC, Rashba SOC, uniform or site-dependent Zeeman, singlet *s*-
 - Density matrices: RK4 integration of *dρ/dt = −i[H(t), ρ]*
 
 **Many-body methods**
-- DMRG ground state and spectral DMRG (`dmrg_gs`, `dmrg_spectral`)
+- DMRG ground state and LDoS via DMRG (`dmrg_gs`, `dmrg_spectral`)
 - Random Phase Approximation (RPA) for susceptibility via Dyson equation
 - Self-consistent Hartree–Fock mean field for the Hubbard model
 
