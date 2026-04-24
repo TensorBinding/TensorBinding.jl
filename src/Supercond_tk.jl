@@ -48,10 +48,11 @@ const _SPIN_OPS = Dict{Symbol, Matrix{ComplexF64}}(
 
 """
     prepend_op(H_mpo, s, op::Symbol) -> MPO
+    postpend_op(H_mpo, s, op::Symbol) -> MPO
 
 Symbol dispatch for indices tagged `"Spin"` or `"Nambu"`.
 Looks up `op` in the appropriate operator dictionary and calls
-`prepend_op(H_mpo, s, mat)`.
+the matrix-form `prepend_op` / `postpend_op`.
 
 Spin ops (index tagged `"Spin"`):
 `:Id`, `:Pup`, `:Pdn`, `:Sz`, `:Sp`, `:Sm`, `:Sx`, `:Sy`, `:iSy`, `:miSy`
@@ -70,6 +71,19 @@ function prepend_op(H_mpo::MPO, s::Index, op::Symbol)
         error("Symbol-based prepend_op requires a \"Spin\" or \"Nambu\" tagged index; got tags: $(tags(s))")
     end
     return prepend_op(H_mpo, s, mat)
+end
+
+function postpend_op(H_mpo::MPO, s::Index, op::Symbol)
+    if hastags(s, "Spin")
+        mat = get(_SPIN_OPS, op, nothing)
+        isnothing(mat) && error("Unknown Spin op :$op.  Known: $(sort(collect(keys(_SPIN_OPS))))")
+    elseif hastags(s, "Nambu")
+        mat = get(_NAMBU_OPS, op, nothing)
+        isnothing(mat) && error("Unknown Nambu op :$op.  Known: $(sort(collect(keys(_NAMBU_OPS))))")
+    else
+        error("Symbol-based postpend_op requires a \"Spin\" or \"Nambu\" tagged index; got tags: $(tags(s))")
+    end
+    return postpend_op(H_mpo, s, mat)
 end
 
 
@@ -97,6 +111,16 @@ Basis: state 1 = ↑, state 2 = ↓.
 """
 prepend_spin(H::MPO, s::Index, op::Symbol)           = prepend_op(H, s, op)
 prepend_spin(H::MPO, s::Index, mat::AbstractMatrix)  = prepend_op(H, s, mat)
+
+"""
+    postpend_spin(H_mpo, spin_s, op) -> MPO
+
+Append a spin-½ operator on `spin_s` to the *end* of `H_mpo`.
+`op` is a `Symbol` (same table as `prepend_spin`) or an explicit 2×2 matrix.
+Equivalent to `postpend_op(H_mpo, spin_s, op)`.
+"""
+postpend_spin(H::MPO, s::Index, op::Symbol)          = postpend_op(H, s, op)
+postpend_spin(H::MPO, s::Index, mat::AbstractMatrix) = postpend_op(H, s, mat)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -148,6 +172,16 @@ Basis: state 1 = particle, state 2 = hole.
 """
 prepend_nambu(H::MPO, s::Index, op::Symbol)          = prepend_op(H, s, op)
 prepend_nambu(H::MPO, s::Index, mat::AbstractMatrix) = prepend_op(H, s, mat)
+
+"""
+    postpend_nambu(H_mpo, nambu_s, op) -> MPO
+
+Append a Nambu operator on `nambu_s` to the *end* of `H_mpo`.
+`op` is a `Symbol` (same table as `prepend_nambu`) or an explicit 2×2 matrix.
+Equivalent to `postpend_op(H_mpo, nambu_s, op)`.
+"""
+postpend_nambu(H::MPO, s::Index, op::Symbol)          = postpend_op(H, s, op)
+postpend_nambu(H::MPO, s::Index, mat::AbstractMatrix) = postpend_op(H, s, mat)
 
 
 # ─────────────────────────────────────────────────────────────────

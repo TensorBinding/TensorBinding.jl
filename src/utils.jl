@@ -234,6 +234,43 @@ end
 prepend_op(H_mpo::MPO, s::Index, k::Int) = prepend_op(H_mpo, s, k, k)
 
 
+"""
+    postpend_op(H_mpo, s, mat)        -> MPO   explicit matrix
+    postpend_op(H_mpo, s, op::Symbol) -> MPO   named op (Spin / Nambu index)
+    postpend_op(H_mpo, s, k, l)       -> MPO   sparse |k⟩⟨l|  (Layer / any index)
+    postpend_op(H_mpo, s, k)          -> MPO   projector |k⟩⟨k|
+
+Append a single-site operator on index `s` to the *end* of `H_mpo`, extending
+it from L sites to L+1 sites.  The returned MPO has site indices `[original…; s]`.
+
+Symmetric counterpart of `prepend_op`; dispatch rules are identical.
+"""
+function postpend_op(H_mpo::MPO, s::Index, mat::AbstractMatrix{T}) where T <: Number
+    Lh       = length(H_mpo)
+    bond_end = Index(1, "Link,l=$Lh")
+    Op       = ITensor(T, s', s, bond_end)
+    for j in axes(mat, 2), i in axes(mat, 1)
+        iszero(mat[i, j]) || (Op[s' => i, s => j, bond_end => 1] = mat[i, j])
+    end
+    delta_end = ITensor(bond_end);  delta_end[bond_end => 1] = 1.0
+    HLast_ext = H_mpo[Lh] * delta_end
+    ext       = MPO(Lh + 1)
+    for k in 1:Lh-1;  ext[k] = H_mpo[k];  end
+    ext[Lh]   = HLast_ext
+    ext[Lh+1] = Op
+    return ext
+end
+postpend_op(H::MPO, s::Index, mat::AbstractMatrix) =
+    postpend_op(H, s, ComplexF64.(mat))
+
+function postpend_op(H_mpo::MPO, s::Index, k::Int, l::Int)
+    mat = zeros(Float64, dim(s), dim(s))
+    mat[k, l] = 1.0
+    return postpend_op(H_mpo, s, mat)
+end
+postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
+
+
 # ============================================================
 # Debug / validation utilities
 # ============================================================

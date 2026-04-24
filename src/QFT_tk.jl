@@ -159,8 +159,7 @@ function get_bands(H::TBHamiltonian, ω_phys_vals;
               "sites.  Trace out the auxiliary DOF first or implement a partial QFT.")
     H._tn_cache === nothing &&
         error("No Chebyshev cache found.  Call KPM_Tn(H, Ncheb; ...) first.")
-    n_aux     = (H.layer_s !== nothing)
-    pos_sites = H.sites[(n_aux + 1):end]
+    pos_sites = _pos_sites(H)
     ω_resc    = (collect(ω_phys_vals) .- H.center) ./ H.scale
     return get_bands(H._tn_cache, H._tn_Ncheb, pos_sites, ω_resc; tol=tol, maxdim=maxdim)
 end

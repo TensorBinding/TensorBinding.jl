@@ -38,15 +38,22 @@ mutable struct TBHamiltonian
     geometry :: Union{Nothing, Function}   # i -> position vector (1-indexed, i=1…N)
     scale    :: Float64    # energy half-bandwidth; 0.0 = not yet determined (triggers lazy DMRG)
     center   :: Float64    # spectral center; 0.0 for symmetric spectra
-    # ---- auxiliary prepended indices (nothing until add_spin!/add_superconductivity!) ----
+    # ---- auxiliary indices (nothing until add_spin!/add_superconductivity!) ----
     spin_s   :: Union{Nothing, Index}
     nambu_s  :: Union{Nothing, Index}
     layer_s  :: Union{Nothing, Index}    # set by bilayer/multilayer constructors
+    aux_side :: Symbol                   # :pre (aux at front) or :post (aux at back)
     # ---- lazy caches (invalidated whenever mpo changes) ----
     _tn_cache      :: Union{Nothing, Vector{MPO}}
     _tn_Ncheb      :: Int
     _density_cache :: Union{Nothing, MPO}
 end
+
+# Backward-compatible 13-arg constructor (pre-aux_side callers); defaults to :pre.
+TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+              spin_s, nambu_s, layer_s, _tn_cache, _tn_Ncheb, _density_cache) =
+    TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+                  spin_s, nambu_s, layer_s, :pre, _tn_cache, _tn_Ncheb, _density_cache)
 
 # ============================================================
 # Cache management
@@ -446,10 +453,17 @@ end
 """
     _pos_sites(H) -> Vector{<:Index}
 
-Return the L position-qubit indices.  These are always the last L entries of
-`H.sites`; spin and Nambu indices (if any) are prepended in front of them.
+Return the L position-qubit indices, filtering out any auxiliary (spin, Nambu,
+layer) indices regardless of whether they sit at the front or back of `H.sites`.
 """
-_pos_sites(H::TBHamiltonian) = H.sites[end - H.L + 1 : end]
+function _pos_sites(H::TBHamiltonian)
+    aux = Index[]
+    isnothing(H.spin_s)  || push!(aux, H.spin_s)
+    isnothing(H.nambu_s) || push!(aux, H.nambu_s)
+    isnothing(H.layer_s) || push!(aux, H.layer_s)
+    aux_set = Set(aux)
+    return filter(s -> s ∉ aux_set, H.sites)
+end
 
 
 # ============================================================
@@ -465,13 +479,20 @@ The resulting Hamiltonian is `I_spin ⊗ H` (both spin sectors identical).
 No-op if `H` is already spinful (`H.spin_s !== nothing`).
 Invalidates all caches.
 """
-function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200)
+function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200,
+                   position::Symbol=:pre)
     H.spin_s === nothing || return H
-    spin_s   = spin_index()
-    H.mpo    = prepend_spin(H.mpo, spin_s, :Id)
+    spin_s = spin_index()
+    if position === :pre
+        H.mpo   = prepend_spin(H.mpo, spin_s, :Id)
+        H.sites = [spin_s; H.sites]
+    else
+        H.mpo   = postpend_spin(H.mpo, spin_s, :Id)
+        H.sites = [H.sites; spin_s]
+    end
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cutoff)
-    H.sites  = [spin_s; H.sites]
-    H.spin_s = spin_s
+    H.spin_s   = spin_s
+    H.aux_side = position
     _invalidate_cache!(H)
     return H
 end
@@ -507,20 +528,24 @@ add_zeeman!(H, 0.05; direction=:x)          # in-plane
 function add_zeeman!(H::TBHamiltonian, h;
                      direction::Symbol = :z,
                      tol::Real  = 1e-8,
-                     maxdim::Int = 200)
+                     maxdim::Int = 200,
+                     position::Union{Nothing,Symbol} = nothing)
     direction in (:x, :y, :z) ||
         error("direction must be :x, :y, or :z; got :$direction")
-    add_spin!(H; cutoff=tol, maxdim=maxdim)
+    pos = something(position, H.aux_side)
+    add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
 
     spin_op = direction == :z ? :Sz : direction == :x ? :Sx : :Sy
     pos_s   = _pos_sites(H)
     h_mpo   = h isa Number ? h * MPO(pos_s, "Id") :
                              get_diagonal_mpo(H.L, pos_s, h)
 
-    H_Z = prepend_spin(h_mpo, H.spin_s, spin_op)
-    if H.nambu_s !== nothing
-        # BdG already present: Zeeman is τ_z ⊗ S_α ⊗ h(r)
-        H_Z = prepend_nambu(H_Z, H.nambu_s, :tz)
+    if H.aux_side === :pre
+        H_Z = prepend_spin(h_mpo, H.spin_s, spin_op)
+        H.nambu_s !== nothing && (H_Z = prepend_nambu(H_Z, H.nambu_s, :tz))
+    else
+        H_Z = postpend_spin(h_mpo, H.spin_s, spin_op)
+        H.nambu_s !== nothing && (H_Z = postpend_nambu(H_Z, H.nambu_s, :tz))
     end
 
     H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=tol)
@@ -569,10 +594,12 @@ add_superconductivity!(H, (i,j) -> ...; type=:custom) # p-wave
 function add_superconductivity!(H::TBHamiltonian, Δ;
                                 type::Symbol = :swave,
                                 tol::Real    = 1e-8,
-                                maxdim::Int  = 200)
+                                maxdim::Int  = 200,
+                                position::Union{Nothing,Symbol} = nothing)
     H.nambu_s === nothing ||
         error("BdG already applied (H.nambu_s is set). Cannot apply twice.")
 
+    pos   = something(position, H.aux_side)
     pos_s = _pos_sites(H)
 
     # ── Build the pairing MPO in position space ──────────────────────────────
@@ -588,25 +615,36 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
         error("Unknown pairing type :$type.  Use :swave or :custom.")
     end
 
-    # ── Lift pairing to full site space ──────────────────────────────────────
-    H_pair = H.spin_s !== nothing ?
-             prepend_spin(H_pair_pos, H.spin_s, :iSy) :   # singlet: (iσ_y) ⊗ Δ
-             H_pair_pos
+    # ── Lift pairing to spin space if needed ─────────────────────────────────
+    H_pair = if H.spin_s !== nothing
+        pos === :pre ? prepend_spin(H_pair_pos,  H.spin_s, :iSy) :
+                       postpend_spin(H_pair_pos, H.spin_s, :iSy)
+    else
+        H_pair_pos
+    end
 
     H_pair_adj = swapprime(dag(H_pair), 0, 1)
 
     # ── BdG assembly ─────────────────────────────────────────────────────────
     nambu_s = nambu_index()
-    H_bdg   = +(+(prepend_nambu(H.mpo,      nambu_s, :tz),
-                  prepend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
-                  prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+    if pos === :pre
+        H_bdg = +(+(prepend_nambu(H.mpo,      nambu_s, :tz),
+                    prepend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
+                    prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+        H.sites = [nambu_s; H.sites]
+    else
+        H_bdg = +(+(postpend_nambu(H.mpo,      nambu_s, :tz),
+                    postpend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
+                    postpend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+        H.sites = [H.sites; nambu_s]
+    end
     ITensorMPS.truncate!(H_bdg; maxdim=maxdim, cutoff=tol)
 
-    Δ_scale   = Δ isa Number ? abs(Δ) : 1.0
-    H.mpo     = H_bdg
-    H.sites   = [nambu_s; H.sites]
-    H.nambu_s = nambu_s
-    H.scale   = H.scale + Δ_scale * 1.1   # rough update; user can override
+    Δ_scale    = Δ isa Number ? abs(Δ) : 1.0
+    H.mpo      = H_bdg
+    H.nambu_s  = nambu_s
+    H.aux_side = pos
+    H.scale    = H.scale + Δ_scale * 1.1   # rough update; user can override
     _invalidate_cache!(H)
     return H
 end
@@ -645,21 +683,25 @@ function add_soc!(H::TBHamiltonian, λ;
                   type::Symbol      = :rashba,
                   direction::Symbol = :z,
                   tol::Real         = 1e-8,
-                  maxdim::Int       = 200)
-    add_spin!(H; cutoff=tol, maxdim=maxdim)
+                  maxdim::Int       = 200,
+                  position::Union{Nothing,Symbol} = nothing)
+    pos = something(position, H.aux_side)
+    add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
+
+    spin_prepend = H.aux_side === :pre ? prepend_spin : postpend_spin
 
     H_soc = if type === :ising
         λ_mpo = λ isa Number ? λ * MPO(pos_s, "Id") :
                                get_diagonal_mpo(H.L, pos_s, λ)
-        prepend_spin(λ_mpo, H.spin_s, :Sz)
+        spin_prepend(λ_mpo, H.spin_s, :Sz)
 
     elseif type === :rashba
         λ isa Number || error("Rashba SOC requires a scalar λ; got $(typeof(λ)).")
         K_u = generate_kin_u(pos_s, H.N)
         K_d = generate_kin_d(pos_s, H.N)
-        +(prepend_spin( λ * K_u, H.spin_s, :Sy),
-          prepend_spin(-λ * K_d, H.spin_s, :Sy); cutoff=tol)
+        +(spin_prepend( λ * K_u, H.spin_s, :Sy),
+          spin_prepend(-λ * K_d, H.spin_s, :Sy); cutoff=tol)
 
     elseif type === :custom
         direction in (:x, :y, :z) ||
@@ -674,7 +716,7 @@ function add_soc!(H::TBHamiltonian, λ;
         else
             error("λ must be a Number or a Function.")
         end
-        prepend_spin(λ_mpo, H.spin_s, spin_op)
+        spin_prepend(λ_mpo, H.spin_s, spin_op)
 
     else
         error("Unknown SOC type :$type.  Use :rashba, :ising, or :custom.")

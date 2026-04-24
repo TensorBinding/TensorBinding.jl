@@ -85,6 +85,20 @@ Equivalent to `prepend_op(H_mpo, layer_s, k, l)`.
 """
 prepend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = prepend_op(H, s, k, l)
 
+"""
+    postpend_layer_projector(H_mpo, layer_s, k) -> MPO
+
+Append the diagonal projector `|k⟩⟨k|` on `layer_s` (1-based) to the end of `H_mpo`.
+"""
+postpend_layer_projector(H::MPO, s::Index, k::Int) = postpend_op(H, s, k)
+
+"""
+    postpend_layer_hopping(H_mpo, layer_s, k, l) -> MPO
+
+Append the off-diagonal operator `|k⟩⟨l|` on `layer_s` (1-based) to the end of `H_mpo`.
+"""
+postpend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = postpend_op(H, s, k, l)
+
 
 # ─────────────────────────────────────────────────────────────────
 # 4.  Twisted multilayer Hamiltonian
