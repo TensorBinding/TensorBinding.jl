@@ -1,120 +1,62 @@
 # 2D_lattice.jl — MPO building blocks for 2D lattice geometries
 #
-# Provides hopping MPOs for square, triangular, and honeycomb lattices,
-# built from the quantics binary representation.  All functions rely on
-# the kinematic shift operators (generate_kin_u / generate_kin_d) and
-# the QTCI-based break_chain mask.
+# Provides hopping MPOs for square, triangular, and honeycomb lattices
+# built from the quantics binary representation.
 #
-# Low-level utilities (to_binary_vector, binary_to_MPS, get_diagonal_mpo,
-# ITensors.op extensions) live in utils.jl and are available here through
-# the module scope.
+# Encoding convention (row-major):
+#   linear index  n = ix + iy * 2^Lx
+#   site ordering: sites 1..Ly hold iy bits (MSB first),
+#                  sites Ly+1..L hold ix bits (MSB first).
+#
+# compose_power lives in Hamiltonian.jl; low-level utilities
+# (to_binary_vector, binary_to_MPS) live in utils.jl.
 
 # ============================================================
-# 1. General tools
+# 1. Single-qubit projectors and binary shift MPOs
 # ============================================================
 
-"""
-    break_chain(x_start, L_chain, num_site, sites) -> MPO
-
-Diagonal MPO that is 0 at sites `x_start, x_start + L_chain, …` and
-1 elsewhere.  Used to suppress hopping at row boundaries in 2D lattices.
-"""
-
-ITensors.op(::OpName"sigma_d",::SiteType"Qubit") =
- [0 0
-  0 1]
-
-function test_break(x_start, L_chain, num_sites, sites) 
-    L = Int(log2(num_sites))
-    Id_op = MPO(sites, "Id")
-    L_row_log = Int(L - Int(log2(L_chain)))
-    
-    os = OpSum()
-    
-    for i in 1:L
-        os += 1/L, "Id",i 
-    end
- 
-    for i in L_row_log+1 :L
-        
-        os *=  1,"sigma_d",i
-    end
-    
-    k_mpo_1 = MPO(os,sites)
-    break_mpo = Id_op - k_mpo_1
-    return break_mpo
-end
+ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
+ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 
 
 """
     generate_kin_u(sites, num_site) -> MPO
 
-'Up-shift' kinematic MPO: moves every basis state |n⟩ → |n+1⟩ in the
-quantics binary representation.  Represents hopping to the right / up.
+Binary-increment MPO: |n⟩ → |n+1⟩ (mod 2^L) on L = log2(num_site) qubits.
+Each term i handles one carry level: sigma_plus at bit i, sigma_minus on all
+lower bits (the bits that were 1 and get reset by the carry).
 """
 function generate_kin_u(sites, num_site)
-    L         = Int(log2(num_site))
-    kinetic_1 = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_minus", j)
-        end
-        kinetic_1 += os
+    L  = Int(log2(num_site))
+    os = OpSum()
+    for i in 1:L                               # i = 1 is LSB, i = L is MSB
+        term  = OpSum()
+        term += 1, "sigma_plus",  L - (i-1)   # flip bit i: 0 → 1
+        for j in 1:L-i;   term *= ("Id",          j); end
+        for j in L+2-i:L; term *= ("sigma_minus",  j); end  # reset lower bits (carry-in)
+        os += term
     end
-    return MPO(kinetic_1, sites)
+    return MPO(os, sites)
 end
 
 
 """
     generate_kin_d(sites, num_site) -> MPO
 
-'Down-shift' kinematic MPO: moves every basis state |n⟩ → |n-1⟩.
-Hermitian conjugate of `generate_kin_u`.
+Binary-decrement MPO: |n⟩ → |n-1⟩ (mod 2^L). Hermitian conjugate of
+`generate_kin_u`; each term handles one borrow level.
 """
 function generate_kin_d(sites, num_site)
-    L         = Int(log2(num_site))
-    kinetic_2 = OpSum()
+    L  = Int(log2(num_site))
+    os = OpSum()
     for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_plus", j)
-        end
-        kinetic_2 += os
+        term  = OpSum()
+        term += 1, "sigma_minus", L - (i-1)   # flip bit i: 1 → 0
+        for j in 1:L-i;   term *= ("Id",         j); end
+        for j in L+2-i:L; term *= ("sigma_plus",  j); end  # set lower bits (borrow-in)
+        os += term
     end
-    return MPO(kinetic_2, sites)
-end
-
-
-"""
-    arbitarty_offline(k_mpo, demand_order) -> MPO
-
-Return `k_mpo^demand_order` (repeated MPO application), used to shift
-hopping by an arbitrary number of sites.
-"""
-function arbitarty_offline(k_mpo, demand_order)
-    k_mpo_o1   = k_mpo
-    k_mpo_o2   = apply(k_mpo, k_mpo)
-    target_mpo = k_mpo
-    for iter_num in 1:demand_order
-        if iter_num == 1
-            target_mpo = k_mpo_o1
-        elseif iter_num == 2
-            target_mpo = k_mpo_o2
-        else
-            target_mpo = apply(k_mpo, k_mpo_o2)
-            k_mpo_o2   = target_mpo
-        end
-    end
-    return target_mpo
+    return MPO(os, sites)
 end
 
 
@@ -125,73 +67,75 @@ end
 """
     intrachain_hopping(L_chain, num_site, sites; hopping=Id, t=1) -> MPO
 
-Nearest-neighbour hopping along rows (x-direction) of a 2D lattice
-with `L_chain` sites per row.  Boundary links between rows are
-suppressed by `break_chain`.
+NN hopping along rows (x-direction) of a 2D lattice with `L_chain` sites per
+row.  Hops that would wrap ix = Nx-1 → 0 are suppressed by `_row_break_mpo`.
 """
 function intrachain_hopping(L_chain, num_site, sites;
                             hopping=MPO(sites, "Id"), t=1)
-    break_mpo  = test_break(L_chain, L_chain, num_site, sites)
-    k_mpo_2    = generate_kin_d(sites, num_site)
-    true_hop_2 = apply(apply(hopping, k_mpo_2), break_mpo)
-    k_mpo_1    = generate_kin_u(sites, num_site)
-    true_hop_1 = apply(break_mpo, apply(k_mpo_1, hopping))
-    return +(t * true_hop_1, conj(t) * true_hop_2; cutoff=1e-8)
+    Lx  = Int(log2(L_chain))
+    Ly  = Int(log2(num_site)) - Lx
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    ku  = generate_kin_u(sites, num_site)
+    kd  = generate_kin_d(sites, num_site)
+    # brk placed opposite the shift direction to kill the wrap-around bond
+    hop_fwd = apply(brk, apply(ku, hopping))
+    hop_bwd = apply(apply(hopping, kd), brk)
+    return +(t * hop_fwd, conj(t) * hop_bwd; cutoff=1e-8)
 end
 
 
 """
     interchain_hopping_square(L_chain, num_site, sites; hopping=Id, t=1) -> MPO
 
-Nearest-neighbour hopping along columns (y-direction) of a square lattice.
+NN hopping along columns (y-direction) of a square lattice.
+One column step = linear shift by L_chain sites = ku composed L_chain times.
 """
 function interchain_hopping_square(L_chain, num_site, sites;
                                    hopping=MPO(sites, "Id"), t=1)
-    k_mpo_1       = generate_kin_u(sites, num_site)
-    K_mpo_1_true  = apply(apply(hopping, k_mpo_1),
-                          arbitarty_offline(k_mpo_1, L_chain - 1))
-    k_mpo_2       = generate_kin_d(sites, num_site)
-    K_mpo_2_true  = apply(arbitarty_offline(k_mpo_2, L_chain - 1),
-                          apply(k_mpo_2, hopping))
-    return t * K_mpo_1_true + conj(t) * K_mpo_2_true
+    ku      = generate_kin_u(sites, num_site)
+    kd      = generate_kin_d(sites, num_site)
+    hop_fwd = apply(apply(hopping, ku), compose_power(ku, L_chain - 1))
+    hop_bwd = apply(compose_power(kd, L_chain - 1), apply(kd, hopping))
+    return t * hop_fwd + conj(t) * hop_bwd
 end
 
 
 """
     interchain_hopping_square_2nd_plus(L_chain, num_site, sites; hopping=Id, t2=1) -> MPO
 
-Next-nearest-neighbour hopping in the (+x+y) diagonal direction on a
-square lattice.
+NNN hopping in the (+x,+y) diagonal direction (linear shift +L_chain+1).
+The single x-step is masked to prevent row wrap-around.
 """
 function interchain_hopping_square_2nd_plus(L_chain, num_site, sites;
                                             hopping=MPO(sites, "Id"), t2=1)
-    break_mpo    = test_break(L_chain, L_chain, num_site, sites)
-    K_mpo_1      = generate_kin_u(sites, num_site)
-    K_mpo_1_true = apply(arbitarty_offline(K_mpo_1, L_chain + 1 - 1),
-                         apply(hopping, apply(break_mpo, K_mpo_1)))
-    K_mpo_2      = generate_kin_d(sites, num_site)
-    K_mpo_2_true = apply(arbitarty_offline(K_mpo_2, L_chain + 1 - 1),
-                         apply(apply(K_mpo_2, break_mpo), hopping))
-    return t2 * K_mpo_1_true + conj(t2) * K_mpo_2_true
+    Lx  = Int(log2(L_chain))
+    Ly  = Int(log2(num_site)) - Lx
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    ku  = generate_kin_u(sites, num_site)
+    kd  = generate_kin_d(sites, num_site)
+    # one masked x-step then L_chain y-steps
+    hop_fwd = apply(compose_power(ku, L_chain), apply(hopping, apply(brk, ku)))
+    hop_bwd = apply(compose_power(kd, L_chain), apply(apply(kd, brk), hopping))
+    return t2 * hop_fwd + conj(t2) * hop_bwd
 end
 
 
 """
     interchain_hopping_square_2nd_minus(L_chain, num_site, sites; hopping=Id, t2=1) -> MPO
 
-Next-nearest-neighbour hopping in the (+x−y) diagonal direction on a
-square lattice.
+NNN hopping in the (+x,−y) diagonal direction (linear shift −(L_chain−1)).
+The single x-step is masked to prevent row wrap-around.
 """
 function interchain_hopping_square_2nd_minus(L_chain, num_site, sites;
                                              hopping=MPO(sites, "Id"), t2=1)
-    break_mpo    = test_break(1, L_chain, num_site, sites)
-    K_mpo_1      = generate_kin_u(sites, num_site)
-    K_mpo_1_true = apply(apply(hopping, apply(break_mpo, K_mpo_1)),
-                         arbitarty_offline(K_mpo_1, L_chain - 1 - 1))
-    K_mpo_2      = generate_kin_d(sites, num_site)
-    K_mpo_2_true = apply(arbitarty_offline(K_mpo_2, L_chain - 1 - 1),
-                         apply(apply(K_mpo_2, break_mpo), hopping))
-    return t2 * K_mpo_1_true + conj(t2) * K_mpo_2_true
+    Lx  = Int(log2(L_chain))
+    Ly  = Int(log2(num_site)) - Lx
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    ku  = generate_kin_u(sites, num_site)
+    kd  = generate_kin_d(sites, num_site)
+    hop_fwd = apply(apply(hopping, apply(brk, ku)), compose_power(ku, L_chain - 2))
+    hop_bwd = apply(compose_power(kd, L_chain - 2), apply(apply(kd, brk), hopping))
+    return t2 * hop_fwd + conj(t2) * hop_bwd
 end
 
 
@@ -202,33 +146,41 @@ end
 """
     skeleton(L_chain, num_site, sites) -> MPO
 
-Diagonal MPO that is 0 at site indices `1, L_chain+1, 2*L_chain+1, …`
-and 1 elsewhere.  Used as a connectivity mask for triangular hoppings.
+Diagonal mask: 0 where ix == 1 (second column, 0-indexed), 1 elsewhere.
+Used in the triangular lattice to exclude the wrap-around bond that enters
+at ix = 1 when shifting by L_chain − 1 sites.
 """
 function skeleton(L_chain, num_site, sites)
-    L = Int(log2(num_site))
-    f(x) = Float64(x % L_chain != 1)
-    return get_diagonal_mpo(L, sites, f)
+    L     = Int(log2(num_site))
+    Ly    = L - Int(log2(L_chain))
+    Id_op = MPO(sites, "Id")
+    # proj_{ix=1}: LSB of ix is 1, all higher x-bits are 0
+    os = OpSum()
+    os += 1, "sigma_d", L
+    for i in Ly+1:L-1; os *= 1, "sigma_u", i; end
+    return Id_op - MPO(os, sites)
 end
 
 
 """
     interchain_hopping_triangle(L_chain, num_site, sites) -> MPO
 
-Hopping MPO for the two diagonal next-row bonds in a triangular lattice
-(both (+1, +L_chain) and (+1, +L_chain−1) directions).
+Inter-row hopping for a triangular lattice.  Two diagonal bonds:
+- SW→NE (shift +L_chain): pure row hop, no masking needed.
+- SE→NW (shift +L_chain−1): row hop + one step back in x; `skeleton`
+  suppresses the spurious ix=1 wrap-around entry.
 """
 function interchain_hopping_triangle(L_chain, num_site, sites)
-    k_mpo_1 = generate_kin_u(sites, num_site)
-    k_mpo_2 = generate_kin_d(sites, num_site)
-    tri_hop = skeleton(L_chain, num_site, sites)
+    ku   = generate_kin_u(sites, num_site)
+    kd   = generate_kin_d(sites, num_site)
+    skel = skeleton(L_chain, num_site, sites)
 
-    K1_up = arbitarty_offline(k_mpo_1, L_chain)
-    conn1 = apply(tri_hop, arbitarty_offline(k_mpo_1, L_chain - 1))
-    K2_up = arbitarty_offline(k_mpo_2, L_chain)
-    conn2 = apply(arbitarty_offline(k_mpo_2, L_chain - 1), tri_hop)
+    hop_swne_fwd = compose_power(ku, L_chain)
+    hop_swne_bwd = compose_power(kd, L_chain)
+    hop_senw_fwd = apply(skel, compose_power(ku, L_chain - 1))
+    hop_senw_bwd = apply(compose_power(kd, L_chain - 1), skel)
 
-    return K1_up + K2_up + conn2 + conn1
+    return hop_swne_fwd + hop_swne_bwd + hop_senw_fwd + hop_senw_bwd
 end
 
 
@@ -236,383 +188,314 @@ end
 # 4. Honeycomb lattice
 # ============================================================
 
+"""
+    odd_template(_, num_site, sites) -> MPO
+
+Diagonal mask: 1 where ix is odd (LSB of ix = 1).  Selects the A-sublattice
+columns within each row for the honeycomb inter-row bonds.
+"""
 function odd_template(::Any, num_site, sites)
-    L = Int(log2(num_site))
-    return get_diagonal_mpo(L, sites, x -> Float64(isodd(x)))
+    L  = Int(log2(num_site))
+    os = OpSum()
+    os += 1, "sigma_d", L    # site L is LSB of ix
+    return MPO(os, sites)
 end
 
+"""
+    even_template(L_chain, num_site, sites) -> MPO
+
+Diagonal mask: 1 where ix is odd AND ix ≠ 1.  Selects B-sublattice columns
+(odd ix, excluding the boundary ix = 1 column which wraps into the next row).
+Computed as proj_{odd ix} − proj_{ix=1}.
+"""
 function even_template(L_chain, num_site, sites)
-    L = Int(log2(num_site))
-    return get_diagonal_mpo(L, sites,
-                            x -> Float64(!(x % 2 == 0 || (x - 1) % L_chain == 0)))
+    L  = Int(log2(num_site))
+    Ly = L - Int(log2(L_chain))
+    os_odd = OpSum(); os_odd += 1, "sigma_d", L
+    os_one = OpSum(); os_one += 1, "sigma_d", L
+    for i in Ly+1:L-1; os_one *= 1, "sigma_u", i; end  # proj_{ix=1}: higher x-bits = 0
+    return MPO(os_odd, sites) - MPO(os_one, sites)
 end
 
+"""
+    odd_skeleton(L_chain, num_site, sites) -> MPO
+
+Diagonal mask: 1 where iy is even (0-based, LSB of iy = 0).
+Selects the even rows for the upper honeycomb inter-row bond.
+"""
 function odd_skeleton(L_chain, num_site, sites)
-    L = Int(log2(num_site))
-    return get_diagonal_mpo(L, sites, x -> Float64(iseven(div(x, L_chain))))
+    L  = Int(log2(num_site))
+    Ly = L - Int(log2(L_chain))
+    os = OpSum()
+    os += 1, "sigma_u", Ly   # site Ly is LSB of iy; = 0 → even row
+    return MPO(os, sites)
 end
 
+"""
+    even_skeleton(L_chain, num_site, sites) -> MPO
+
+Diagonal mask: 1 where iy is odd (0-based, LSB of iy = 1).
+Selects the odd rows for the lower honeycomb inter-row bond.
+"""
 function even_skeleton(L_chain, num_site, sites)
-    L = Int(log2(num_site))
-    return get_diagonal_mpo(L, sites, x -> Float64(isodd(div(x, L_chain))))
+    L  = Int(log2(num_site))
+    Ly = L - Int(log2(L_chain))
+    os = OpSum()
+    os += 1, "sigma_d", Ly   # site Ly is LSB of iy; = 1 → odd row
+    return MPO(os, sites)
 end
 
 
 """
     interchain_hopping_honeycomb(L_chain, num_site, sites) -> MPO
 
-Inter-row hopping MPO for a honeycomb lattice with `L_chain` sites per
-row.  Handles the two inequivalent inter-row bonds (A→B going up-left
-and up-right).
+Inter-row hopping for a honeycomb lattice with `L_chain` sites per row.
+Two inequivalent inter-row bonds, each with a forward and backward term:
+- Upper bond (shift +L_chain+1): connectivity mask = odd_template * odd_skeleton
+- Lower bond (shift +L_chain−1): connectivity mask = even_template * even_skeleton
 """
 function interchain_hopping_honeycomb(L_chain, num_site, sites)
-    connect_up = apply(odd_template(L_chain, num_site, sites),
-                       odd_skeleton(L_chain, num_site, sites))
-    connect_dn = apply(even_template(L_chain, num_site, sites),
-                       even_skeleton(L_chain, num_site, sites))
+    ku = generate_kin_u(sites, num_site)
+    kd = generate_kin_d(sites, num_site)
 
-    k_mpo_1 = generate_kin_u(sites, num_site)
-    k_mpo_2 = generate_kin_d(sites, num_site)
+    mask_up = apply(odd_template( L_chain, num_site, sites),
+                    odd_skeleton( L_chain, num_site, sites))
+    mask_dn = apply(even_template(L_chain, num_site, sites),
+                    even_skeleton(L_chain, num_site, sites))
 
-    hop_up_1 = apply(connect_up, arbitarty_offline(k_mpo_1, L_chain + 1))
-    hop_dn_1 = apply(connect_dn, arbitarty_offline(k_mpo_1, L_chain - 1))
-    hop_up_2 = apply(arbitarty_offline(k_mpo_2, L_chain + 1), connect_up)
-    hop_dn_2 = apply(arbitarty_offline(k_mpo_2, L_chain - 1), connect_dn)
+    hop_up_fwd = apply(mask_up, compose_power(ku, L_chain + 1))
+    hop_up_bwd = apply(compose_power(kd, L_chain + 1), mask_up)
+    hop_dn_fwd = apply(mask_dn, compose_power(ku, L_chain - 1))
+    hop_dn_bwd = apply(compose_power(kd, L_chain - 1), mask_dn)
 
-    return hop_up_1 + hop_up_2 + hop_dn_1 + hop_dn_2
+    return hop_up_fwd + hop_up_bwd + hop_dn_fwd + hop_dn_bwd
 end
 
 
 # ============================================================
-# 5. Row/column/checkerboard mask MPOs (diagonal, 0/1 entries)
-#    Conventions:
-#      row-major flattening:  linear index i = ix + iy * 2^Lx
-#      bit split:  low Lx bits → ix,  next Ly bits → iy
+# 5. Row/column/checkerboard mask MPOs (diagonal, exact)
+#    Bit layout: sites 1..Ly → iy (MSB first), sites Ly+1..L → ix (MSB first)
 # ============================================================
 
 """
     _row_break_mpo(Lx, Ly, sites; which) -> MPO
 
-Diagonal mask that zeroes out wrap-around couplings at row boundaries of a
-`2^Lx × 2^Ly` grid flattened row-major.
+Diagonal mask that zeroes wrap-around couplings at row boundaries of a
+`2^Lx × 2^Ly` grid (row-major encoding).
 
-- `which = :xplus`  → mask 0 where `(ix+1) % 2^Lx == 0`  (end of each row)
-- `which = :xplain` → mask 0 where `ix % 2^Lx == 0`       (start of each row)
+- `which = :xplus`  → 0 where ix == 2^Lx − 1  (end of each row)
+- `which = :xplain` → 0 where ix == 0           (start of each row)
 
-Multiply a kinetic MPO by this mask (left or right) to prevent hops wrapping
-from the last site of one row to the first site of the next.
+Multiply a kinetic MPO by this mask on the appropriate side to suppress the
+bond that crosses a row boundary.
 """
 function _row_break_mpo(Lx, Ly, sites; which::Symbol)
     L     = Lx + Ly
-    xvals = 0:(2^L - 1)
-    f = which === :xplus  ? (x -> iszero(mod(x + 1, 2^Lx)) ? 0.0 : 1.0) :
-        which === :xplain ? (x -> iszero(mod(x,     2^Lx)) ? 0.0 : 1.0) :
-        error("unknown which=:$(which); use :xplus or :xplain")
-    qttb    = QuanticsTCI.quanticscrossinterpolate(ComplexF64, f, xvals; tolerance=1e-8)[1]
-    ttb     = TCI.tensortrain(qttb.tci)
-    maskmps = MPS(ttb; sites)
-    maskmpo = outer(maskmps', maskmps)
-    for i in 1:L
-        maskmpo.data[i] = Quantics._asdiagonal(maskmps.data[i], sites[i])
-    end
-    return maskmpo
+    Id_op = MPO(sites, "Id")
+    proj  = which === :xplus  ? "sigma_d" :
+            which === :xplain ? "sigma_u" :
+            error("unknown which=:$(which); use :xplus or :xplain")
+    # projector onto ix = Nx-1 (:xplus) or ix = 0 (:xplain):
+    # product of proj on all Lx x-bit sites (Ly+1 .. L)
+    os = OpSum()
+    os += 1, proj, Ly+1
+    for i in Ly+2:L; os *= 1, proj, i; end
+    return Id_op - MPO(os, sites)
 end
 
 
 """
-    _row_select_mpo(Lx, Ly, sites; keep=:even) -> MPO
+    _row_select_mpo(_, Ly, sites; keep=:even) -> MPO
 
-Diagonal mask that keeps only even (1-based: 2,4,…) or odd (1,3,…) rows
-of a `2^Lx × 2^Ly` grid flattened row-major.
+Diagonal mask that retains only even or odd rows of a `2^Lx × 2^Ly` grid.
 
-- `keep = :even` → retain rows where `iy % 2 == 1` (0-based)
-- `keep = :odd`  → retain rows where `iy % 2 == 0` (0-based)
+- `keep = :even` → 1 where iy % 2 == 1  (0-based; LSB of iy = 1)
+- `keep = :odd`  → 1 where iy % 2 == 0  (0-based; LSB of iy = 0)
 """
-function _row_select_mpo(Lx, Ly, sites; keep::Symbol = :even)
-    L     = Lx + Ly
-    xvals = 0:(2^L - 1)
-    row_keep = keep === :even ? (iy -> iy % 2 == 1) :
-               keep === :odd  ? (iy -> iy % 2 == 0) :
-               error("unknown keep=:$(keep); use :even or :odd")
-    f = x -> begin
-        xi = x isa Integer ? x : Int(floor(x))
-        row_keep(xi >>> Lx) ? 1.0 : 0.0
-    end
-    qttb = QuanticsTCI.quanticscrossinterpolate(ComplexF64, f, xvals; tolerance=1e-8)[1]
-    ttb  = TCI.tensortrain(qttb.tci)
-    mps  = MPS(ttb; sites)
-    mpo  = outer(mps', mps)
-    for i in 1:L
-        mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i])
-    end
-    return mpo
+function _row_select_mpo(::Any, Ly, sites; keep::Symbol = :even)
+    proj = keep === :even ? "sigma_d" :
+           keep === :odd  ? "sigma_u" :
+           error("unknown keep=:$(keep); use :even or :odd")
+    os = OpSum()
+    os += 1, proj, Ly    # site Ly is the LSB of iy
+    return MPO(os, sites)
 end
 
 
 """
     _col_select_mpo(Lx, Ly, sites; keep=:even) -> MPO
 
-Diagonal mask that keeps only even or odd **columns** of a `2^Lx × 2^Ly` grid.
-`keep = :even` retains columns where `ix % 2 == 1`; `:odd` where `ix % 2 == 0`.
+Diagonal mask that retains only even or odd columns of a `2^Lx × 2^Ly` grid.
+
+- `keep = :even` → 1 where ix % 2 == 1  (0-based; LSB of ix = 1)
+- `keep = :odd`  → 1 where ix % 2 == 0  (0-based; LSB of ix = 0)
 """
 function _col_select_mpo(Lx, Ly, sites; keep::Symbol = :even)
-    L     = Lx + Ly
-    xvals = 0:(2^L - 1)
-    xmask = (1 << Lx) - 1
-    col_keep = keep === :even ? (ix -> ix % 2 == 1) :
-               keep === :odd  ? (ix -> ix % 2 == 0) :
-               error("unknown keep=:$(keep); use :even or :odd")
-    f = x -> begin
-        xi = x isa Integer ? x : Int(floor(x))
-        col_keep(xi & xmask) ? 1.0 : 0.0
-    end
-    qttb = QuanticsTCI.quanticscrossinterpolate(ComplexF64, f, xvals; tolerance=1e-8)[1]
-    ttb  = TCI.tensortrain(qttb.tci)
-    mps  = MPS(ttb; sites)
-    mpo  = outer(mps', mps)
-    for i in 1:L
-        mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i])
-    end
-    return mpo
+    proj = keep === :even ? "sigma_d" :
+           keep === :odd  ? "sigma_u" :
+           error("unknown keep=:$(keep); use :even or :odd")
+    os = OpSum()
+    os += 1, proj, Lx + Ly   # site L = Lx+Ly is the LSB of ix
+    return MPO(os, sites)
 end
 
 
 """
     _row_checker_mpo(Lx, Ly, sites) -> MPO
 
-Diagonal checkerboard mask: entry 1 where `(ix + iy)` is even, 0 otherwise.
-Useful for Néel/AFM patterns and alternating sublattice filters.
+Diagonal checkerboard mask: 1 where (ix + iy) is even, 0 otherwise.
+Equivalent to projecting onto LSB(ix) == LSB(iy), i.e. both qubits agree:
+  proj_{iy-LSB=0, ix-LSB=0}  +  proj_{iy-LSB=1, ix-LSB=1}
 """
 function _row_checker_mpo(Lx, Ly, sites)
-    L     = Lx + Ly
-    xvals = 0:(2^L - 1)
-    xmask = (1 << Lx) - 1
-    f = x -> begin
-        xi = x isa Integer ? x : Int(floor(x))
-        ix = xi & xmask
-        iy = xi >>> Lx
-        ((ix + iy) & 1 == 0) ? 1.0 : 0.0
-    end
-    qttb = QuanticsTCI.quanticscrossinterpolate(ComplexF64, f, xvals; tolerance=1e-8)[1]
-    ttb  = TCI.tensortrain(qttb.tci)
-    mps  = MPS(ttb; sites)
-    mpo  = outer(mps', mps)
-    for i in 1:L
-        mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i])
-    end
-    return mpo
+    os = OpSum()
+    os += 1, "sigma_u", Ly, "sigma_u", Lx + Ly   # both LSBs = 0
+    os += 1, "sigma_d", Ly, "sigma_d", Lx + Ly   # both LSBs = 1
+    return MPO(os, sites)
 end
 
 
 # ============================================================
 # 6. NNN 2D kinetic builders
-#    All use compose_power (from Hamiltonian.jl) and the masks above.
+#    Pattern for every function:
+#      1. Build ku = generate_kin_u, kd = generate_kin_d
+#      2. Raise to the nn-th power with compose_power
+#      3. Apply hopping weights: hop_fwd = h * ku^n,  hop_bwd = kd^n * h†
+#      4. Mask with _row_break_mpo and optionally _row_select/_checker
 # ============================================================
 
 """
     kineticintra2DNNN(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range **intra-row** hopping on a `2^Lx × 2^Ly` square lattice flattened row-major.
-Row-boundary wrap-around is prevented by left/right multiplication with `_row_break_mpo`.
+Long-range intra-row hopping on a `2^Lx × 2^Ly` square lattice (nn bonds
+along x).  Row wrap-around at ix = Nx-1 is suppressed by `_row_break_mpo(:xplus)`.
 """
 function kineticintra2DNNN(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn ≥ 1
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",          j); end
-        for j in (L+2-i):L; os *= ("sigma_minus",  j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_plus",  j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    th1 = apply(brk, th1; apply_kwargs...)
-    th2 = apply(th2, brk; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
+    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
 """
     kineticinterNNNSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range **inter-row** hopping along the SW↗NE diagonal of an `Lx × Ly` square lattice.
-Prevents horizontal wrap-around with `:xplus` row-break mask.
+Long-range inter-row hopping along the SW↗NE diagonal of a `2^Lx × 2^Ly`
+square lattice.  Row end-wrap suppressed by `_row_break_mpo(:xplus)`.
 """
 function kineticinterNNNSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn ≥ 1
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    th1 = apply(brk, th1; apply_kwargs...)
-    th2 = apply(th2, brk; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
+    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
 """
     kineticinterNNNSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range **inter-row** hopping along the SE↖NW diagonal.
-Uses `:xplain` row-break mask (breaks at row start rather than row end).
+Long-range inter-row hopping along the SE↖NW diagonal.
+Row start-wrap suppressed by `_row_break_mpo(:xplain)`.
 """
 function kineticinterNNNSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn ≥ 1
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    th1 = apply(brk, th1; apply_kwargs...)
-    th2 = apply(th2, brk; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
+    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
 """
     kineticinterNNNtriSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-SW↗NE diagonal inter-row hopping for a **triangular lattice**.
-Applies both an `:xplus` row-break mask and an `:even`-row selection mask.
+SW↗NE diagonal inter-row hopping for a triangular lattice.
+Applies `_row_break_mpo(:xplus)` and `_row_select_mpo(:even)` to restrict
+hops to the correct sublattice rows.
 """
 function kineticinterNNNtriSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn ≥ 1
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
-    brk     = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    rowmask = _row_select_mpo(Lx, Ly, sites; keep=:even)
-    th1 = apply(rowmask, apply(brk, th1; apply_kwargs...); apply_kwargs...)
-    th2 = apply(apply(th2, brk; apply_kwargs...), rowmask; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    sel = _row_select_mpo(Lx, Ly, sites; keep=:even)
+    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
+    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
 """
     kineticinterNNNtriSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-SE↖NW diagonal inter-row hopping for a **triangular lattice**.
-Applies both an `:xplain` row-break mask and an `:odd`-row selection mask.
+SE↖NW diagonal inter-row hopping for a triangular lattice.
+Applies `_row_break_mpo(:xplain)` and `_row_select_mpo(:odd)`.
 """
 function kineticinterNNNtriSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn ≥ 1
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
-    brk     = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    rowmask = _row_select_mpo(Lx, Ly, sites; keep=:odd)
-    th1 = apply(rowmask, apply(brk, th1; apply_kwargs...); apply_kwargs...)
-    th2 = apply(apply(th2, brk; apply_kwargs...), rowmask; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
+    sel = _row_select_mpo(Lx, Ly, sites; keep=:odd)
+    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
+    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
 """
     kineticintra2DNNhex(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Intra-row hopping for a **honeycomb lattice** (hexagonal geometry).
-Applies both an `:xplus` row-break mask and a checkerboard mask to implement
-the alternating A/B sublattice connectivity pattern.
+Intra-row hopping for a honeycomb lattice.  Applies `_row_break_mpo(:xplus)`
+and `_row_checker_mpo` to implement the alternating A/B sublattice pattern.
 """
 function kineticintra2DNNhex(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    kinetic_1 = OpSum(); kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum(); os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites); k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    th1 = apply(hopping, An; apply_kwargs...)
-    th2 = apply(Am, dag(hopping); apply_kwargs...)
-    brk     = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    checker = _row_checker_mpo(Lx, Ly, sites)
-    th1 = apply(checker, apply(brk, th1; apply_kwargs...); apply_kwargs...)
-    th2 = apply(apply(th2, brk; apply_kwargs...), checker; apply_kwargs...)
-    return +(th1, th2; cutoff=1e-12)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
+    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
+    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    chk = _row_checker_mpo(Lx, Ly, sites)
+    hop_fwd = apply(chk, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
+    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), chk; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
@@ -688,7 +571,7 @@ end
 """
     HUniform2Dsquare(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` **square lattice** (row-major encoding).
+Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` square lattice (row-major encoding).
 Intra-row: `kineticintra2DNNN(…, nn=1)`.  Inter-row: `kineticNNN(…, nn=Nx)`.
 """
 function HUniform2Dsquare(Lx::Integer, Ly::Integer, t;
@@ -700,8 +583,7 @@ function HUniform2Dsquare(Lx::Integer, Ly::Integer, t;
     N     = Nx * 2^Ly
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
-    w     = i -> t   # constant hopping
-    hops  = qtt_mpo(L, xvals, sites, w; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    hops  = qtt_mpo(L, xvals, sites, _ -> t; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     Hintra = kineticintra2DNNN(Lx, Ly, sites, hops, 1)
     Hinter = kineticNNN(L, sites, hops, Nx)
     return +(Hintra, Hinter; cutoff=cutoff)
@@ -711,7 +593,7 @@ end
 """
     HUniform2Dhex(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` **hexagonal lattice**.
+Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` hexagonal lattice.
 Intra-row uses `kineticintra2DNNhex` (checkerboard mask); inter-row uses `kineticNNN(…, Nx)`.
 """
 function HUniform2Dhex(Lx::Integer, Ly::Integer, t;
@@ -733,7 +615,7 @@ end
 """
     HUniform2Dtri(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` **triangular lattice**.
+Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` triangular lattice.
 Three kinetic terms:
 - `kineticintra2DNNN(…, 1)` — intra-row NN
 - `kineticinterNNNtriSWNE(…, Nx+1)` — SW↗NE diagonal
@@ -748,10 +630,10 @@ function HUniform2Dtri(Lx::Integer, Ly::Integer, t;
     N     = Nx * 2^Ly
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
-    hops  = qtt_mpo(L, xvals, sites, _ -> t; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    HintraNN  = kineticintra2DNNN(           Lx, Ly, sites, hops,  1)
-    HinterSWNE = kineticinterNNNtriSWNE(     Lx, Ly, sites, hops, Nx + 1)
-    HinterSENW = kineticinterNNNtriSENW(     Lx, Ly, sites, hops, Nx - 1)
+    hops       = qtt_mpo(L, xvals, sites, _ -> t; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    HintraNN   = kineticintra2DNNN(       Lx, Ly, sites, hops,  1)
+    HinterSWNE = kineticinterNNNtriSWNE(  Lx, Ly, sites, hops, Nx + 1)
+    HinterSENW = kineticinterNNNtriSENW(  Lx, Ly, sites, hops, Nx - 1)
     Htot = +(HintraNN, HinterSWNE; cutoff=cutoff)
     return  +(Htot,    HinterSENW; cutoff=cutoff)
 end
@@ -775,7 +657,7 @@ function HChern8(Lx::Integer, Ly::Integer, V, t;
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
 
-    alt_hop_x(x)       = (-1)^mod(x + 1, Nx) * t
+    alt_hop_x(x) = (-1)^mod(x + 1, Nx) * t
 
     function func8fold(x, y)
         Ka1 = (2π/a) .* [1.0, 0.0];  Kb1 = (2π/a) .* [0.0, 1.0]
@@ -796,13 +678,13 @@ function HChern8(Lx::Integer, Ly::Integer, V, t;
     hops_MPO2 = qtt_mpo(L, xvals, sites, w2;    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     hops_MPO3 = qtt_mpo(L, xvals, sites, w3;    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
 
-    HinterNN   = kineticNNN(           L,    sites, hops_MPO,  Nx)
-    HintraNN   = kineticintra2DNNN(    Lx, Ly, sites, hops_MPO1, 1)
-    HinterNNN  = kineticinterNNNSWNE(  Lx, Ly, sites, hops_MPO2, Nx+1)
-    HinterNNN2 = kineticinterNNNSENW(  Lx, Ly, sites, hops_MPO3, Nx-1)
+    HinterNN  = kineticNNN(          L,    sites, hops_MPO,  Nx)
+    HintraNN  = kineticintra2DNNN(   Lx, Ly, sites, hops_MPO1, 1)
+    HinterSWNE = kineticinterNNNSWNE(Lx, Ly, sites, hops_MPO2, Nx+1)
+    HinterSENW = kineticinterNNNSENW(Lx, Ly, sites, hops_MPO3, Nx-1)
 
-    Htot = +(HinterNN,  HinterNNN;  cutoff=cutoff)
-    Htot = +(Htot,      HinterNNN2; cutoff=cutoff)
+    Htot = +(HinterNN,  HinterSWNE; cutoff=cutoff)
+    Htot = +(Htot,      HinterSENW; cutoff=cutoff)
     return  +(Htot,     HintraNN;   cutoff=cutoff)
 end
 
@@ -840,9 +722,9 @@ function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
 
     wrap(f) = i -> f(i % Nx, i ÷ Nx)
 
-    hops_MPO      = qtt_mpo(L, xvals, sites, wrap((x,y) -> t);             tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    hops_MPO      = qtt_mpo(L, xvals, sites, wrap((x,y) -> t);               tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     hops_MPOalter = qtt_mpo(L, xvals, sites, wrap((x,y) -> alt_hop_xy(x,y)); tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    on_site_MPO   = qtt_mpo(L, xvals, sites, wrap((x,y) -> semenoff(x,y));  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    on_site_MPO   = qtt_mpo(L, xvals, sites, wrap((x,y) -> semenoff(x,y));   tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
 
     Hintra    = kineticintra2DNNhex( Lx, Ly, sites, hops_MPO,      1)
     Hinter    = kineticNNN(          L,       sites, hops_MPO,      Nx)
