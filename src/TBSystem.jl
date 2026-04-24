@@ -99,8 +99,8 @@ Supported geometry strings
 --------------------------
 | `geometry`    | `params`                       | Extra kwargs                  |
 |---------------|--------------------------------|-------------------------------|
-| `"chain_1d"`  | hopping amplitude `t::Number`  | —                             |
-| `"square_2d"` | hopping amplitude `t::Number`  | `Lx` (sites per row; default √N) |
+| `"chain_1d"`  | hopping amplitude `t::Number`  | direct MPO, no QTCI; use `add_onsite!` for potentials |
+| `"square_2d"` | hopping amplitude `t::Number`  | `Lx`, `Ly` (default `L÷2` each) |
 | `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 Float64 position matrix, required) |
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
 
@@ -138,9 +138,6 @@ function get_Hamiltonian(geometry::String, params;
     if geometry == "chain_1d"
         return _build_chain_1d(params, L, N, sites; scale, tol, maxdim)
 
-    elseif geometry == "square_2d"
-        return _build_square_2d(params, L, N, sites; scale, tol, maxdim, kwargs...)
-
     elseif geometry == "haldane"
         return _build_haldane(params, L, N, sites; scale, tol, maxdim, kwargs...)
 
@@ -149,14 +146,14 @@ function get_Hamiltonian(geometry::String, params;
 
     # ---- new preset models routed through build_hamiltonian ----
     elseif geometry in ("ssh", "aah", "uniform",
-                        "hex_2d", "triangular_2d",
+                        "square_2d", "hex_2d", "triangular_2d",
                         "chern8", "chernhex", "qc2dsquare")
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, kwargs...)
 
     else
-        known = ("chain_1d", "square_2d", "haldane", "custom",
-                 "ssh", "aah", "uniform",
-                 "hex_2d", "triangular_2d",
+        known = ("chain_1d", "haldane", "custom",
+                 "uniform", "ssh", "aah",
+                 "square_2d", "hex_2d", "triangular_2d",
                  "chern8", "chernhex", "qc2dsquare")
         error("Unknown geometry \"$geometry\". Supported: $(join(known, ", ")).")
     end
@@ -166,33 +163,13 @@ end
 # Per-geometry builders (internal)
 # ============================================================
 
+
+
 function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
-    # kinetic_1d_nn implements NN hopping in the quantics binary representation
-    # (sigma_plus/minus acting as binary increment/decrement operators)
     mpo = t * kinetic_1d_nn(L, sites)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    geom = reshape(Float64.(1:N), N, 1)
-    sc   = something(scale, 2.2 * abs(t))   # 1D chain bandwidth = 4|t|, half = 2|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
-end
-
-
-function _build_square_2d(t, L, N, sites;
-                          Lx=nothing, scale=nothing, tol=1e-8, maxdim=15)
-    Lx = something(Lx, isqrt(N))
-    @assert Lx^2 == N "square_2d requires N = 2^L to be a perfect square. " *
-                      "Got N = $N with Lx = $Lx."
-    hop_x = intrachain_hopping(Lx, N, sites; t=t)
-    hop_y = interchain_hopping_square(Lx, N, sites; t=t)
-    mpo   = +(hop_x, hop_y; cutoff=tol)
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    geom  = Matrix{Float64}(undef, N, 2)
-    for i in 1:N
-        geom[i, 1] = Float64(mod(i - 1, Lx) + 1)
-        geom[i, 2] = Float64(div(i - 1, Lx) + 1)
-    end
-    sc = something(scale, 4.4 * abs(t))   # 2D square bandwidth ≈ 8|t|, half = 4|t|
-    return TBHamiltonian(L, N, sites, mpo, geom, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    sc  = something(scale, 2.5 * abs(t))
+    return TBHamiltonian(L, N, sites, mpo, nothing, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -272,9 +249,11 @@ function _estimate_scale(geometry, params)
     t = params isa Number ? abs(params) :
         params isa NamedTuple && hasfield(typeof(params), :t) ? abs(params.t) :
         params isa AbstractDict && haskey(params, :t) ? abs(params[:t]) : 1.0
+    geometry == "chain_1d"     && return 2.5 * t
     geometry == "ssh"          && return 2.5 * t
     geometry == "aah"          && return (t + (params isa NamedTuple ? abs(params.V) : 1.0)) * 1.2
     geometry == "uniform"      && return 2.5 * t
+    geometry == "square_2d"    && return 4.4 * t
     geometry == "hex_2d"       && return 4.0 * t
     geometry == "triangular_2d"&& return 7.0 * t
     geometry in ("chern8","chernhex","qc2dsquare") && return 6.0 * t

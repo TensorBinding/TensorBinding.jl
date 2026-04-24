@@ -632,10 +632,12 @@ function HUniform2Dtri(Lx::Integer, Ly::Integer, t;
     xvals = 0:N-1
     hops       = qtt_mpo(L, xvals, sites, _ -> t; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     HintraNN   = kineticintra2DNNN(       Lx, Ly, sites, hops,  1)
+    HinterNN   = kineticNNN(              L,       sites, hops, Nx)
     HinterSWNE = kineticinterNNNtriSWNE(  Lx, Ly, sites, hops, Nx + 1)
     HinterSENW = kineticinterNNNtriSENW(  Lx, Ly, sites, hops, Nx - 1)
-    Htot = +(HintraNN, HinterSWNE; cutoff=cutoff)
-    return  +(Htot,    HinterSENW; cutoff=cutoff)
+    Htot = +(HintraNN,   HinterNN;   cutoff=cutoff)
+    Htot = +(Htot,       HinterSWNE; cutoff=cutoff)
+    return  +(Htot,      HinterSENW; cutoff=cutoff)
 end
 
 
