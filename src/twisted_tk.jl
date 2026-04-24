@@ -14,41 +14,29 @@
 
 Return an N×2 matrix of real-space positions for a 2^Lx × 2^Ly patch of
 `lattice ∈ {:square, :triangular, :honeycomb}`, optionally rotated by
-`angle_deg` degrees about the origin.
+`angle_deg` degrees about the geometric centroid of the lattice.
 
-Site ordering matches the quantics row-major encoding used throughout
-TensorBinding: site i (1-based) corresponds to linear index i-1 = ix + iy*2^Lx.
-
-Constraint: `:honeycomb` requires `Lx + Ly` to be odd (so N/2 is a perfect square).
+Site ordering matches the quantics row-major encoding: `n = ix + iy·2^Lx` (0-indexed).
 """
 function lattice_positions(lattice::Symbol, Lx::Int, Ly::Int;
                            angle_deg::Real = 0.0)
-    Nx = 2^Lx;  Ny = 2^Ly;  N = Nx * Ny;  L = Lx + Ly
-    rs = Matrix{Float64}(undef, N, 2)
-
-    if lattice === :square
-        for i in 0:N-1
-            rs[i+1, 1] = Float64(i % Nx)
-            rs[i+1, 2] = Float64(i ÷ Nx)
-        end
+    L = Lx + Ly
+    rs = if lattice === :square
+        square_positions(L; Lx=Lx)
     elseif lattice === :triangular
-        a1 = [1.0, 0.0];  a2 = [0.5, sqrt(3) / 2]
-        for i in 0:N-1
-            p = (i % Nx) .* a1 .+ (i ÷ Nx) .* a2
-            rs[i+1, 1] = p[1];  rs[i+1, 2] = p[2]
-        end
+        triangular_positions(L; Lx=Lx)
     elseif lattice === :honeycomb
-        isodd(L) || error(":honeycomb requires Lx+Ly to be odd " *
-                          "(got Lx=$Lx, Ly=$Ly → L=$L).")
-        rs = honeycomb_positions(L)   # defined in TBSystem.jl
+        honeycomb_positions(L; Lx=Lx)
     else
         error("Unknown lattice :$lattice.  Choose :square, :triangular, or :honeycomb.")
     end
 
     if !iszero(angle_deg)
-        θ = angle_deg * π / 180
-        c, s = cos(θ), sin(θ)
-        rs = Matrix{Float64}(([c -s; s c] * rs')')
+        θ      = angle_deg * π / 180
+        c, s   = cos(θ), sin(θ)
+        R      = [c -s; s c]
+        center = vec(sum(rs, dims=1)) / size(rs, 1)
+        rs     = Matrix{Float64}(((R * (rs' .- center)) .+ center)')
     end
     return rs
 end
@@ -63,25 +51,17 @@ end
 
 NN tight-binding Hamiltonian MPO on `L = Lx+Ly` qubit `sites` for
 `lattice ∈ {:square, :triangular, :honeycomb}` with uniform hopping `t`.
+Delegates to `build_hamiltonian` and replaces internal site indices with `sites`.
 """
 function monolayer_hamiltonian(lattice::Symbol, Lx::Int, Ly::Int, sites;
                                t::Number = 1.0, cutoff::Real = 1e-8)
-    Nx = 2^Lx;  L = Lx + Ly;  N = 2^L
-    hops = qtt_mpo(L, 0:N-1, sites, _ -> t)
-
-    if lattice === :square
-        return +(kineticintra2DNNN(Lx, Ly, sites, hops, 1),
-                 kineticNNN(L, sites, hops, Nx); cutoff=cutoff)
-    elseif lattice === :triangular
-        H = +(kineticintra2DNNN(Lx, Ly, sites, hops, 1),
-              kineticinterNNNtriSWNE(Lx, Ly, sites, hops, Nx + 1); cutoff=cutoff)
-        return +(H, kineticinterNNNtriSENW(Lx, Ly, sites, hops, Nx - 1); cutoff=cutoff)
-    elseif lattice === :honeycomb
-        return +(kineticintra2DNNhex(Lx, Ly, sites, hops, 1),
-                 kineticNNN(L, sites, hops, Nx); cutoff=cutoff)
-    else
-        error("Unknown lattice :$lattice.  Choose :square, :triangular, or :honeycomb.")
-    end
+    model = lattice === :square     ? "square_2d"     :
+            lattice === :triangular ? "triangular_2d" :
+            lattice === :honeycomb  ? "hex_2d"        :
+            error("Unknown lattice :$lattice. Choose :square, :triangular, or :honeycomb.")
+    mpo = build_hamiltonian(model, Lx, Ly;
+                            mparam_dict=Dict{Symbol,Any}(:t => t, :cutoff => cutoff))
+    return fix_sites(mpo, sites)
 end
 
 

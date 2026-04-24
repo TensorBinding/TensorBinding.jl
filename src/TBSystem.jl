@@ -35,7 +35,7 @@ mutable struct TBHamiltonian
     N        :: Int
     sites    :: Vector{<:Index}
     mpo      :: MPO
-    geometry :: Union{Nothing, Matrix{Float64}}
+    geometry :: Union{Nothing, Function}   # i -> position vector (1-indexed, i=1…N)
     scale    :: Float64    # energy half-bandwidth; 0.0 = not yet determined (triggers lazy DMRG)
     center   :: Float64    # spectral center; 0.0 for symmetric spectra
     # ---- auxiliary prepended indices (nothing until add_spin!/add_superconductivity!) ----
@@ -163,13 +163,41 @@ end
 # Per-geometry builders (internal)
 # ============================================================
 
+# ---- Geometry functions (i -> position, 1-indexed) ----
 
+_chain_geometry() = i -> Float64[i]
+
+function _square_geometry(Nx)
+    return i -> Float64[(i-1) % Nx, (i-1) ÷ Nx]
+end
+
+function _tri_geometry(Nx)
+    function pos(i)
+        ix = (i-1) % Nx
+        iy = (i-1) ÷ Nx
+        x  = Float64(ix) + 0.5 * (iy % 2)
+        y  = iy * sqrt(3) / 2
+        return Float64[x, y]
+    end
+    return pos
+end
+
+function _hex_geometry(Nx)
+    function pos(i)
+        ix = (i-1) % Nx
+        iy = (i-1) ÷ Nx
+        x  = 3.0*(ix÷2) + Float64(ix%2) + (iy%2) * (Float64(ix%2) - 0.5)
+        y  = iy * sqrt(3)/2
+        return Float64[x, y]
+    end
+    return pos
+end
 
 function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
     mpo = t * kinetic_1d_nn(L, sites)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     sc  = something(scale, 2.5 * abs(t))
-    return TBHamiltonian(L, N, sites, mpo, nothing, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -186,7 +214,8 @@ function _build_haldane(params, L, N, sites;
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     # bandwidth ≈ 2*(3*t1 + 6*t2) + 2*M where t1=1; conservative upper bound
     sc  = something(scale, (1.0 + abs(t2) + abs(M)) * 4.0)
-    return TBHamiltonian(L, N, sites, mpo, Float64.(rs), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    rs_f = let m = Float64.(rs); i -> m[i, :]; end
+    return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
@@ -197,9 +226,10 @@ function _build_custom(f, L, N, sites;
                        maxdim=15,
                        type=ComplexF64)
     @assert !isnothing(scale) "`scale` must be provided for geometry=\"custom\"."
+    geom_f = geometry isa Matrix ? (let m = Float64.(geometry); i -> m[i, :]; end) : geometry
     mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    return TBHamiltonian(L, N, sites, mpo, geometry, Float64(scale), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(L, N, sites, mpo, geom_f, Float64(scale), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 function _build_preset(geometry, params, L, N, sites;
@@ -240,8 +270,17 @@ function _build_preset(geometry, params, L, N, sites;
     # so we extract the actual sites from the MPO rather than using the ones
     # created at the top of get_Hamiltonian (which would be a different set).
     mpo_sites = getindex.(siteinds(mpo), 2)
-    sc = something(scale, _estimate_scale(geometry, params))
-    return TBHamiltonian(L, N, mpo_sites, mpo, nothing, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    sc   = something(scale, _estimate_scale(geometry, params))
+    geom = _preset_geometry(geometry, dim == 2 ? 2^get(kwargs, :Lx, L ÷ 2) : nothing)
+    return TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+end
+
+function _preset_geometry(geometry, Nx)
+    geometry in ("uniform", "ssh", "aah", "chain_1d") && return _chain_geometry()
+    geometry == "square_2d"    && return _square_geometry(Nx)
+    geometry == "hex_2d"       && return _hex_geometry(Nx)
+    geometry == "triangular_2d"&& return _tri_geometry(Nx)
+    return nothing
 end
 
 # Rough scale estimates for known geometries (used when scale=nothing)
@@ -266,39 +305,80 @@ end
 # ============================================================
 
 """
-    honeycomb_positions(L) -> Matrix{Float64}
+    honeycomb_positions(L; Lx=L÷2) -> Matrix{Float64}
 
-Generate `N = 2^L` positions on a honeycomb lattice arranged in a
-square patch of `√(N/2) × √(N/2)` unit cells, with nearest-neighbour
-bond length = 1.
+Generate `N = 2^L` physical honeycomb positions consistent with the
+quantics row-major encoding `n = ix + iy * 2^Lx`, bond length = 1.
 
-Returns an `N × 2` matrix.  Sites are ordered so that site `2k-1`
-is sublattice A and site `2k` is sublattice B in unit cell `k`.
+The lattice is an armchair ribbon: even rows have intra-row bonds
+`(2k, 2k+1)` and odd rows have intra-row bonds `(2k+1, 2k+2)`, with
+all inter-row bonds `(iy, ix) ↔ (iy+1, ix)`.
 
-Requires `N/2` to be a perfect square.
+Returns an `N × 2` matrix where row `i` (1-indexed) is the 2D position
+of quantics site `i-1`.
 """
-function honeycomb_positions(L::Int)
-    N   = 2^L
-    @assert iseven(N) "N = 2^L must be even for a honeycomb (two sites per unit cell)."
-    Nc  = N ÷ 2
-    Lc  = isqrt(Nc)
-    @assert Lc^2 == Nc "honeycomb_positions requires N/2 to be a perfect square. " *
-                       "Got N/2 = $Nc.  Try L such that 2^(L-1) is a perfect square."
-    # Primitive lattice vectors (NN distance = 1)
-    a1 = [√3,   0.0]
-    a2 = [√3/2, 3/2]
-    # Sublattice offsets within the unit cell
-    dA = [0.0, 0.0]
-    dB = [1.0, 0.0]
-    rs  = Matrix{Float64}(undef, N, 2)
-    idx = 1
-    for n2 in 0:Lc-1, n1 in 0:Lc-1
-        origin        = n1 .* a1 .+ n2 .* a2
-        rs[idx,     :] = origin .+ dA
-        rs[idx + 1, :] = origin .+ dB
-        idx += 2
-    end
+function honeycomb_positions(L::Int; Lx::Int = L ÷ 2)
+    N  = 2^L
+    Nx = 2^Lx
+    g  = _hex_geometry(Nx)
+    rs = Matrix{Float64}(undef, N, 2)
+    for i in 1:N; rs[i, :] = g(i); end
     return rs
+end
+
+"""
+    square_positions(L; Lx=L÷2) -> Matrix{Float64}
+
+Physical positions for the `2^L`-site square lattice in quantics row-major
+encoding `n = ix + iy·2^Lx`.  Site `i` (1-indexed) maps to `(ix, iy)`.
+"""
+function square_positions(L::Int; Lx::Int = L ÷ 2)
+    N  = 2^L
+    Nx = 2^Lx
+    g  = _square_geometry(Nx)
+    rs = Matrix{Float64}(undef, N, 2)
+    for i in 1:N; rs[i, :] = g(i); end
+    return rs
+end
+
+"""
+    triangular_positions(L; Lx=L÷2) -> Matrix{Float64}
+
+Physical positions for the `2^L`-site triangular lattice in quantics row-major
+encoding `n = ix + iy·2^Lx`, bond length = 1.  Odd rows are offset by 0.5 in x:
+`x = ix + 0.5·(iy % 2)`,  `y = iy·√3/2`.
+"""
+function triangular_positions(L::Int; Lx::Int = L ÷ 2)
+    N  = 2^L
+    Nx = 2^Lx
+    g  = _tri_geometry(Nx)
+    rs = Matrix{Float64}(undef, N, 2)
+    for i in 1:N; rs[i, :] = g(i); end
+    return rs
+end
+
+# ============================================================
+# Geometry utilities
+# ============================================================
+
+"""
+    central_index(geom, N) -> Int
+    central_index(H)       -> Int
+
+Return the 1-indexed site index whose position is closest to the geometric
+centroid of the lattice.  Accepts either a geometry function `geom(i)` and
+system size `N`, or a `TBHamiltonian` directly.
+
+Errors if `H.geometry` is `nothing`.
+"""
+function central_index(geom::Function, N::Int)
+    center = sum(geom(i) for i in 1:N) / N
+    return argmin(LinearAlgebra.norm(geom(i) .- center) for i in 1:N)
+end
+
+function central_index(H::TBHamiltonian)
+    isnothing(H.geometry) && error("central_index requires H.geometry to be set.")
+    return central_index(H.geometry, H.N)
 end
 
 # ============================================================
@@ -614,8 +694,8 @@ end
 function Base.show(io::IO, H::TBHamiltonian)
     tn_str   = H._tn_cache !== nothing ?
                "Tn cached (Ncheb = $(H._tn_Ncheb))" : "no Tn cache"
-    geom_str = isnothing(H.geometry) ? "implicit 1D" :
-               "$(size(H.geometry, 1)) sites, $(size(H.geometry, 2))D"
+    geom_str = isnothing(H.geometry) ? "no geometry" :
+               "$(H.N) sites, $(length(H.geometry(1)))D"
     aux_str  = ""
     H.layer_s !== nothing && (aux_str *= " +$(ITensors.dim(H.layer_s))layers")
     H.spin_s  !== nothing && (aux_str *= " +spin")
