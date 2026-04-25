@@ -669,19 +669,26 @@ Gibbs ringing.
   & Returns $U W U^\dagger$ where $U$ is the QFT MPO.
     Maps any real-space MPO to momentum space. \\[4pt]
 \sig{get\_spect\_k(W; tol=1e-9, maxdim=100)} $\to$ \sig{Vector}
-  & Momentum-space diagonal $\langle k|\tilde{W}|k\rangle$ for a single-band 1D system.
+  & Momentum-space diagonal $\langle k|\tilde{W}|k\rangle$ for an $L$-site 1D quantics MPO.
     Returns length-$N$ vector. \\[4pt]
 \sig{get\_spect\_k\_doubled(W; tol=1e-9, maxdim=100)} $\to$ \sig{Vector}
-  & Same for a doubled ($2L$-site) system (two-band or spin-resolved). \\[4pt]
+  & For a $2L$-site MPO whose site chain consists of two equal $L$-site quantics
+    position registers (e.g.\ an exciton Hamiltonian on $r_e \otimes r_h$ space);
+    evaluates $\langle k{\otimes}k|\tilde{W}|k{\otimes}k\rangle$, probing the
+    equal-momentum sector $k_e = k_h$. \\[4pt]
 \sig{get\_bands(Tn\_list, Ncheb, sites, \(\omega\)\_vals; tol=1e-9, maxdim=100)} $\to$ \sig{Matrix\{Float64\}}
   & Low-level form. Compute $A(k,\omega) = \langle k|U\,\delta(\omega-H)\,U^\dagger|k\rangle$.
-    Returns $(N_k\times N_\omega)$ matrix.
+    Returns $(N_k\times N_\omega)$ matrix; row $k+1$ (Julia) corresponds to physical
+    momentum $k \in \{0,\ldots,N-1\}$ (0-indexed, binary $00\cdots0$ = $k=0$).
     \kw{\(\omega\)\_vals} must be in \emph{rescaled} units $\in (-1,1)$. \\[4pt]
 \sig{get\_bands(H::TBHamiltonian, \(\omega\)\_phys\_vals; aux\_proj=nothing, tol=1e-9, maxdim=100)} $\to$ \sig{Matrix\{Float64\}}
   & High-level form.  Works for plain, spinful, BdG, and layered Hamiltonians.
     The QFT acts only on position qubits; identity is prepended/postpended on aux sites.
     \kw{aux\_proj=nothing}: traces over aux DOF.
-    \kw{aux\_proj=[}\(\sigma_1,\ldots\)\kw{]}: fixes each aux site to the given 1-based state.
+    \kw{aux\_proj=[}\(\sigma_1,\ldots\)\kw{]}: fixes each aux site to the given ITensors
+    state index (1-based: state 1 = first basis state of that site type).
+    Note: momentum $k$ and real-space site $i$ are always 0-indexed; the 1-based
+    convention applies only to auxiliary DOF (spin, Nambu, layer) states.
     Requires a prior \fn{KPM\_Tn} call to populate \kw{H.\_tn\_cache}. \\
 \bottomrule
 \end{longtable}
