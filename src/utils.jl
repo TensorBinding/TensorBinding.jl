@@ -275,6 +275,32 @@ postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
 # Debug / validation utilities
 # ============================================================
 
+# Build a product-state MPS with an explicit 1-indexed value per site.
+# Works for any site types (Qubit, Layer, Spin, Nambu …).
+function _product_state_mps(sites::Vector{<:Index}, vals::Vector{Int})
+    n = length(sites)
+    links   = [Index(1, "Link,l=$i") for i in 1:n-1]
+    tensors = Vector{ITensor}(undef, n)
+    if n == 1
+        t = ITensor(sites[1]);  t[sites[1] => vals[1]] = 1.0
+        tensors[1] = t
+    else
+        t = ITensor(sites[1], links[1])
+        t[sites[1] => vals[1], links[1] => 1] = 1.0
+        tensors[1] = t
+        for i in 2:n-1
+            t = ITensor(links[i-1], sites[i], links[i])
+            t[links[i-1] => 1, sites[i] => vals[i], links[i] => 1] = 1.0
+            tensors[i] = t
+        end
+        t = ITensor(links[n-1], sites[n])
+        t[links[n-1] => 1, sites[n] => vals[n]] = 1.0
+        tensors[n] = t
+    end
+    return MPS(tensors)
+end
+
+
 # Build a product-state MPS for basis state k (0-indexed, big-endian across
 # sites) without using string state names.  Works for any site types.
 function _basis_state_mps(k::Int, sites::Vector{<:Index})

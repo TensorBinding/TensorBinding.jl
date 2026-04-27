@@ -101,9 +101,9 @@ Returns a `(N_k × N_ω)` matrix where `N_k = 2^L` and `N_ω = length(ω_vals)`.
 
 **High-level form**: pass a `TBHamiltonian` as the first argument and supply
 `ω_phys_vals` in **physical** energy units.  The Chebyshev list and order are
-taken from the cache set by a prior `KPM_Tn(H, Ncheb; ...)` call; the energy
-conversion `ω_resc = (ω_phys .- H.center) ./ H.scale` is done internally.
-Errors if no cache exists or if spin/Nambu DOF are present.
+taken from the cache set by a prior `KPM_Tn(H, Ncheb; ...)` call.  Spin,
+Nambu, and layer auxiliary DOF are handled via `aux_proj` (see high-level
+overload docstring).  Errors if no cache exists.
 
 Typical usage (high-level)
 --------------------------
@@ -151,15 +151,110 @@ function get_bands(Tn_list, Ncheb::Int, sites, ω_vals;
 end
 
 
+"""
+    get_bands(H::TBHamiltonian, ω_phys_vals;
+              aux_proj=nothing, tol=1e-9, maxdim=100) -> Matrix{Float64}
+
+High-level band-structure calculation that works for plain, spinful, BdG,
+and layered `TBHamiltonian`s.
+
+The QFT acts only on the `L` position qubits; identity operators are
+prepended/appended on any auxiliary (spin, Nambu, layer) sites so that the
+full Ã(ω) = U_ext · δ(ω−H) · U_ext† lives on the complete site space.
+
+**`aux_proj`** controls what happens to the auxiliary DOF:
+- `nothing` (default) — **trace**: `A(k,ω) = Σ_σ ⟨σ,k|Ã|σ,k⟩`
+- `[σ₁, σ₂, …]` — **project**: fix each auxiliary site to the given 1-based
+  state index.  The vector must have one entry per auxiliary site in the order
+  they appear in `H.sites`.  For a single aux site pass e.g. `[1]` (spin-up /
+  particle sector).
+
+Returns a `(N_k × N_ω)` matrix where `N_k = 2^L`.
+
+Requires a prior `KPM_Tn(H, Ncheb; …)` call to populate `H._tn_cache`.
+"""
 function get_bands(H::TBHamiltonian, ω_phys_vals;
+                   aux_proj = nothing,
                    tol=1e-9, maxdim::Int=100)
-    (H.spin_s !== nothing || H.nambu_s !== nothing) &&
-        error("get_bands does not support spinful or BdG Hamiltonians: the QFT " *
-              "must act only on position qubits while the spectral MPO spans all " *
-              "sites.  Trace out the auxiliary DOF first or implement a partial QFT.")
     H._tn_cache === nothing &&
         error("No Chebyshev cache found.  Call KPM_Tn(H, Ncheb; ...) first.")
+
     pos_sites = _pos_sites(H)
-    ω_resc    = (collect(ω_phys_vals) .- H.center) ./ H.scale
-    return get_bands(H._tn_cache, H._tn_Ncheb, pos_sites, ω_resc; tol=tol, maxdim=maxdim)
+    Lpos      = length(pos_sites)
+    Npos      = 2^Lpos
+    pos_set   = Set(pos_sites)
+
+    # Auxiliary sites in H.sites order (spin, Nambu, layer, …)
+    aux_sites = filter(s -> s ∉ pos_set, H.sites)
+
+    # ── Build QFT on pos_sites then extend with I on each aux site ────────────
+    FTirev = fix_sites(MPO(TCI.reverse(
+        QuanticsTCI.quanticsfouriermpo(Lpos; sign=-1.0, normalize=true))), pos_sites)
+    FTrev  = fix_sites(MPO(TCI.reverse(
+        QuanticsTCI.quanticsfouriermpo(Lpos; sign=+1.0, normalize=true))), pos_sites)
+
+    if H.aux_side === :pre
+        for s in reverse(aux_sites)       # innermost first → outermost last
+            Id = Matrix{Float64}(LinearAlgebra.I, dim(s), dim(s))
+            FTirev = prepend_op(FTirev, s, Id)
+            FTrev  = prepend_op(FTrev,  s, Id)
+        end
+    else
+        for s in aux_sites
+            Id = Matrix{Float64}(LinearAlgebra.I, dim(s), dim(s))
+            FTirev = postpend_op(FTirev, s, Id)
+            FTrev  = postpend_op(FTrev,  s, Id)
+        end
+    end
+
+    # ── Aux state combinations: trace or project ──────────────────────────────
+    aux_combos = if isnothing(aux_proj) || isempty(aux_sites)
+        collect(Iterators.product((1:dim(s) for s in aux_sites)...))
+    else
+        proj = aux_proj isa Integer ? fill(Int(aux_proj), length(aux_sites)) :
+                                      collect(Int, aux_proj)
+        length(proj) == length(aux_sites) ||
+            error("aux_proj has $(length(proj)) entries but H has $(length(aux_sites)) " *
+                  "auxiliary site(s).  Pass one state index per aux site.")
+        [Tuple(proj)]
+    end
+
+    # ── Pre-build (σ_combo, k) product-state MPS ─────────────────────────────
+    # k is encoded LSB-first on pos_sites: site i gets bit (i-1) of k.
+    pos_kvals(k) = [((k >> (i-1)) & 1) + 1 for i in 1:Lpos]  # 1-indexed
+
+    all_sites_ord = H.aux_side === :pre ? [aux_sites; pos_sites] :
+                                          [pos_sites; aux_sites]
+
+    kmps = Dict{Any, Vector{MPS}}()
+    for σ_combo in aux_combos
+        σ_vals = collect(Int, σ_combo)
+        states = Vector{MPS}(undef, Npos)
+        for k in 0:Npos-1
+            all_vals = H.aux_side === :pre ? [σ_vals; pos_kvals(k)] :
+                                             [pos_kvals(k); σ_vals]
+            states[k+1] = _product_state_mps(all_sites_ord, all_vals)
+        end
+        kmps[σ_combo] = states
+    end
+
+    # ── Main ω loop ───────────────────────────────────────────────────────────
+    ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    Nω     = length(ω_resc)
+    Ak_w   = zeros(Float64, Npos, Nω)
+
+    for (iω, ω) in enumerate(ω_resc)
+        abs(ω) >= 1.0 && continue
+
+        δH   = get_ldos_w_from_Tn(H._tn_cache, H._tn_Ncheb, ω; maxdim=maxdim)
+        Op1  = apply(δH,                       FTirev; cutoff=tol, maxdim=maxdim)
+        Akop = apply(swapprime(FTrev, 0 => 1), Op1;   cutoff=tol, maxdim=maxdim)
+
+        for σ_combo in aux_combos, k in 0:Npos-1
+            psi = kmps[σ_combo][k+1]
+            Ak_w[k+1, iω] += real(inner(psi', Akop, psi))
+        end
+    end
+
+    return Ak_w
 end
