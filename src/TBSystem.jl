@@ -24,8 +24,9 @@ Fields
 - `geometry` : `N × d` matrix of real-space positions (`nothing` for implicit 1D)
 - `scale`    : energy half-bandwidth such that `H/scale` has spectrum in `[-1, 1]`;
                required for KPM.  Must satisfy `scale > spectral_radius(H)`.
-- `_tn_cache`      : cached Chebyshev polynomial list (`nothing` if stale)
-- `_tn_Ncheb`      : order of the cached Chebyshev list
+- `_tn_cache`      : cached MPO Chebyshev list (`nothing` if stale); set by `KPM_Tn(...; mode=:mpo)`
+- `_tn_mps_cache`  : cached MPS Chebyshev list (`nothing` if stale); set by `KPM_Tn(...; mode=:mps)`
+- `_tn_Ncheb`      : order of the cached Chebyshev list (shared between both caches)
 - `_density_cache` : cached density matrix MPO (`nothing` if stale)
 
 Do not construct directly — use [`get_Hamiltonian`](@ref).
@@ -44,16 +45,23 @@ mutable struct TBHamiltonian
     layer_s  :: Union{Nothing, Index}    # set by bilayer/multilayer constructors
     aux_side :: Symbol                   # :pre (aux at front) or :post (aux at back)
     # ---- lazy caches (invalidated whenever mpo changes) ----
-    _tn_cache      :: Union{Nothing, Vector{MPO}}
+    _tn_cache      :: Union{Nothing, Vector{MPO}}   # MPO Chebyshev list (mode=:mpo)
+    _tn_mps_cache  :: Union{Nothing, Vector{MPS}}   # MPS Chebyshev list (mode=:mps)
     _tn_Ncheb      :: Int
     _density_cache :: Union{Nothing, MPO}
 end
+
+# Backward-compatible 14-arg constructor (pre-_tn_mps_cache callers); inserts _tn_mps_cache=nothing.
+TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+              spin_s, nambu_s, layer_s, aux_side, _tn_cache, _tn_Ncheb, _density_cache) =
+    TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+                  spin_s, nambu_s, layer_s, aux_side, _tn_cache, nothing, _tn_Ncheb, _density_cache)
 
 # Backward-compatible 13-arg constructor (pre-aux_side callers); defaults to :pre.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
               spin_s, nambu_s, layer_s, _tn_cache, _tn_Ncheb, _density_cache) =
     TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
-                  spin_s, nambu_s, layer_s, :pre, _tn_cache, _tn_Ncheb, _density_cache)
+                  spin_s, nambu_s, layer_s, :pre, _tn_cache, nothing, _tn_Ncheb, _density_cache)
 
 # ============================================================
 # Cache management
@@ -67,6 +75,7 @@ Clear all cached intermediate results.  Called automatically by
 """
 function _invalidate_cache!(H::TBHamiltonian)
     H._tn_cache      = nothing
+    H._tn_mps_cache  = nothing
     H._tn_Ncheb      = 0
     H._density_cache = nothing
     # Spectrum changed — force re-estimation of scale/center on next KPM call.

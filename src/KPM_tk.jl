@@ -137,22 +137,37 @@ Usage:
     ω_r = (ω_phys - center) / scale   # rescaled energy in (-1, 1)
 """
 function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
-                maxdim::Int        = 40,
-                cutoff::Real       = 1e-8,
-                dmrg_nsweeps::Int  = 5,
-                dmrg_maxdim        = [10, 20, 40],
-                dmrg_linkdim::Int  = 4,
-                verbose::Bool    = false)
+                mode::Symbol                  = :mpo,
+                psi0::Union{MPS, Nothing}     = nothing,
+                maxdim::Int                   = 40,
+                cutoff::Real                  = 1e-8,
+                dmrg_nsweeps::Int             = 5,
+                dmrg_maxdim                   = [10, 20, 40],
+                dmrg_linkdim::Int             = 4,
+                verbose::Bool                 = false)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
-    Tn, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
-                       scale     = H.scale,
-                       center    = H.center,
-                       maxdim    = maxdim,
-                       cutoff    = cutoff,
-                       verbose = verbose)
-    H._tn_cache = Tn
+    if mode == :mpo
+        Tn, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
+                           scale    = H.scale,
+                           center   = H.center,
+                           maxdim   = maxdim,
+                           cutoff   = cutoff,
+                           verbose  = verbose)
+        H._tn_cache = Tn
+    elseif mode == :mps
+        psi0 === nothing && error("KPM_Tn with mode=:mps requires the psi0 keyword argument")
+        Tn, _, _ = KPM_Tn_mps(H.mpo, Ncheb, psi0, H.sites;
+                               scale    = H.scale,
+                               center   = H.center,
+                               maxdim   = maxdim,
+                               cutoff   = cutoff,
+                               verbose  = verbose)
+        H._tn_mps_cache = Tn
+    else
+        error("Unknown KPM mode: $mode. Choose :mpo or :mps")
+    end
     H._tn_Ncheb = Ncheb
     return Tn, H.scale, H.center
 end
@@ -239,8 +254,67 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
                                 center    = H.center,
                                 maxdim    = maxdim,
                                 cutoff    = cutoff,
-                                verbose = verbose)
+                                verbose   = verbose)
+    H._tn_mps_cache = Tn_mps
+    H._tn_Ncheb     = N
     return Tn_mps, H.scale, H.center
+end
+
+
+"""
+    get_ldos(H::TBHamiltonian, ω_phys; psi0, kernel, lambda, eta, m_order, maxdim, zl, wl)
+
+Compute the local density of states at physical energy `ω_phys` using the
+Chebyshev expansion cached in `H` by a prior `KPM_Tn` or `KPM_Tn_mps` call.
+
+Dispatches on `H._tn_mode`:
+
+- `:mpo` — calls `get_ldos_w_from_Tn(H._tn_cache, N, E; ...)` and returns an `MPO`
+  representing the spectral weight operator at energy `ω_phys`.
+
+- `:mps` — computes moments `μₙ = ⟨ψ₀|φₙ⟩` from the cached MPS states and
+  calls `get_ldos_from_mun(μ, N, E; ...)`, returning a `Real` (the site-resolved
+  LDoS for the reference state `psi0`).  `psi0` must be the same state that was
+  passed to `KPM_Tn_mps`.
+
+The physical energy is converted to the rescaled energy `E = (ω_phys − H.center) / H.scale`
+internally, so `ω_phys` should be in the same units as the Hamiltonian.
+"""
+function get_ldos(H::TBHamiltonian, ω_phys::Real;
+                  mode::Symbol              = :mpo,
+                  psi0::Union{MPS, Nothing} = nothing,
+                  kernel::Symbol  = :jackson,
+                  lambda::Real    = 4.0,
+                  eta::Real       = 0.0,       # 0.0 → use 1/(N+1) default
+                  m_order::Int    = 4,
+                  maxdim::Int     = 40,
+                  zl              = nothing,
+                  wl              = nothing)
+    N    = H._tn_Ncheb
+    E    = (ω_phys - H.center) / H.scale
+    eta_ = eta == 0.0 ? 1 / (N + 1) : eta
+
+    if mode == :mpo
+        H._tn_cache === nothing && error("No MPO Chebyshev cache. Call KPM_Tn(H, N; mode=:mpo) first.")
+        return get_ldos_w_from_Tn(H._tn_cache, N, E;
+                                  maxdim = maxdim,
+                                  kernel = kernel,
+                                  lambda = lambda,
+                                  zl     = zl,
+                                  wl     = wl,
+                                  eta    = eta_)
+    elseif mode == :mps
+        H._tn_mps_cache === nothing && error("No MPS Chebyshev cache. Call KPM_Tn(H, N; mode=:mps, psi0=...) first.")
+        psi0 === nothing && error("get_ldos with mode=:mps requires the psi0 keyword argument")
+        mun = [inner(psi0, H._tn_mps_cache[n]) for n in 1:N]
+        return get_ldos_from_mun(mun, N, E;
+                                 kernel  = kernel,
+                                 lambda  = lambda,
+                                 eta     = eta_,
+                                 m_order = m_order)
+    else
+        error("Unknown mode: $mode. Choose :mpo or :mps")
+    end
 end
 
 
