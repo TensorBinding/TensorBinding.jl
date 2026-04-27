@@ -288,6 +288,7 @@ function get_ldos(H::TBHamiltonian, ω_phys::Real;
                   eta::Real       = 0.0,       # 0.0 → use 1/(N+1) default
                   m_order::Int    = 4,
                   maxdim::Int     = 40,
+                  cutoff::Real    = 1e-8,
                   zl              = nothing,
                   wl              = nothing)
     N    = H._tn_Ncheb
@@ -298,6 +299,7 @@ function get_ldos(H::TBHamiltonian, ω_phys::Real;
         H._tn_cache === nothing && error("No MPO Chebyshev cache. Call KPM_Tn(H, N; mode=:mpo) first.")
         return get_ldos_w_from_Tn(H._tn_cache, N, E;
                                   maxdim = maxdim,
+                                  cutoff = cutoff,
                                   kernel = kernel,
                                   lambda = lambda,
                                   zl     = zl,
@@ -449,35 +451,30 @@ function get_hodc_gf_weights(y_target, N, eta, zl, wl)
     return π .* (nu_HT .- im .* nu_delta)
 end
 
-function get_density_from_Tn(Tn_list,N;fermi=0,maxdim=40,kernel=:jackson,lambda=4.0)
-
+function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
+                              kernel=:jackson, lambda=4.0)
     jackson_kernel = _kpm_kernel(N, kernel; lambda=lambda)
 
     function G_n(n)
-        if n == 1
-            return acos(fermi)
-        else
-            return sin((n-1) * acos(fermi)) / (n-1)
-        end
+        n == 1 ? acos(fermi) : sin((n-1) * acos(fermi)) / (n-1)
     end
 
-    # Compute electronic density
-    A = Tn_list[1] * G_n(1) * jackson_kernel[1] 
+    A = Tn_list[1] * G_n(1) * jackson_kernel[1]
     for n in 2:N
-        A = +(A,  2 *  Tn_list[n] * G_n(n) * jackson_kernel[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A;cutoff=1e-8)
+        A = +(A, 2 * Tn_list[n] * G_n(n) * jackson_kernel[n]; maxdim=maxdim)
+        A = ITensorMPS.truncate!(A; cutoff=cutoff)
     end
-    A /= (π* N)
-    
-    return  A
+    A /= (π * N)
+    return A
 end
 
-function get_Green_retarded_from_Tn(Tn_list, N, ω; η=1e-2, maxdim=40,
+function get_Green_retarded_from_Tn(Tn_list, N, ω; η=1e-2, maxdim=40, cutoff=1e-8,
                                      kernel=:jackson, lambda=4.0,
                                      zl=nothing, wl=nothing)
     if kernel == :hodc
         zl === nothing && error("kernel=:hodc requires zl and wl from compute_hodc_params()")
-        return get_Green_retarded_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=η, maxdim=maxdim)
+        return get_Green_retarded_from_Tn_hodc(Tn_list, N, ω, zl, wl;
+                                                eta=η, maxdim=maxdim, cutoff=cutoff)
     end
 
     kweights = _kpm_kernel(N, kernel; lambda=lambda)
@@ -491,30 +488,30 @@ function get_Green_retarded_from_Tn(Tn_list, N, ω; η=1e-2, maxdim=40,
     G = Tn_list[1] * G_n(1, ω, η) * kweights[1]
     for n in 2:N
         G = +(G, Tn_list[n] * G_n(n, ω, η) * kweights[n]; maxdim=maxdim)
-        G = ITensorMPS.truncate!(G; cutoff=1e-8)
+        G = ITensorMPS.truncate!(G; cutoff=cutoff)
     end
     G /= N
-
     return G
 end
 
-function get_Green_retarded_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40)
+function get_Green_retarded_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40,
+                                          cutoff=1e-8)
     c = get_hodc_gf_weights(ω, N, eta, zl, wl)
 
     G = Tn_list[1] * c[1]
     for n in 2:N
         G = +(G, Tn_list[n] * c[n]; maxdim=maxdim)
-        G = ITensorMPS.truncate!(G; cutoff=1e-8)
+        G = ITensorMPS.truncate!(G; cutoff=cutoff)
     end
     return G
 end
 
 
-function get_ldos_w_from_Tn(Tn_list, N, ω; maxdim=40, kernel=:jackson, lambda=4.0,
-                             zl=nothing, wl=nothing, eta=1e-2)
+function get_ldos_w_from_Tn(Tn_list, N, ω; maxdim=40, cutoff=1e-8, kernel=:jackson,
+                             lambda=4.0, zl=nothing, wl=nothing, eta=1e-2)
     if kernel == :hodc
         zl === nothing && error("kernel=:hodc requires zl and wl from compute_hodc_params()")
-        return get_ldos_w_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=eta, maxdim=maxdim)
+        return get_ldos_w_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=eta, maxdim=maxdim, cutoff=cutoff)
     end
 
     kweights = _kpm_kernel(N, kernel; lambda=lambda)
@@ -523,7 +520,7 @@ function get_ldos_w_from_Tn(Tn_list, N, ω; maxdim=40, kernel=:jackson, lambda=4
     A = Tn_list[1] * G_n(1) * kweights[1]
     for n in 2:N
         A = +(A, 2 * Tn_list[n] * G_n(n) * kweights[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=1e-8)
+        A = ITensorMPS.truncate!(A; cutoff=cutoff)
     end
     A /= (π * N)
     return A
@@ -531,27 +528,14 @@ end
 
 # HODC variant: nu coefficients encode both kernel and spectral target directly.
 # Call compute_hodc_params once per expansion order, then pass zl, wl here.
-function get_ldos_w_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40)
+function get_ldos_w_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40, cutoff=1e-8)
     nu = get_hodc_weights(ω, N, eta, zl, wl)
 
     A = Tn_list[1] * nu[1]
     for n in 2:N
         A = +(A, Tn_list[n] * nu[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=1e-8)
+        A = ITensorMPS.truncate!(A; cutoff=cutoff)
     end
-    return A
-end
-
-function get_PH_from_Tn(Tn_list, N, ω; maxdim=40, kernel=:jackson, lambda=4.0)
-    kweights = _kpm_kernel(N, kernel; lambda=lambda)
-    G_n(n) = cos((n - 1) * acos(ω)) / (π * sqrt(1 - ω^2))
-
-    A = Tn_list[1] * G_n(1) * kweights[1]
-    for n in 2:N
-        A = +(A, 2 * Tn_list[n] * G_n(n) * kweights[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=1e-8)
-    end
-    A /= (π * N)
     return A
 end
 

@@ -379,32 +379,21 @@ end
 # Public RPA pipeline
 # ============================================================
 
-# Default parameters — override by passing kwargs to build_bubble_mpo/rpa_from_bubble_diag
-const CHI_BUBBLE    = 150
-const SIGN_BUBBLE   = 0
-const A_BUBBLE      = 6
-const MAXDIM_BUBBLE = 200
-const NSWEEPS_SOLVE = 20
-const MAXDIM_SOLVE  = 400
-const CUTOFF_SOLVE  = 1e-8
-
-
 """
     build_bubble_mpo(ω; Tn_list1, Tn_list2, Tn_listeff,
                         sites, sites2, finalsites, finalfinalsites,
-                        chi, sign, a, maxdim) -> MPO
+                        chi, ϵF, a, maxdim) -> MPO
 
 Compute the L-site polarization bubble Π₀(ω) from pre-computed
-Chebyshev lists.  This is the main entry point for the RPA calculation.
+Chebyshev lists.
 """
 function build_bubble_mpo(ω;
                           Tn_list1, Tn_list2, Tn_listeff,
                           sites, sites2, finalsites, finalfinalsites,
-                          chi=CHI_BUBBLE, sign=SIGN_BUBBLE,
-                          a=A_BUBBLE, maxdim=MAXDIM_BUBBLE)
+                          chi=150, ϵF=0.0, a=6, maxdim=200)
     bubble             = get_bublle_expanded_from_Tn(
         Tn_list1, Tn_list2, Tn_listeff,
-        sites, sites2, chi, ω, sign; a=a, maxdim=maxdim)
+        sites, sites2, chi, ω, ϵF; a=a, maxdim=maxdim)
     bubble_interleaved = swap_every_other_legs(bubble, finalsites)
     return collapse_mpo_pairs(bubble_interleaved, finalfinalsites)
 end
@@ -420,9 +409,7 @@ susceptibility χ using DMRG-style linear solve.
 Returns a 2L-site MPS encoding the diagonal χ_{iijj}^RPA.
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
-                               nsweeps=NSWEEPS_SOLVE,
-                               maxdim=MAXDIM_SOLVE,
-                               cutoff=CUTOFF_SOLVE)
+                               nsweeps=20, maxdim=400, cutoff=1e-8)
     L   = length(finalfinalsites)
     Id  = MPO(finalfinalsites, "Id")
     ΠV  = apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
@@ -444,4 +431,330 @@ function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
     x0 = deepcopy(b)
     return ITensorMPS.linsolve(Aop, b, x0;
                                nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
+end
+
+# ============================================================
+# Internal helpers for TBHamiltonian API
+# ============================================================
+
+function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
+                              P_method::Symbol, Ncheb::Int,
+                              maxdim::Int, cutoff::Real,
+                              purify_method::Symbol, purify_maxdim::Int,
+                              purify_maxiters::Int, purify_tol::Float64,
+                              verbose::Bool)
+    if P_method == :purification
+        if H._density_cache !== nothing
+            verbose && println("  Reusing cached density matrix")
+            return H._density_cache
+        end
+        if purify_method == :mcweeny
+            verbose && println("  Running McWeeny purification")
+            return mcweeny_purify(H; maxiters=purify_maxiters, maxdim=purify_maxdim,
+                                     cutoff=cutoff, tol=purify_tol, verbose=verbose)
+        elseif purify_method == :sp2
+            Nel = H.N ÷ 2
+            verbose && println("  Running SP2 purification (Nel=$Nel)")
+            return sp2_purify(H; Nel=Nel, maxiters=purify_maxiters, maxdim=purify_maxdim,
+                                 cutoff=cutoff, tol=purify_tol, verbose=verbose)
+        else
+            error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
+        end
+    elseif P_method == :kpm
+        _ensure_scale!(H)
+        Tn_list, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
+                                 scale=H.scale, center=H.center, maxdim=maxdim, cutoff=cutoff)
+        fermi_rescaled = (ϵF - H.center) / H.scale
+        return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_rescaled, maxdim=maxdim,
+                                    cutoff=cutoff)
+    else
+        error("Unknown P_method: $P_method. Choose :purification or :kpm")
+    end
+end
+
+
+function _build_heff(H1_mpo::MPO, H2_mpo::MPO, sites_combined::Vector{<:Index})
+    L      = length(H1_mpo)
+    sites1 = sites_combined[1:L]
+    sites2 = sites_combined[L+1:end]
+    id1    = MPO(sites1, "Id")
+    id2    = MPO(sites2, "Id")
+    H2op   = interleave_mpo(H2_mpo, sites_combined, 1)
+    Iop2   = interleave_mpo(id2,    sites_combined, 1)
+    Iop1   = interleave_mpo(id1,    sites_combined, 0)
+    H1op   = interleave_mpo(H1_mpo, sites_combined, 0)
+    return apply(Iop1, H2op) - apply(H1op, Iop2)
+end
+
+# ============================================================
+# High-level TBHamiltonian API
+# ============================================================
+
+"""
+    get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω; ...) -> MPO
+
+Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
+
+**Keyword arguments**
+- `ϵF`             : Fermi energy (physical units). Default `0.0`.
+- `P_method`       : `:purification` (default) or `:kpm` — how to compute density matrices.
+  With `:purification`, `H._density_cache` is reused if present.
+- `GF_method`      : `:kpm` (default) or `:krylov` — how to compute G_eff(ω).
+- `Ncheb`          : Chebyshev order (KPM methods only). Default `150`.
+- `maxdim`         : Maximum bond dimension. Default `200`.
+- `cutoff`         : SVD truncation cutoff. Default `1e-8`.
+- `purify_method`  : `:mcweeny` (default) or `:sp2`.
+- `purify_maxdim`  : Max bond dim during purification. Default `40`.
+- `purify_maxiters`: Max purification iterations. Default `30`.
+- `purify_tol`     : Purification convergence tolerance. Default `1e-5`.
+- `η`              : Lorentzian broadening for the GF. Default `1e-3`.
+- `krylov_nsweeps` : DMRG sweeps for Krylov solver. Default `12`.
+- `krylov_maxdim`  : Max bond dim for Krylov solver. Default `100`.
+- `krylov_cutoff`  : SVD cutoff for Krylov solver. Default `1e-8`.
+- `verbose`        : Print progress. Default `false`.
+"""
+function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
+                        ϵF::Real              = 0.0,
+                        P_method::Symbol      = :purification,
+                        GF_method::Symbol     = :kpm,
+                        Ncheb::Int            = 150,
+                        maxdim::Int           = 200,
+                        cutoff::Real          = 1e-8,
+                        purify_method::Symbol = :mcweeny,
+                        purify_maxdim::Int    = 40,
+                        purify_maxiters::Int  = 30,
+                        purify_tol::Float64   = 1e-5,
+                        η::Real               = 1e-3,
+                        krylov_nsweeps::Int   = 12,
+                        krylov_maxdim::Int    = 100,
+                        krylov_cutoff::Real   = 1e-8,
+                        verbose::Bool         = false)
+
+    L1 = H1.L; L2 = H2.L
+    @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    L      = L1
+    sites1 = H1.sites
+    sites2 = H2.sites
+
+    sites_combined = vcat(sites1, sites2)
+
+    # ---- Density matrices ----
+    verbose && println("RPA: computing P1 (P_method=$P_method)...")
+    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters,
+                              purify_tol, verbose)
+    verbose && println("RPA: computing P2...")
+    P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters,
+                              purify_tol, verbose)
+
+    # ---- Numerator: P1⊗I₂ − I₁⊗P₂ ----
+    id1  = MPO(sites1, "Id")
+    id2  = MPO(sites2, "Id")
+    P2op = interleave_mpo(P2,  sites_combined, 1)
+    Iop2 = interleave_mpo(id2, sites_combined, 1)
+    Iop1 = interleave_mpo(id1, sites_combined, 0)
+    P1op = interleave_mpo(P1,  sites_combined, 0)
+    numerator = ITensorMPS.truncate!(
+        apply(Iop1, P2op; maxdim, cutoff) - apply(P1op, Iop2; maxdim, cutoff);
+        cutoff=cutoff)
+    verbose && println("RPA: computed numerator")
+
+    # ---- GF of Heff = I⊗H₂ − H₁⊗I ----
+    Heff = _build_heff(H1.mpo, H2.mpo, sites_combined)
+    if GF_method == :kpm
+        # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
+        Tn_listeff, scaleeff, centereff = KPM_Tn(Heff, Ncheb, sites_combined;
+                                                   maxdim=maxdim, cutoff=cutoff)
+        GF_mpo = (1/scaleeff) * get_Green_retarded_from_Tn(
+            Tn_listeff, Ncheb, (ω - centereff)/scaleeff;
+            η = η/scaleeff, maxdim=maxdim, cutoff=cutoff)
+    elseif GF_method == :krylov
+        GF_mpo = get_green_krylov(Heff, sites_combined, ω;
+                                   η=η, nsweeps=krylov_nsweeps,
+                                   maxdim=krylov_maxdim, cutoff=krylov_cutoff,
+                                   verbose=verbose)
+    else
+        error("Unknown GF_method: $GF_method. Choose :kpm or :krylov")
+    end
+    verbose && println("RPA: computed Heff GF (GF_method=$GF_method)")
+
+    # ---- Bubble: GF_eff · numerator ----
+    bubble2L = ITensorMPS.truncate!(apply(GF_mpo, numerator; maxdim, cutoff); cutoff=cutoff)
+    verbose && println("RPA: assembled bubble")
+
+    # ---- Collapse 2L-site MPO → L-site Π₀ on H1.sites ----
+    finalsites = siteinds("Qubit", 2L)
+    bubble_iv  = swap_every_other_legs(bubble2L, finalsites)
+    return collapse_mpo_pairs(bubble_iv, H1.sites)
+end
+
+
+"""
+    get_rpa_susceptibility(H::TBHamiltonian, MPOV, ω; ...) -> MPS
+
+Compute the RPA susceptibility χ(ω) for a system described by `H` with
+interaction MPO `MPOV`.  Returns a 2L-site MPS encoding the diagonal
+χ_{iijj}^RPA.
+
+Internally calls `get_bubble_mpo(H, H, ω; ...)` then solves the Dyson
+equation (I − Π₀V) χ = Π₀.  All `get_bubble_mpo` keyword arguments are
+accepted and forwarded.
+
+**Additional keywords (Dyson solve)**
+- `rpa_nsweeps` : sweeps for the RPA linsolve. Default `20`.
+- `rpa_maxdim`  : max bond dim for the RPA linsolve. Default `400`.
+- `rpa_cutoff`  : cutoff for the RPA linsolve. Default `1e-8`.
+"""
+function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
+                                 rpa_nsweeps::Int  = 20,
+                                 rpa_maxdim::Int   = 400,
+                                 rpa_cutoff::Real  = 1e-8,
+                                 ϵF::Real              = 0.0,
+                                 P_method::Symbol      = :purification,
+                                 GF_method::Symbol     = :kpm,
+                                 Ncheb::Int            = 150,
+                                 maxdim::Int           = 200,
+                                 cutoff::Real          = 1e-8,
+                                 purify_method::Symbol = :mcweeny,
+                                 purify_maxdim::Int    = 40,
+                                 purify_maxiters::Int  = 30,
+                                 purify_tol::Float64   = 1e-5,
+                                 η::Real               = 1e-3,
+                                 krylov_nsweeps::Int   = 12,
+                                 krylov_maxdim::Int    = 100,
+                                 krylov_cutoff::Real   = 1e-8,
+                                 verbose::Bool         = false)
+
+    Π = get_bubble_mpo(H, H, ω;
+                        ϵF, P_method, GF_method, Ncheb, maxdim, cutoff,
+                        purify_method, purify_maxdim, purify_maxiters, purify_tol,
+                        η, krylov_nsweeps, krylov_maxdim, krylov_cutoff, verbose)
+
+    finalsites = siteinds("Qubit", 2 * H.L)
+    return rpa_from_bubble_diag(Π, MPOV, finalsites, H.sites;
+                                 nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
+end
+
+# ============================================================
+# Wynn ε-algorithm accelerated RPA
+# ============================================================
+
+"""
+    wynn_epsilon(s) -> Vector{ComplexF64}
+
+Wynn ε-algorithm applied to a scalar sequence `s = [s₀, s₁, ..., sK]`.
+Returns the even-column first-row Padé estimates `[ε₂(0), ε₄(0), ...]`.
+Uses only additions and reciprocals — no matrix operations.
+"""
+function wynn_epsilon(s::AbstractVector{<:Number})
+    n   = length(s)
+    eps = zeros(ComplexF64, n+1, n+1)
+    for k in 1:n
+        eps[2, k] = s[k]
+    end
+    for j in 1:n-1
+        for k in 1:n-j
+            d = eps[j+1, k+1] - eps[j+1, k]
+            eps[j+2, k] = abs(d) < 1e-30 ? complex(1e30) : eps[j, k+1] + 1/d
+        end
+    end
+    return [eps[j+2, 1] for j in 2:2:n-1]
+end
+
+
+"""
+    get_rpa_susceptibility_wynn(H, MPOV, ωlist; K_max, maxdim_apply, cutoff_apply,
+                                 verbose, <bubble kwargs>) -> (chi_partial, chi_wynn)
+
+Compute the RPA susceptibility χ_RPA(q,ω) for all frequencies in `ωlist` using
+the Wynn ε-algorithm for Padé acceleration of the geometric (bubble) series.
+
+**Key idea**: instead of inverting (I − Π₀V), build the Neumann series
+  T₀ = Π₀,  Tₙ = Tₙ₋₁·V·Π₀  (so Σ Tₙ → χ_RPA as K→∞),
+extract scalars `sₙ(q,ω) = −Im⟨q|Tₙ(ω)|q⟩/π` via `get_spect_k`, and apply
+Wynn ε to the partial-sum sequence per (q,ω) for fast convergence.
+
+**Returns**
+- `chi_partial[k+1, i_ω, q]` : partial sum Σₙ₌₀ᵏ sₙ(q,ω)
+- `chi_wynn[m, i_ω, q]`      : Wynn ε_{2m}(0) estimate (uses 2m+1 terms)
+
+**Keyword arguments**
+- `K_max`         : highest order in the series (total K_max+1 terms). Default `6`.
+- `maxdim_apply`  : bond dim for the Tₙ·V·Π₀ products. Default `200`.
+- `cutoff_apply`  : truncation cutoff for those products. Default `1e-8`.
+- `verbose`       : print per-ω progress. Default `false`.
+- All `get_bubble_mpo` keywords (`ϵF`, `P_method`, `GF_method`, `Ncheb`, `a`,
+  `Ncheb`, `maxdim`, `cutoff`, `purify_*`, `η`, `krylov_*`) are accepted and forwarded.
+"""
+function get_rpa_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
+                                      ωlist::AbstractVector{<:Real};
+                                      K_max::Int         = 6,
+                                      maxdim_apply::Int  = 200,
+                                      cutoff_apply::Real = 1e-8,
+                                      ϵF::Real              = 0.0,
+                                      P_method::Symbol      = :purification,
+                                      GF_method::Symbol     = :kpm,
+                                      Ncheb::Int            = 150,
+                                      maxdim::Int           = 200,
+                                      cutoff::Real          = 1e-8,
+                                      purify_method::Symbol = :mcweeny,
+                                      purify_maxdim::Int    = 40,
+                                      purify_maxiters::Int  = 30,
+                                      purify_tol::Float64   = 1e-5,
+                                      η::Real               = 1e-3,
+                                      krylov_nsweeps::Int   = 12,
+                                      krylov_maxdim::Int    = 100,
+                                      krylov_cutoff::Real   = 1e-8,
+                                      verbose::Bool         = false)
+
+    nω     = length(ωlist)
+    n_wynn = K_max ÷ 2
+
+    chi_partial = nothing   # allocated on first ω once nq is known
+    chi_wynn    = nothing
+
+    for (i, ω) in enumerate(ωlist)
+        verbose && println("Wynn RPA: ω $i/$nω  (ω = $ω)")
+
+        Π0 = get_bubble_mpo(H, H, ω;
+                             ϵF, P_method, GF_method, Ncheb, maxdim, cutoff,
+                             purify_method, purify_maxdim, purify_maxiters, purify_tol,
+                             η, krylov_nsweeps, krylov_maxdim, krylov_cutoff, verbose)
+
+        term = deepcopy(Π0)
+        s0   = -imag.(get_spect_k(term))
+
+        if chi_partial === nothing
+            nq          = length(s0)
+            chi_partial = zeros(Float64, K_max+1, nω, nq)
+            chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
+        end
+
+        # Individual term contributions: spect_terms[n+1, i_ω, q]
+        spect_terms          = zeros(Float64, K_max+1, nq)
+        spect_terms[1, :]    = s0
+
+        for n in 1:K_max
+            term             = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
+            term             = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
+            spect_terms[n+1, :] = -imag.(get_spect_k(term))
+        end
+
+        # Partial sums (Wynn input)
+        partial_sums = cumsum(spect_terms; dims=1)
+        chi_partial[:, i, :] = partial_sums
+
+        # Apply Wynn ε per q-point
+        for q in 1:nq
+            ests = wynn_epsilon(complex.(partial_sums[:, q]))
+            for m in 1:min(n_wynn, length(ests))
+                chi_wynn[m, i, q] = real(ests[m])
+            end
+        end
+
+        verbose && println("  done ($(K_max+1) terms, $(n_wynn) Wynn estimates)")
+    end
+
+    return chi_partial, chi_wynn
 end

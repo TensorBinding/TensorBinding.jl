@@ -10,7 +10,7 @@ Some notes and todo's on the package:
 
 Questions:
 *   aux index can be in begin or end for both 1D and 2D? 
-*   what is get_PH_from_Tn? 
+*   what is get_PH_from_Tn? Tiago: Legacy code. Now deleted!
 
 
 Package version dependencies:

@@ -74,6 +74,47 @@ end
 
 
 """
+    get_green_krylov(H_mpo, sites, ω_phys; η, nsweeps, maxdim, cutoff,
+                     ishermitian, tol, maxiter, krylovdim, verbose) -> MPO
+
+Low-level: compute the retarded Green's function G(ω) = (ω + iη − H)⁻¹ for a
+raw MPO `H_mpo` defined on `sites`, via the vectorized linear system
+
+    [(ω + iη − H) ⊗ I] |G⟩⟩ = |I⟩⟩
+
+See the `TBHamiltonian` overload for the full keyword-argument reference.
+"""
+function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
+                          η::Real           = 1e-2,
+                          nsweeps::Int      = 12,
+                          maxdim::Int       = 100,
+                          cutoff::Real      = 1e-8,
+                          ishermitian::Bool = false,
+                          tol::Real         = 1e-10,
+                          maxiter::Int      = 600,
+                          krylovdim::Int    = 30,
+                          verbose::Bool     = false)
+    N      = length(sites)
+    sites2 = siteinds("Qubit", 2N)
+
+    z     = ComplexF64(ω_phys + im * η)
+    ω_mpo = z * MPO(sites, "Id") - H_mpo
+    Lop   = interleave_mpo(ω_mpo, sites2, 0)
+    rhs   = _identity_vec_mps(N, sites2)
+    x0    = deepcopy(rhs)
+
+    verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps)")
+
+    sol = ITensorMPS.linsolve(Lop, rhs, x0;
+                              nsweeps        = nsweeps,
+                              maxdim         = maxdim,
+                              cutoff         = cutoff,
+                              updater_kwargs = (; ishermitian, tol, maxiter, krylovdim))
+    return custom_mpo(sol, sites)
+end
+
+
+"""
     get_green_krylov(H::TBHamiltonian, ω_phys; η, nsweeps, maxdim, cutoff,
                      ishermitian, tol, maxiter, krylovdim, verbose) -> MPO
 
@@ -118,31 +159,7 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
                           maxiter::Int      = 600,
                           krylovdim::Int    = 30,
                           verbose::Bool     = false)
-    L     = H.L
-    sites = H.sites
-
-    # 2L interleaved site indices for the vectorized operator space
-    sites2 = siteinds("Qubit", 2L)
-
-    # (ω + iη − H) as a complex MPO on the physical sites
-    z     = ComplexF64(ω_phys + im * η)
-    ω_mpo = z * MPO(sites, "Id") - H.mpo
-
-    # Place (ω + iη − H) at even (column) sites; identity at odd (row) sites
-    Lop = interleave_mpo(ω_mpo, sites2, 0)
-
-    # RHS: vectorized identity — exact bond-2 MPS, no QTCI required
-    rhs = _identity_vec_mps(L, sites2)
-    x0  = deepcopy(rhs)
-
-    verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (L=$L, maxdim=$maxdim, nsweeps=$nsweeps)")
-
-    sol = ITensorMPS.linsolve(Lop, rhs, x0;
-                              nsweeps        = nsweeps,
-                              maxdim         = maxdim,
-                              cutoff         = cutoff,
-                              updater_kwargs = (; ishermitian, tol, maxiter, krylovdim))
-
-    # Merge 2L-site MPS pairs back into an L-site MPO
-    return custom_mpo(sol, sites)
+    return get_green_krylov(H.mpo, H.sites, ω_phys;
+                            η, nsweeps, maxdim, cutoff, ishermitian,
+                            tol, maxiter, krylovdim, verbose)
 end

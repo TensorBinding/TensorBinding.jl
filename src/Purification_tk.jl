@@ -228,3 +228,76 @@ function sp2_purify(H::TBHamiltonian;
     H._density_cache = ρ
     return ρ
 end
+
+
+# ============================================================
+# Unified high-level density-matrix wrapper
+# ============================================================
+
+"""
+    get_density(H::TBHamiltonian; method, ϵF, Ncheb, kernel, lambda,
+                maxdim, cutoff, Nel, maxiters, tol, verbose) -> MPO
+
+Compute and cache the zero-temperature density matrix P = θ(ϵF − H).
+
+If `H._density_cache` is already populated it is returned immediately.
+Set `H._density_cache = nothing` to force a fresh computation.
+
+**method**
+- `:mcweeny` (default) — McWeeny purification P_{n+1} = 3P_n² − 2P_n³
+- `:sp2`               — SP2 purification (1 MPO product/step), requires `Nel`
+- `:kpm`               — KPM Chebyshev expansion of the Fermi step function
+
+**Keyword arguments**
+- `ϵF`      : Fermi energy in physical units (`:kpm` only). Default `0.0`.
+- `Ncheb`   : Chebyshev order (`:kpm` only). Default `150`.
+  Reuses `H._tn_cache` if already built at order ≥ `Ncheb`; otherwise calls
+  `KPM_Tn` to build and cache it.
+- `kernel`  : KPM kernel — `:jackson` (default). HODC is not meaningful for the
+  step function so only convolution kernels are supported.
+- `lambda`  : Jackson kernel damping parameter. Default `4.0`.
+- `maxdim`  : Maximum bond dimension. Default `40`.
+- `cutoff`  : SVD truncation cutoff. Default `1e-8`.
+- `Nel`     : Target electron count (`:sp2` only). Default `H.N ÷ 2`.
+- `maxiters`: Maximum purification iterations. Default `30`.
+- `tol`     : Idempotency convergence tolerance (purification). Default `1e-5`.
+- `verbose` : Print iteration progress. Default `false`.
+"""
+function get_density(H::TBHamiltonian;
+                     method::Symbol   = :mcweeny,
+                     ϵF::Real         = 0.0,
+                     Ncheb::Int       = 150,
+                     kernel::Symbol   = :jackson,
+                     lambda::Real     = 4.0,
+                     maxdim::Int      = 40,
+                     cutoff::Float64  = 1e-8,
+                     Nel::Int         = H.N ÷ 2,
+                     maxiters::Int    = 30,
+                     tol::Float64     = 1e-5,
+                     verbose::Bool    = false)
+
+    if H._density_cache !== nothing
+        verbose && println("get_density: returning cached density matrix")
+        return H._density_cache
+    end
+
+    if method == :mcweeny
+        return mcweeny_purify(H; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                                 tol=tol, verbose=verbose)
+    elseif method == :sp2
+        return sp2_purify(H; Nel=Nel, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                             tol=tol, verbose=verbose)
+    elseif method == :kpm
+        if H._tn_cache === nothing || H._tn_Ncheb < Ncheb
+            KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+        end
+        fermi_r = (ϵF - H.center) / H.scale
+        ρ = get_density_from_Tn(H._tn_cache, H._tn_Ncheb;
+                                  fermi=fermi_r, maxdim=maxdim, cutoff=cutoff,
+                                  kernel=kernel, lambda=lambda)
+        H._density_cache = ρ
+        return ρ
+    else
+        error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")
+    end
+end
