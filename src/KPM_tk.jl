@@ -83,7 +83,7 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
                 dmrg_maxdim        = [10, 20, 40],
                 dmrg_linkdim::Int  = 4,
                 cutoff::Real       = 1e-8,
-                printinfo::Bool    = true)
+                verbose::Bool    = true)
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
@@ -109,7 +109,7 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
         T_k_minus_2 = T_k_minus_1
         T_k_minus_1 = T_k
         push!(Tn_list, T_k)
-        if printinfo
+        if verbose
             if k%10 == 0 || k == N+1 # print info every 10 iterations and at the end
                 println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(T_k))
             end 
@@ -142,7 +142,7 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                 dmrg_nsweeps::Int  = 5,
                 dmrg_maxdim        = [10, 20, 40],
                 dmrg_linkdim::Int  = 4,
-                printinfo::Bool    = false)
+                verbose::Bool    = false)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
@@ -151,7 +151,7 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                        center    = H.center,
                        maxdim    = maxdim,
                        cutoff    = cutoff,
-                       printinfo = printinfo)
+                       verbose = verbose)
     H._tn_cache = Tn
     H._tn_Ncheb = Ncheb
     return Tn, H.scale, H.center
@@ -160,7 +160,7 @@ end
 
 """
     KPM_Tn_mps(H_mpo, N, psi0, sites; scale=nothing, center=0.0, maxdim=40,
-               dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim, cutoff, printinfo)
+               dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim, cutoff, verbose)
     -> (Tn_mps_list, scale, center)
 
 MPS-based Chebyshev expansion. Instead of storing Chebyshev MPOs T_n(H) (as
@@ -188,7 +188,7 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
                     dmrg_maxdim        = [10, 20, 40],
                     dmrg_linkdim::Int  = 4,
                     cutoff::Real       = 1e-8,
-                    printinfo::Bool    = true)
+                    verbose::Bool    = true)
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
@@ -214,7 +214,7 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
         T_k_minus_2 = T_k_minus_1
         T_k_minus_1 = T_k
         push!(Tn_mps_list, T_k)
-        if printinfo
+        if verbose
             if k % 10 == 0 || k == N + 1
                 println("Computed MPS T_$(k-1) with maxlinkdim = ", maxlinkdim(T_k))
             end
@@ -230,7 +230,7 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
                     dmrg_nsweeps::Int  = 5,
                     dmrg_maxdim        = [10, 20, 40],
                     dmrg_linkdim::Int  = 4,
-                    printinfo::Bool    = false)
+                    verbose::Bool    = false)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
@@ -239,7 +239,7 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
                                 center    = H.center,
                                 maxdim    = maxdim,
                                 cutoff    = cutoff,
-                                printinfo = printinfo)
+                                verbose = verbose)
     return Tn_mps, H.scale, H.center
 end
 
@@ -269,7 +269,6 @@ function get_ldos_from_mun(mun_list, N::Int, E::Real;
     abs(E) >= 1.0 && return 0.0
 
     if kernel == :hodc
-        zl === nothing && error("kernel=:hodc requires zl and wl from compute_hodc_params()")
         return get_ldos_hodc_from_mun(mun_list, N, E; eta = eta, m_order = m_order)
     end
 
