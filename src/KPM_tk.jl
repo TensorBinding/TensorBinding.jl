@@ -82,7 +82,8 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
                 dmrg_nsweeps::Int  = 5,
                 dmrg_maxdim        = [10, 20, 40],
                 dmrg_linkdim::Int  = 4,
-                cutoff::Real       = 1e-8)
+                cutoff::Real       = 1e-8,
+                printinfo::Bool    = true)
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
@@ -108,7 +109,11 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
         T_k_minus_2 = T_k_minus_1
         T_k_minus_1 = T_k
         push!(Tn_list, T_k)
-        println(ITensorMPS.maxlinkdim(T_k))
+        if printinfo
+            if k%10 == 0 || k == N+1 # print info every 10 iterations and at the end
+                println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(T_k))
+            end 
+        end
     end
 
     return Tn_list, scale, center
@@ -136,18 +141,178 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                 cutoff::Real       = 1e-8,
                 dmrg_nsweeps::Int  = 5,
                 dmrg_maxdim        = [10, 20, 40],
-                dmrg_linkdim::Int  = 4)
+                dmrg_linkdim::Int  = 4,
+                printinfo::Bool    = false)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
     Tn, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
-                       scale  = H.scale,
-                       center = H.center,
-                       maxdim = maxdim,
-                       cutoff = cutoff)
+                       scale     = H.scale,
+                       center    = H.center,
+                       maxdim    = maxdim,
+                       cutoff    = cutoff,
+                       printinfo = printinfo)
     H._tn_cache = Tn
     H._tn_Ncheb = Ncheb
     return Tn, H.scale, H.center
+end
+
+
+"""
+    KPM_Tn_mps(H_mpo, N, psi0, sites; scale=nothing, center=0.0, maxdim=40,
+               dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim, cutoff, printinfo)
+    -> (Tn_mps_list, scale, center)
+
+MPS-based Chebyshev expansion. Instead of storing Chebyshev MPOs T_n(H) (as
+`KPM_Tn` does), this builds the projected MPS states
+
+    |φ_n⟩ = T_n((H − center·I)/scale) |ψ₀⟩,   n = 0 … N
+
+via the three-term recurrence
+
+    |φ₀⟩ = |ψ₀⟩,   |φ₁⟩ = H̃|ψ₀⟩,   |φ_k⟩ = 2H̃|φ_{k-1}⟩ − |φ_{k-2}⟩.
+
+This is more memory-efficient than the full MPO version when only a single
+reference state is needed (e.g. site-resolved LDoS). Moments and spectral
+weights are then obtained as `inner(ref_mps, Tn_mps_list[n+1])`.
+
+`psi0` is normalised internally. `scale`/`center` follow the same convention as
+`KPM_Tn`: if `scale=nothing` the spectral bounds are estimated via DMRG.
+Returns `(Tn_mps_list, scale, center)` where `Tn_mps_list[n+1]` = |φ_n⟩.
+"""
+function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
+                    scale::Union{Real, Nothing} = nothing,
+                    center::Real       = 0.0,
+                    maxdim::Int        = 40,
+                    dmrg_nsweeps::Int  = 5,
+                    dmrg_maxdim        = [10, 20, 40],
+                    dmrg_linkdim::Int  = 4,
+                    cutoff::Real       = 1e-8,
+                    printinfo::Bool    = true)
+
+    # ── Spectral bounds ───────────────────────────────────────────────────
+    if isnothing(scale)
+        scale, center = _estimate_spectral_bounds(H_mpo, sites;
+                             dmrg_nsweeps = dmrg_nsweeps,
+                             dmrg_maxdim  = dmrg_maxdim,
+                             dmrg_linkdim = dmrg_linkdim)
+    end
+
+    # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
+    I_mpo = MPO(sites, "Id")
+    Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+
+    # ── Chebyshev recursion T_0 = |ψ₀⟩,  |T_1⟩ = H_scaled|ψ₀⟩,  |T_k⟩ = 2H_scaled|ψ_{k-1}⟩ − |ψ_{k-2}⟩
+    psi0_n      = psi0 / norm(psi0)  # ensure normalisation
+    T_k_minus_2 = psi0_n
+    T_k_minus_1 = apply(Ham_n, psi0_n; cutoff = cutoff, maxdim = maxdim)
+    Tn_mps_list = [T_k_minus_2, T_k_minus_1]
+
+    for k in 3:N+1
+        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff, maxdim = maxdim),
+                -T_k_minus_2; cutoff = cutoff, maxdim = maxdim)
+        T_k_minus_2 = T_k_minus_1
+        T_k_minus_1 = T_k
+        push!(Tn_mps_list, T_k)
+        if printinfo
+            if k % 10 == 0 || k == N + 1
+                println("Computed MPS T_$(k-1) with maxlinkdim = ", maxlinkdim(T_k))
+            end
+        end
+    end
+
+    return Tn_mps_list, scale, center
+end
+
+function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
+                    maxdim::Int        = 40,
+                    cutoff::Real       = 1e-8,
+                    dmrg_nsweeps::Int  = 5,
+                    dmrg_maxdim        = [10, 20, 40],
+                    dmrg_linkdim::Int  = 4,
+                    printinfo::Bool    = false)
+    _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
+                      dmrg_maxdim=dmrg_maxdim,
+                      dmrg_linkdim=dmrg_linkdim)
+    Tn_mps, _, _ = KPM_Tn_mps(H.mpo, N, psi0, H.sites;
+                                scale     = H.scale,
+                                center    = H.center,
+                                maxdim    = maxdim,
+                                cutoff    = cutoff,
+                                printinfo = printinfo)
+    return Tn_mps, H.scale, H.center
+end
+
+
+"""
+    get_ldos_from_mun(mun_list, N, E; kernel=:jackson, lambda=4.0) -> Real
+
+Reconstruct the local spectral weight at rescaled energy `E ∈ (−1, 1)` from a
+list of Chebyshev moments `μ_n = ⟨ψ₀|T_n(H̃)|ψ₀⟩` produced by `KPM_Tn_mps`.
+
+Equivalent to computing `⟨ψ₀|δ(E − H̃)|ψ₀⟩` via the KPM expansion:
+
+    A(E) ≈ [g₀μ₀ + 2 Σ_{n≥1} gₙ Tₙ(E) μₙ] / (π √(1−E²))
+
+where `gₙ` are the kernel damping weights (Jackson by default). Supported
+`kernel` values: `:jackson`, `:lorentz` (requires `lambda`), `:fejer`,
+`:dirichlet`. Returns `0` for `|E| ≥ 1`.
+
+To convert a physical energy ω: `E = (ω − center) / scale`.
+To obtain the density of states per site, sum over all sites and divide by N.
+"""
+function get_ldos_from_mun(mun_list, N::Int, E::Real;
+                           kernel::Symbol = :jackson,
+                           lambda::Real   = 4.0,
+                           eta::Real      = 1/(N+1),
+                           m_order::Int   = 4)
+    abs(E) >= 1.0 && return 0.0
+
+    if kernel == :hodc
+        zl === nothing && error("kernel=:hodc requires zl and wl from compute_hodc_params()")
+        return get_ldos_hodc_from_mun(mun_list, N, E; eta = eta, m_order = m_order)
+    end
+
+    kweights = _kpm_kernel(N, kernel; lambda = lambda)
+    G_n(n)   = cos((n - 1) * acos(E))
+
+    val = real(mun_list[1]) * G_n(1) * kweights[1]
+    for n in 2:N
+        val += 2.0 * real(mun_list[n]) * G_n(n) * kweights[n]
+    end
+
+    return val / (π^2 * N * sqrt(1 - E^2))
+end
+
+
+"""
+    get_ldos_hodc_from_mun(mun_list, N, E; eta=0.02, m_order=6) -> Real
+
+HODC (High-Order Damping Correction) variant of `get_ldos_from_mun`. Uses a
+contour-based kernel that gives sharper spectral features than the Jackson
+kernel, at the cost of `m_order` extra parameters.
+
+The HODC weights `νₖ` (from `compute_hodc_params` / `get_hodc_weights`) already
+carry the full KPM normalisation, so no extra denominator is needed:
+
+    A_hodc(E) ≈ ν₁μ₁ + 2 Σ_{n≥2} νₙ μₙ
+
+Returns `0` for `|E| ≥ 1`.
+"""
+function get_ldos_hodc_from_mun(mun_list, N::Int, E::Real;
+                                eta::Real    = 0.02,
+                                m_order::Int = 4)
+    abs(E) >= 1.0 && return 0.0
+
+    zl, wl = compute_hodc_params(m_order)
+    nu_k   = get_hodc_weights(E, N, eta, zl, wl)
+
+    val = real(mun_list[1]) * nu_k[1]
+    for n in 2:N
+        val += real(mun_list[n]) * nu_k[n]
+    end
+
+    return real(val)
 end
 
 
