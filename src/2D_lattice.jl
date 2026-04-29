@@ -783,7 +783,228 @@ end
 
 
 # ============================================================
-# 8. Antiferromagnetic / Néel initial-guess density matrices
+# 8. Kagomé lattice
+# ============================================================
+
+"""
+    kagome_positions(Lx, Ly) -> Matrix{Float64}
+
+Return the (3·2^L × 2) real-space atom-position matrix for a kagomé lattice
+of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
+
+For total 1-indexed site i:
+  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
+  s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
+  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+
+Atom positions (lattice vectors a₁=(1,0), a₂=(½,√3/2)):
+  A: (ix + iy/2,        iy·√3/2       )
+  B: (ix + iy/2 + ½,    iy·√3/2       )
+  C: (ix + iy/2 + ¼,    iy·√3/2 + √3/4)
+"""
+function kagome_positions(Lx::Int, Ly::Int)
+    Nx    = 2^Lx
+    N_uc  = 2^(Lx + Ly)
+    rs    = Matrix{Float64}(undef, 3 * N_uc, 2)
+    sq3_2 = sqrt(3) / 2
+    sq3_4 = sqrt(3) / 4
+    for n in 0:N_uc-1
+        ix   = n % Nx
+        iy   = n ÷ Nx
+        ax   = ix + iy * 0.5
+        ay   = iy * sq3_2
+        base = 3n + 1
+        rs[base,   :] = [ax,        ay        ]   # A
+        rs[base+1, :] = [ax + 0.5,  ay        ]   # B
+        rs[base+2, :] = [ax + 0.25, ay + sq3_4]   # C
+    end
+    return rs
+end
+
+
+"""
+    kagome_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+
+Build a uniform kagomé tight-binding Hamiltonian as a `TBHamiltonian`.
+
+**Encoding** (L+1 sites total, L = Lx+Ly):
+- Sites 1…L : L position qubits for 2^L unit cells on a triangular Bravais lattice
+              (row-major: n = ix + iy·2^Lx)
+- Site  L+1 : dim-3 "Kagome" sublattice index (A=1, B=2, C=3), postpended
+
+**Hopping structure** (uniform amplitude `t`):
+
+*Intra-cell* — all three bonds of the unit-cell triangle (same unit cell):
+  A-B, B-C, A-C
+
+*Inter-cell* — one bond type per triangular lattice direction:
+  x   (shift +1   ): B(n+1)    ↔ A(n)
+  y   (shift +Nx  ): A(n+Nx)   ↔ C(n)
+  diag(shift +Nx-1): B(n+Nx-1) ↔ C(n)
+
+Boundary wrapping is not enforced.  Use `kagome_positions(Lx, Ly)` for
+real-space atom coordinates.  The sublattice index is stored in `H.sublattice_s`;
+`H.aux_side = :post`.
+"""
+function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
+                             cutoff::Real = 1e-8,
+                             maxdim::Int  = 200)
+    Nx = 2^Lx
+    L  = Lx + Ly
+    N  = 2^L
+
+    pos_sites = siteinds("Qubit", L)
+    kag_s     = Index(3, "Kagome")
+    all_sites = [pos_sites; kag_s]
+
+    ku   = generate_kin_u(pos_sites, N)
+    kd   = generate_kin_d(pos_sites, N)
+    Id   = MPO(pos_sites, "Id")
+    apkw = (; cutoff = cutoff, maxdim = maxdim)
+
+    brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)   # zeros ix = Nx-1
+    brk_xn = _row_break_mpo(Lx, Ly, pos_sites; which=:xplain)  # zeros ix = 0
+
+    # ── Intra-cell: full off-diagonal 3×3 triangle ────────────────────────────
+    H_intra = postpend_op(Id, kag_s, t * Float64[0 1 1; 1 0 1; 1 1 0])
+
+    # ── Inter-cell x: A(n) ↔ B(n+1), shift ±1 ───────────────────────────────
+    # Break suppresses B(Nx-1) ↔ A(0) wrap-around across row boundary
+    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), kag_s, 1, 2),
+             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), kag_s, 2, 1); cutoff=cutoff)
+
+    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx ─────────────────────────────
+    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
+    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+    H_y  = +(t        * postpend_op(ku_y, kag_s, 1, 3),
+              conj(t) * postpend_op(kd_y, kag_s, 3, 1); cutoff=cutoff)
+
+    # ── Inter-cell diagonal: C(n) ↔ B(n+Nx-1), shift ±(Nx-1) ────────────────
+    # Break suppresses C(0) ↔ B(Nx-1) same-row spurious bond (ix=0 source wraps)
+    ku_d = compose_power(ku, Nx - 1; apply_kwargs=apkw)
+    kd_d = compose_power(kd, Nx - 1; apply_kwargs=apkw)
+    H_d  = +(t        * postpend_op(apply(brk_xn, ku_d; apkw...), kag_s, 2, 3),
+              conj(t) * postpend_op(apply(kd_d, brk_xn; apkw...), kag_s, 3, 2); cutoff=cutoff)
+
+    # ── Assembly ───────────────────────────────────────────────────────────────
+    H_total = +(H_intra, H_x;    cutoff=cutoff)
+    H_total = +(H_total, H_y;    cutoff=cutoff)
+    H_total = +(H_total, H_d;    cutoff=cutoff)
+    ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+
+    # Kagomé spectrum: flat band at −2t, dispersive bands reaching up to +4t
+    scale = 4.5 * abs(t)
+    return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
+                         nothing, nothing, nothing, kag_s, :post, nothing, nothing, 0, nothing)
+end
+
+
+
+# ============================================================
+# 8b. Lieb lattice
+# ============================================================
+
+"""
+    lieb_positions(Lx, Ly) -> Matrix{Float64}
+
+Return the (3·2^L × 2) real-space atom-position matrix for a Lieb lattice
+of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
+
+For total 1-indexed site i:
+  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
+  s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
+  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+
+Atom positions (lattice vectors a₁=(1,0), a₂=(0,1)):
+  A: (ix,       iy      )   corner
+  B: (ix + 0.5, iy      )   x-edge center
+  C: (ix,       iy + 0.5)   y-edge center
+"""
+function lieb_positions(Lx::Int, Ly::Int)
+    Nx   = 2^Lx
+    N_uc = 2^(Lx + Ly)
+    rs   = Matrix{Float64}(undef, 3 * N_uc, 2)
+    for n in 0:N_uc-1
+        ix   = n % Nx
+        iy   = n ÷ Nx
+        base = 3n + 1
+        rs[base,   :] = [ix,       iy       ]   # A
+        rs[base+1, :] = [ix + 0.5, iy       ]   # B
+        rs[base+2, :] = [ix,       iy + 0.5 ]   # C
+    end
+    return rs
+end
+
+
+"""
+    lieb_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+
+Build a uniform Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
+
+**Encoding** (L+1 sites total, L = Lx+Ly):
+- Sites 1…L : L position qubits for 2^L unit cells on a square Bravais lattice
+              (row-major: n = ix + iy·2^Lx)
+- Site  L+1 : dim-3 "Lieb" sublattice index (A=1, B=2, C=3), postpended
+
+**Hopping structure** (uniform amplitude `t`):
+
+*Intra-cell* — two bonds within the unit-cell cross:
+  A-B, A-C
+
+*Inter-cell*:
+  x (shift +1 ): B(n) ↔ A(n+1)  — break at ix=Nx-1
+  y (shift +Nx): C(n) ↔ A(n+Nx) — no x-break needed (pure y step)
+
+The spectrum has a flat band at E=0 and two dispersive bands at ±2t.
+Use `lieb_positions(Lx, Ly)` for real-space atom coordinates.
+The sublattice index is stored in `H.sublattice_s`; `H.aux_side = :post`.
+"""
+function lieb_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
+                           cutoff::Real = 1e-8,
+                           maxdim::Int  = 200)
+    Nx = 2^Lx
+    L  = Lx + Ly
+    N  = 2^L
+
+    pos_sites = siteinds("Qubit", L)
+    lieb_s    = Index(3, "Lieb")
+    all_sites = [pos_sites; lieb_s]
+
+    ku   = generate_kin_u(pos_sites, N)
+    kd   = generate_kin_d(pos_sites, N)
+    Id   = MPO(pos_sites, "Id")
+    apkw = (; cutoff = cutoff, maxdim = maxdim)
+
+    brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
+
+    # ── Intra-cell: A↔B and A↔C within the same unit cell ────────────────────
+    H_intra = postpend_op(Id, lieb_s, t * Float64[0 1 1; 1 0 0; 1 0 0])
+
+    # ── Inter-cell x: B(n) ↔ A(n+1), shift ±1 ───────────────────────────────
+    # Break suppresses B(Nx-1) ↔ A(0) wrap-around across row boundary
+    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), lieb_s, 1, 2),
+             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), lieb_s, 2, 1); cutoff=cutoff)
+
+    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx ─────────────────────────────
+    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
+    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+    H_y  = +(t        * postpend_op(ku_y, lieb_s, 1, 3),
+              conj(t) * postpend_op(kd_y, lieb_s, 3, 1); cutoff=cutoff)
+
+    # ── Assembly ───────────────────────────────────────────────────────────────
+    H_total = +(H_intra, H_x;    cutoff=cutoff)
+    H_total = +(H_total, H_y;    cutoff=cutoff)
+    ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+
+    # Lieb spectrum: flat band at 0, dispersive bands up to ±2t
+    scale = 2.5 * abs(t)
+    return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
+                         nothing, nothing, nothing, lieb_s, :post, nothing, nothing, 0, nothing)
+end
+
+
+# ============================================================
+# 9. Antiferromagnetic / Néel initial-guess density matrices
 #    Used as seeds for mean-field SCF on interacting models.
 #    Return (density_MPO, density_MPS).
 # ============================================================

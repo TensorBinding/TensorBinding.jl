@@ -177,10 +177,11 @@ function purification_initial_guess(H_mpo::MPO, scale::Float64, sites; maxdim::I
     return ρ0
 end
 
-function purification_initial_guess(H::TBHamiltonian; maxdim::Int=40, cutoff::Float64=1e-8)
+function purification_initial_guess(H::TBHamiltonian; ϵF::Real=0.0,
+                                    maxdim::Int=40, cutoff::Float64=1e-8)
     _ensure_scale!(H)
     Id       = MPO(H.sites, "Id")
-    coeff_I  = 0.5 + H.center / (2 * H.scale)
+    coeff_I  = 0.5 + (ϵF + H.center) / (2 * H.scale)
     coeff_H  = -0.5 / H.scale
     ρ0       = +(coeff_I * Id, coeff_H * H.mpo; cutoff)
     ITensorMPS.truncate!(ρ0; maxdim=maxdim, cutoff)
@@ -189,18 +190,22 @@ end
 
 
 """
-    mcweeny_purify(H::TBHamiltonian; Nel, maxiters, maxdim, cutoff, tol, verbose) -> MPO
+    mcweeny_purify(H::TBHamiltonian; ϵF, maxiters, maxdim, cutoff, tol, verbose) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs McWeeny purification,
 caches the result in `H._density_cache`, and returns the purified density matrix.
+
+`ϵF` shifts the Fermi level of the initial guess ρ₀ = (I − (H − ϵF·I)/scale) / 2,
+allowing purification to target a band other than half-filling. Default `0.0`.
 """
 function mcweeny_purify(H::TBHamiltonian;
+                        ϵF::Real        = 0.0,
                         maxiters::Int   = 30,
                         maxdim::Int     = 40,
                         cutoff::Float64 = 1e-8,
                         tol::Float64    = 1e-5,
                         verbose::Bool   = false)
-    ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
+    ρ0 = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff)
     ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                             tol=tol, verbose=verbose)
     H._density_cache = ρ
@@ -282,7 +287,7 @@ function get_density(H::TBHamiltonian;
     end
 
     if method == :mcweeny
-        return mcweeny_purify(H; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+        return mcweeny_purify(H; ϵF=ϵF, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                                  tol=tol, verbose=verbose)
     elseif method == :sp2
         return sp2_purify(H; Nel=Nel, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,

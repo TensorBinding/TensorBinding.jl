@@ -204,7 +204,7 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
         Hmid = Hoft(t_mid)
 
         psi = tdvp(
-            Hmid,
+            -im * Hmid,
             dt,
             psi;
             time_step = dt,
@@ -696,3 +696,33 @@ function central_x_bond(L::Int; Nx::Union{Int,Nothing} = nothing)
 end
 
 
+# ============================================================
+# TBHamiltonian overloads
+#
+# These accept a physical Hamiltonian and apply -im internally,
+# consistent with evolve_rk4_dm_timedep / _von_neumann_rhs.
+# L and sites are read from H directly, so they need not be
+# supplied at the call site.
+# ============================================================
+
+function build_tdvp_propagator_mpo(H::TBHamiltonian, dt; kwargs...)
+    return build_tdvp_propagator_mpo(-im * H.mpo, dt, H.L, H.sites; kwargs...)
+end
+
+function tdvp_evolve(H::TBHamiltonian, psi::MPS, dt::Real; kwargs...)
+    return tdvp_evolve(-im * H.mpo, psi, dt; kwargs...)
+end
+
+function evolve_with_tdvp(H::TBHamiltonian, psi0::MPS, nsteps::Int, dt::Real; kwargs...)
+    return evolve_with_tdvp(-im * H.mpo, psi0, nsteps, dt; kwargs...)
+end
+
+function check_tdvp_vs_U_mpo(H::TBHamiltonian, U_mpo::MPO, dt; kwargs...)
+    return check_tdvp_vs_U_mpo(-im * H.mpo, U_mpo, dt, H.L, H.sites; kwargs...)
+end
+
+function compare_propagator_and_tdvp_heatmaps(U_mpo::MPO, H::TBHamiltonian,
+                                               psi0::MPS, nsteps::Int; kwargs...)
+    return compare_propagator_and_tdvp_heatmaps(U_mpo, -im * H.mpo, psi0,
+                                                  H.L, H.sites, nsteps; kwargs...)
+end
