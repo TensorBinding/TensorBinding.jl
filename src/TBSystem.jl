@@ -147,6 +147,7 @@ function get_Hamiltonian(geometry::String, params;
                          scale=nothing,
                          tol=1e-8,
                          maxdim=15,
+                         ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                          kwargs...)
     sites = siteinds("Qubit", L)
     N     = 2^L
@@ -164,7 +165,7 @@ function get_Hamiltonian(geometry::String, params;
     elseif geometry in ("ssh", "aah", "uniform",
                         "square_2d", "hex_2d", "triangular_2d",
                         "chern8", "chernhex", "qc2dsquare")
-        return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, kwargs...)
+        return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
         known = ("chain_1d", "haldane", "custom",
@@ -249,7 +250,9 @@ function _build_custom(f, L, N, sites;
 end
 
 function _build_preset(geometry, params, L, N, sites;
-                       scale=nothing, tol=1e-8, maxdim=15, kwargs...)
+                       scale=nothing, tol=1e-8, maxdim=15,
+                       ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
+                       kwargs...)
     # Route through build_hamiltonian which dispatches on MODEL_REGISTRY.
     # params can be: a scalar, a NamedTuple, or a Dict — normalise to mparam_dict.
     dim = MODEL_REGISTRY[geometry][2]
@@ -286,6 +289,12 @@ function _build_preset(geometry, params, L, N, sites;
     # so we extract the actual sites from the MPO rather than using the ones
     # created at the top of get_Hamiltonian (which would be a different set).
     mpo_sites = getindex.(siteinds(mpo), 2)
+    # If caller supplied ref_sites, replace MPO indices in-place so all
+    # Hamiltonians built with the same ref_sites share identical Index objects.
+    if !isnothing(ref_sites)
+        fix_sites(mpo, ref_sites)
+        mpo_sites = ref_sites
+    end
     sc   = something(scale, _estimate_scale(geometry, params))
     geom = _preset_geometry(geometry, dim == 2 ? 2^get(kwargs, :Lx, L ÷ 2) : nothing)
     return TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
@@ -402,29 +411,52 @@ end
 # ============================================================
 
 """
-    add_hopping!(H, f; maxdim=15, tol=1e-8, type=ComplexF64) -> H
+    add_hopping!(H, f; nn=1, maxdim=15, tol=1e-8, type=ComplexF64, apply_kwargs=NamedTuple()) -> H
 
-Add an arbitrary hopping term to `H` defined by the function
-`f(i, j)` over site indices `i, j ∈ {1, …, N}`.  The term is
-compressed via QTCI and added to `H.mpo`.  Caches are invalidated.
+Add a hopping term to `H`.  Three calling modes, selected automatically by the type of `f`:
+
+- **Constant** (`f::Number`): uniform nth-neighbour hopping with amplitude `f`.
+  Builds the MPO via `kineticNNN` with a uniform diagonal hopping weight.  Use `nn`
+  to select the neighbour shell (default `nn=1` = nearest neighbour).
+
+- **Site-dependent** (`f(i)`, 1-arg `Function`): spatially varying hopping.
+  A diagonal hopping MPO is built from `f` via `get_diagonal_mpo` (1-indexed,
+  `i ∈ {1, …, N}`), then passed to `kineticNNN`.  Use `nn` as above.
+
+- **Full matrix QTCI** (`f(i,j)`, 2-arg `Function`): the full N×N hopping matrix
+  is compressed via Quantics Tensor Cross Interpolation.  `nn` is ignored in
+  this mode; the function itself encodes the connectivity.
+
+`apply_kwargs` (e.g. `(; cutoff=1e-8, maxdim=100)`) are forwarded to every `apply`
+call inside `kineticNNN` (constant and site-dependent modes only).
 
 Examples
 --------
 ```julia
-# Second-neighbour hopping on a 1D chain
-add_hopping!(H, (i, j) -> abs(i - j) == 2 ? -t2 : 0.0)
-
-# NNN complex hopping (Haldane-like extra term)
-add_hopping!(H, (i, j) -> ...; type=ComplexF64)
+add_hopping!(H, -1.0)                                    # uniform NN hopping
+add_hopping!(H, -0.3; nn=2)                              # uniform NNN hopping
+add_hopping!(H, i -> cos(2π*i/H.N); nn=1)               # site-dependent NN hopping
+add_hopping!(H, (i, j) -> abs(i-j) == 2 ? -0.3 : 0.0)  # full QTCI (any connectivity)
 ```
 """
 function add_hopping!(H::TBHamiltonian, f;
-                      maxdim=15, tol=1e-8, type=ComplexF64)
+                      nn::Integer      = 1,
+                      maxdim           = 15,
+                      tol              = 1e-8,
+                      type             = ComplexF64,
+                      apply_kwargs     = NamedTuple())
     H.spin_s === nothing && H.nambu_s === nothing && H.layer_s === nothing ||
         error("add_hopping! must be called before add_spin!/add_superconductivity! " *
               "and cannot be used on layered Hamiltonians (layer index already prepended).")
-    new_term = hopping2MPO(f, H.N, H.sites; tol=tol, type=type)
-    H.mpo    = +(H.mpo, new_term; maxdim=maxdim, cutoff=tol)
+    pos_s    = _pos_sites(H)
+    new_term = if f isa Number
+        kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn; apply_kwargs)
+    elseif f isa Function && applicable(f, 1)
+        kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn; apply_kwargs)
+    else
+        hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
+    end
+    H.mpo = +(H.mpo, new_term; maxdim=maxdim, cutoff=tol)
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
     _invalidate_cache!(H)
     return H
