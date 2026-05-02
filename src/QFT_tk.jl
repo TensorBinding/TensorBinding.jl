@@ -1,53 +1,83 @@
 # QFT_tk.jl — Momentum-space band structure via online Chebyshev KPM
 #
+# ─────────────────────────────────────────────────────────────────────────────
 # Overview
-# --------
-# The quantics representation encodes a 1D or 2D real-space index as a
-# binary string across L qubit sites.  Conjugating any real-space MPO W
-# by the Quantum Fourier Transform (QFT) gives its momentum-space image:
+# ─────────────────────────────────────────────────────────────────────────────
+# The quantics representation encodes a 1D or 2D real-space position index as
+# a binary string across L qubit sites.  Conjugating any real-space MPO W by
+# the Quantum Fourier Transform gives its momentum-space counterpart:
 #
 #   Ã(k,ω) = U · δ(ω − H) · U†
 #
 # The diagonal ⟨k|Ã(ω)|k⟩ is the k-resolved spectral function A(k,ω).
 #
-# Design: online Chebyshev accumulation
-# --------------------------------------
-# Instead of storing all Ncheb Chebyshev MPOs, get_bands runs a single
-# Chebyshev recurrence T_0, T_1, … T_Ncheb.  At each step n the current
-# Chebyshev MPO passes through up to four composable projection stages
-# before the QFT is applied (see get_bands for the full pipeline):
+# ─────────────────────────────────────────────────────────────────────────────
+# Online Chebyshev accumulation
+# ─────────────────────────────────────────────────────────────────────────────
+# `get_bands` runs a single Chebyshev recurrence over the full MPO space.
+# At each step n the current T_n passes through five composable projection
+# stages before the QFT is applied:
 #
-#   Step 0  nambu_proj  — project Nambu (BdG particle/hole) index
-#   Step 1  spin_proj   — project spin index
-#   Step 1b sublat_proj — project sublattice auxiliary index (kagome, Lieb…)
-#   Step 2  sublattice  — legacy mask sandwich for 2-sublattice models
-#   Step 3  QFT + diagonal extraction + KPM accumulation
+#   Step 0  nambu_proj   — project Nambu (BdG particle/hole) auxiliary index
+#   Step 1  spin_proj    — project spin auxiliary index
+#   Step 1c layer_proj   — project layer auxiliary index (bilayer/multilayer)
+#   Step 1b sublat_proj  — project sublattice auxiliary index (kagome, Lieb, …)
+#   Step 2  sublattice   — legacy mask sandwich (preset models without aux index)
+#   Step 3  QFT + diagonal extraction + KPM weight accumulation
 #
-# Each step is independent and optional; any combination is supported.
+# All steps are independent and optional; any combination is valid.
 # Peak memory: O(3 MPOs) regardless of Ncheb.
 #
-# Auxiliary index projection (section 4b)
-# ----------------------------------------
-# Hamiltonians with auxiliary DOFs (spin, Nambu, sublattice…) carry an
-# extra site at the front or back of the MPO.  project_aux removes it by
-# contracting |σ⟩⟨σ| onto the auxiliary tensor, returning an (L−1)-site
-# position-only MPO ready for conjugate_by_qft.  aux_site(H, which)
-# extracts the correct Index and side (:pre/:post) from a TBHamiltonian.
+# ─────────────────────────────────────────────────────────────────────────────
+# Auxiliary DOF projection  (section 4b)
+# ─────────────────────────────────────────────────────────────────────────────
+# Models with auxiliary DOFs (spin, Nambu, layer, sublattice) have an extra
+# site at the front (`:pre`) or back (`:post`) of the MPO.  `project_aux`
+# removes it by contracting |σ⟩⟨σ| onto the auxiliary tensor, returning an
+# (L−1)-site position-only MPO ready for `conjugate_by_qft`.
 #
+# When `H::TBHamiltonian` is passed to `get_bands`, all auxiliary indices are
+# auto-detected from the struct fields (H.spin_s, H.nambu_s, H.layer_s,
+# H.sublattice_s) and never need to be passed manually.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# High-symmetry k-path shortcut  (section 3b)
+# ─────────────────────────────────────────────────────────────────────────────
+# The `kpath` kwarg in the `TBHamiltonian` overload of `get_bands` eliminates
+# the manual kpath setup:
+#
+#   res = get_bands(H, Ncheb, 2, omega;
+#                   kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
+#   # res.Ak, res.ticks, res.labels  ← all path metadata included
+#
+# ─────────────────────────────────────────────────────────────────────────────
 # Encoding conventions
-# --------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # 1D  — sites 1…L hold x bits, LSB at site 1 (quantics QFT convention).
 # 2D  — sites 1…Ly hold iy bits (MSB first), sites Ly+1…L hold ix bits
-#        (MSB first); linear index n = ix + iy * 2^Lx (row-major).
-#        Sublattice masks from 2D_lattice.jl respect this convention.
-#        ## Note: bit ordering in 2D needs further verification.
+#        (MSB first); linear index n = ix + iy·2^Lx (row-major).
 #
+# ─────────────────────────────────────────────────────────────────────────────
 # Dependencies outside this file
-# --------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # fix_sites, _kpm_kernel               → utils.jl
 # extract_diagonal_to_mps              → utils.jl
 # _row_checker_mpo, _col_select_mpo    → 2D_lattice.jl
 # TBHamiltonian, _ensure_scale!        → TBSystem.jl
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# File structure
+# ─────────────────────────────────────────────────────────────────────────────
+# 1.  QFT conjugation            conjugate_by_qft
+# 2.  Legacy sublattice projectors projop_2DSL, projop_1DSL
+# 3.  Internal utilities         ilinspace, _eval_diag_mps, sample_diag,
+#                                _kpm_weight_matrix
+# 3b. High-symmetry k-path       kpath_2d, hsk_honeycomb/square/triangular,
+#                                kpath_setup, _hs_label, _hsk
+# 4.  Online band structure      get_bands (low-level MPO version)
+# 4b. Aux index projection       project_aux, project_spin, aux_site
+# 5.  High-level overload        get_bands (TBHamiltonian version)
+# 6.  Legacy reference code      old get_bands (inner-product approach)
 
 
 # ============================================================
@@ -57,11 +87,15 @@
 """
     conjugate_by_qft(W; tol=1e-9, maxdim=100) -> MPO
 
-Return `U · W · U†` where `U` is the Quantum Fourier Transform MPO
-built from `QuanticsTCI.quanticsfouriermpo`.
+Return `U · W · U†` where `U` is the Quantum Fourier Transform MPO built from
+`QuanticsTCI.quanticsfouriermpo` (normalised, with `TCI.reverse` applied).
 
-The `TCI.reverse` call places the LSB at site 1 to match the quantics
-encoding used throughout this codebase. Note that the ordering in k-space is the reverse of the site ordering in real space
+`TCI.reverse` places the LSB at site 1, matching the quantics encoding used
+throughout this codebase.  The resulting k-space MPO has the same site
+structure as `W` but with momenta as the diagonal degree of freedom.
+
+Calling this on the Chebyshev spectral MPO T_n and then extracting the
+diagonal gives the k-resolved contribution to A(k,ω).
 """
 function conjugate_by_qft(W; tol=1e-9, maxdim::Int=100)
     sites  = getindex.(siteinds(W), 2)
@@ -75,27 +109,33 @@ end
 
 
 # ============================================================
-# 2. Sublattice projection
+# 2. Legacy sublattice projection  (mask sandwich)
 #
-# For now only works in 1D and 2D lattices using a checkerboard or alternating-site sublattice decomposition
+# These wrappers apply the mask sandwich O_SL = mask · O · mask to project
+# an MPO onto one of two sublattices.  They are used by `get_bands` when
+# `sublattice=true` (Step 2 in the pipeline).
 #
-# These wrappers project an MPO O onto one of two sublattices by
-# sandwiching it with the corresponding diagonal mask MPO:
-#   O_SL = mask · O · mask
+# WHEN TO USE:
+#   `sublattice=true` / `projop_*SL`  — for PRESET models built by
+#   `build_hamiltonian` / `monolayer_hamiltonian` (HUniform2Dhex, H2DChernhex,
+#   HUniform2Dtri, …).  These encode the sublattice structure implicitly in
+#   the hopping MPO; H.sublattice_s is nothing.
 #
-# The mask MPOs (`_row_checker_mpo`, `_col_select_mpo`) are defined in
-# 2D_lattice.jl and operate on a single qubit site each, so they are
-# bond-dimension 1 and cheap to apply.
+#   `sublat_proj=true`                — for models with an EXPLICIT sublattice
+#   auxiliary index (honeycomb_sublattice_hamiltonian, kagome_hamiltonian,
+#   lieb_hamiltonian, dice_hamiltonian).  H.sublattice_s is set.
 #
-# 2D — checkerboard sublattices of a 2^Lx × 2^Ly lattice:
-#   SL=1 → sites where (ix+iy) is even  (_row_checker_mpo)
-#   SL=2 → sites where (ix+iy) is odd   (Id − _row_checker_mpo)
+# The mask MPOs are bond-dimension 1 (single-site operators from 2D_lattice.jl)
+# and negligibly cheap to apply.
 #
-# 1D — alternating sublattices of a 2^L chain:
-#   SL=1 → even sites (ix % 2 == 0)    (_col_select_mpo, keep=:odd)
-#   SL=2 → odd  sites (ix % 2 == 1)    (_col_select_mpo, keep=:even)
-#   Note: the `:odd`/`:even` labels in _col_select_mpo refer to the
-#   parity of the LSB qubit state (0 or 1), not of the site index.
+# 2D — checkerboard sublattices:
+#   SL=1 → (ix+iy) even  (_row_checker_mpo)
+#   SL=2 → (ix+iy) odd   (Id − _row_checker_mpo)
+#
+# 1D — alternating-site sublattices:
+#   SL=1 → even sites (ix % 2 == 0)   (_col_select_mpo, keep=:odd)
+#   SL=2 → odd  sites (ix % 2 == 1)   (_col_select_mpo, keep=:even)
+#   (`:odd`/`:even` labels refer to the LSB qubit state, not the site index)
 # ============================================================
 
 """
@@ -131,6 +171,11 @@ end
 
 # ============================================================
 # 3. Internal utilities
+#
+# ilinspace       — evenly-spaced integer grid for k-center placement
+# _eval_diag_mps  — fast diagonal evaluation without constructing basis MPS
+# sample_diag     — batch evaluation over a contiguous range (convenience)
+# _kpm_weight_matrix — precomputed Chebyshev-KPM weights W[n, iω]
 # ============================================================
 
 """
@@ -188,17 +233,21 @@ end
 
 
 """
-    _kpm_weight_matrix(Ncheb, ω_vals; kernel, lambda) -> Matrix{Float64}
+    _kpm_weight_matrix(Ncheb, ω_vals; kernel=:jackson, lambda=4.0) -> Matrix{Float64}
 
-Precompute the KPM weight matrix `W[n, iω]` for fast accumulation.
+Precompute the full KPM weight matrix `W[n, iω]` for fast in-loop accumulation.
 
-`W[n, iω] = c_n · g_n · cos((n-1) · arccos(ω_iω))`
+```
+W[n, iω] = c_n · g_n · cos((n-1) · arccos(ω_iω))
+```
 
-where `c_n = 1` for n=1 and 2 otherwise, and `g_n` is the kernel
-damping factor (Jackson or Lorentz).  Entries for `|ω| ≥ 1` are left
-at zero.
+- `c_n = 1` for n=1, `c_n = 2` otherwise (Chebyshev expansion factor)
+- `g_n` = kernel damping: Jackson (default, finite-size ringing suppressed)
+  or Lorentz (controlled width `lambda`, smoother tails)
+- Entries for `|ω| ≥ 1` are set to zero (outside the spectral support)
 
-Note: later could include HODC kernel
+Pre-computing W avoids recomputing cos((n-1)·arccos(ω)) inside the inner loop,
+which is called Ncheb × Nω times.
 """
 function _kpm_weight_matrix(Ncheb::Int, ω_vals; kernel::Symbol=:jackson, lambda::Real=4.0)
     kweights = _kpm_kernel(Ncheb, kernel; lambda=lambda)
@@ -215,49 +264,271 @@ end
 
 
 # ============================================================
+# 3b. High-symmetry k-path utilities  (2D)
+#
+# Low-level:
+#   kpath_2d(hs_points, Lx; npts_per_segment)
+#       Takes explicit (kx_idx, ky_idx) tuples, interpolates between them.
+#       Returns (k_groups, tick_positions) for use with k_groups_override.
+#
+#   hsk_honeycomb / hsk_square / hsk_triangular(Lx, Ly)
+#       Named-tuple dictionaries of standard high-symmetry k-points in
+#       quantics integer units (0-based; verified analytically for honeycomb,
+#       approximate for triangular).  Use Latin symbol names (G, M, K, Kp, X)
+#       — no non-ASCII input required.
+#
+# High-level (called internally by get_bands kpath shortcut):
+#   _hsk(lattice, Lx, Ly)     — dispatch to the right hsk_* function
+#   _hs_label(sym)            — symbol → display string (G → "Γ", Kp → "K'")
+#   kpath_setup(lattice, ...)  — builds (k_groups, ticks, labels) from symbols
+#
+# The preferred user interface is the kpath kwarg in get_bands(H::TBHamiltonian):
+#   res = get_bands(H, Ncheb, 2, omega;
+#                   kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
+#   # res.Ak — (Nω × Nk) spectral function
+#   # res.ticks, res.labels — ready for xticks=(res.ticks, res.labels)
+# ============================================================
+
+"""
+    kpath_2d(hs_points, Lx; npts_per_segment=20) -> (k_groups, tick_positions)
+
+Build k-groups for `get_bands(…; D=2, k_groups_override=k_groups)` sampling
+along a high-symmetry path.
+
+`hs_points` is an ordered list of `(kx_idx, ky_idx)` integer tuples defining
+the path vertices (0-based, kx_idx ∈ [0, 2^Lx−1]).  `npts_per_segment` points
+are linearly interpolated between each consecutive pair of vertices.
+
+Returns:
+- `k_groups`      : `Vector{Vector{Int}}` — single-element groups in the
+  `(ky << Lx) | kx` linear-index format expected by `get_bands`.
+  Pass as `k_groups_override`.
+- `tick_positions` : 1-based indices into `k_groups` at each vertex;
+  use as x-axis tick positions when plotting.
+
+```julia
+# Low-level: explicit tuples
+hs = hsk_honeycomb(Lx, Ly)
+kg, ticks = kpath_2d([hs.G, hs.M, hs.Kp, hs.G], Lx; npts_per_segment=30)
+Ak = get_bands(H, Ncheb, 2, omega; k_groups_override=kg)
+
+# High-level shortcut (preferred):
+res = get_bands(H, Ncheb, 2, omega;
+                kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
+# heatmap(1:size(res.Ak,2), omega, res.Ak; xticks=(res.ticks, res.labels))
+```
+"""
+function kpath_2d(hs_points, Lx::Int; npts_per_segment::Int = 20)
+    k_list   = Int[]
+    tick_pos = Int[]
+    for seg in 1:length(hs_points)-1
+        kx1, ky1 = hs_points[seg]
+        kx2, ky2 = hs_points[seg+1]
+        push!(tick_pos, length(k_list) + 1)
+        for t in range(0, 1; length = npts_per_segment + 1)[1:end-1]
+            kx = round(Int, kx1 + t * (kx2 - kx1))
+            ky = round(Int, ky1 + t * (ky2 - ky1))
+            push!(k_list, (ky << Lx) | kx)
+        end
+    end
+    push!(tick_pos, length(k_list) + 1)   # final vertex
+    kx, ky = hs_points[end]
+    push!(k_list, (ky << Lx) | kx)
+    return [[k] for k in k_list], tick_pos
+end
+
+
+"""
+    hsk_honeycomb(Lx, Ly) -> NamedTuple
+
+High-symmetry k-points for the honeycomb sublattice Hamiltonian
+(`honeycomb_sublattice_hamiltonian`) in quantics integer units
+(kx_idx ∈ [0, 2^Lx−1], ky_idx ∈ [0, 2^Ly−1]).
+
+**Derivation.**  The Bloch off-diagonal element is
+    h(k) = t ( 1 + e^{2πi kx/Nx} + e^{2πi ky/Ny} )
+Dirac points h=0 require θx = 2π/3 AND θy = 4π/3 (or their conjugates):
+    K  : (kx_idx, ky_idx) = (Nx/3, 2Ny/3)  →  Cartesian (2π/3, 2π/√3)
+    K' : (kx_idx, ky_idx) = (2Nx/3, Ny/3)  →  Cartesian (4π/3, 0)
+
+Because Nx = 2^Lx is never divisible by 3, the K/K' indices are rounded
+to the nearest integer.  Use a large Lx (≥4) for a good approximation.
+
+M is the edge midpoint adjacent to K' along the kx axis:
+    M  : (Nx/2, Ny/4)  →  Cartesian (π, 0)   — |h|=1, saddle point
+
+| Point | Symbol | Cartesian (b₁/b₂ frame)  | Quantics index             |
+|-------|--------|--------------------------|----------------------------|
+| Γ     | `G`    | (0, 0)                   | (0, 0)                     |
+| M     | `M`    | (π, 0)                   | (Nx÷2, Ny÷4)              |
+| K     | `K`    | (2π/3, 2π/√3)            | (round(Nx/3), round(2Ny/3))|
+| K'    | `Kp`   | (4π/3, 0)                | (round(2Nx/3), round(Ny/3))|
+
+Standard G–M–Kp–G path (along the kx direction, K' corner at (4π/3,0)):
+```julia
+hs = hsk_honeycomb(Lx, Ly)
+kg, ticks = kpath_2d([hs.G, hs.M, hs.Kp, hs.G], Lx; npts_per_segment=30)
+Ak = get_bands(H, Ncheb, 2, omega; k_groups_override=kg)
+# or using the kpath shortcut:
+res = get_bands(H, Ncheb, 2, omega; kpath=[:G, :M, :Kp, :G],
+                kpath_lattice=:honeycomb, num_x=30)
+```
+"""
+function hsk_honeycomb(Lx::Int, Ly::Int)
+    Nx, Ny = 2^Lx, 2^Ly
+    return (
+        G  = (0,                       0                      ),   # Gamma — zone centre
+        M  = (Nx ÷ 2,                  Ny ÷ 4                 ),   # (π,  0)         Cartesian
+        K  = (round(Int, Nx / 3),      round(Int, 2Ny / 3)    ),   # (2π/3, 2π/√3)  Cartesian
+        Kp = (round(Int, 2Nx / 3),     round(Int, Ny / 3)     ),   # (4π/3, 0)       Cartesian
+    )
+end
+
+
+"""
+    hsk_square(Lx, Ly) -> NamedTuple
+
+High-symmetry k-points for a 2D square lattice in quantics integer units.
+
+| Point | Symbol | Meaning              | Quantics index   |
+|-------|--------|----------------------|------------------|
+| Γ     | `G`    | zone centre          | (0, 0)           |
+| X     | `X`    | zone-edge midpoint   | (Nx÷2, 0)       |
+| M     | `M`    | zone corner          | (Nx÷2, Ny÷2)    |
+
+Standard path: `[:G, :X, :M, :G]`
+"""
+function hsk_square(Lx::Int, Ly::Int)
+    Nx, Ny = 2^Lx, 2^Ly
+    return (
+        G = (0,      0     ),   # Gamma — zone centre
+        X = (Nx÷2,   0     ),
+        M = (Nx÷2,   Ny÷2  ),
+    )
+end
+
+
+"""
+    hsk_triangular(Lx, Ly) -> NamedTuple
+
+Approximate high-symmetry k-points for a 2D triangular lattice in quantics
+integer units.
+
+| Point | Symbol | Quantics index   |
+|-------|--------|------------------|
+| Γ     | `G`    | (0, 0)           |
+| M     | `M`    | (Nx÷2, 0)       |
+| K     | `K`    | (Nx÷3, Ny÷3)   |
+
+Standard path: `[:G, :M, :K, :G]`
+"""
+function hsk_triangular(Lx::Int, Ly::Int)
+    Nx, Ny = 2^Lx, 2^Ly
+    return (
+        G = (0,      0     ),   # Gamma — zone centre
+        M = (Nx÷2,   0     ),
+        K = (Nx÷3,   Ny÷3  ),
+    )
+end
+
+
+# ── High-symmetry path helpers ───────────────────────────────────────────────
+
+# Symbol → display string for axis tick labels.
+# Use Latin aliases (G, Kp, …) in code; display shows the traditional notation.
+_hs_label(s::Symbol) = s === :G  ? "Γ"  :
+                       s === :M  ? "M"  :
+                       s === :K  ? "K"  :
+                       s === :Kp ? "K'" :
+                       s === :X  ? "X"  :
+                       s === :R  ? "R"  :
+                       s === :A  ? "A"  :
+                       string(s)
+
+# Dispatch kpath symbols → (kx_idx, ky_idx) integer pairs via hsk_* functions.
+_hsk(lattice::Symbol, Lx::Int, Ly::Int) =
+    lattice === :honeycomb  ? hsk_honeycomb(Lx, Ly)  :
+    lattice === :square     ? hsk_square(Lx, Ly)     :
+    lattice === :triangular ? hsk_triangular(Lx, Ly) :
+    error("Unknown kpath_lattice :$lattice.  Use :honeycomb, :square, or :triangular.")
+
+"""
+    kpath_setup(lattice, Lx, Ly, path_syms; npts_per_segment=20)
+        -> (k_groups, ticks, labels)
+
+Build k-path inputs for `get_bands` from a list of high-symmetry symbols.
+`path_syms` is a vector of symbols such as `[:G, :M, :Kp, :G]`
+(use `G` for Γ — the Latin alias avoids non-ASCII input).
+`npts_per_segment` is the number of points between each consecutive pair.
+
+Returns `(k_groups, ticks, labels)` ready to pass to `get_bands` as
+`k_groups_override`, and to `heatmap` as `xticks=(ticks, labels)`.
+"""
+function kpath_setup(lattice::Symbol, Lx::Int, Ly::Int,
+                     path_syms::AbstractVector{Symbol};
+                     npts_per_segment::Int = 20)
+    hs     = _hsk(lattice, Lx, Ly)
+    path   = [getfield(hs, s) for s in path_syms]
+    labels = [_hs_label(s) for s in path_syms]
+    kg, ticks = kpath_2d(path, Lx; npts_per_segment = npts_per_segment)
+    return kg, ticks, labels
+end
+
+
+# ============================================================
 # 4. Online band structure  —  get_bands
 #
-# Chebyshev recurrence (runs on the FULL MPO space, all aux sites included):
+# ── Chebyshev recurrence ────────────────────────────────────────────────────
+# Runs on the FULL MPO space (all auxiliary sites included):
 #   T_0 = I,  T_1 = H̃,  T_n = 2 H̃ T_{n-1} − T_{n-2}    (H̃ = (H−center)/scale)
 #
-# At each step n, T_n passes through four composable projection stages that
-# build a list of position-only MPOs; each is QFT'd and accumulated.
+# ── Projection pipeline (five composable steps) ─────────────────────────────
+# At each step n, T_n is passed through the following stages.  Each stage
+# builds a list of position-only MPOs; every MPO in the final list is QFT'd,
+# sampled, and its contribution added to Ak_w.
 #
-#   Step 0  nambu_proj  (optional)
-#       For each selected Nambu sector σ ∈ {1=particle, 2=hole}:
-#           project_aux(T_n, nambu_s, σ; side=nambu_side)  → L_pos+Lspin-site MPO
-#       Nambu is the outermost aux (prepended last), so it is projected first.
+#   Step 0  nambu_proj  — Nambu (BdG particle/hole) aux index
+#       Outermost aux (prepended last), projected first.
+#       Sectors: 1=particle, 2=hole.  kwarg: proj_nambu.
 #
-#   Step 1  spin_proj  (optional)
-#       For each selected spin channel σ ∈ {1=↑, 2=↓}:
-#           project_aux(T, spin_s, σ; side=:pre)  → L_pos-site MPO
+#   Step 1  spin_proj   — spin aux index
 #       After Nambu removal, spin is at site 1 of the reduced MPO.
-#       spin_s_aux carries the explicit spin Index for disambiguation.
+#       spin_s_aux carries the explicit spin Index to avoid ambiguity when
+#       both Nambu and spin are prepended.
+#       Channels: 1=↑, 2=↓.  kwarg: proj_s.
 #
-#   Step 1b  sublat_proj  (optional — for kagome/Lieb/honeycomb aux index)
-#       For each selected sublattice σ ∈ {1…dim(sublat_s)}:
-#           project_aux(T, sublat_s, σ; side=sublat_side)  → L_pos-site MPO
+#   Step 1c layer_proj  — layer aux index (bilayer / multilayer)
+#       For bilayer_hamiltonian / twisted_bilayer_hamiltonian models (H.layer_s).
+#       Sectors: 1…n_layers.  kwarg: proj_layer.
 #
-#   Step 2  sublattice  (optional — legacy mask sandwich for 2-sublattice models)
-#       For each selected mask ∈ {mask_A, mask_B}:
-#           T_proj = mask · T · mask
+#   Step 1b sublat_proj — sublattice aux index (explicit aux models only)
+#       For honeycomb_sublattice_hamiltonian, kagome_hamiltonian,
+#       lieb_hamiltonian, dice_hamiltonian (H.sublattice_s set).
+#       Sectors: 1…dim(sublat_s).  kwarg: proj_sl.
 #
-#   Step 3  QFT + diagonal extraction + KPM accumulation  (always)
-#       T_k  = conjugate_by_qft(T_proj)
+#   Step 2  sublattice  — LEGACY mask sandwich (preset models, no aux index)
+#       For HUniform2Dhex, H2DChernhex, HUniform2Dtri, HQC2Dsquare, …
+#       The sublattice structure is implicit in the hopping MPO.
+#       Use this when H.sublattice_s is nothing.  kwarg: proj_sl (shared).
+#
+#   Step 3  QFT + diagonal extraction + KPM weight accumulation  (always)
+#       T_k   = conjugate_by_qft(T_proj)
 #       A_mps = extract_diagonal_to_mps(T_k)
-#       for each k-group: s = mean(_eval_diag_mps(A_mps, x))
+#       for each k-group:  s = mean(_eval_diag_mps(A_mps, x) for x in group)
 #       ak_accum[iω, ik] += W[n, iω] * s
 #
-# k-point sampling (mirrors projdos_from_Tn_mpsk):
-#   num_x centers placed with ilinspace in [xmin, xmax]; each center
-#   is averaged over num_avg nearby offset points (±half_step).
-#   2D: diagonal zip of x/y-offsets, combined as (iy << Lx) | ix.
+# ── k-point groups ───────────────────────────────────────────────────────────
+# Default (grid) mode: num_x centres placed with ilinspace in [xmin,xmax];
+#   each centre is averaged over num_avg offset points (±half_step).
+#   2D: offsets zipped diagonally, combined as (iy << Lx) | ix.
 #
-# Projection combinations:
-#   nambu_proj  ×  spin_proj  ×  sublat_proj  ×  sublattice
-#   yields up to 2 × 2 × dim(sublat_s) × 2 MPOs per Chebyshev step.
-#   All contributions are summed unless specific sectors are selected
-#   via proj_nambu / proj_s / proj_sl.
+# Path mode: pass k_groups_override (from kpath_2d) or use the kpath kwarg
+#   in the TBHamiltonian overload; this bypasses all grid parameters.
+#
+# ── Projection count per Chebyshev step ──────────────────────────────────────
+#   nambu(×2) × spin(×2) × layer(×n) × sublat_aux(×dim) × sublat_mask(×2)
+#   All contributions are summed unless a specific sector is selected via the
+#   corresponding proj_* kwarg.
 # ============================================================
 
 """
@@ -293,6 +564,12 @@ Each projection flag is independent; any combination is valid.
                    so that spin is correctly identified even when Nambu is also
                    prepended at site 1.
 
+**Layer projection — Step 1c (bilayer / multilayer):**
+- `layer_proj`   : project each T_n onto individual layers (default `false`).
+- `proj_layer`   : `k` = layer k only, `nothing` = sum all layers.
+- `layer_s`      : the layer `Index` (auto-detected from `H.layer_s`).
+- `layer_side`   : `:pre` (default) — layer is always prepended.
+
 **Sublattice auxiliary projection — Step 1b (kagome, Lieb, honeycomb):**
 - `sublat_proj`  : project each T_n onto sublattice aux sectors (default `false`).
 - `proj_sl`      : `k` = sublattice k only, `nothing` = sum all.  Shared with
@@ -327,11 +604,16 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           proj_nambu        = nothing,
                           nambu_s           = nothing,
                           nambu_side::Symbol  = :pre,
+                          layer_proj::Bool  = false,
+                          proj_layer        = nothing,
+                          layer_s           = nothing,
+                          layer_side::Symbol  = :pre,
                           sublattice::Bool  = false,
                           proj_sl           = nothing,
                           sublat_proj::Bool = false,
                           sublat_s          = nothing,
                           sublat_side::Symbol = :post,
+                          k_groups_override   = nothing,
                           xmin::Int       = 0,
                           xmax            = nothing,
                           num_x::Int      = 10,
@@ -349,7 +631,8 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     L = length(sites)
     # Nambu and sublattice are always internal aux DOFs, never position qubits.
     # Spin is subtracted only when spin_proj=true (it may be part of the physical encoding).
-    L_pos = L - (spin_proj ? 1 : 0) - (!isnothing(nambu_s) ? 1 : 0) - (!isnothing(sublat_s) ? 1 : 0)
+    L_pos = L - (spin_proj ? 1 : 0) - (!isnothing(nambu_s) ? 1 : 0) -
+                (!isnothing(layer_s) ? 1 : 0) - (!isnothing(sublat_s) ? 1 : 0)
     N     = 2^L_pos
 
     # ── Scaled Hamiltonian ────────────────────────────────────────────────────
@@ -362,17 +645,26 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     valid = [abs(ω) < 1.0 for ω in ω_vals]
     W     = _kpm_weight_matrix(Ncheb, ω_vals; kernel = kernel, lambda = lambda)
 
-    # ── Build k-point groups (mirrors projdos_from_Tn_mpsk sampling) ─────────
-    if D == 1
+    # Lx is needed for both the 2D k-group builder and the sublattice mask builder;
+    # compute it unconditionally so it is always in scope when D==2.
+    Lx = D == 2 ? div(L_pos, 2) : 0
+
+    # ── Build k-point groups ──────────────────────────────────────────────────
+    # k_groups_override (from kpath_2d) bypasses the grid sampling entirely.
+    if !isnothing(k_groups_override)
+        k_groups = k_groups_override
+        num_x    = length(k_groups)
+    elseif D == 1
         _xmax     = xmax === nothing ? N - 1 : Int(xmax)
         xcenters  = ilinspace(xmin, _xmax, num_x)
         half_step = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
         offsets   = num_avg > 1 ? round.(Int, range(-half_step, half_step; length=num_avg)) : Int[0]
         k_groups  = [clamp.(xcenters[i] .+ offsets, 0, N - 1) for i in 1:num_x]
     elseif D == 2
-        Lx     = div(L_pos, 2)
+        Lx     = div(L_pos, 2)   # also computed above; repeated here keeps the branch self-contained
         Nx_loc = 2^Lx
         Ny_loc = 2^(L_pos - Lx)
+        num_x  = min(num_x, Nx_loc)   # can't have more output pts than grid positions
         _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
         _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
         xcenters    = ilinspace(xmin, _xmax, Nx_loc)
@@ -404,6 +696,7 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     aux_to_drop = Set{Index}()
     spin_proj             && push!(aux_to_drop, sites[1])
     !isnothing(nambu_s)   && push!(aux_to_drop, nambu_s::Index)
+    !isnothing(layer_s)   && push!(aux_to_drop, layer_s::Index)
     !isnothing(sublat_s)  && push!(aux_to_drop, sublat_s::Index)
     pos_sites = filter(s -> s ∉ aux_to_drop, sites)
     if sublattice
@@ -423,36 +716,48 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     #
     #  Step 0  nambu_proj         → project aux Nambu (BdG) index  (×1 or ×2)
     #  Step 1  spin_proj          → project aux spin index          (×1 or ×2)
+    #  Step 1c layer_proj         → project layer index             (×1 … ×n_layers)
     #  Step 1b sublat_proj        → project aux sublattice index    (×1 … ×dim)
     #  Step 2  sublattice (legacy)→ apply mask sandwich             (×1 or ×2)
     #
-    # Nambu is projected before spin because it is the outermost aux site.
-    # After nambu removal the spin index moves to position 1, so project_aux(:pre)
-    # on the reduced MPO lands on spin automatically.  spin_s_aux carries the
-    # explicit spin Index so the correct site is targeted even when nambu is present.
+    # Aux sites are projected in outermost-first order (nambu → spin → layer →
+    # sublat).  After each removal the next aux moves to position 1 of the
+    # reduced MPO, so project_aux(:pre) always lands on the right site.
     local _nambu_side = nambu_side
+    local _layer_side = layer_side
     local _sublat_side = sublat_side
     local _spin_idx    = isnothing(spin_s_aux) ? sites[1] : spin_s_aux
     function accumulate_Tn!(ak_accum, Tn, n)
         # Step 0: Nambu (BdG particle/hole) projection — outermost aux, project first.
         # proj_nambu=nothing → sum particle+hole; proj_nambu=1/2 → select one sector.
-        after_nambu = nambu_proj ? [project_aux(Tn, nambu_s::Index, σ; side=_nambu_side)
-                                    for σ in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] : MPO[Tn]
+        after_nambu = nambu_proj ? [project_aux(Tn, nambu_s::Index, sec; side=_nambu_side)
+                                    for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] : MPO[Tn]
 
         # Step 1: spin aux projection.
         # Uses spin_s_aux (explicit Index) when provided, falls back to sites[1].
         # proj_s=nothing → sum both channels; proj_s=1/2 → select one.
-        after_spin = spin_proj ? [project_aux(T, _spin_idx, σ; side=:pre)
-                                  for T in after_nambu, σ in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] : after_nambu
+        after_spin = spin_proj ? [project_aux(T, _spin_idx, sec; side=:pre)
+                                  for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] : after_nambu
+
+        # Step 1c: layer projection (bilayer / multilayer with H.layer_s).
+        # proj_layer=nothing → sum all layers; proj_layer=k → select layer k.
+        after_layer = if layer_proj
+            n_lay = dim(layer_s::Index)
+            lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
+            [project_aux(T, layer_s::Index, sec; side=_layer_side)
+             for T in after_spin for sec in lay_range]
+        else
+            after_spin
+        end
 
         # Step 1b: sublattice aux projection (kagome/Lieb/honeycomb with H.sublattice_s).
         # proj_sl=nothing → sum all sublattices; proj_sl=k → select sublattice k.
         after_sl_aux = if sublat_proj
-            σ_sl = isnothing(proj_sl) ? (1:dim(sublat_s::Index)) : (proj_sl:proj_sl)
-            [project_aux(T, sublat_s::Index, σ; side=_sublat_side)
-             for T in after_spin for σ in σ_sl]
+            sl_range = isnothing(proj_sl) ? (1:dim(sublat_s::Index)) : (proj_sl:proj_sl)
+            [project_aux(T, sublat_s::Index, sec; side=_sublat_side)
+             for T in after_layer for sec in sl_range]
         else
-            after_spin
+            after_layer
         end
 
         # Step 2: legacy sublattice mask projection (for 2-sublattice models without aux index)
@@ -511,28 +816,59 @@ end
 
 
 """
-    get_bands(H, Ncheb, D, ω_phys_vals; kwargs...) -> Matrix{Float64}
+    get_bands(H, Ncheb, D, ω_phys_vals; kwargs...)
+        -> Matrix{Float64}  or  NamedTuple(Ak, ticks, labels)
 
 High-level overload of `get_bands` for a `TBHamiltonian`.
 
-Physical energies `ω_phys_vals` are rescaled automatically via `H.scale` and
-`H.center`.  All projection keyword arguments (`spin_proj`, `nambu_proj`,
-`sublat_proj`, `sublattice`, `proj_s`, `proj_nambu`, `proj_sl`) are
-accepted exactly as in the low-level MPO method.
+Physical energies `ω_phys_vals` are rescaled via `H.scale` and `H.center`.
 
-The auxiliary indices (`nambu_s`/`nambu_side`, `spin_s_aux`,
-`sublat_s`/`sublat_side`) are **auto-detected** from the `TBHamiltonian`
-fields (`H.nambu_s`, `H.spin_s`, `H.sublattice_s`) and never need to be
-passed manually.  See the low-level method docstring for full documentation.
+**Auto-detection:** All auxiliary site Indices (Nambu, spin, layer, sublattice)
+and their positions (:pre/:post) are read from the struct fields and excluded
+from position k-space automatically — no manual index passing required.
+
+**Projection kwargs** (forwarded verbatim to the low-level MPO method):
+`spin_proj`, `proj_s`, `nambu_proj`, `proj_nambu`, `layer_proj`, `proj_layer`,
+`sublat_proj`, `proj_sl`, `sublattice`.
+
+**High-symmetry k-path shortcut** — replaces the manual `hsk_*` + `kpath_2d`
++ `k_groups_override` boilerplate with a single call:
+
+```julia
+res = get_bands(H, Ncheb, 2, omega;
+                kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
+```
+
+- `kpath`         : symbol vector defining the path.  Use Latin aliases:
+                    `G`=Γ, `M`, `K`, `Kp`=K', `X` — no special characters needed.
+- `kpath_lattice` : `:honeycomb`, `:square`, or `:triangular`.
+- `kpath_Lx`      : Lx for the 2D grid; defaults to `H.L ÷ 2`.
+- `num_x`         : **reused as `npts_per_segment`** when `kpath` is given.
+
+When `kpath` is set the return value is a `NamedTuple`:
+  `(Ak = Matrix{Float64}(Nω×Nk),  ticks = Vector{Int},  labels = Vector{String})`
+
+  ```julia
+  heatmap(1:size(res.Ak,2), omega, res.Ak; xticks=(res.ticks, res.labels))
+  vline!(p, res.ticks; ls=:dash, color=:white)
+  ```
+
+Otherwise returns `Matrix{Float64}` as usual (backward-compatible).
 """
 function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
+                          kpath             = nothing,
+                          kpath_lattice     = nothing,
+                          kpath_Lx          = nothing,
                           spin_proj::Bool   = false,
                           proj_s            = nothing,
                           nambu_proj::Bool  = false,
                           proj_nambu        = nothing,
+                          layer_proj::Bool  = false,
+                          proj_layer        = nothing,
                           sublattice::Bool  = false,
                           proj_sl           = nothing,
                           sublat_proj::Bool = false,
+                          k_groups_override   = nothing,
                           xmin::Int       = 0,
                           xmax            = nothing,
                           num_x::Int      = 10,
@@ -550,6 +886,19 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
     _ensure_scale!(H)
     ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
 
+    # ── High-symmetry path shortcut ──────────────────────────────────────────
+    # When `kpath` is provided, build k_groups_override from symbols and use
+    # num_x as npts_per_segment.  Returns a NamedTuple with tick info.
+    kpath_ticks = nothing; kpath_labels = nothing
+    if !isnothing(kpath)
+        isnothing(kpath_lattice) && error(
+            "kpath requires kpath_lattice (:honeycomb, :square, or :triangular).")
+        Lx_kp = isnothing(kpath_Lx) ? H.L ÷ 2 : Int(kpath_Lx)
+        Ly_kp = H.L - Lx_kp
+        k_groups_override, kpath_ticks, kpath_labels =
+            kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath; npts_per_segment = num_x)
+    end
+
     # Auto-detect all aux indices so the low-level function can exclude them
     # from L_pos and pos_sites regardless of which projections are active.
     nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
@@ -557,47 +906,60 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
 
     spin_s_det = H.spin_s   # may be nothing; low-level falls back to sites[1] when nothing
 
+    layer_s_det, layer_side_det = !isnothing(H.layer_s) ?
+        aux_site(H, :layer) : (nothing, :pre)
+
     sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ?
         aux_site(H, :sublattice) : (nothing, :post)
 
-    return get_bands(H.mpo, H.scale, H.center, H.sites, Ncheb, D, ω_resc;
+    Ak_w = get_bands(H.mpo, H.scale, H.center, H.sites, Ncheb, D, ω_resc;
                             spin_proj  = spin_proj,  proj_s     = proj_s,
                             spin_s_aux = spin_s_det,
                             nambu_proj = nambu_proj, proj_nambu = proj_nambu,
                             nambu_s    = nambu_s_det, nambu_side = nambu_side_det,
+                            layer_proj = layer_proj, proj_layer  = proj_layer,
+                            layer_s    = layer_s_det, layer_side = layer_side_det,
                             sublattice = sublattice, proj_sl    = proj_sl,
                             sublat_proj = sublat_proj,
                             sublat_s    = sublat_s_det,
                             sublat_side = sublat_side_det,
+                            k_groups_override = k_groups_override,
                             xmin = xmin, xmax = xmax,
                             num_x = num_x, num_avg = num_avg,
                             ymin = ymin, ymax = ymax, num_y = num_y,
                             kernel = kernel, lambda = lambda,
                             tol = tol, maxdim = maxdim, cutoff = cutoff,
                             printinfo = printinfo)
+
+    # When kpath was used, return a NamedTuple carrying the tick info so the
+    # caller can use result.Ak, result.ticks, result.labels directly in plots.
+    return isnothing(kpath_ticks) ? Ak_w :
+           (Ak = Ak_w, ticks = kpath_ticks, labels = kpath_labels)
 end
 
 
 # ============================================================
 # 4b. Auxiliary index projection utilities
 #
-# Any auxiliary DOF (spin, sublattice, Nambu …) added with prepend_op /
+# Any auxiliary DOF (spin, Nambu, layer, sublattice) added with prepend_op /
 # postpend_op lives at the first or last site of the MPO as a dim-1-bonded
-# tensor.
+# tensor.  The functions below implement the removal step used in Steps 0–1c
+# of the get_bands projection pipeline.
 #
-# project_aux(W, aux_s, σ; side)
-#   Contracts the projector |σ⟩⟨σ| onto the bra and ket physical indices of
-#   the aux tensor at the front (:pre) or back (:post) of the MPO, then
-#   absorbs the remaining dim-1 link into the adjacent position site.
-#   Returns an (L−1)-site MPO ready for conjugate_by_qft.
-#   project_spin is a convenience alias for the common :pre case.
+# project_aux(W, aux_s, sec; side)
+#   Contracts the projector |sec⟩⟨sec| onto the bra (aux_s') and ket (aux_s)
+#   physical indices of the aux tensor.  The resulting dim-1 link is absorbed
+#   into the adjacent position site, returning an (L−1)-site MPO.
+#   `side=:pre` for prepended indices (spin, Nambu, layer);
+#   `side=:post` for postpended indices (sublattice).
+#
+#   project_spin — convenience alias for the :pre case (spin is always prepended).
 #
 # aux_site(H, which) -> (Index, Symbol)
-#   Extracts the auxiliary Index and its side (:pre/:post) from a
-#   TBHamiltonian by looking up the appropriate field (H.spin_s, H.nambu_s,
-#   H.sublattice_s, H.layer_s) and finding its position in H.sites.
-#   Used internally by the TBHamiltonian overload of get_bands to pass the
-#   correct aux_s / side to the low-level function without user intervention.
+#   Extracts the auxiliary Index and its side (:pre or :post) from H.sites.
+#   `which` ∈ :spin, :nambu, :layer, :sublattice.
+#   Used by the TBHamiltonian overload to auto-detect all auxiliary indices
+#   and pass them to the low-level get_bands without user intervention.
 # ============================================================
 
 """
