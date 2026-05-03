@@ -938,6 +938,25 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
 end
 
 
+"""
+    get_bands(H, Ncheb, ω_phys_vals; kwargs...)
+
+Convenience overload that infers the spatial dimension `D` from `H.geometry`
+(via `length(H.geometry(1))`), so callers do not need to pass `D` explicitly.
+All keyword arguments are forwarded unchanged to the 4-argument form.
+
+Errors if `H.geometry` is `nothing` (custom or geometry-free Hamiltonians must
+still pass `D` explicitly via the 4-argument form).
+"""
+function get_bands(H::TBHamiltonian, Ncheb::Int, ω_phys_vals; kwargs...)
+    isnothing(H.geometry) &&
+        error("get_bands without explicit D requires H.geometry to be set. " *
+              "Pass D (1 or 2) as the third argument, or set H.geometry.")
+    D = length(H.geometry(1))
+    return get_bands(H, Ncheb, D, ω_phys_vals; kwargs...)
+end
+
+
 # ============================================================
 # 4b. Auxiliary index projection utilities
 #
