@@ -20,6 +20,41 @@ ITensors.op(::OpName"sigma_minus", ::SiteType"Qubit") =
 # Binary / index utilities
 # ============================================================
 
+
+# ---------------------------------------------------------------------
+# Shift MPO:  (Q f)(x) = f(x + q)  on a binary-encoded chain
+# ---------------------------------------------------------------------
+
+function build_shift_mpo(sites, q)
+    N      = length(sites)
+    q_bits = [(q >> (N - i)) & 1 for i in 1:N]
+    links  = [Index(2, "Link,l$n") for n in 0:N+1]
+    mpo    = MPO(sites)
+
+    for n in N:-1:1
+        s     = sites[n]
+        l_in  = links[n+1]
+        l_out = links[n]
+        T     = ITensor(s', s, l_in, l_out)
+        qn    = q_bits[n]
+
+        for cin in 0:1, s_val in 0:1
+            total   = s_val + qn + cin
+            res_val = total % 2
+            cout    = total ÷ 2
+            T[s' => (res_val + 1), s => (s_val + 1),
+              l_in => (cin == 1 ? 1 : 2), l_out => (cout == 1 ? 1 : 2)] = 1.0
+        end
+        mpo[n] = T
+    end
+
+    mpo[N] *= onehot(links[N+1] => 2)
+    mpo[1] *= (onehot(links[1] => 1) + onehot(links[1] => 2))  # cyclic
+
+    return mpo
+end
+
+
 """
     to_binary_vector(n, L) -> Vector{String}
 
@@ -182,6 +217,58 @@ function get_diagonal_mpo(L, sites, f; type=Float64)
     tt         = TensorCrossInterpolation.tensortrain(qtt.tci)
     density_mps = MPS(tt; sites)
     return mps2mpo(L, sites, density_mps)
+end
+
+
+
+# Exciton basis state |x, x⟩ on the interleaved electron-hole chain.
+# x is 1-indexed (x ∈ {1, …, 2^LPhys}), consistent with get_diagonal_mpo
+# and add_onsite! conventions in TensorBinding.
+function mpsexciton(x, sites)
+    L     = length(sites)
+    LPhys = div(L, 2)
+    bits  = to_binary_vector(Int(x) - 1, LPhys)   # shift to 0-indexed for binary encoding
+
+    elechole = Vector{String}(undef, L)
+    for i in 1:LPhys
+        elechole[2i - 1] = bits[i]
+        elechole[2i]     = bits[i]
+    end
+
+    return MPS(sites, elechole)
+end
+
+
+
+# ---------------------------------------------------------------------
+# MPS → diagonal MPO conversion
+# ---------------------------------------------------------------------
+
+"""
+    mps_to_diagonal_mpo(mps, sites) -> MPO
+
+Convert an MPS into a diagonal MPO on `sites` by replacing each physical
+index with a bra–ket pair tied by a 3-leg delta.  Used to convert the
+output of a 2D QTCI (encoded as a flat MPS) into a diagonal MPO on the
+interleaved (e.g. electron-hole) site space.
+"""
+function mps_to_diagonal_mpo(mps, sites)
+    N          = length(mps)
+    mpo_tensors = Vector{ITensor}(undef, N)
+    for i in 1:N
+        mps_t = mps[i]
+        old_s = if i == 1
+            uniqueind(mps_t, mps[i+1])
+        elseif i == N
+            uniqueind(mps_t, mps[i-1])
+        else
+            uniqueind(mps_t, mps[i-1], mps[i+1])
+        end
+        s              = sites[i]
+        s_temp         = Index(dim(s), "temp")
+        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) * delta(s_temp, s, s')
+    end
+    return MPO(mpo_tensors)
 end
 
 # ============================================================
@@ -366,3 +453,4 @@ function get_matrix(mpo, sites)
     return mat
 end
 get_matrix(mpo, ::Int, sites) = get_matrix(mpo, sites)
+
