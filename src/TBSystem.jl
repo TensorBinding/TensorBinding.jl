@@ -828,10 +828,15 @@ function Base.show(io::IO, H::TBHamiltonian)
     H.sublattice_s  !== nothing && (aux_str *= " +$(ITensors.dim(H.sublattice_s))sublattices")
     H.spin_s  !== nothing && (aux_str *= " +spin")
     H.nambu_s !== nothing && (aux_str *= " +BdG")
+    # Detect exciton: interleaved 2L-site chain with no auxiliary indices
+    is_exc = length(H.sites) == 2 * H.L &&
+             H.layer_s === nothing && H.sublattice_s === nothing &&
+             H.spin_s  === nothing && H.nambu_s      === nothing
+    N_str = is_exc ? "N=$(H.N) [exciton, D=$(H.N^2)]" : "N=$(H.N)$(aux_str)"
     sc_str = H.scale == 0.0 ? "scale=auto" :
              H.center == 0.0 ? "scale=$(H.scale)" :
              "scale=$(H.scale), center=$(H.center)"
-    print(io, "TBHamiltonian | L=$(H.L), N=$(H.N)$(aux_str), $sc_str, " *
+    print(io, "TBHamiltonian | L=$(H.L), $N_str, $sc_str, " *
               "maxlinkdim=$(ITensorMPS.maxlinkdim(H.mpo)) | " *
               "geometry: $geom_str | $tn_str")
 end

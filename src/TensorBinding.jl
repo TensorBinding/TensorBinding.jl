@@ -1,6 +1,7 @@
 module TensorBinding
 
 using LinearAlgebra
+using Random
 using ITensors
 using NDTensors
 using ITensorMPS
@@ -33,6 +34,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   RPA_tk.jl      — RPA susceptibility (uses KPM_tk)
 #   krylov_tk.jl   — Green's function via vectorized linsolve (uses RPA_tk for interleave_mpo)
 #   Timeev_tk.jl   — time evolution (uses Hamiltonian)
+#   twoparticle_tk.jl — exciton / two-particle system construction (uses TBSystem, Hamiltonian)
 
 include("utils.jl")
 include("Hamiltonian.jl")
@@ -51,5 +53,6 @@ include("twisted_tk.jl")
 include("bilayer_tk.jl")
 include("Supercond_tk.jl")
 include("DMRG_tk.jl")
+include("twoparticle_tk.jl")
 
 end
