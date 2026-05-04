@@ -121,20 +121,72 @@ end
 
 
 """
-    KPM_Tn(H::TBHamiltonian, Ncheb; maxdim=40, cutoff=1e-8,
-           dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim) -> (Tn_list, scale, center)
+    KPM_Tn(H::TBHamiltonian, Ncheb; mode=:mpo, psi0=nothing,
+           maxdim=40, cutoff=1e-8, dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+        -> (Tn_list, scale, center)
 
-High-level overload: accepts a `TBHamiltonian` directly.
+High-level Chebyshev expansion for a `TBHamiltonian`.
 
-- Calls `_ensure_scale!` to lazily determine `H.scale` and `H.center` via DMRG
-  if not already set (i.e. when `H.scale == 0`).
-- Builds the rescaled Chebyshev list `T_n((H−center·I)/scale)`.
-- Caches the result in `H._tn_cache` / `H._tn_Ncheb`.
-- Returns `(Tn_list, H.scale, H.center)` — same tuple as the low-level method.
+Lazily determines `H.scale` and `H.center` via DMRG if not already set, builds
+the rescaled Chebyshev list, caches the result on `H`, and returns
+`(Tn_list, H.scale, H.center)`.
 
-Usage:
-    Tn, scale, center = KPM_Tn(H, 200; maxdim=100)
-    ω_r = (ω_phys - center) / scale   # rescaled energy in (-1, 1)
+**`mode` keyword**
+
+| `mode` | What is cached | Used by |
+|--------|---------------|---------|
+| `:mpo` (default) | MPO list `{T_n(H̃)}` in `H._tn_cache` | `get_ldos`, `get_ldos_spectrum`, `get_ldos_spatial` |
+| `:mps` | MPS list `{T_n(H̃)|ψ₀⟩}` in `H._tn_mps_cache` | `get_ldos(…; mode=:mps, psi0=…)` |
+
+`mode=:mps` requires `psi0` (a reference MPS).  The MPS pathway is more
+memory-efficient when a single reference state is sufficient.
+
+**Overview of the three KPM pathways**
+
+```
+Pathway 1 — MPO × MPO cache  [legacy / rarely used]
+  KPM_Tn(H, Ncheb; mode=:mpo)           # build and cache {T_n(H̃)} MPOs
+  → get_ldos_spectrum(H, ωlist)          # all ω in one pass → Vector{MPS}
+  → get_ldos(H, ω; mode=:diag)           # single ω → diagonal site-LDOS MPS
+  → get_ldos(H, ω; mode=:mpo)            # single ω → full off-diagonal MPO
+
+  ⚠ Bond dimension χ_T grows at each MPO × MPO step; memory scales as
+  O(Ncheb × χ_T²).  Prefer Pathways 3 or 4 unless the cache is reused for
+  multiple downstream calls.  Kept mainly for legacy compatibility.
+
+Pathway 2 — MPS cache  [exciton LDOS, fixed reference state]
+  KPM_Tn(H, Ncheb; mode=:mps, psi0=ψ₀)  # cache {T_n(H̃)|ψ₀⟩} MPS on H
+  → get_exciton_ldos(H, X, ω; …)         # μₙ = ⟨X|T_n(H̃)|X⟩ reusing cache
+  → get_ldos(H, ω; mode=:mps, psi0=ψ₀)  # μₙ = ⟨ψ₀|T_n(H̃)|ψ₀⟩ → scalar
+
+  Propagates a single reference MPS and stores the full trajectory
+  {|φ_n⟩ = T_n(H̃)|ψ₀⟩} for repeated re-use across many energy queries on the
+  same state.  Natural for exciton LDOS where many sites |X⟩ are probed
+  sequentially after building the cache once.
+
+Pathway 3 — Online MPO × MPO  [k-space and spatial spectral functions]
+  get_bands(H, Ncheb, D, ωlist; …)       # k-resolved A(k,ω), QFT-conjugated
+  get_ldos_spatial(H, Ncheb, ωlist; …)   # real-space LDOS heatmap (default mode)
+
+  Runs the MPO × MPO Chebyshev recursion online with no prior KPM_Tn call;
+  only 3 MPOs alive at a time (truncated after each step).  Preferred for
+  computing band structures and spatial LDOS over many positions simultaneously.
+
+Pathway 4 — Online MPO × MPS  [single-particle default, most memory-efficient]
+  get_ldos_online(H, Ncheb, X, ωlist; …) # LDOS at one site, all ω
+  get_ldos_spatial(H, Ncheb, ωlist; mode=:mps; …)  # per-position MPS recursion
+  get_dos_stochastic(H, Ncheb, ωlist; …) # stochastic trace DOS
+
+  Propagates MPS states rather than full MPOs: only 3 MPS alive per sample/site.
+  For single-particle problems this is almost always the best choice —
+  memory cost is O(χ_H × χ_ψ) instead of O(χ_T²).  get_dos_stochastic
+  applies this with random initial states for a stochastic trace estimate.
+```
+
+All pathways share the same KPM kernel and normalization.
+Aux-DOF projections (`spin_proj`, `nambu_proj`, `sublat_proj`, …) are supported
+in **Pathways 1, 3, and 4**.  Pathway 2 operates on a fixed reference state
+and does not expose per-DOF projection keywords.
 """
 function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                 mode::Symbol                  = :mpo,
@@ -383,37 +435,41 @@ end
 
 """
     get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
-                    kernel, lambda, maxdim, cutoff, verbose) -> Vector{Float64}
+                    kernel, lambda, maxdim, cutoff, verbose,
+                    nambu_proj, proj_nambu, spin_proj, proj_s,
+                    layer_proj, proj_layer, sublat_proj, proj_sl)
+        -> Vector{Float64}
 
-Online real-space LDOS at site `X` for all physical energies in `ω_phys_vals`.
+Online real-space LDOS at unit-cell position `X` for all physical energies in
+`ω_phys_vals`.  Never stores more than **3 MPS** simultaneously (no Chebyshev cache).
 
-This is the third KPM method, complementing the MPO-MPO (full operator, `mode=:mpo`)
-and MPO-MPS (state propagation, `mode=:mps`) variants.  It never stores more than
-**3 MPOs** simultaneously.
+**Algorithm**: MPS Chebyshev recursion
+`|φ_k⟩ = T_k(H̃)|X⟩` with moment accumulation `μ_k = ⟨X|φ_k⟩`.
+Auxiliary DOF sectors are summed by running the recursion once per requested sector.
 
-**Algorithm** (mirrors `get_bands` but in real space, without QFT):
+`X ∈ {1, …, H.N}` is the 1-indexed unit-cell position.
 
-1. Rescale `H` and pre-compute the weight matrix `W[n, iω]` for all energies.
-2. Run the Chebyshev recursion `T_0 = I, T_1 = H̃, T_k = 2H̃T_{k-1} − T_{k-2}`:
-   at each step `n`:
-   a. Extract the diagonal of `T_n` as an MPS: `diag_n = extract_diagonal_to_mps(T_n)`
-   b. Evaluate `diag_n` at the computational-basis state `|X⟩`:
-      contract site-by-site using the binary digits of `X − 1` (MSB-first).
-   c. Accumulate: `accum[iω] += W[n, iω] * val`  for every energy `iω`.
-   d. Discard `T_{n-2}`.  Only `T_{n-1}` and `T_n` stay in memory.
-3. Normalise: `A(X, ω) = accum[iω] / (π² · Ncheb · √(1 − ω²))`.
+**Auxiliary DOF projections** (same interface as `get_bands` and `get_ldos_spatial`):
 
-`X ∈ {1, …, 2^L}` is the 1-indexed physical site (TensorBinding convention).
-`ω_phys_vals` is a vector of physical energies; pass `[ω]` for a single point.
+- `spin_proj`, `nambu_proj`, `layer_proj`, `sublat_proj` — enable projection of the
+  corresponding auxiliary DOF auto-detected from `H`.
+- `proj_s`, `proj_nambu`, `proj_layer`, `proj_sl` — sector selector: `nothing` sums
+  all sectors of that DOF; an integer selects a single sector (1-based).
+- Contributions from all requested sectors are accumulated into a single result vector.
 
-Returns `Vector{Float64}` of length `length(ω_phys_vals)` with `0.0` for energies
-outside the spectral support.  No Chebyshev cache is needed or produced.
+Returns `Vector{Float64}` of length `Nω` with `0.0` outside the spectral support.
 
-Example
--------
+Examples
+--------
 ```julia
 ωlist = range(-3.0, 3.0; length=300)
-ldos  = get_ldos_online(H, 200, 2^(H.L-1), ωlist)   # middle site
+ldos  = get_ldos_online(H, 200, 2^(H.L-1), ωlist)          # no aux DOF
+
+# Spin-summed LDOS at site 16
+ldos_tot = get_ldos_online(H_spin, 200, 16, ωlist; spin_proj=true)
+
+# Spin-↑ LDOS only
+ldos_up  = get_ldos_online(H_spin, 200, 16, ωlist; spin_proj=true, proj_s=1)
 ```
 """
 function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
@@ -421,7 +477,16 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                           lambda::Real   = 4.0,
                           maxdim::Int    = 100,
                           cutoff::Real   = 1e-8,
-                          verbose::Bool  = false)
+                          verbose::Bool  = false,
+                          # Auxiliary DOF projections — same interface as get_bands:
+                          nambu_proj::Bool  = false,
+                          proj_nambu        = nothing,
+                          spin_proj::Bool   = false,
+                          proj_s            = nothing,
+                          layer_proj::Bool  = false,
+                          proj_layer        = nothing,
+                          sublat_proj::Bool = false,
+                          proj_sl           = nothing)
     _ensure_scale!(H)
 
     # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
@@ -435,46 +500,55 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
     accum  = zeros(Float64, Nω)
 
-    # ── Evaluation state |X⟩ on the full MPO site chain ─────────────────────
-    # Standard (L sites): X is a position in {1,…,2^L}.
-    # Exciton (2L sites): X labels the single-sector exciton position → |X,X⟩.
-    L_tot    = length(H.sites)
-    psi_eval = L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
-                               mpsexciton(X, H.sites)
+    # ── Auto-detect auxiliary indices ────────────────────────────────────────
+    nambu_s_det, _ = !isnothing(H.nambu_s) ? aux_site(H, :nambu) : (nothing, :pre)
+    spin_s_det     = H.spin_s
+    layer_s_det, _ = !isnothing(H.layer_s) ? aux_site(H, :layer) : (nothing, :pre)
+    sublat_s_det, _= !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
 
-    # ── MPS-based Chebyshev recursion ─────────────────────────────────────────
-    # We propagate the STATE |φ_k⟩ = T_k(H)|X⟩ rather than the full operator T_k(H).
-    # At each step the scalar moment μ_k = ⟨X|T_k(H)|X⟩ = inner(psi_eval, φ_k) is
-    # accumulated directly into all energy slots simultaneously.
-    #
-    # Cost: Ncheb × (MPO×MPS apply) — O(L · χ² · W) — vs the old MPO×MPO route
-    # which is O(L · χ_T² · W²) with χ_T growing with every step.  For L=5 exciton
-    # (10 sites, W_H≈5) this is typically 10-100× faster.
-    #
-    # Only 3 MPS alive at any time (φ_{k-2}, φ_{k-1}, φ_k).
+    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
+    L_tot        = length(H.sites)
 
-    function accumulate_mps!(phi, n)
-        mu = real(inner(psi_eval, phi))
-        for iω in 1:Nω
-            valid[iω] || continue
-            accum[iω] += W[n, iω] * mu
+    # ── Sector ranges ─────────────────────────────────────────────────────────
+    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
+        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
+    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
+        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
+    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
+        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
+    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
+        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
+
+    # ── MPS-based Chebyshev recursion, summed over requested aux sectors ──────
+    for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
+        psi_eval = any_aux_proj ?
+                   _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
+                   (L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
+                                   mpsexciton(X, H.sites))
+
+        function accumulate_mps!(phi, n)
+            mu = real(inner(psi_eval, phi))
+            for iω in 1:Nω
+                valid[iω] || continue
+                accum[iω] += W[n, iω] * mu
+            end
         end
-    end
 
-    phi_km2 = psi_eval
-    phi_km1 = apply(Ham_n, psi_eval; cutoff=cutoff, maxdim=maxdim)
-    accumulate_mps!(phi_km2, 1)
-    accumulate_mps!(phi_km1, 2)
+        phi_km2 = psi_eval
+        phi_km1 = apply(Ham_n, psi_eval; cutoff=cutoff, maxdim=maxdim)
+        accumulate_mps!(phi_km2, 1)
+        accumulate_mps!(phi_km1, 2)
 
-    for k in 3:Ncheb
-        phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                  -phi_km2; cutoff=cutoff, maxdim=maxdim)
-        accumulate_mps!(phi_k, k)
-        phi_km2 = phi_km1
-        phi_km1 = phi_k
-        verbose && (k % 10 == 0 || k == Ncheb) &&
-            println("get_ldos_online step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi_km1))")
-    end
+        for k in 3:Ncheb
+            phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
+                      -phi_km2; cutoff=cutoff, maxdim=maxdim)
+            accumulate_mps!(phi_k, k)
+            phi_km2 = phi_km1
+            phi_km1 = phi_k
+            verbose && (k % 10 == 0 || k == Ncheb) &&
+                println("get_ldos_online step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi_km1))")
+        end
+    end  # sector loop
 
     # ── Normalise ─────────────────────────────────────────────────────────────
     result = zeros(Float64, Nω)
@@ -487,54 +561,99 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Auxiliary DOF helpers for LDOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) -> MPS
+
+Product-state MPS over all `H.sites` for KPM evaluation in LDOS `:mps` mode.
+
+- Position sites encode `x-1` in big-endian binary (first position site = MSB).
+- Auxiliary sites are set to 1-based sector indices:
+  `σ_n` (nambu), `σ_s` (spin), `σ_l` (layer), `σ_sl` (sublattice).
+  Indices for absent aux dofs are ignored.
+"""
+function _ldos_make_psi0(H::TBHamiltonian, x::Int,
+                          σ_n::Int, σ_s::Int, σ_l::Int, σ_sl::Int)
+    k       = 0
+    pos_bit = H.L - 1   # bit index: MSB of (x-1) goes to the first position site
+    for s in H.sites
+        k *= dim(s)
+        if     !isnothing(H.nambu_s)      && s == H.nambu_s;      k += σ_n  - 1
+        elseif !isnothing(H.spin_s)       && s == H.spin_s;       k += σ_s  - 1
+        elseif !isnothing(H.layer_s)      && s == H.layer_s;      k += σ_l  - 1
+        elseif !isnothing(H.sublattice_s) && s == H.sublattice_s; k += σ_sl - 1
+        else
+            k += (x - 1) >> pos_bit & 1
+            pos_bit -= 1
+        end
+    end
+    return _basis_state_mps(k, H.sites)
+end
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Spatial LDOS at multiple x-positions (real-space analogue of get_bands)
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
     get_ldos_spatial(H, Ncheb, ω_phys_vals;
-                     num_x, num_avg, mode, x_start, x_end,
-                     x_groups, kernel, lambda, maxdim, cutoff, verbose)
-        -> Matrix{Float64}  (Nω × num_x)
+                     num_x, num_avg, mode, x_start, x_end, x_groups,
+                     kernel, lambda, maxdim, cutoff, verbose,
+                     nambu_proj, proj_nambu, spin_proj, proj_s,
+                     layer_proj, proj_layer, sublat_proj, proj_sl)
+        -> Matrix{Float64}
 
-Spatially-resolved LDOS at `num_x` coarse positions with optional local averaging,
-mirroring the `get_bands` interface.
+Spatially-resolved LDOS, real-space analogue of `get_bands`.
+
+**Return shape**
+
+- **No sublattice DOF** (`H.sublattice_s === nothing`): `(Nω × ng)` where `ng = num_x`.
+- **With sublattice DOF** (`H.sublattice_s` set): `(Nω × ng×n_sub)` where `n_sub =
+  dim(H.sublattice_s)`.  Columns are interleaved in atom order matching the
+  corresponding `*_positions` function: `[A₀, B₀, A₁, B₁, …]` for 2-sublattice
+  lattices, `[A₀, B₀, C₀, …]` for 3-sublattice ones.  Pair directly with
+  `plot_ldos_2d` which consumes this column layout without further transformation.
+
+**Sublattice auto-detection**
+
+`H.sublattice_s` is detected automatically.  When set:
+- `proj_sl=nothing` (default): a single Chebyshev pass fills *all* sublattice columns.
+- `proj_sl=k`: only sublattice `k` columns are filled; all others are zero.
+  `sublat_proj=true` is accepted for API compatibility but is no longer required.
 
 **Sampling parameters**
 
-- `num_x`    : number of coarse sample positions (default `H.N` = all sites).
-- `num_avg`  : number of sub-samples per coarse position for local averaging
-               (default `1` = no averaging).  The coarse block of width
-               `dx = (x_end−x_start+1) ÷ num_x` is sampled at `num_avg` evenly-
-               spaced sub-positions separated by `dx ÷ num_avg`.
-- `x_start`, `x_end` : 1-indexed range to sample (defaults: `1` and `H.N`).
-- `x_groups` : explicit `Vector{Vector{Int}}` override (bypasses `num_x`/`num_avg`).
+- `num_x`    : coarse position count (default `H.N` for full resolution).
+- `num_avg`  : sub-samples per coarse block for local averaging (default 1).
+- `x_start`, `x_end` : 1-indexed position range (defaults: `1` and `H.N`).
+- `x_groups` : explicit `Vector{Vector{Int}}` override.
 
 **Modes**
 
-- `:mpo` (default) — single online MPO Chebyshev recursion; at each step the
-  diagonal of `T_n` is extracted as an MPS and evaluated at every position
-  simultaneously.  3 MPOs alive; cost `∝ Ncheb × (MPO×MPO)`, independent of
-  `num_x`.  Preferred for typical use (compact Hamiltonian MPO, many positions).
+- `:mpo` (default) — single Chebyshev pass; evaluates all positions simultaneously.
+  Cost `∝ Ncheb × (MPO×MPO)`, independent of `num_x` or `n_sub`.
+- `:mps` — independent MPS recursion per (position, sector) combination.
+  Use for systems where MPO×MPO is too expensive.
 
-- `:mps` — independent MPS Chebyshev recursion per position.
-  3 MPS alive per run; cost `∝ N_total_positions × Ncheb × (MPO×MPS)`.
-  Use for very large systems where the MPO×MPO step is too expensive.
-
-**`x` convention**: 1-indexed, `x ∈ {1,…,2^L}`.
-Exciton: evaluation state is `|x,x⟩`.
+**Other auxiliary DOF projections** (same interface as `get_bands`):
+`nambu_proj`/`proj_nambu`, `spin_proj`/`proj_s`, `layer_proj`/`proj_layer`.
 
 Examples
 --------
 ```julia
-# All sites, no averaging, MPS mode
-ldos(x) = get_ldos_spatial(H, 200, ωlist)
+# Standard 1D chain — shape (Nω × 8)
+ldos = get_ldos_spatial(H, 200, ωlist; num_x=8)
 
-# 16 coarse points, each averaged over 4 neighbours
-ldos(x) = get_ldos_spatial(H, 200, ωlist; num_x=16, num_avg=4)
+# Kagome: full resolution, all sublattices — shape (Nω × 3*H.N)
+ldos_all = get_ldos_spatial(H_kg, 200, ωlist; num_x=H_kg.N)
 
-# Same with explicit groups
-groups = [[x + k for k in 0:3] for x in 1:8:H.N]
-ldos(x) = get_ldos_spatial(H, 200, ωlist; x_groups=groups)
+# Kagome: sublattice A only — only A columns filled, B/C columns zero
+ldos_A   = get_ldos_spatial(H_kg, 200, ωlist; proj_sl=1, num_x=H_kg.N)
+
+# BdG chain: particle sector only
+ldos_p   = get_ldos_spatial(H_bdg, 200, ωlist; nambu_proj=true, proj_nambu=1)
 ```
 """
 function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
@@ -548,9 +667,17 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            lambda::Real   = 4.0,
                            maxdim::Int    = 100,
                            cutoff::Real   = 1e-8,
-                           verbose::Bool  = false)
+                           verbose::Bool  = false,
+                           nambu_proj::Bool  = false,
+                           proj_nambu        = nothing,
+                           spin_proj::Bool   = false,
+                           proj_s            = nothing,
+                           layer_proj::Bool  = false,
+                           proj_layer        = nothing,
+                           sublat_proj::Bool = false,   # kept for backward compat; auto-on when H.sublattice_s is set
+                           proj_sl           = nothing)
 
-    # ── Build x_groups from num_x / num_avg if not provided explicitly ────────
+    # ── Build x_groups ────────────────────────────────────────────────────────
     groups = if x_groups !== nothing
         x_groups isa AbstractVector{<:AbstractVector} ?
             collect.(x_groups) : [[x] for x in x_groups]
@@ -566,6 +693,27 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     _ensure_scale!(H)
 
+    # ── Auto-detect auxiliary indices ─────────────────────────────────────────
+    nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
+        aux_site(H, :nambu) : (nothing, :pre)
+    spin_s_det  = H.spin_s
+    layer_s_det, layer_side_det = !isnothing(H.layer_s) ?
+        aux_site(H, :layer) : (nothing, :pre)
+    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ?
+        aux_site(H, :sublattice) : (nothing, :post)
+
+    # ── Sublattice layout ─────────────────────────────────────────────────────
+    # When H.sublattice_s is set, the result always covers every atom:
+    #   shape = (Nω, ng × n_sub),  col = (ig-1)*n_sub + s
+    # This matches the atom ordering of honeycomb/kagome/lieb positions functions.
+    # proj_sl=k  → fill only sublattice k (others stay 0)
+    # proj_sl=nothing → fill all sublattices (auto when sublat_proj=false too)
+    has_sublat = !isnothing(sublat_s_det)
+    n_sub      = has_sublat ? dim(sublat_s_det::Index) : 1
+    sl_fill    = has_sublat ?
+        (isnothing(proj_sl) ? (1:n_sub) : (proj_sl:proj_sl)) :
+        (1:1)
+
     I_mpo = MPO(H.sites, "Id")
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
@@ -574,74 +722,146 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
-    ng    = length(groups)
-    result = zeros(Float64, Nω, ng)
+    ng     = length(groups)
+    n_cols = ng * n_sub
+    result = zeros(Float64, Nω, n_cols)
     L_tot  = length(H.sites)
 
-    # ── Helper: build evaluation MPS for position x ───────────────────────────
-    make_psi(x) = L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
-                                  mpsexciton(x, H.sites)
+    any_other_proj = nambu_proj || spin_proj || layer_proj
 
     if mode == :mps
-        # ── MPS mode: one independent recursion per position ─────────────────
+        # ── MPS mode ──────────────────────────────────────────────────────────
+        nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
+            (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
+        spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
+            (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
+        layer_range = (layer_proj && !isnothing(layer_s_det)) ?
+            (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
+
+        any_aux_proj = any_other_proj || has_sublat
         n_total = sum(length(g) for g in groups)
         n_done  = 0
 
         for (ig, grp) in enumerate(groups)
-            grp_accum = zeros(Float64, Nω)
+            grp_accum = zeros(Float64, Nω, n_sub)  # per-sublattice accumulator
 
             for x in grp
-                psi0  = make_psi(x)
-                accum = zeros(Float64, Nω)
+                for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range,
+                        σ_sl in sl_fill
+                    psi0 = any_aux_proj ?
+                           _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) :
+                           (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
+                                           mpsexciton(x, H.sites))
+                    accum_loc = zeros(Float64, Nω)
 
-                function kpm_accum!(phi, n)
-                    mu = real(inner(psi0, phi))
+                    function kpm_accum!(phi, n)
+                        mu = real(inner(psi0, phi))
+                        for iω in 1:Nω
+                            valid[iω] || continue
+                            accum_loc[iω] += W[n, iω] * mu
+                        end
+                    end
+
+                    phi_km2 = psi0
+                    phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
+                    kpm_accum!(phi_km2, 1);  kpm_accum!(phi_km1, 2)
+
+                    for k in 3:Ncheb
+                        phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
+                                  -phi_km2; cutoff=cutoff, maxdim=maxdim)
+                        kpm_accum!(phi_k, k)
+                        phi_km2 = phi_km1
+                        phi_km1 = phi_k
+                    end
+
                     for iω in 1:Nω
                         valid[iω] || continue
-                        accum[iω] += W[n, iω] * mu
+                        grp_accum[iω, σ_sl] += accum_loc[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
                     end
-                end
+                end  # sector loop
+            end  # x
 
-                phi_km2 = psi0
-                phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
-                kpm_accum!(phi_km2, 1);  kpm_accum!(phi_km1, 2)
-
-                for k in 3:Ncheb
-                    phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                              -phi_km2; cutoff=cutoff, maxdim=maxdim)
-                    kpm_accum!(phi_k, k)
-                    phi_km2 = phi_km1
-                    phi_km1 = phi_k
-                end
-
-                for iω in 1:Nω
-                    valid[iω] || continue
-                    grp_accum[iω] += accum[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
-                end
-
-                n_done += 1
-                verbose && n_done % 15 == 0 &&
-                    println("get_ldos_spatial [:mps]  group $ig/$ng  x=$x  " *
-                            "($n_done/$n_total)  maxlinkdim=$(maxlinkdim(phi_km1))")
+            for s in sl_fill
+                result[:, (ig-1)*n_sub + s] = grp_accum[:, s] ./ length(grp)
             end
 
-            result[:, ig] = grp_accum ./ length(grp)
+            n_done += length(grp)
+            verbose && n_done % 15 == 0 &&
+                println("get_ldos_spatial [:mps]  group $ig/$ng  ($n_done/$n_total)")
         end
 
     elseif mode == :mpo
-        # ── MPO mode: single online Chebyshev pass, evaluate diagonal at all x ─
-        # Pre-build all evaluation states (one per unique position)
-        all_xs   = unique(vcat(groups...))
-        psi_dict = Dict(x => make_psi(x) for x in all_xs)
-        accum    = zeros(Float64, Nω, ng)   # [iω, ig]
+        # ── MPO mode: single online Chebyshev pass ────────────────────────────
+        all_xs = unique(vcat(groups...))
+
+        # Build position-only eval states (drop sublat + any other projected aux)
+        aux_to_drop = Set{Index}()
+        (nambu_proj && !isnothing(nambu_s_det)) && push!(aux_to_drop, nambu_s_det::Index)
+        (spin_proj  && !isnothing(spin_s_det))  && push!(aux_to_drop, spin_s_det::Index)
+        (layer_proj && !isnothing(layer_s_det)) && push!(aux_to_drop, layer_s_det::Index)
+        has_sublat                              && push!(aux_to_drop, sublat_s_det::Index)
+        pos_sites = filter(s -> s ∉ aux_to_drop, H.sites)
+
+        psi_dict = if isempty(aux_to_drop)
+            Dict(x => (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
+                                      mpsexciton(x, H.sites)) for x in all_xs)
+        else
+            @assert length(pos_sites) == H.L "get_ldos_spatial: $(length(pos_sites)) position sites after dropping aux but expected H.L=$(H.L)."
+            Dict(x => binary_to_MPS(x - 1, H.L, pos_sites) for x in all_xs)
+        end
+
+        accum = zeros(Float64, Nω, n_cols)
+
+        local _nambu_side  = nambu_side_det
+        local _layer_side  = layer_side_det
+        local _sublat_side = sublat_side_det
 
         function accumulate_Tn!(Tk, n)
-            diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tk); cutoff=cutoff)
-            for (ig, grp) in enumerate(groups)
-                s = sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp)
-                for iω in 1:Nω
-                    valid[iω] || continue
-                    accum[iω, ig] += W[n, iω] * s
+            # Non-sublattice projections (nambu → spin → layer)
+            after_nambu = nambu_proj ?
+                [project_aux(Tk, nambu_s_det::Index, sec; side=_nambu_side)
+                 for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] :
+                MPO[Tk]
+
+            after_spin = spin_proj ?
+                [project_aux(T, spin_s_det::Index, sec; side=:pre)
+                 for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] :
+                after_nambu
+
+            after_layer = if layer_proj
+                n_lay     = dim(layer_s_det::Index)
+                lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
+                [project_aux(T, layer_s_det::Index, sec; side=_layer_side)
+                 for T in after_spin for sec in lay_range]
+            else
+                after_spin
+            end
+
+            if has_sublat
+                # Project per sublattice sector; each gets its own columns
+                for Tl in after_layer, s in sl_fill
+                    Tp     = project_aux(Tl, sublat_s_det::Index, s; side=_sublat_side)
+                    diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
+                    for (ig, grp) in enumerate(groups)
+                        val = sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp)
+                        col = (ig - 1) * n_sub + s
+                        for iω in 1:Nω
+                            valid[iω] || continue
+                            accum[iω, col] += W[n, iω] * val
+                        end
+                    end
+                end
+            else
+                # No sublattice: one column per group (original behavior)
+                for Tp in after_layer
+                    diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
+                    for (ig, grp) in enumerate(groups)
+                        val = sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp)
+                        for iω in 1:Nω
+                            valid[iω] || continue
+                            accum[iω, ig] += W[n, iω] * val
+                        end
+                    end
                 end
             end
         end
@@ -678,47 +898,77 @@ end
 
 """
     get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
-                       N_sample, N_bound, seed, kernel, lambda, maxdim, cutoff, verbose)
+                       N_sample, N_bound, seed, normalize,
+                       kernel, lambda, maxdim, cutoff, verbose,
+                       nambu_proj, proj_nambu, spin_proj, proj_s,
+                       layer_proj, proj_layer, sublat_proj, proj_sl)
         -> Vector{Float64}
 
-Stochastic full DOS via stratified random sampling.
+Stochastic full DOS via random trace estimation (MPS Chebyshev, 3 MPS per sample).
 
-**Sectors and stratification**
+**Normalization**
 
-For a system with total Hilbert space dimension `D` (e.g. `D = 2^(2L)` for an
-exciton), the full trace splits into two sectors:
+- `normalize=false` (default): returns the **total** spectral weight `Tr[δ(ω−H)]`,
+  which grows as `H.N` with system size.
+- `normalize=true`: divides by `H.N`, giving a **per-site** DOS that is intensive
+  (independent of `L`) and directly comparable to `get_ldos_spatial` values.
 
-- **Bound sector** (e.g. electron and hole at the same site, |x,x⟩): `N_phys` states
-- **Scattering sector** (all remaining basis states): `D − N_phys` states
+**Auxiliary DOF projections**
 
-Uniform random sampling massively underrepresents the bound sector when
-`N_phys ≪ D` (for L=5: N=32, D=1024, only 3 % of states are bound).  Stratified
-sampling dedicates `N_bound` samples explicitly to the bound sector and `N_sample`
-to the full Hilbert space, combining with proper weights:
+When any `*_proj=true` flag is set (same interface as `get_bands` and
+`get_ldos_spatial`), the function samples only from position-basis states with the
+specified aux-sector values instead of the full `D`-dimensional Hilbert space:
 
-    DOS(ω) = N_phys × avg_bound(ω)  +  (D − N_phys) × avg_scatter(ω)
+- `proj_sl=k` (or `proj_s`, `proj_nambu`, `proj_layer`): sample from `|x, σ=k⟩`
+  states; `N_phys` effective states.
+- `proj_sl=nothing` with `sublat_proj=true`: iterate all sublattice sectors per
+  sample; all selected channels are accumulated into one result.
 
-`N_bound = 0` (default) recovers uniform sampling over all D states.
-`N_bound = H.N` uses one sample per physical site — exact bound-state sum for
-small systems (L ≤ 7 or so).
+This gives `DOS_σ(ω) = Σ_x ⟨x,σ|δ(ω−H)|x,σ⟩` for the selected sectors.
+With `normalize=true` the result is per position (averaged over `H.N` unit cells).
 
-**Bound-state sampling (exciton)**
+**Exciton stratification** (no aux projections)
 
-When `N_bound > 0` and `length(H.sites) == 2*H.L` (exciton interleaved chain),
-bound states are sampled as random |x,x⟩ states via `mpsexciton(x, H.sites)`.
-For other Hamiltonians the parameter is silently ignored.
+For exciton Hamiltonians (`length(H.sites) == 2*H.L`), stratified sampling
+dedicates `N_bound` samples to the bound sector `|x,x⟩` and `N_sample` to the
+full Hilbert space, combining with proper weights:
+  `DOS = N_phys × avg_bound + (D − N_phys) × avg_scatter`.
+`N_bound = 0` (default) = uniform sampling over all D states.
 
-**Algorithm** — MPS Chebyshev, 3 MPS alive per sample.
+Examples
+--------
+```julia
+# Per-site DOS, size-independent
+dos = get_dos_stochastic(H, 100, ωlist; N_sample=50, normalize=true)
+
+# Sublattice-resolved per-site DOS (kagome)
+dos_A = get_dos_stochastic(H_kg, 100, ωlist; sublat_proj=true, proj_sl=1,
+                            N_sample=50, normalize=true)
+
+# BdG: particle + hole combined per-site DOS
+dos   = get_dos_stochastic(H_bdg, 100, ωlist; nambu_proj=true,
+                            N_sample=50, normalize=true)
+```
 """
 function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              N_sample::Int            = 50,
                              N_bound::Int             = 0,
                              seed::Union{Int,Nothing} = 42,
+                             normalize::Bool          = false,
                              kernel::Symbol           = :jackson,
                              lambda::Real             = 4.0,
                              maxdim::Int              = 100,
                              cutoff::Real             = 1e-8,
-                             verbose::Bool            = false)
+                             verbose::Bool            = false,
+                             # Auxiliary DOF projections — same interface as get_bands:
+                             nambu_proj::Bool  = false,
+                             proj_nambu        = nothing,
+                             spin_proj::Bool   = false,
+                             proj_s            = nothing,
+                             layer_proj::Bool  = false,
+                             proj_layer        = nothing,
+                             sublat_proj::Bool = false,
+                             proj_sl           = nothing)
     _ensure_scale!(H)
 
     # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
@@ -728,6 +978,23 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     D      = prod(ITensors.dim(s) for s in H.sites)
     N_phys = H.N   # physical sites per sector (= 2^H.L)
     is_exc = length(H.sites) == 2 * H.L   # exciton interleaved structure
+
+    # ── Auto-detect auxiliary indices ────────────────────────────────────────
+    nambu_s_det, _ = !isnothing(H.nambu_s) ? aux_site(H, :nambu) : (nothing, :pre)
+    spin_s_det     = H.spin_s
+    layer_s_det, _ = !isnothing(H.layer_s) ? aux_site(H, :layer) : (nothing, :pre)
+    sublat_s_det, _= !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
+
+    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
+
+    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
+        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
+    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
+        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
+    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
+        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
+    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
+        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
 
     # ── KPM weight matrix ─────────────────────────────────────────────────────
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
@@ -759,6 +1026,36 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     accum_full  = zeros(Float64, Nω)
     accum_bound = zeros(Float64, Nω)
+    norm        = π^2 * Ncheb
+
+    if any_aux_proj
+        # ── Projected DOS: sample position states with fixed aux sectors ─────
+        # Trace over position basis only, with aux dofs projected to selected
+        # sectors.  Effective dimension = N_phys × n_sectors.
+        # D_eff = N_phys: the sector loop already sums all sectors into accum_full,
+        # so only the position average (× N_phys) is needed for normalisation.
+        D_eff = N_phys
+
+        xs = rand(rng, 1:N_phys, N_sample)
+        for (i, x) in enumerate(xs)
+            for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
+                psi0 = _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl)
+                χ = run_sample!(psi0, accum_full, 1.0 / N_sample)
+                verbose && i % 15 == 0 && σ_n == first(nambu_range) &&
+                    σ_s == first(spin_range) && σ_l == first(layer_range) &&
+                    σ_sl == first(sl_range) &&
+                    println("Projected DOS sample $i/$N_sample  maxlinkdim=$χ")
+            end
+        end
+
+        result = zeros(Float64, Nω)
+        for iω in 1:Nω
+            valid[iω] || continue
+            result[iω] = D_eff * accum_full[iω] / (norm * sqrt(1 - ω_vals[iω]^2))
+        end
+        normalize && (result ./= N_phys)
+        return result
+    end
 
     # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────────
     samples = rand(rng, 0:(D - 1), N_sample)
@@ -779,39 +1076,19 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Combine and normalise ─────────────────────────────────────────────────
-    # DOS = D × avg_full  +  (N_bound > 0) × N_phys × (avg_bound − avg_full_bound)
-    # Equivalently: replace the fraction N_phys/D of full samples with the dedicated
-    # bound estimate, keeping the scattering contribution from the full samples.
-    #
-    #   DOS = (D - N_phys) × avg_scatter  +  N_phys × avg_bound
-    #       ≈  D × avg_full               (when N_bound = 0, uniform)
-    #   With stratification:
-    #       scatter part  = D × avg_full  (already weighted correctly for D-N_phys states
-    #                                      because bound states are rare in random draw)
-    #       bound part    = N_phys × avg_bound  (dedicated samples, exact for that sector)
-    #   Combined = D × avg_full + N_phys × (avg_bound - avg_full_bound_contamination)
-    #
-    # Simplest unbiased combination: subtract bound-state contamination in full samples
-    # and replace with the dedicated estimate.
-    #   DOS = D × avg_full  +  N_phys × avg_bound  −  N_phys × (N_phys/D) × avg_full
-    #       = D × avg_full × (1 - N_phys²/D²) + N_phys × avg_bound   [approximately]
-    #
-    # For N_phys ≪ D the correction is negligible.  We use the simple form:
-    #   DOS ≈ (D - N_phys) × avg_full  +  N_phys × avg_bound
-    norm = π^2 * Ncheb
-
+    # DOS ≈ (D - N_phys) × avg_full  +  N_phys × avg_bound
     result = zeros(Float64, Nω)
     for iω in 1:Nω
         valid[iω] || continue
         denom = norm * sqrt(1 - ω_vals[iω]^2)
         if N_bound > 0 && is_exc
-            # Stratified: scattering from full samples, bound from dedicated samples
             result[iω] = ((D - N_phys) * accum_full[iω] +
                           N_phys       * accum_bound[iω]) / denom
         else
             result[iω] = D * accum_full[iω] / denom
         end
     end
+    normalize && (result ./= N_phys)
     return result
 end
 
