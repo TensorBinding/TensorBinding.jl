@@ -82,8 +82,10 @@ function mcweeny_purify(ρ0::MPO;
                         maxdim::Int     = 40,
                         cutoff::Float64 = 1e-8,
                         tol::Float64    = 1e-5,
-                        verbose::Bool   = false)
-    ρ = deepcopy(ρ0)
+                        verbose::Bool   = false,
+                        run_on::Symbol  = :cpu)
+    backend = _resolve_backend(run_on)
+    ρ = to_device(deepcopy(ρ0), backend)
     for iter in 1:maxiters
         ρ2  = _mpo_sq(ρ; maxdim, cutoff)
         err = _idempotency_error(ρ, ρ2)
@@ -96,7 +98,7 @@ function mcweeny_purify(ρ0::MPO;
         ρ = +(3.0 * ρ2, -2.0 * ρ3; cutoff)
         ITensorMPS.truncate!(ρ; maxdim, cutoff)
     end
-    return ρ
+    return from_device(ρ, backend)
 end
 
 
@@ -130,8 +132,10 @@ function sp2_purify(ρ0::MPO, Nel::Real;
                     maxdim::Int     = 40,
                     cutoff::Float64 = 1e-8,
                     tol::Float64    = 1e-5,
-                    verbose::Bool   = false)
-    ρ = deepcopy(ρ0)
+                    verbose::Bool   = false,
+                    run_on::Symbol  = :cpu)
+    backend = _resolve_backend(run_on)
+    ρ = to_device(deepcopy(ρ0), backend)
     for iter in 1:maxiters
         ρ2  = _mpo_sq(ρ; maxdim, cutoff)
         err = _idempotency_error(ρ, ρ2)
@@ -139,15 +143,13 @@ function sp2_purify(ρ0::MPO, Nel::Real;
         err < tol && break
         tr_ρ2 = real(tr(ρ2))
         if tr_ρ2 >= Nel
-            # contract toward 0: keep ρ²
             ρ = ρ2
         else
-            # expand toward 1: 2ρ - ρ²
             ρ = +(2.0 * ρ, -1.0 * ρ2; cutoff)
             ITensorMPS.truncate!(ρ; maxdim, cutoff)
         end
     end
-    return ρ
+    return from_device(ρ, backend)
 end
 
 
@@ -204,10 +206,11 @@ function mcweeny_purify(H::TBHamiltonian;
                         maxdim::Int     = 40,
                         cutoff::Float64 = 1e-8,
                         tol::Float64    = 1e-5,
-                        verbose::Bool   = false)
+                        verbose::Bool   = false,
+                        run_on::Symbol  = :cpu)
     ρ0 = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff)
     ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
-                            tol=tol, verbose=verbose)
+                            tol=tol, verbose=verbose, run_on=run_on)
     H._density_cache = ρ
     return ρ
 end
@@ -226,10 +229,11 @@ function sp2_purify(H::TBHamiltonian;
                     maxdim::Int     = 40,
                     cutoff::Float64 = 1e-8,
                     tol::Float64    = 1e-5,
-                    verbose::Bool   = false)
+                    verbose::Bool   = false,
+                    run_on::Symbol  = :cpu)
     ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
     ρ  = sp2_purify(ρ0, Nel; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
-                              tol=tol, verbose=verbose)
+                              tol=tol, verbose=verbose, run_on=run_on)
     H._density_cache = ρ
     return ρ
 end
@@ -279,7 +283,8 @@ function get_density(H::TBHamiltonian;
                      Nel::Int         = H.N ÷ 2,
                      maxiters::Int    = 30,
                      tol::Float64     = 1e-5,
-                     verbose::Bool    = false)
+                     verbose::Bool    = false,
+                     run_on::Symbol   = :cpu)
 
     if H._density_cache !== nothing
         verbose && println("get_density: returning cached density matrix")
@@ -288,13 +293,13 @@ function get_density(H::TBHamiltonian;
 
     if method == :mcweeny
         return mcweeny_purify(H; ϵF=ϵF, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
-                                 tol=tol, verbose=verbose)
+                                 tol=tol, verbose=verbose, run_on=run_on)
     elseif method == :sp2
         return sp2_purify(H; Nel=Nel, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
-                             tol=tol, verbose=verbose)
+                             tol=tol, verbose=verbose, run_on=run_on)
     elseif method == :kpm
         if H._tn_cache === nothing || H._tn_Ncheb < Ncheb
-            KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+            KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose, run_on=run_on)
         end
         fermi_r = (ϵF - H.center) / H.scale
         ρ = get_density_from_Tn(H._tn_cache, H._tn_Ncheb;

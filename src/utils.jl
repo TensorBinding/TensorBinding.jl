@@ -428,12 +428,14 @@ end
 Return the matrix element ⟨i|mpo|j⟩.  Works for any site types
 (Qubit, Layer, Spin, Nambu …).  Intended for small-system validation.
 """
-function matrix_checker(mpo, sites, i, j)
-    psii = _basis_state_mps(Int(i), sites)
-    psij = _basis_state_mps(Int(j), sites)
+function matrix_checker(mpo, sites, i, j; run_on::Symbol = :cpu)
+    backend = _resolve_backend(run_on)
+    psii = to_device(_basis_state_mps(Int(i), sites), backend)
+    psij = to_device(_basis_state_mps(Int(j), sites), backend)
     return inner(psii, apply(mpo, psij))
 end
-matrix_checker(mpo, ::Int, sites, i, j) = matrix_checker(mpo, sites, i, j)
+matrix_checker(mpo, ::Int, sites, i, j; run_on::Symbol = :cpu) =
+    matrix_checker(mpo, sites, i, j; run_on=run_on)
 
 
 """

@@ -83,7 +83,8 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
                 dmrg_maxdim        = [10, 20, 40],
                 dmrg_linkdim::Int  = 4,
                 cutoff::Real       = 1e-8,
-                verbose::Bool    = true)
+                verbose::Bool      = true,
+                run_on::Symbol     = :cpu)
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
@@ -97,25 +98,29 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
     I_mpo   = MPO(sites, "Id")
     Ham_n   = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
 
-    # ── Chebyshev recursion T_0 = I,  T_1 = H_scaled,  T_k = 2H·T_{k-1} − T_{k-2}
-    T_k_minus_2 = I_mpo
-    T_k_minus_1 = Ham_n
-    Tn_list = [T_k_minus_2, T_k_minus_1]
+    # ── Move recurrence tensors to device; accumulate on device, transfer once ──
+    backend     = _resolve_backend(run_on)
+    Ham_n_dev   = to_device(Ham_n, backend)
+    Tkm2_dev    = to_device(I_mpo, backend)
+    Tkm1_dev    = Ham_n_dev
+    Tn_dev_list = MPO[Tkm2_dev, Tkm1_dev]
 
+    # ── Chebyshev recursion T_0 = I,  T_1 = H_scaled,  T_k = 2H·T_{k-1} − T_{k-2}
     for k in 3:N+1
-        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff),
-                -T_k_minus_2; maxdim = maxdim)
-        T_k = ITensorMPS.truncate!(T_k; cutoff = cutoff)
-        T_k_minus_2 = T_k_minus_1
-        T_k_minus_1 = T_k
-        push!(Tn_list, T_k)
+        Tk_dev  = +(2 * apply(Ham_n_dev, Tkm1_dev; cutoff = cutoff),
+                    -Tkm2_dev; maxdim = maxdim)
+        Tk_dev  = ITensorMPS.truncate!(Tk_dev; cutoff = cutoff)
+        Tkm2_dev = Tkm1_dev
+        Tkm1_dev = Tk_dev
+        push!(Tn_dev_list, Tk_dev)
         if verbose
-            if k%10 == 0 || k == N+1 # print info every 10 iterations and at the end
-                println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(T_k))
-            end 
+            if k%10 == 0 || k == N+1
+                println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(Tk_dev))
+            end
         end
     end
 
+    Tn_list = MPO[from_device(T, backend) for T in Tn_dev_list]
     return Tn_list, scale, center
 end
 
@@ -196,7 +201,8 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                 dmrg_nsweeps::Int             = 5,
                 dmrg_maxdim                   = [10, 20, 40],
                 dmrg_linkdim::Int             = 4,
-                verbose::Bool                 = false)
+                verbose::Bool                 = false,
+                run_on::Symbol                = :cpu)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
@@ -206,7 +212,8 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                            center   = H.center,
                            maxdim   = maxdim,
                            cutoff   = cutoff,
-                           verbose  = verbose)
+                           verbose  = verbose,
+                           run_on   = run_on)
         H._tn_cache = Tn
     elseif mode == :mps
         psi0 === nothing && error("KPM_Tn with mode=:mps requires the psi0 keyword argument")
@@ -215,7 +222,8 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                                center   = H.center,
                                maxdim   = maxdim,
                                cutoff   = cutoff,
-                               verbose  = verbose)
+                               verbose  = verbose,
+                               run_on   = run_on)
         H._tn_mps_cache = Tn
     else
         error("Unknown KPM mode: $mode. Choose :mpo or :mps")
@@ -255,7 +263,8 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
                     dmrg_maxdim        = [10, 20, 40],
                     dmrg_linkdim::Int  = 4,
                     cutoff::Real       = 1e-8,
-                    verbose::Bool    = true)
+                    verbose::Bool      = true,
+                    run_on::Symbol     = :cpu)
 
     # ── Spectral bounds ───────────────────────────────────────────────────
     if isnothing(scale)
@@ -269,25 +278,29 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
     I_mpo = MPO(sites, "Id")
     Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
 
-    # ── Chebyshev recursion T_0 = |ψ₀⟩,  |T_1⟩ = H_scaled|ψ₀⟩,  |T_k⟩ = 2H_scaled|ψ_{k-1}⟩ − |ψ_{k-2}⟩
-    psi0_n      = psi0 / norm(psi0)  # ensure normalisation
-    T_k_minus_2 = psi0_n
-    T_k_minus_1 = apply(Ham_n, psi0_n; cutoff = cutoff, maxdim = maxdim)
-    Tn_mps_list = [T_k_minus_2, T_k_minus_1]
+    # ── Move to device; accumulate on device, transfer once ──────────────
+    backend  = _resolve_backend(run_on)
+    Ham_dev  = to_device(Ham_n, backend)
+    psi0_n   = psi0 / norm(psi0)
+    Tkm2_dev = to_device(psi0_n, backend)
+    Tkm1_dev = apply(Ham_dev, Tkm2_dev; cutoff = cutoff, maxdim = maxdim)
+    Tn_dev_list = MPS[Tkm2_dev, Tkm1_dev]
 
+    # ── Chebyshev recursion |T_k⟩ = 2H̃|T_{k-1}⟩ − |T_{k-2}⟩ ───────────
     for k in 3:N+1
-        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff, maxdim = maxdim),
-                -T_k_minus_2; cutoff = cutoff, maxdim = maxdim)
-        T_k_minus_2 = T_k_minus_1
-        T_k_minus_1 = T_k
-        push!(Tn_mps_list, T_k)
+        Tk_dev  = +(2 * apply(Ham_dev, Tkm1_dev; cutoff = cutoff, maxdim = maxdim),
+                    -Tkm2_dev; cutoff = cutoff, maxdim = maxdim)
+        Tkm2_dev = Tkm1_dev
+        Tkm1_dev = Tk_dev
+        push!(Tn_dev_list, Tk_dev)
         if verbose
             if k % 10 == 0 || k == N + 1
-                println("Computed MPS T_$(k-1) with maxlinkdim = ", maxlinkdim(T_k))
+                println("Computed MPS T_$(k-1) with maxlinkdim = ", maxlinkdim(Tk_dev))
             end
         end
     end
 
+    Tn_mps_list = MPS[from_device(T, backend) for T in Tn_dev_list]
     return Tn_mps_list, scale, center
 end
 
@@ -297,7 +310,8 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
                     dmrg_nsweeps::Int  = 5,
                     dmrg_maxdim        = [10, 20, 40],
                     dmrg_linkdim::Int  = 4,
-                    verbose::Bool    = false)
+                    verbose::Bool      = false,
+                    run_on::Symbol     = :cpu)
     _ensure_scale!(H; dmrg_nsweeps=dmrg_nsweeps,
                       dmrg_maxdim=dmrg_maxdim,
                       dmrg_linkdim=dmrg_linkdim)
@@ -306,7 +320,8 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
                                 center    = H.center,
                                 maxdim    = maxdim,
                                 cutoff    = cutoff,
-                                verbose   = verbose)
+                                verbose   = verbose,
+                                run_on    = run_on)
     H._tn_mps_cache = Tn_mps
     H._tn_Ncheb     = N
     return Tn_mps, H.scale, H.center
@@ -478,6 +493,7 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                           maxdim::Int    = 100,
                           cutoff::Real   = 1e-8,
                           verbose::Bool  = false,
+                          run_on::Symbol = :cpu,
                           # Auxiliary DOF projections — same interface as get_bands:
                           nambu_proj::Bool  = false,
                           proj_nambu        = nothing,
@@ -490,8 +506,10 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     _ensure_scale!(H)
 
     # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    I_mpo   = MPO(H.sites, "Id")
+    Ham_n   = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    backend = _resolve_backend(run_on)
+    Ham_n   = to_device(Ham_n, backend)
 
     # ── KPM weight matrix and accumulators ────────────────────────────────────
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
@@ -521,10 +539,11 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
 
     # ── MPS-based Chebyshev recursion, summed over requested aux sectors ──────
     for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-        psi_eval = any_aux_proj ?
+        psi_cpu  = any_aux_proj ?
                    _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
                    (L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
                                    mpsexciton(X, H.sites))
+        psi_eval = to_device(psi_cpu, backend)
 
         function accumulate_mps!(phi, n)
             mu = real(inner(psi_eval, phi))
@@ -668,6 +687,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            maxdim::Int    = 100,
                            cutoff::Real   = 1e-8,
                            verbose::Bool  = false,
+                           run_on::Symbol = :cpu,
                            nambu_proj::Bool  = false,
                            proj_nambu        = nothing,
                            spin_proj::Bool   = false,
@@ -714,8 +734,10 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         (isnothing(proj_sl) ? (1:n_sub) : (proj_sl:proj_sl)) :
         (1:1)
 
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    I_mpo   = MPO(H.sites, "Id")
+    Ham_n   = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    backend = _resolve_backend(run_on)
+    Ham_n   = to_device(Ham_n, backend)
 
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
     Nω     = length(ω_vals)
@@ -752,6 +774,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) :
                            (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
                                            mpsexciton(x, H.sites))
+                    psi0 = to_device(psi0, backend)
                     accum_loc = zeros(Float64, Nω)
 
                     function kpm_accum!(phi, n)
@@ -817,6 +840,8 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         local _sublat_side = sublat_side_det
 
         function accumulate_Tn!(Tk, n)
+            # Chebyshev recurrence runs on device; projections and inner products on CPU.
+            Tk = from_device(Tk, backend)
             # Non-sublattice projections (nambu → spin → layer)
             after_nambu = nambu_proj ?
                 [project_aux(Tk, nambu_s_det::Index, sec; side=_nambu_side)
@@ -866,7 +891,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             end
         end
 
-        Tkm2 = I_mpo;  Tkm1 = Ham_n
+        Tkm2 = to_device(I_mpo, backend);  Tkm1 = Ham_n
         accumulate_Tn!(Tkm2, 1);  accumulate_Tn!(Tkm1, 2)
 
         for k in 3:Ncheb
@@ -960,6 +985,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              maxdim::Int              = 100,
                              cutoff::Real             = 1e-8,
                              verbose::Bool            = false,
+                             run_on::Symbol           = :cpu,
                              # Auxiliary DOF projections — same interface as get_bands:
                              nambu_proj::Bool  = false,
                              proj_nambu        = nothing,
@@ -972,8 +998,10 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     _ensure_scale!(H)
 
     # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    I_mpo   = MPO(H.sites, "Id")
+    Ham_n   = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    backend = _resolve_backend(run_on)
+    Ham_n   = to_device(Ham_n, backend)
 
     D      = prod(ITensors.dim(s) for s in H.sites)
     N_phys = H.N   # physical sites per sector (= 2^H.L)
@@ -1039,7 +1067,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         xs = rand(rng, 1:N_phys, N_sample)
         for (i, x) in enumerate(xs)
             for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-                psi0 = _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl)
+                psi0 = to_device(_ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl), backend)
                 χ = run_sample!(psi0, accum_full, 1.0 / N_sample)
                 verbose && i % 15 == 0 && σ_n == first(nambu_range) &&
                     σ_s == first(spin_range) && σ_l == first(layer_range) &&
@@ -1060,7 +1088,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────────
     samples = rand(rng, 0:(D - 1), N_sample)
     for (i, k) in enumerate(samples)
-        psi0  = _basis_state_mps(k, H.sites)
+        psi0 = to_device(_basis_state_mps(k, H.sites), backend)
         χ = run_sample!(psi0, accum_full, 1.0 / N_sample)
         verbose && i % 15 == 0 && println("Full sample $i/$N_sample  maxlinkdim=$χ")
     end
@@ -1069,7 +1097,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     if N_bound > 0 && is_exc
         xs = rand(rng, 1:N_phys, N_bound)
         for (i, x) in enumerate(xs)
-            psi0 = mpsexciton(x, H.sites)
+            psi0 = to_device(mpsexciton(x, H.sites), backend)
             χ = run_sample!(psi0, accum_bound, 1.0 / N_bound)
             verbose && i % 15 == 0 && println("Bound sample $i/$N_bound  (x=$x)  maxlinkdim=$χ")
         end

@@ -60,24 +60,25 @@ function _get_projector(H::TBHamiltonian;
                          Nchebychev::Int  = 300,
                          maxdim::Int      = 40,
                          cutoff::Float64  = 1e-8,
-                         Nel              = nothing)
+                         Nel              = nothing,
+                         run_on::Symbol   = :cpu)
     if method == :KPM
         if H._tn_cache !== nothing
             Tn_list = H._tn_cache
             Ncheb   = H._tn_Ncheb
         else
-            Tn_list, _, _ = KPM_Tn(H, Nchebychev; maxdim=maxdim, cutoff=cutoff)
+            Tn_list, _, _ = KPM_Tn(H, Nchebychev; maxdim=maxdim, cutoff=cutoff, run_on=run_on)
             Ncheb = Nchebychev
         end
         fermi_resc = (fermi - H.center) / H.scale
         return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_resc, maxdim=maxdim)
     elseif method == :mcweeny
         H._density_cache !== nothing && return H._density_cache
-        return mcweeny_purify(H; ϵF=fermi, maxdim=maxdim, cutoff=cutoff)
+        return mcweeny_purify(H; ϵF=fermi, maxdim=maxdim, cutoff=cutoff, run_on=run_on)
     elseif method == :sp2
         H._density_cache !== nothing && return H._density_cache
         Nel_val = Nel === nothing ? H.N ÷ 2 : Int(Nel)
-        return sp2_purify(H; Nel=Nel_val, maxdim=maxdim, cutoff=cutoff)
+        return sp2_purify(H; Nel=Nel_val, maxdim=maxdim, cutoff=cutoff, run_on=run_on)
     else
         error("Unknown method: :$method. Choose :KPM, :mcweeny, or :sp2")
     end
@@ -149,39 +150,42 @@ function get_W(H::TBHamiltonian, xfunc, sz_func;
                Nel              = nothing,
                quenched::Bool   = true,
                l                = nothing,
-               Λ::Real          = 10)
+               Λ::Real          = 10,
+               run_on::Symbol   = :cpu)
+    backend = _resolve_backend(run_on)
     P       = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
-                              maxdim=maxdim, cutoff=cutoff, Nel=Nel)
-    Q       = MPO(H.sites, "Id") - P
+                              maxdim=maxdim, cutoff=cutoff, Nel=Nel, run_on=run_on)
+    Q_cpu   = +(MPO(H.sites, "Id"), -1.0 * P; cutoff=1e-15)
+    P_dev   = to_device(P, backend)
+    Q_dev   = to_device(Q_cpu, backend)
     l_bits  = l === nothing ? div(H.L, 2) : l
     L_chain = 2^l_bits
-    sz      = get_diagonal_mpo(H.L, H.sites, sz_func)
+    sz_dev  = to_device(get_diagonal_mpo(H.L, H.sites, sz_func), backend)
 
     if quenched
-        # W1 = σ (P sinX Q + Q sinX P),  W2 = σ (P cosX Q + Q cosX P)
-        sinX_op = get_sinx_op(H.L, H.sites, L_chain, Λ, xfunc)
-        cosX_op = get_cosx_op(H.L, H.sites, L_chain, Λ, xfunc)
-        T1s = apply(P, apply(sinX_op, Q; maxdim, cutoff); maxdim, cutoff)
-        T2s = apply(Q, apply(sinX_op, P; maxdim, cutoff); maxdim, cutoff)
-        W1  = apply(sz, +(T1s, T2s; maxdim, cutoff); maxdim, cutoff)
-        T1c = apply(P, apply(cosX_op, Q; maxdim, cutoff); maxdim, cutoff)
-        T2c = apply(Q, apply(cosX_op, P; maxdim, cutoff); maxdim, cutoff)
-        W2  = apply(sz, +(T1c, T2c; maxdim, cutoff); maxdim, cutoff)
+        sinX_dev = to_device(get_sinx_op(H.L, H.sites, L_chain, Λ, xfunc), backend)
+        cosX_dev = to_device(get_cosx_op(H.L, H.sites, L_chain, Λ, xfunc), backend)
+        T1s = apply(P_dev, apply(sinX_dev, Q_dev; maxdim, cutoff); maxdim, cutoff)
+        T2s = apply(Q_dev, apply(sinX_dev, P_dev; maxdim, cutoff); maxdim, cutoff)
+        W1  = apply(sz_dev, +(T1s, T2s; maxdim, cutoff); maxdim, cutoff)
+        T1c = apply(P_dev, apply(cosX_dev, Q_dev; maxdim, cutoff); maxdim, cutoff)
+        T2c = apply(Q_dev, apply(cosX_dev, P_dev; maxdim, cutoff); maxdim, cutoff)
+        W2  = apply(sz_dev, +(T1c, T2c; maxdim, cutoff); maxdim, cutoff)
 
         calculate_winding = alpha -> begin
-            α = binary_to_MPS(alpha - 1, H.L, H.sites)
+            α = to_device(binary_to_MPS(alpha - 1, H.L, H.sites), backend)
             x = xfunc(alpha - 1, L_chain)
             Λ * (cos(x / Λ) * inner(α', W1, α) - sin(x / Λ) * inner(α', W2, α))
         end
 
     else
-        x_op = get_diagonal_mpo(H.L, H.sites, i -> xfunc(i - 1, L_chain))
-        T1   = apply(P, apply(x_op, Q; maxdim, cutoff); maxdim, cutoff)
-        T2   = apply(Q, apply(x_op, P; maxdim, cutoff); maxdim, cutoff)
-        W_op = apply(sz, +(T1, T2; maxdim, cutoff); maxdim, cutoff)
+        x_dev = to_device(get_diagonal_mpo(H.L, H.sites, i -> xfunc(i - 1, L_chain)), backend)
+        T1    = apply(P_dev, apply(x_dev, Q_dev; maxdim, cutoff); maxdim, cutoff)
+        T2    = apply(Q_dev, apply(x_dev, P_dev; maxdim, cutoff); maxdim, cutoff)
+        W_op  = apply(sz_dev, +(T1, T2; maxdim, cutoff); maxdim, cutoff)
 
         calculate_winding = alpha -> begin
-            α = binary_to_MPS(alpha - 1, H.L, H.sites)
+            α = to_device(binary_to_MPS(alpha - 1, H.L, H.sites), backend)
             inner(α', W_op, α)
         end
     end
@@ -327,63 +331,61 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                               Λ::Real         = 10,
                               maxdim::Int     = 500,
                               cutoff::Float64 = 1e-8,
-                              quenched::Bool  = true)
+                              quenched::Bool  = true,
+                              run_on::Symbol  = :cpu)
+    backend = _resolve_backend(run_on)
     l_bits  = l === nothing ? div(L, 2) : l
     L_chain = 2^l_bits
 
-    Q = MPO(sites, "Id") - P
+    P_dev = to_device(P, backend)
+    Q_dev = to_device(+(MPO(sites, "Id"), -1.0 * P; cutoff=1e-15), backend)
 
     if quenched
-        sinX_op = get_sinx_op(L, sites, L_chain, Λ, xfunc)
-        cosX_op = get_cosx_op(L, sites, L_chain, Λ, xfunc)
-        sinY_op = get_siny_op(L, sites, L_chain, Λ, yfunc)
-        cosY_op = get_cosy_op(L, sites, L_chain, Λ, yfunc)
+        sinX_dev = to_device(get_sinx_op(L, sites, L_chain, Λ, xfunc), backend)
+        cosX_dev = to_device(get_cosx_op(L, sites, L_chain, Λ, xfunc), backend)
+        sinY_dev = to_device(get_siny_op(L, sites, L_chain, Λ, yfunc), backend)
+        cosY_dev = to_device(get_cosy_op(L, sites, L_chain, Λ, yfunc), backend)
 
-        # Pre-multiply the 8 P/Q × sin/cos combinations
-        sinY_P = apply(sinY_op, P;  maxdim=maxdim, cutoff=cutoff)
-        cosY_P = apply(cosY_op, P;  maxdim=maxdim, cutoff=cutoff)
-        P_sinX = apply(P,  sinX_op; maxdim=maxdim, cutoff=cutoff)
-        P_cosX = apply(P,  cosX_op; maxdim=maxdim, cutoff=cutoff)
-        sinY_Q = apply(sinY_op, Q;  maxdim=maxdim, cutoff=cutoff)
-        cosY_Q = apply(cosY_op, Q;  maxdim=maxdim, cutoff=cutoff)
-        Q_sinX = apply(Q,  sinX_op; maxdim=maxdim, cutoff=cutoff)
-        Q_cosX = apply(Q,  cosX_op; maxdim=maxdim, cutoff=cutoff)
+        sinY_P = apply(sinY_dev, P_dev;  maxdim=maxdim, cutoff=cutoff)
+        cosY_P = apply(cosY_dev, P_dev;  maxdim=maxdim, cutoff=cutoff)
+        P_sinX = apply(P_dev,  sinX_dev; maxdim=maxdim, cutoff=cutoff)
+        P_cosX = apply(P_dev,  cosX_dev; maxdim=maxdim, cutoff=cutoff)
+        sinY_Q = apply(sinY_dev, Q_dev;  maxdim=maxdim, cutoff=cutoff)
+        cosY_Q = apply(cosY_dev, Q_dev;  maxdim=maxdim, cutoff=cutoff)
+        Q_sinX = apply(Q_dev,  sinX_dev; maxdim=maxdim, cutoff=cutoff)
+        Q_cosX = apply(Q_dev,  cosX_dev; maxdim=maxdim, cutoff=cutoff)
         println("Quenched operator products done")
 
-        # C1 = Q sinX P sinY Q − P sinX Q sinY P
-        C1 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
+        C1 = apply(Q_sinX, P_dev;  maxdim=maxdim, cutoff=cutoff)
         C1 = apply(C1,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
-        c1 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
+        c1 = apply(P_sinX, Q_dev;  maxdim=maxdim, cutoff=cutoff)
         c1 = apply(c1,     sinY_P; maxdim=maxdim, cutoff=cutoff)
         C1 = +(C1, -1.0 * c1; maxdim=maxdim, cutoff=cutoff)
         println("C1 done")
 
-        # C2 = Q cosX P cosY Q − P cosX Q cosY P
-        C2 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
+        C2 = apply(Q_cosX, P_dev;  maxdim=maxdim, cutoff=cutoff)
         C2 = apply(C2,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
-        c2 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
+        c2 = apply(P_cosX, Q_dev;  maxdim=maxdim, cutoff=cutoff)
         c2 = apply(c2,     cosY_P; maxdim=maxdim, cutoff=cutoff)
         C2 = +(C2, -1.0 * c2; maxdim=maxdim, cutoff=cutoff)
         println("C2 done")
 
-        # C3 = Q sinX P cosY Q − P sinX Q cosY P
-        C3 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
+        C3 = apply(Q_sinX, P_dev;  maxdim=maxdim, cutoff=cutoff)
         C3 = apply(C3,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
-        c3 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
+        c3 = apply(P_sinX, Q_dev;  maxdim=maxdim, cutoff=cutoff)
         c3 = apply(c3,     cosY_P; maxdim=maxdim, cutoff=cutoff)
         C3 = +(C3, -1.0 * c3; maxdim=maxdim, cutoff=cutoff)
         println("C3 done")
 
-        # C4 = Q cosX P sinY Q − P cosX Q sinY P
-        C4 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
+        C4 = apply(Q_cosX, P_dev;  maxdim=maxdim, cutoff=cutoff)
         C4 = apply(C4,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
-        c4 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
+        c4 = apply(P_cosX, Q_dev;  maxdim=maxdim, cutoff=cutoff)
         c4 = apply(c4,     sinY_P; maxdim=maxdim, cutoff=cutoff)
         C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
         println("C4 done")
 
         calculate_chern_number = alpha -> begin
-            α      = binary_to_MPS(alpha - 1, L, sites)
+            α      = to_device(binary_to_MPS(alpha - 1, L, sites), backend)
             x      = xfunc(alpha - 1, L_chain)
             y      = yfunc(alpha - 1, L_chain)
             cos_x, sin_x = cos(x / Λ), sin(x / Λ)
@@ -396,21 +398,20 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         end
 
     else
-        # Flat mode: build global position MPOs directly from xfunc/yfunc
-        x_op = get_diagonal_mpo(L, sites, i -> xfunc(i - 1, L_chain))
-        y_op = get_diagonal_mpo(L, sites, i -> yfunc(i - 1, L_chain))
+        x_dev = to_device(get_diagonal_mpo(L, sites, i -> xfunc(i - 1, L_chain)), backend)
+        y_dev = to_device(get_diagonal_mpo(L, sites, i -> yfunc(i - 1, L_chain)), backend)
 
-        T1   = apply(Q, apply(x_op, apply(P, apply(y_op, Q;
-                     maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
-                     maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
-        T2   = apply(P, apply(x_op, apply(Q, apply(y_op, P;
-                     maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
-                     maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
+        T1    = apply(Q_dev, apply(x_dev, apply(P_dev, apply(y_dev, Q_dev;
+                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
+                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
+        T2    = apply(P_dev, apply(x_dev, apply(Q_dev, apply(y_dev, P_dev;
+                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
+                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
         C_op = 2im * π * +(T1, -1.0 * T2; maxdim=maxdim, cutoff=cutoff)
         ITensorMPS.truncate!(C_op; maxdim=maxdim, cutoff=cutoff)
 
         calculate_chern_number = alpha -> begin
-            α = binary_to_MPS(alpha - 1, L, sites)
+            α = to_device(binary_to_MPS(alpha - 1, L, sites), backend)
             inner(α', C_op, α)
         end
     end
@@ -451,12 +452,13 @@ function get_C(H::TBHamiltonian, xfunc, yfunc;
                maxdim::Int      = 500,
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
-               quenched::Bool   = true)
+               quenched::Bool   = true,
+               run_on::Symbol   = :cpu)
     P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
-                       maxdim=maxdim, cutoff=cutoff, Nel=Nel)
+                       maxdim=maxdim, cutoff=cutoff, Nel=Nel, run_on=run_on)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
                                 l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
-                                quenched=quenched)
+                                quenched=quenched, run_on=run_on)
 end
 
 
@@ -540,38 +542,40 @@ Finite differences for ∂P/∂t use central differences (one-sided at endpoints
 function thouless_pump(P_array::Vector{<:MPO}, dt::Real, x_op::MPO,
                        sites::Vector{<:Index};
                        r_center::Int,
-                       maxdim::Int          = 100,
-                       cutoff::Float64      = 1e-8,
-                       verbose::Bool        = false,
-                       return_trajectory::Bool = false)
+                       maxdim::Int             = 100,
+                       cutoff::Float64         = 1e-8,
+                       verbose::Bool           = false,
+                       return_trajectory::Bool = false,
+                       run_on::Symbol          = :cpu)
+    backend = _resolve_backend(run_on)
     Nt    = length(P_array)
-    I_mpo = MPO(sites, "Id")
+    P_dev = [to_device(P, backend) for P in P_array]
+    x_dev = to_device(x_op, backend)
+    I_dev = to_device(MPO(sites, "Id"), backend)
 
-    # M1Q at t = 0: U(0) = I  →  ⟨r|P(0) x̂ P(0)|r⟩
-    PxP_0 = apply(apply(P_array[1], x_op; maxdim, cutoff), P_array[1]; maxdim, cutoff)
-    M1Q_0 = real(matrix_checker(PxP_0, sites, r_center, r_center))
+    PxP_0 = apply(apply(P_dev[1], x_dev; maxdim, cutoff), P_dev[1]; maxdim, cutoff)
+    M1Q_0 = real(matrix_checker(PxP_0, sites, r_center, r_center; run_on=run_on))
     verbose && println("M1Q(0) = $(round(M1Q_0; digits=6))")
 
     M1Q_traj = return_trajectory ? Float64[M1Q_0] : Float64[]
 
-    # Propagate U: h(k) = [Ṗ(k), P(k)] = Ṗ P − P Ṗ
-    U = deepcopy(I_mpo)
+    U = deepcopy(I_dev)
     for k in 1:Nt
         if k == 1
-            Pdot = (1.0 / dt) * +(P_array[2],  -1.0 * P_array[1];    maxdim, cutoff)
+            Pdot = (1.0 / dt) * +(P_dev[2],    -1.0 * P_dev[1];    maxdim, cutoff)
         elseif k == Nt
-            Pdot = (1.0 / dt) * +(P_array[Nt], -1.0 * P_array[Nt-1]; maxdim, cutoff)
+            Pdot = (1.0 / dt) * +(P_dev[Nt],   -1.0 * P_dev[Nt-1]; maxdim, cutoff)
         else
-            Pdot = (0.5 / dt) * +(P_array[k+1], -1.0 * P_array[k-1]; maxdim, cutoff)
+            Pdot = (0.5 / dt) * +(P_dev[k+1],  -1.0 * P_dev[k-1]; maxdim, cutoff)
         end
         ITensorMPS.truncate!(Pdot; maxdim, cutoff)
 
-        h_k  = +(apply(Pdot, P_array[k]; maxdim, cutoff),
-                 -1.0 * apply(P_array[k], Pdot; maxdim, cutoff); maxdim, cutoff)
+        h_k  = +(apply(Pdot, P_dev[k]; maxdim, cutoff),
+                 -1.0 * apply(P_dev[k], Pdot; maxdim, cutoff); maxdim, cutoff)
         ITensorMPS.truncate!(h_k; maxdim, cutoff)
 
         h_sq = apply(h_k, h_k; maxdim, cutoff)
-        dU   = +(+(I_mpo, dt * h_k; maxdim, cutoff),
+        dU   = +(+(I_dev, dt * h_k; maxdim, cutoff),
                  (dt^2 / 2) * h_sq; maxdim, cutoff)
         ITensorMPS.truncate!(dU; maxdim, cutoff)
         U    = apply(dU, U; maxdim, cutoff)
@@ -581,20 +585,19 @@ function thouless_pump(P_array::Vector{<:MPO}, dt::Real, x_op::MPO,
 
         if return_trajectory
             Ud_k    = dag(swapprime(U, 0, 1))
-            UxU_k   = apply(apply(Ud_k, x_op; maxdim, cutoff), U; maxdim, cutoff)
-            PUxUP_k = apply(apply(P_array[k], UxU_k; maxdim, cutoff), P_array[k]; maxdim, cutoff)
-            push!(M1Q_traj, real(matrix_checker(PUxUP_k, sites, r_center, r_center)))
+            UxU_k   = apply(apply(Ud_k, x_dev; maxdim, cutoff), U; maxdim, cutoff)
+            PUxUP_k = apply(apply(P_dev[k], UxU_k; maxdim, cutoff), P_dev[k]; maxdim, cutoff)
+            push!(M1Q_traj, real(matrix_checker(PUxUP_k, sites, r_center, r_center; run_on=run_on)))
         end
     end
 
-    # M1Q at t = T
     if return_trajectory
         M1Q_T = M1Q_traj[end]
     else
         Ud    = dag(swapprime(U, 0, 1))
-        UxU   = apply(apply(Ud, x_op; maxdim, cutoff), U;    maxdim, cutoff)
-        PUxUP = apply(apply(P_array[end], UxU; maxdim, cutoff), P_array[end]; maxdim, cutoff)
-        M1Q_T = real(matrix_checker(PUxUP, sites, r_center, r_center))
+        UxU   = apply(apply(Ud, x_dev; maxdim, cutoff), U; maxdim, cutoff)
+        PUxUP = apply(apply(P_dev[end], UxU; maxdim, cutoff), P_dev[end]; maxdim, cutoff)
+        M1Q_T = real(matrix_checker(PUxUP, sites, r_center, r_center; run_on=run_on))
     end
     verbose && println("M1Q(T) = $(round(M1Q_T; digits=6))")
 
@@ -634,7 +637,8 @@ function get_thouless_pump(H_of_t::Function, Nt::Int, T::Real, xfunc;
                            Λ::Real                      = -1.0,
                            Nel                          = nothing,
                            r_center::Union{Nothing,Int} = nothing,
-                           verbose::Bool                = false)
+                           verbose::Bool                = false,
+                           run_on::Symbol               = :cpu)
     dt    = T / Nt
     H0    = H_of_t(0.0)
     sites = H0.sites
@@ -648,11 +652,12 @@ function get_thouless_pump(H_of_t::Function, Nt::Int, T::Real, xfunc;
         H_k = H_of_t(t_k)
         P_k = _get_projector(H_k; method=P_method, fermi=fermi,
                               Nchebychev=Nchebychev, maxdim=maxdim,
-                              cutoff=cutoff, Nel=Nel)
+                              cutoff=cutoff, Nel=Nel, run_on=run_on)
         push!(P_array, P_k)
     end
 
     verbose && println("Computing M1Q invariant (r_center=$rc)...")
     return thouless_pump(P_array, dt, x_op, sites;
-                         r_center=rc, maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+                         r_center=rc, maxdim=maxdim, cutoff=cutoff,
+                         verbose=verbose, run_on=run_on)
 end

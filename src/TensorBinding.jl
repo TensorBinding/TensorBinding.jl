@@ -36,6 +36,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   Timeev_tk.jl   — time evolution (uses Hamiltonian)
 #   twoparticle_tk.jl — exciton / two-particle system construction (uses TBSystem, Hamiltonian)
 
+include("backends.jl")
 include("utils.jl")
 include("Hamiltonian.jl")
 include("2D_lattice.jl")

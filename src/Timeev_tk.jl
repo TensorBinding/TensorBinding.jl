@@ -402,10 +402,12 @@ function rk4_step_dm_timedep(Hoft, ρ::MPO, t::Float64, dt::Float64;
     maxdim::Int     = 200,
     cutoff::Float64 = 1e-10,
     truncate_intermediates::Bool = true,
+    run_on::Symbol  = :cpu,
 )
-    H0   = Hoft(t)
-    Hmid = Hoft(t + dt / 2)
-    H1   = Hoft(t + dt)
+    backend = _resolve_backend(run_on)
+    H0   = to_device(Hoft(t),          backend)
+    Hmid = to_device(Hoft(t + dt / 2), backend)
+    H1   = to_device(Hoft(t + dt),     backend)
 
     k1 = _von_neumann_rhs(H0,   ρ;  maxdim=maxdim, cutoff=cutoff)
 
@@ -445,11 +447,13 @@ function evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
     cutoff::Float64 = 1e-10,
     truncate_intermediates::Bool = true,
     verbose::Bool   = false,
+    run_on::Symbol  = :cpu,
 )
-    states = Vector{MPO}(undef, nsteps + 1)
+    backend = _resolve_backend(run_on)
+    states    = Vector{MPO}(undef, nsteps + 1)
     states[1] = deepcopy(ρ0)
 
-    ρ = deepcopy(ρ0)
+    ρ = to_device(deepcopy(ρ0), backend)
     for step in 1:nsteps
         t = (step - 1) * dt
         verbose && println("RK4 step $step / $nsteps,  t = $t,  maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
@@ -457,8 +461,9 @@ function evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
             maxdim=maxdim,
             cutoff=cutoff,
             truncate_intermediates=truncate_intermediates,
+            run_on=run_on,
         )
-        states[step + 1] = deepcopy(ρ)
+        states[step + 1] = from_device(ρ, backend)
     end
 
     return states

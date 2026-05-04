@@ -97,11 +97,13 @@ structure as `W` but with momenta as the diagonal degree of freedom.
 Calling this on the Chebyshev spectral MPO T_n and then extracting the
 diagonal gives the k-resolved contribution to A(k,ω).
 """
-function conjugate_by_qft(W; tol=1e-9, maxdim::Int=100)
+function conjugate_by_qft(W; tol=1e-9, maxdim::Int=100,
+                          backend::AbstractTBBackend=CPUBackend())
     sites  = getindex.(siteinds(W), 2)
     R      = length(sites)
-    FTirev = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true))), sites)
-    FTrev  = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true))), sites)
+    # Build QFT MPOs on CPU (QuanticsTCI is CPU-only), then move to target device.
+    FTirev = to_device(fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true))), sites), backend)
+    FTrev  = to_device(fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true))), sites), backend)
     Op1    = apply(W,                        FTirev; cutoff=tol, maxdim=maxdim)
     Op2    = apply(swapprime(FTrev, 0 => 1), Op1;   cutoff=tol, maxdim=maxdim)
     return TCI.truncate(Op2; cutoff=tol, maxdim=maxdim)
@@ -626,7 +628,8 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           tol::Real       = 1e-9,
                           maxdim::Int     = 100,
                           cutoff::Real    = 1e-10,
-                          printinfo::Bool = false)
+                          printinfo::Bool = false,
+                          run_on::Symbol  = :cpu)
 
     L = length(sites)
     # Nambu and sublattice are always internal aux DOFs, never position qubits.
@@ -637,8 +640,10 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
 
     # ── Scaled Hamiltonian ────────────────────────────────────────────────────
     # sites already includes all aux sites; MPO(sites, "Id") is correctly sized.
-    I_mpo = MPO(sites, "Id")
-    Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    I_mpo   = MPO(sites, "Id")
+    Ham_n   = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    backend = _resolve_backend(run_on)
+    Ham_n   = to_device(Ham_n, backend)
 
     # ── KPM weight matrix  W[n, iω] ──────────────────────────────────────────
     Nω    = length(ω_vals)
@@ -775,8 +780,8 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
 
         # Step 3: QFT + diagonal sample + accumulate for every MPO in the list
         for T in sl_mpas
-            Tn_k  = conjugate_by_qft(T; tol=tol, maxdim=maxdim)
-            A_mps = ITensorMPS.truncate!(extract_diagonal_to_mps(Tn_k); cutoff=cutoff)
+            Tn_k  = conjugate_by_qft(T; tol=tol, maxdim=maxdim, backend=backend)
+            A_mps = ITensorMPS.truncate!(extract_diagonal_to_mps(from_device(Tn_k, backend)); cutoff=cutoff)
             for (ik, xs) in enumerate(k_groups)
                 s = sum(_eval_diag_mps(A_mps, x) for x in xs) / length(xs)
                 for ie in 1:Nω
@@ -787,10 +792,11 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     end
 
     # ── Chebyshev recurrence  T_0 = I,  T_1 = H̃,  T_n = 2H̃T_{n-1} − T_{n-2}
-    # The recurrence runs on the full MPO space (L+1 sites when spin_proj=true).
-    # Projection happens inside accumulate_Tn! so T_n itself is never modified.
-    Tkm2 = I_mpo   # T_0
-    Tkm1 = Ham_n   # T_1
+    # Recurrence runs on device (Ham_n already moved above).
+    # accumulate_Tn! receives device Tk; conjugate_by_qft moves QFT MPOs to
+    # the same device so the full QFT pipeline also runs on GPU when run_on=:gpu.
+    Tkm2 = to_device(I_mpo, backend)   # T_0
+    Tkm1 = Ham_n                        # T_1 (already on device)
 
     accumulate_Tn!(Ak_w, Tkm2, 1)
     accumulate_Tn!(Ak_w, Tkm1, 2)
@@ -881,7 +887,8 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           tol::Real       = 1e-9,
                           maxdim::Int     = 100,
                           cutoff::Real    = 1e-10,
-                          printinfo::Bool = false)
+                          printinfo::Bool = false,
+                          run_on::Symbol  = :cpu)
 
     _ensure_scale!(H)
     ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
@@ -929,7 +936,8 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                             ymin = ymin, ymax = ymax, num_y = num_y,
                             kernel = kernel, lambda = lambda,
                             tol = tol, maxdim = maxdim, cutoff = cutoff,
-                            printinfo = printinfo)
+                            printinfo = printinfo,
+                            run_on = run_on)
 
     # When kpath was used, return a NamedTuple carrying the tick info so the
     # caller can use result.Ak, result.ticks, result.labels directly in plots.
@@ -948,12 +956,12 @@ All keyword arguments are forwarded unchanged to the 4-argument form.
 Errors if `H.geometry` is `nothing` (custom or geometry-free Hamiltonians must
 still pass `D` explicitly via the 4-argument form).
 """
-function get_bands(H::TBHamiltonian, Ncheb::Int, ω_phys_vals; kwargs...)
+function get_bands(H::TBHamiltonian, Ncheb::Int, ω_phys_vals; run_on::Symbol=:cpu, kwargs...)
     isnothing(H.geometry) &&
         error("get_bands without explicit D requires H.geometry to be set. " *
               "Pass D (1 or 2) as the third argument, or set H.geometry.")
     D = length(H.geometry(1))
-    return get_bands(H, Ncheb, D, ω_phys_vals; kwargs...)
+    return get_bands(H, Ncheb, D, ω_phys_vals; run_on=run_on, kwargs...)
 end
 
 

@@ -19,10 +19,16 @@ QuanticsTCI = "b11687fd-3a1c-4c41-97d0-998ab401d50e"
 TCIITensorConversion = "9f0aa9f4-9415-4e6a-8795-331ebf40aa04"
 TensorCrossInterpolation = "b261b2ec-6378-4871-b32e-9173bb050604"
 
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+TensorBindingCUDAExt = "CUDA"
+
 [compat]
 Arpack = "0.5.4"
 HDF5 = "0.17.2"
-julia = "1.6.7"
+julia = "1.9"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
