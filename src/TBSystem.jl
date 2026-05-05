@@ -50,7 +50,8 @@ mutable struct TBHamiltonian
     N        :: Int
     sites    :: Vector{<:Index}
     mpo      :: MPO
-    geometry :: Union{Nothing, Function}   # i -> position vector (1-indexed, i=1…N)
+    geometry    :: Union{Nothing, Function}   # i -> pos_vec (1-indexed, i=1…n_sub·N)
+    geometry_uc :: Union{Nothing, Function}   # i -> Bravais pos; same for all sublattice atoms in a UC
     scale    :: Float64    # energy half-bandwidth; 0.0 = not yet determined (triggers lazy DMRG)
     center   :: Float64    # spectral center; 0.0 for symmetric spectra
     # ---- auxiliary indices (nothing until add_spin!/add_superconductivity!) ----
@@ -66,22 +67,30 @@ mutable struct TBHamiltonian
     _density_cache :: Union{Nothing, MPO}
 end
 
+# Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
+TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
+    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
+                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache)
+
 # Backward-compatible 15-arg constructor (pre-sublattice_s callers); inserts sublattice_s=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
               spin_s, nambu_s, layer_s, aux_side, _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
                   spin_s, nambu_s, layer_s, nothing, aux_side, _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache)
 
 # Backward-compatible 14-arg constructor (pre-sublattice_s, pre-_tn_mps_cache callers).
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
               spin_s, nambu_s, layer_s, aux_side, _tn_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
                   spin_s, nambu_s, layer_s, nothing, aux_side, _tn_cache, nothing, _tn_Ncheb, _density_cache)
 
 # Backward-compatible 13-arg constructor (pre-sublattice_s, pre-aux_side callers); defaults to :pre.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
               spin_s, nambu_s, layer_s, _tn_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
+    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
                   spin_s, nambu_s, layer_s, nothing, :pre, _tn_cache, nothing, _tn_Ncheb, _density_cache)
 
 # ============================================================
@@ -196,6 +205,17 @@ function get_Hamiltonian(geometry::String, params;
     elseif geometry in ("kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
         return _build_sublattice(geometry, params, L; scale, tol, maxdim, kwargs...)
 
+    # ---- SSH with explicit sublattice index ----
+    elseif geometry == "ssh_sublattice"
+        t  = params isa Number                                          ? params     :
+             params isa NamedTuple && hasfield(typeof(params), :t)     ? params.t   :
+             params isa AbstractDict && haskey(params, :t)             ? params[:t] : 1.0
+        d  = params isa NamedTuple && hasfield(typeof(params), :d)     ? params.d   :
+             params isa AbstractDict && haskey(params, :d)             ? params[:d] : 0.0
+        H  = ssh_sublattice_hamiltonian(L, t, d; cutoff=tol, maxdim=maxdim)
+        isnothing(scale) || (H.scale = Float64(scale))
+        return H
+
     # ---- preset models routed through build_hamiltonian ----
     elseif geometry in ("ssh", "aah", "uniform",
                         "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
@@ -204,7 +224,7 @@ function get_Hamiltonian(geometry::String, params;
 
     else
         known = ("chain_1d", "haldane", "custom",
-                 "uniform", "ssh", "aah",
+                 "uniform", "ssh", "ssh_sublattice", "aah",
                  "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
                  "kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
@@ -368,6 +388,21 @@ function _build_sublattice(geometry, params, L;
                  geometry == "dice"      ? dice_positions(                   Lx, Ly) :
                                           honeycomb_sublattice_positions(    Lx, Ly)
     H.geometry = let m = rs; i -> m[i, :]; end
+
+    # UC geometry: same Bravais position for every atom in the same unit cell.
+    # All four lattices share a triangular Bravais basis; n_sub = atoms per UC.
+    n_sub  = geometry in ("honeycomb", "honeycomb_nnn") ? 2 : 3
+    Nx_uc  = 2^Lx
+    sq3_2  = sqrt(3) / 2
+    H.geometry_uc = let n_sub = n_sub, Nx = Nx_uc, sq3_2 = sq3_2
+        i -> begin
+            n_cell = (i - 1) ÷ n_sub
+            ix = n_cell % Nx
+            iy = n_cell ÷ Nx
+            [ix + iy * 0.5, iy * sq3_2]
+        end
+    end
+
     isnothing(scale) || (H.scale = Float64(scale))
     return H
 end

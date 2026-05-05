@@ -112,8 +112,13 @@ Defined in \texttt{src/TBSystem.jl}.
 \kw{sites}      & \kw{Vector\{<:Index\}} & All ITensor site indices (includes auxiliary
                                            indices if present). \\
 \kw{mpo}        & \kw{MPO}   & The accumulated Hamiltonian MPO. \\
-\kw{geometry}   & \kw{Function} or \kw{Nothing} & Callable \kw{i -> pos\_vec}
-                               (1-indexed); returns real-space position of site \kw{i}. \\
+\kw{geometry}    & \kw{Function} or \kw{Nothing} & Callable \kw{i -> pos\_vec} (1-indexed);
+                               returns real-space position of physical atom \kw{i}. \\
+\kw{geometry\_uc} & \kw{Function} or \kw{Nothing} & Callable \kw{i -> pos\_vec} returning the
+                               Bravais unit-cell position, \emph{identical} for all sublattice atoms in the
+                               same cell.  Set for sublattice-aware models
+                               (\kw{"honeycomb"}, \kw{"honeycomb\_nnn"}, \kw{"kagome"}, \kw{"lieb"}, \kw{"dice"});
+                               \kw{nothing} for single-atom geometries. \\
 \kw{scale}      & \kw{Float64} & Energy half-bandwidth; \kw{H/scale} has spectrum
                                  $\subseteq [-1,1]$.  Set to 0 for lazy DMRG estimation. \\
 \kw{center}     & \kw{Float64} & Spectral center $(E_\text{max}+E_\text{min})/2$.
