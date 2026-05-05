@@ -969,6 +969,9 @@ Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed.
               spin operator given by `direction` (`:x`, `:y`, or `:z`).
               `λ` may be a Number, a 1-arg `Function λ(i)`, or a 2-arg
               `Function λ(i,j)` (the last compressed via TCI).
+              For the result to be Hermitian, the position-space matrix must
+              itself be Hermitian: `λ(i,j) = conj(λ(j,i))`.  Diagonal and
+              real-symmetric inputs satisfy this automatically.
 
 Examples
 --------
@@ -999,8 +1002,10 @@ function add_soc!(H::TBHamiltonian, λ;
         λ isa Number || error("Rashba SOC requires a scalar λ; got $(typeof(λ)).")
         K_u = generate_kin_u(pos_s, H.N)
         K_d = generate_kin_d(pos_s, H.N)
-        +(spin_prepend( λ * K_u, H.spin_s, :Sy),
-          spin_prepend(-λ * K_d, H.spin_s, :Sy); cutoff=tol)
+        # λ·(iσ_y) ⊗ (K_u − K_d): both factors anti-Hermitian → product Hermitian.
+        # :Sy (Hermitian) ⊗ anti-Hermitian would give a non-Hermitian term.
+        +(spin_prepend( λ * K_u, H.spin_s, :iSy),
+          spin_prepend(-λ * K_d, H.spin_s, :iSy); cutoff=tol)
 
     elseif type === :custom
         direction in (:x, :y, :z) ||

@@ -884,6 +884,9 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           printinfo::Bool = false)
 
     _ensure_scale!(H)
+    nambu_proj, spin_proj, layer_proj, sublat_proj =
+        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
+
     ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
 
     # ── High-symmetry path shortcut ──────────────────────────────────────────
@@ -1023,6 +1026,41 @@ Convenience wrapper for `project_aux` when the auxiliary site is prepended
 project_spin(W::MPO, spin_s::Index,   σ::Integer) = project_aux(W, spin_s, σ; side=:pre)
 project_spin(W::MPO, ::Nothing, ::Integer) =
     error("spin_proj=true requires spin_s — detected via sites[1] when spin_proj=true")
+
+
+"""
+    _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
+        -> (nambu_proj, spin_proj, layer_proj, sublat_proj)
+
+Enable projection flags for any auxiliary DOF detected on `H`, printing one
+info line per auto-enabled flag.  Called at the top of every `TBHamiltonian`
+spectral method before any aux-index logic runs.
+"""
+function _autoenable_proj(H::TBHamiltonian,
+                           nambu_proj::Bool, spin_proj::Bool,
+                           layer_proj::Bool, sublat_proj::Bool)
+    if !isnothing(H.nambu_s) && !nambu_proj
+        println("Info: H.nambu_s detected; auto-enabling nambu_proj=true ",
+                "(pass proj_nambu=1/2 to select particle/hole sector).")
+        nambu_proj = true
+    end
+    if !isnothing(H.spin_s) && !spin_proj
+        println("Info: H.spin_s detected; auto-enabling spin_proj=true ",
+                "(pass proj_s=1/2 to select ↑/↓ sector).")
+        spin_proj = true
+    end
+    if !isnothing(H.layer_s) && !layer_proj
+        println("Info: H.layer_s detected; auto-enabling layer_proj=true ",
+                "(pass proj_layer=k to select a layer).")
+        layer_proj = true
+    end
+    if !isnothing(H.sublattice_s) && !sublat_proj
+        println("Info: H.sublattice_s detected; auto-enabling sublat_proj=true ",
+                "(pass proj_sl=k to select a sublattice).")
+        sublat_proj = true
+    end
+    return nambu_proj, spin_proj, layer_proj, sublat_proj
+end
 
 
 """

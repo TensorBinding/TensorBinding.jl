@@ -433,6 +433,88 @@ function get_ldos_spectrum(H::TBHamiltonian, ω_phys_vals;
 end
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared KPM helpers  (used by get_ldos_online, get_ldos_spatial, get_dos_stochastic)
+# ─────────────────────────────────────────────────────────────────────────────
+
+"""
+    _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
+               layer_proj, proj_layer, sublat_proj, proj_sl) -> NamedTuple
+
+Detect all auxiliary DOF indices from `H` and compute sector iteration ranges.
+Returns a NamedTuple with fields:
+  `nambu_s_det`, `nambu_side_det`, `spin_s_det`,
+  `layer_s_det`, `layer_side_det`, `sublat_s_det`, `sublat_side_det`,
+  `nambu_range`, `spin_range`, `layer_range`, `sl_range`, `any_aux_proj`.
+"""
+function _aux_setup(H::TBHamiltonian,
+                    nambu_proj::Bool, proj_nambu,
+                    spin_proj::Bool,  proj_s,
+                    layer_proj::Bool, proj_layer,
+                    sublat_proj::Bool, proj_sl)
+    nambu_s_det,  nambu_side_det  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
+    spin_s_det                    = H.spin_s
+    layer_s_det,  layer_side_det  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
+    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
+
+    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
+        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
+    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
+        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
+    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
+        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
+    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
+        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
+    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
+
+    return (; nambu_s_det, nambu_side_det, spin_s_det,
+              layer_s_det, layer_side_det, sublat_s_det, sublat_side_det,
+              nambu_range, spin_range, layer_range, sl_range, any_aux_proj)
+end
+
+
+"""
+    _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum;
+                  weight=1.0, cutoff=1e-8, maxdim=100,
+                  verbose=false, label="") -> Int
+
+Online MPS Chebyshev KPM recursion.  Computes `μ_n = ⟨psi0|T_n(Ham_n)|psi0⟩`
+for n = 1…Ncheb and accumulates `W[n,iω] × μ_n × weight` into `accum[iω]`
+for each valid energy index.  Returns the `maxlinkdim` of the final state.
+"""
+function _run_kpm_mps!(Ham_n::MPO, psi0::MPS, Ncheb::Int,
+                        W::Matrix{Float64}, valid::Vector{Bool},
+                        accum::Vector{Float64};
+                        weight::Float64 = 1.0,
+                        cutoff::Real    = 1e-8,
+                        maxdim::Int     = 100,
+                        verbose::Bool   = false,
+                        label::String   = "")
+    Nω = length(valid)
+    function kpm_step!(phi, n)
+        mu = real(inner(psi0, phi))
+        for iω in 1:Nω
+            valid[iω] || continue
+            accum[iω] += W[n, iω] * mu * weight
+        end
+    end
+    phi_km2 = psi0
+    phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
+    kpm_step!(phi_km2, 1)
+    kpm_step!(phi_km1, 2)
+    for k in 3:Ncheb
+        phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
+                  -phi_km2; cutoff=cutoff, maxdim=maxdim)
+        kpm_step!(phi_k, k)
+        phi_km2 = phi_km1
+        phi_km1 = phi_k
+        verbose && (k % 10 == 0 || k == Ncheb) &&
+            println(label, " step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi_km1))")
+    end
+    return maxlinkdim(phi_km1)
+end
+
+
 """
     get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                     kernel, lambda, maxdim, cutoff, verbose,
@@ -488,69 +570,34 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                           sublat_proj::Bool = false,
                           proj_sl           = nothing)
     _ensure_scale!(H)
+    nambu_proj, spin_proj, layer_proj, sublat_proj =
+        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
     I_mpo = MPO(H.sites, "Id")
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
-    # ── KPM weight matrix and accumulators ────────────────────────────────────
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
     Nω     = length(ω_vals)
     W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
     accum  = zeros(Float64, Nω)
 
-    # ── Auto-detect auxiliary indices ────────────────────────────────────────
-    nambu_s_det, _ = !isnothing(H.nambu_s) ? aux_site(H, :nambu) : (nothing, :pre)
-    spin_s_det     = H.spin_s
-    layer_s_det, _ = !isnothing(H.layer_s) ? aux_site(H, :layer) : (nothing, :pre)
-    sublat_s_det, _= !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
-
-    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
-    L_tot        = length(H.sites)
-
-    # ── Sector ranges ─────────────────────────────────────────────────────────
-    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
-        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
-    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
-        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
-    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
-        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
-    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
-        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
+    (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
+        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
+                      layer_proj, proj_layer, sublat_proj, proj_sl)
+    L_tot = length(H.sites)
 
     # ── MPS-based Chebyshev recursion, summed over requested aux sectors ──────
     for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-        psi_eval = any_aux_proj ?
-                   _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
-                   (L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
-                                   mpsexciton(X, H.sites))
-
-        function accumulate_mps!(phi, n)
-            mu = real(inner(psi_eval, phi))
-            for iω in 1:Nω
-                valid[iω] || continue
-                accum[iω] += W[n, iω] * mu
-            end
-        end
-
-        phi_km2 = psi_eval
-        phi_km1 = apply(Ham_n, psi_eval; cutoff=cutoff, maxdim=maxdim)
-        accumulate_mps!(phi_km2, 1)
-        accumulate_mps!(phi_km1, 2)
-
-        for k in 3:Ncheb
-            phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                      -phi_km2; cutoff=cutoff, maxdim=maxdim)
-            accumulate_mps!(phi_k, k)
-            phi_km2 = phi_km1
-            phi_km1 = phi_k
-            verbose && (k % 10 == 0 || k == Ncheb) &&
-                println("get_ldos_online step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi_km1))")
-        end
+        psi0 = any_aux_proj ?
+               _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
+               (L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
+                               mpsexciton(X, H.sites))
+        _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum;
+                      cutoff=cutoff, maxdim=maxdim,
+                      verbose=verbose, label="get_ldos_online")
     end  # sector loop
 
-    # ── Normalise ─────────────────────────────────────────────────────────────
     result = zeros(Float64, Nω)
     for iω in 1:Nω
         valid[iω] || continue
@@ -692,15 +739,14 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     _ensure_scale!(H)
+    nambu_proj, spin_proj, layer_proj, sublat_proj =
+        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    # ── Auto-detect auxiliary indices ─────────────────────────────────────────
-    nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
-        aux_site(H, :nambu) : (nothing, :pre)
-    spin_s_det  = H.spin_s
-    layer_s_det, layer_side_det = !isnothing(H.layer_s) ?
-        aux_site(H, :layer) : (nothing, :pre)
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ?
-        aux_site(H, :sublattice) : (nothing, :post)
+    (; nambu_s_det, nambu_side_det, spin_s_det,
+       layer_s_det, layer_side_det, sublat_s_det, sublat_side_det,
+       nambu_range, spin_range, layer_range, any_aux_proj) =
+        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
+                      layer_proj, proj_layer, sublat_proj, proj_sl)
 
     # ── Sublattice layout ─────────────────────────────────────────────────────
     # When H.sublattice_s is set, the result always covers every atom:
@@ -727,18 +773,8 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     result = zeros(Float64, Nω, n_cols)
     L_tot  = length(H.sites)
 
-    any_other_proj = nambu_proj || spin_proj || layer_proj
-
     if mode == :mps
         # ── MPS mode ──────────────────────────────────────────────────────────
-        nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
-            (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
-        spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
-            (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
-        layer_range = (layer_proj && !isnothing(layer_s_det)) ?
-            (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
-
-        any_aux_proj = any_other_proj || has_sublat
         n_total = sum(length(g) for g in groups)
         n_done  = 0
 
@@ -753,26 +789,8 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
                                            mpsexciton(x, H.sites))
                     accum_loc = zeros(Float64, Nω)
-
-                    function kpm_accum!(phi, n)
-                        mu = real(inner(psi0, phi))
-                        for iω in 1:Nω
-                            valid[iω] || continue
-                            accum_loc[iω] += W[n, iω] * mu
-                        end
-                    end
-
-                    phi_km2 = psi0
-                    phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
-                    kpm_accum!(phi_km2, 1);  kpm_accum!(phi_km1, 2)
-
-                    for k in 3:Ncheb
-                        phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                                  -phi_km2; cutoff=cutoff, maxdim=maxdim)
-                        kpm_accum!(phi_k, k)
-                        phi_km2 = phi_km1
-                        phi_km1 = phi_k
-                    end
+                    _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_loc;
+                                  cutoff=cutoff, maxdim=maxdim)
 
                     for iω in 1:Nω
                         valid[iω] || continue
@@ -909,8 +927,8 @@ Stochastic full DOS via random trace estimation (MPS Chebyshev, 3 MPS per sample
 **Normalization**
 
 - `normalize=false` (default): returns the **total** spectral weight `Tr[δ(ω−H)]`,
-  which grows as `H.N` with system size.
-- `normalize=true`: divides by `H.N`, giving a **per-site** DOS that is intensive
+  which grows as `D` (Hilbert space dimension).
+- `normalize=true`: divides by `D`, giving a **per-state** DOS that is intensive
   (independent of `L`) and directly comparable to `get_ldos_spatial` values.
 
 **Auxiliary DOF projections**
@@ -938,14 +956,14 @@ full Hilbert space, combining with proper weights:
 Examples
 --------
 ```julia
-# Per-site DOS, size-independent
+# Per-state DOS, size-independent
 dos = get_dos_stochastic(H, 100, ωlist; N_sample=50, normalize=true)
 
-# Sublattice-resolved per-site DOS (kagome)
+# Sublattice-resolved per-state DOS (kagome)
 dos_A = get_dos_stochastic(H_kg, 100, ωlist; sublat_proj=true, proj_sl=1,
                             N_sample=50, normalize=true)
 
-# BdG: particle + hole combined per-site DOS
+# BdG: particle + hole combined per-state DOS
 dos   = get_dos_stochastic(H_bdg, 100, ωlist; nambu_proj=true,
                             N_sample=50, normalize=true)
 ```
@@ -970,58 +988,24 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              sublat_proj::Bool = false,
                              proj_sl           = nothing)
     _ensure_scale!(H)
+    nambu_proj, spin_proj, layer_proj, sublat_proj =
+        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    # ── Rescaled Hamiltonian ──────────────────────────────────────────────────
     I_mpo = MPO(H.sites, "Id")
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
     D      = prod(ITensors.dim(s) for s in H.sites)
-    N_phys = H.N   # physical sites per sector (= 2^H.L)
-    is_exc = length(H.sites) == 2 * H.L   # exciton interleaved structure
+    N_phys = H.N
+    is_exc = length(H.sites) == 2 * H.L
 
-    # ── Auto-detect auxiliary indices ────────────────────────────────────────
-    nambu_s_det, _ = !isnothing(H.nambu_s) ? aux_site(H, :nambu) : (nothing, :pre)
-    spin_s_det     = H.spin_s
-    layer_s_det, _ = !isnothing(H.layer_s) ? aux_site(H, :layer) : (nothing, :pre)
-    sublat_s_det, _= !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
+    (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
+        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
+                      layer_proj, proj_layer, sublat_proj, proj_sl)
 
-    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
-
-    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
-        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
-    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
-        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
-    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
-        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
-    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
-        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
-
-    # ── KPM weight matrix ─────────────────────────────────────────────────────
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
     Nω     = length(ω_vals)
     W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
-
-    # ── Shared: run one MPS Chebyshev recursion and accumulate moments ────────
-    function run_sample!(psi0, accum, weight)
-        function accum!(phi, n)
-            mu = real(inner(psi0, phi))
-            for iω in 1:Nω
-                valid[iω] || continue
-                accum[iω] += W[n, iω] * mu * weight
-            end
-        end
-        phi_km2 = psi0
-        phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
-        accum!(phi_km2, 1);  accum!(phi_km1, 2)
-        for k in 3:Ncheb
-            phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                      -phi_km2; cutoff=cutoff, maxdim=maxdim)
-            accum!(phi_k, k)
-            phi_km2 = phi_km1;  phi_km1 = phi_k
-        end
-        return maxlinkdim(phi_km1)
-    end
 
     rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     accum_full  = zeros(Float64, Nω)
@@ -1040,7 +1024,8 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         for (i, x) in enumerate(xs)
             for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
                 psi0 = _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl)
-                χ = run_sample!(psi0, accum_full, 1.0 / N_sample)
+                χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_full;
+                                   weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
                 verbose && i % 15 == 0 && σ_n == first(nambu_range) &&
                     σ_s == first(spin_range) && σ_l == first(layer_range) &&
                     σ_sl == first(sl_range) &&
@@ -1060,8 +1045,9 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────────
     samples = rand(rng, 0:(D - 1), N_sample)
     for (i, k) in enumerate(samples)
-        psi0  = _basis_state_mps(k, H.sites)
-        χ = run_sample!(psi0, accum_full, 1.0 / N_sample)
+        psi0 = _basis_state_mps(k, H.sites)
+        χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_full;
+                           weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
         verbose && i % 15 == 0 && println("Full sample $i/$N_sample  maxlinkdim=$χ")
     end
 
@@ -1070,7 +1056,8 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         xs = rand(rng, 1:N_phys, N_bound)
         for (i, x) in enumerate(xs)
             psi0 = mpsexciton(x, H.sites)
-            χ = run_sample!(psi0, accum_bound, 1.0 / N_bound)
+            χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_bound;
+                               weight=1.0/N_bound, cutoff=cutoff, maxdim=maxdim)
             verbose && i % 15 == 0 && println("Bound sample $i/$N_bound  (x=$x)  maxlinkdim=$χ")
         end
     end
