@@ -12,24 +12,36 @@
 """
     TBHamiltonian
 
-Central object representing a tight-binding Hamiltonian in the
-quantics MPO framework.
+Central object representing a tight-binding Hamiltonian in the quantics MPO framework.
 
 Fields
 ------
-- `L`        : number of qubit sites (log₂ of the physical system size)
-- `N`        : number of physical sites (2^L)
-- `sites`    : ITensor `Qubit` site indices of length `L`
+**Core**
+- `L`        : number of position qubit sites (log₂ of the physical system size)
+- `N`        : number of physical sites / unit cells (2^L)
+- `sites`    : ITensor site indices (position qubits + any auxiliary DOF indices)
 - `mpo`      : accumulated Hamiltonian as an ITensor MPO
-- `geometry`    : callable `i -> pos_vec` (1-indexed) for each physical atom's real-space position
-- `geometry_uc` : callable `i -> pos_vec` that returns the *unit-cell* (Bravais) position,
-                  same for all sublattice atoms in the same cell; `nothing` for single-atom geometries
-- `scale`    : energy half-bandwidth such that `H/scale` has spectrum in `[-1, 1]`;
-               required for KPM.  Must satisfy `scale > spectral_radius(H)`.
-- `_tn_cache`      : cached MPO Chebyshev list (`nothing` if stale); set by `KPM_Tn(...; mode=:mpo)`
-- `_tn_mps_cache`  : cached MPS Chebyshev list (`nothing` if stale); set by `KPM_Tn(...; mode=:mps)`
-- `_tn_Ncheb`      : order of the cached Chebyshev list (shared between both caches)
-- `_density_cache` : cached density matrix MPO (`nothing` if stale)
+- `geometry` : function `i -> position_vector` (1-indexed); `nothing` for implicit 1D
+
+**KPM spectral bounds**
+- `scale`    : energy half-bandwidth; `H/scale` has spectrum in `[-1, 1]`.
+               Set analytically at construction for standard geometries.
+               Reset to `0.0` by `_invalidate_cache!` after any modification —
+               `_ensure_scale!` then re-estimates it on demand via DMRG.
+- `center`   : spectral centre; `0.0` for particle-hole symmetric Hamiltonians.
+
+**Auxiliary DOF indices** (`nothing` until the corresponding `add_*!` is called)
+- `spin_s`       : dim-2 spin index (prepended by `add_spin!`)
+- `nambu_s`      : dim-2 Nambu index (prepended by `add_superconductivity!`)
+- `layer_s`      : dim-k layer index (set by bilayer/multilayer constructors)
+- `sublattice_s` : dim-k sublattice index (set by kagomé/Lieb/honeycomb/dice constructors)
+- `aux_side`     : `:pre` or `:post` — position of the outermost aux index in `sites`
+
+**Lazy caches** (cleared by `_invalidate_cache!` whenever `mpo` changes)
+- `_tn_cache`      : MPO Chebyshev list; set by `KPM_Tn(H, N; mode=:mpo)`
+- `_tn_mps_cache`  : MPS Chebyshev state list; set by `KPM_Tn(H, N; mode=:mps, psi0=…)`
+- `_tn_Ncheb`      : order of the cached Chebyshev expansion
+- `_density_cache` : cached density-matrix MPO
 
 Do not construct directly — use [`get_Hamiltonian`](@ref).
 """
@@ -88,8 +100,12 @@ TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
 """
     _invalidate_cache!(H) -> H
 
-Clear all cached intermediate results.  Called automatically by
-`add_hopping!` and `add_onsite!` whenever the Hamiltonian changes.
+Clear all cached intermediate results.  Called automatically whenever `mpo` changes
+(e.g. `add_hopping!`, `add_onsite!`, `add_zeeman!`, `add_superconductivity!`).
+
+Clears: `_tn_cache`, `_tn_mps_cache`, `_tn_Ncheb`, `_density_cache`.
+Resets `scale` and `center` to `0.0` so that `_ensure_scale!` re-estimates them via
+DMRG on the next KPM call.
 """
 function _invalidate_cache!(H::TBHamiltonian)
     H._tn_cache      = nothing
@@ -97,7 +113,6 @@ function _invalidate_cache!(H::TBHamiltonian)
     H._tn_Ncheb      = 0
     H._density_cache = nothing
     # Spectrum changed — force re-estimation of scale/center on next KPM call.
-    # Analytic constructors re-set scale immediately; layered/custom start at 0.
     H.scale  = 0.0
     H.center = 0.0
     return H
@@ -522,52 +537,117 @@ end
 # ============================================================
 
 """
-    add_hopping!(H, f; nn=1, maxdim=15, tol=1e-8, type=ComplexF64, apply_kwargs=NamedTuple()) -> H
+    add_hopping!(H, f; nn, sublat, sublat_from, sublat_to, maxdim, tol, ...) -> H
 
-Add a hopping term to `H`.  Three calling modes, selected automatically by the type of `f`:
+Add a hopping term to `H`.
 
-- **Constant** (`f::Number`): uniform nth-neighbour hopping with amplitude `f`.
-  Builds the MPO via `kineticNNN` with a uniform diagonal hopping weight.  Use `nn`
-  to select the neighbour shell (default `nn=1` = nearest neighbour).
+**`f` modes** (selected automatically by type):
 
-- **Site-dependent** (`f(i)`, 1-arg `Function`): spatially varying hopping.
-  A diagonal hopping MPO is built from `f` via `get_diagonal_mpo` (1-indexed,
-  `i ∈ {1, …, N}`), then passed to `kineticNNN`.  Use `nn` as above.
+- `f::Number` — uniform `nn`-th-neighbour hopping (amplitude `f`, shell `nn`).
+- `f(i)`, 1-arg `Function` — spatially varying amplitude per site, QTCI-compressed.
+- `f(i,j)`, 2-arg `Function` — full N×N matrix, QTCI-compressed (`nn` ignored).
 
-- **Full matrix QTCI** (`f(i,j)`, 2-arg `Function`): the full N×N hopping matrix
-  is compressed via Quantics Tensor Cross Interpolation.  `nn` is ignored in
-  this mode; the function itself encodes the connectivity.
+**Sublattice keywords** (`H.sublattice_s` must be set; call before `add_spin!` etc.)
 
-`apply_kwargs` (e.g. `(; cutoff=1e-8, maxdim=100)`) are forwarded to every `apply`
-call inside `kineticNNN` (constant and site-dependent modes only).
+- `sublat=k` — **intra-sublattice**: restrict the full kinetic term to sublattice `k`
+  by postpending the projector `|k⟩⟨k|`.  Works with all three `f` modes.
 
-Examples
---------
-```julia
-add_hopping!(H, -1.0)                                    # uniform NN hopping
-add_hopping!(H, -0.3; nn=2)                              # uniform NNN hopping
-add_hopping!(H, i -> cos(2π*i/H.N); nn=1)               # site-dependent NN hopping
-add_hopping!(H, (i, j) -> abs(i-j) == 2 ? -0.3 : 0.0)  # full QTCI (any connectivity)
-```
+  ```julia
+  add_hopping!(H, -0.1; sublat=1, nn=2)           # NNN within sublattice A
+  ```
+
+- `sublat_from=k, sublat_to=l` — **inter-sublattice**: adds
+  `f · K_u^nn ⊗ |l⟩⟨k| + conj(f) · K_d^nn ⊗ |k⟩⟨l|`
+  (Hermitian, `f` must be scalar).  Use `nn=0` for **intra-cell** bonds
+  (no position shift; useful to correct individual bond amplitudes in an existing
+  sublattice Hamiltonian):
+
+  ```julia
+  add_hopping!(H, -0.3; sublat_from=1, sublat_to=2, nn=1)   # A↔B NN inter-cell
+  add_hopping!(H, δt;   sublat_from=2, sublat_to=3, nn=0)   # B↔C intra-cell only
+  ```
+
+Without sublattice keywords the function errors if any auxiliary DOF is already attached.
+Invalidates all caches.
 """
 function add_hopping!(H::TBHamiltonian, f;
                       nn::Integer      = 1,
                       maxdim           = 15,
                       tol              = 1e-8,
                       type             = ComplexF64,
-                      apply_kwargs     = NamedTuple())
-    H.spin_s === nothing && H.nambu_s === nothing &&
-        H.layer_s === nothing && H.sublattice_s === nothing ||
-        error("add_hopping! must be called before add_spin!/add_superconductivity! " *
-              "and cannot be used on layered or sublattice Hamiltonians.")
-    pos_s    = _pos_sites(H)
-    new_term = if f isa Number
-        kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn; apply_kwargs)
-    elseif f isa Function && applicable(f, 1)
-        kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn; apply_kwargs)
+                      apply_kwargs     = NamedTuple(),
+                      sublat           = nothing,
+                      sublat_from      = nothing,
+                      sublat_to        = nothing)
+    any_sublat_kw = !isnothing(sublat) || !isnothing(sublat_from)
+
+    if any_sublat_kw
+        isnothing(H.sublattice_s) &&
+            error("add_hopping! with sublat/sublat_from requires H.sublattice_s to be set.")
+        (H.spin_s !== nothing || H.nambu_s !== nothing || H.layer_s !== nothing) &&
+            error("add_hopping! with sublattice keywords must be called before add_spin!/add_superconductivity!.")
     else
-        hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
+        H.spin_s === nothing && H.nambu_s === nothing &&
+            H.layer_s === nothing && H.sublattice_s === nothing ||
+            error("add_hopping! must be called before add_spin!/add_superconductivity! " *
+                  "and cannot be used on layered or sublattice Hamiltonians. " *
+                  "Use sublat= or sublat_from/sublat_to= for sublattice-specific hoppings.")
     end
+
+    pos_s = _pos_sites(H)
+    sl_s  = H.sublattice_s
+    apkw  = isempty(apply_kwargs) ? (; cutoff=tol, maxdim=maxdim) : apply_kwargs
+
+    # ── Build position-space hopping MPO (shared for all cases) ───────────────
+    function pos_hop()
+        if f isa Number
+            kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn; apply_kwargs)
+        elseif f isa Function && applicable(f, 1)
+            kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn; apply_kwargs)
+        else
+            hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
+        end
+    end
+
+    # Helper: postpend or prepend based on sublattice position in H.sites
+    sl_pos  = isnothing(sl_s) ? 0 : findfirst(==(sl_s), H.sites)
+    function extend_with_sublat(mpo, mat)
+        sl_pos == length(H.sites) ?
+            postpend_op(mpo, sl_s, mat) : prepend_op(mpo, sl_s, mat)
+    end
+
+    new_term = if isnothing(sublat) && isnothing(sublat_from)
+        # ── Original: no sublattice keywords ──────────────────────────────────
+        pos_hop()
+
+    elseif !isnothing(sublat) && isnothing(sublat_from)
+        # ── Intra-sublattice: project full kinetic onto sublattice k ──────────
+        n    = dim(sl_s)
+        proj = zeros(Float64, n, n);  proj[sublat, sublat] = 1.0
+        extend_with_sublat(pos_hop(), proj)
+
+    else
+        # ── Inter-sublattice hopping: t * K_nn ⊗ |to⟩⟨from| + h.c. ──────────
+        isnothing(sublat_to) &&
+            error("sublat_from requires sublat_to.")
+        f isa Number ||
+            error("Inter-sublattice add_hopping! (sublat_from/to) requires a scalar amplitude.")
+
+        n       = dim(sl_s)
+        mat_fwd = zeros(ComplexF64, n, n);  mat_fwd[sublat_to,   sublat_from] = f
+        mat_bwd = zeros(ComplexF64, n, n);  mat_bwd[sublat_from, sublat_to  ] = conj(f)
+
+        if nn == 0
+            # Intra-cell (zero position shift): Id_pos ⊗ (|to⟩⟨from| + |from⟩⟨to|)
+            extend_with_sublat(MPO(pos_s, "Id"), mat_fwd + mat_bwd)
+        else
+            ku_nn = compose_power(generate_kin_u(pos_s, H.N), nn; apply_kwargs=apkw)
+            kd_nn = compose_power(generate_kin_d(pos_s, H.N), nn; apply_kwargs=apkw)
+            +(extend_with_sublat(ku_nn, mat_fwd),
+              extend_with_sublat(kd_nn, mat_bwd); cutoff=tol)
+        end
+    end
+
     H.mpo = +(H.mpo, new_term; maxdim=maxdim, cutoff=tol)
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
     _invalidate_cache!(H)
@@ -576,24 +656,56 @@ end
 
 
 """
-    add_onsite!(H, f; tol=1e-8) -> H
+    add_onsite!(H, f; sublat=nothing, tol=1e-8) -> H
 
-Add a diagonal (on-site) term defined by `f(i)` for site `i ∈ {1, …, N}`.
-Compressed via QTCI using `get_diagonal_mpo`.  Caches are invalidated.
+Add a diagonal (on-site) potential to `H`.
 
-Examples
---------
-```julia
-# Linear potential (electric field)
-add_onsite!(H, i -> 0.01 * i)
+**`f` argument**
 
-# Quasicrystal modulation
-add_onsite!(H, i -> V * cos(2π * α * i))
-```
+- `f::Number` — uniform constant; builds `f · Id` directly (no QTCI).
+- `f(i)` — 1-arg `Function` for site `i ∈ {1, …, N}`, QTCI-compressed via
+  `get_diagonal_mpo`.
+
+**`sublat` keyword** (`H.sublattice_s` must be set)
+
+- `sublat=nothing` (default) — applies `f` equally to all sublattices:
+  `f(i) · Id_sublat ⊗ Id_pos`.
+- `sublat=k` — restricts the potential to sublattice `k` only by postpending
+  the projector `|k⟩⟨k|`: `f(i) · Id_pos ⊗ |k⟩⟨k|_sublat`.
+
+  The canonical use-case is a **Semenoff mass** on a honeycomb Hamiltonian:
+  ```julia
+  add_onsite!(H_hc, +M; sublat=1)   # +M on sublattice A
+  add_onsite!(H_hc, -M; sublat=2)   # −M on sublattice B  → gap = 2M
+  ```
+
+  Works for any sublattice-carrying `TBHamiltonian` (kagome, Lieb, dice, …)
+  and for spatially-varying `f(i)` as well.
+
+Invalidates all caches.
 """
-function add_onsite!(H::TBHamiltonian, f; tol=1e-8)
-    new_term = get_diagonal_mpo(H.L, _pos_sites(H), f)
-    H.mpo    = +(H.mpo, new_term; cutoff=tol)
+function add_onsite!(H::TBHamiltonian, f; sublat=nothing, tol=1e-8)
+    pos_s    = _pos_sites(H)
+    # For a scalar, do x -> f.
+    diag_mpo = f isa Number ? get_diagonal_mpo(H.L, pos_s, x -> f) :
+                              get_diagonal_mpo(H.L, pos_s, f)
+
+    if !isnothing(sublat)
+        isnothing(H.sublattice_s) &&
+            error("add_onsite! with sublat=$sublat requires H.sublattice_s to be set.")
+        sl_s  = H.sublattice_s
+        n     = dim(sl_s)
+        proj  = zeros(Float64, n, n);  proj[sublat, sublat] = 1.0
+        # Detect side from position of sublattice index in H.sites
+        sl_pos  = findfirst(==(sl_s), H.sites)
+        new_term = sl_pos == length(H.sites) ?
+                   postpend_op(diag_mpo, sl_s, proj) :
+                   prepend_op(diag_mpo, sl_s, proj)
+    else
+        new_term = diag_mpo
+    end
+
+    H.mpo = +(H.mpo, new_term; cutoff=tol)
     _invalidate_cache!(H)
     return H
 end
@@ -722,27 +834,37 @@ Nambu (particle–hole) index.
 The BdG structure is:
     H_BdG = τ_z ⊗ H_kin  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
 
-- **Spinless** (default): simple spinless BdG; `H_pair = Δ(r) · I`.
-- **Spinful** (`add_spin!` called first): singlet pairing;
-  `H_pair = (i·σ_y)_spin ⊗ Δ(r)`, the standard BCS Cooper-pair operator.
+- **Spinless + p-wave** (`type=:pwave`, or auto-selected when spinless + `:swave`):
+  `H_pair = Δ·(K_forward − K_backward)`, the antisymmetric nearest-neighbour
+  matrix required by Fermi statistics (`Δ(i,j) = −Δ(j,i)`).  This is the
+  Kitaev chain.  `Δ` must be a `Number`.
+- **Spinful + s-wave** (`add_spin!` called first, `type=:swave`):
+  `H_pair = (i·σ_y)_spin ⊗ Δ(r)`, the standard BCS singlet Cooper-pair operator.
+  On-site (s-wave) pairing is allowed here because the antisymmetry is carried
+  by the spin singlet factor `i·σ_y`.  `Δ` can be a `Number` or 1-arg `Function`.
+- **Custom** (`type=:custom`): arbitrary pairing matrix via 2-arg function `Δ(i,j)`,
+  compressed with TCI.
 
-`Δ` can be:
-- a `Number`   — uniform on-site gap (s-wave, `type=:swave`)
-- a `Function` `Δ(i)` — spatially varying diagonal gap (`type=:swave`)
-- a `Function` `Δ(i,j)` — general pairing matrix compressed via TCI (`type=:custom`)
+**Note on spinless s-wave**: on-site pairing is forbidden for spinless fermions
+(`Δ(i,i) = 0` by antisymmetry).  Calling with `type=:swave` on a spinless chain
+automatically redirects to `:pwave` (uniform `Δ`) or errors (spatially varying `Δ`).
 
 `type`:
-- `:swave`  (default) — diagonal pairing, `H_pair = diag(Δ(1),…,Δ(N))`
-- `:custom` — off-diagonal (p-wave, d-wave …); pass a 2-arg function `Δ(i,j)`
+- `:swave`  (default) — diagonal pairing for spinful chains; auto-redirects to
+  `:pwave` for spinless chains when `Δ isa Number`
+- `:pwave`  — antisymmetric NN pairing `Δ·(K_f − K_b)` for spinless chains; `Δ` must be a `Number`
+- `:custom` — arbitrary `Δ(i,j)`; pass a 2-arg function
 
 Errors if BdG has already been applied.  Invalidates all caches.
 
 Examples
 --------
 ```julia
-add_superconductivity!(H, 0.1)                      # uniform s-wave
-add_superconductivity!(H, i -> i < N÷2 ? 0.1 : 0.0) # half-system gap
-add_superconductivity!(H, (i,j) -> ...; type=:custom) # p-wave
+add_superconductivity!(H_spinless, 0.1)              # auto p-wave (Kitaev chain)
+add_superconductivity!(H_spinless, 0.1; type=:pwave) # explicit p-wave
+add_superconductivity!(H_spinful,  0.1)              # singlet s-wave (spinful required)
+add_superconductivity!(H_spinful,  i -> i < N÷2 ? 0.1 : 0.0)  # spatially varying s-wave
+add_superconductivity!(H, (i,j) -> ...; type=:custom)          # general pairing
 ```
 """
 function add_superconductivity!(H::TBHamiltonian, Δ;
@@ -756,17 +878,40 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     pos   = something(position, H.aux_side)
     pos_s = _pos_sites(H)
 
+    # ── Spinless + :swave redirect ───────────────────────────────────────────
+    if H.spin_s === nothing && type === :swave
+        if Δ isa Number
+            println("Info: on-site (s-wave) pairing is forbidden for spinless fermions ",
+                    "(Δ(i,i) = 0 by Fermi antisymmetry).  ",
+                    "Constructing nearest-neighbour p-wave instead.")
+            type = :pwave
+        else
+            error("On-site (s-wave) pairing is forbidden for spinless fermions.  " *
+                  "For spatially varying spinless pairing use type=:custom with a 2-arg Function Δ(i,j).")
+        end
+    end
+
     # ── Build the pairing MPO in position space ──────────────────────────────
-    H_pair_pos = if type === :swave
+    H_pair_pos = if type === :pwave
+        H.spin_s === nothing ||
+            error("type=:pwave is only for spinless chains.  " *
+                  "For spinful p-wave use type=:custom with a 2-arg Function Δ(i,j).")
+        Δ isa Number ||
+            error("For type=:pwave, Δ must be a Number.  " *
+                  "For spatially varying spinless pairing use type=:custom with a 2-arg Function Δ(i,j).")
+        # H_pair = Δ·(Kf − Kb): antisymmetric NN pairing matrix.
+        # The τ- ⊗ H_pair† term handles the hole-particle sector automatically.
+        pairingNNN(H.L, pos_s, Δ * MPO(pos_s, "Id"), 1)
+    elseif type === :swave
         Δ isa Number   ? Δ * MPO(pos_s, "Id")            :
         Δ isa Function ? get_diagonal_mpo(H.L, pos_s, Δ) :
         error("For type=:swave, Δ must be a Number or a 1-arg Function.")
     elseif type === :custom
         Δ isa Function ||
             error("For type=:custom, Δ must be a 2-arg Function Δ(i,j).")
-        hopping2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
+        pairing2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
     else
-        error("Unknown pairing type :$type.  Use :swave or :custom.")
+        error("Unknown pairing type :$type.  Use :swave, :pwave, or :custom.")
     end
 
     # ── Lift pairing to spin space if needed ─────────────────────────────────

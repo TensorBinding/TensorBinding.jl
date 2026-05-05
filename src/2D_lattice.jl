@@ -876,30 +876,39 @@ end
 
 
 """
-    kagome_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+    kagome_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, t_BC, cutoff, maxdim) -> TBHamiltonian
 
-Build a uniform kagomé tight-binding Hamiltonian as a `TBHamiltonian`.
+Build a kagomé tight-binding Hamiltonian as a `TBHamiltonian`.
 
-**Encoding** (L+1 sites total, L = Lx+Ly):
-- Sites 1…L : L position qubits for 2^L unit cells on a triangular Bravais lattice
-              (row-major: n = ix + iy·2^Lx)
-- Site  L+1 : dim-3 "Kagome" sublattice index (A=1, B=2, C=3), postpended
+**Encoding** (L+1 sites, L = Lx+Ly):
+- Sites 1…L : position qubits for 2^L unit cells (row-major: n = ix + iy·2^Lx)
+- Site  L+1 : dim-3 "Kagome" sublattice index A=1, B=2, C=3 (postpended)
 
-**Hopping structure** (uniform amplitude `t`):
+**Bond amplitudes**
 
-*Intra-cell* — all three bonds of the unit-cell triangle (same unit cell):
-  A-B, B-C, A-C
+Each bond type controls both the intra-cell matrix entry and the matching
+inter-cell hopping term along the corresponding lattice direction:
 
-*Inter-cell* — one bond type per triangular lattice direction:
-  x   (shift +1   ): B(n+1)    ↔ A(n)
-  y   (shift +Nx  ): A(n+Nx)   ↔ C(n)
-  diag(shift +Nx-1): B(n+Nx-1) ↔ C(n)
+| Kwarg | Bond  | Intra-cell | Inter-cell direction       |
+|-------|-------|------------|---------------------------|
+| `t_AB`| A↔B   | yes        | x  (shift ±1)             |
+| `t_AC`| A↔C   | yes        | y  (shift ±Nx)            |
+| `t_BC`| B↔C   | yes        | diag (shift ±(Nx-1))      |
 
-Boundary wrapping is not enforced.  Use `kagome_positions(Lx, Ly)` for
-real-space atom coordinates.  The sublattice index is stored in `H.sublattice_s`;
-`H.aux_side = :post`.
+All three default to `t` (uniform kagomé).  For anisotropic / breathing kagomé
+pass individual values:
+```julia
+H = kagome_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.8, t_BC=0.6)
+```
+
+**Flat band**: at `E = −2t` (uniform case); dispersive bands reach up to `+4t`.
+Boundary wrapping is suppressed.  Real-space coordinates: `kagome_positions(Lx, Ly)`.
+`H.sublattice_s` stores the dim-3 sublattice index; `H.aux_side = :post`.
 """
 function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
+                             t_AB::Number = t,
+                             t_AC::Number = t,
+                             t_BC::Number = t,
                              cutoff::Real = 1e-8,
                              maxdim::Int  = 200)
     Nx = 2^Lx
@@ -918,26 +927,26 @@ function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)   # zeros ix = Nx-1
     brk_xn = _row_break_mpo(Lx, Ly, pos_sites; which=:xplain)  # zeros ix = 0
 
-    # ── Intra-cell: full off-diagonal 3×3 triangle ────────────────────────────
-    H_intra = postpend_op(Id, kag_s, t * Float64[0 1 1; 1 0 1; 1 1 0])
+    # ── Intra-cell: 3×3 bond matrix (A=1, B=2, C=3) ──────────────────────────
+    # t_AB: A-B bond,  t_AC: A-C bond,  t_BC: B-C bond
+    H_intra = postpend_op(Id, kag_s,
+        Float64[0 t_AB t_AC; t_AB 0 t_BC; t_AC t_BC 0])
 
-    # ── Inter-cell x: A(n) ↔ B(n+1), shift ±1 ───────────────────────────────
-    # Break suppresses B(Nx-1) ↔ A(0) wrap-around across row boundary
-    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), kag_s, 1, 2),
-             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), kag_s, 2, 1); cutoff=cutoff)
+    # ── Inter-cell x: A(n) ↔ B(n+1), shift ±1 — uses t_AB ───────────────────
+    H_x = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), kag_s, 1, 2),
+             conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), kag_s, 2, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx ─────────────────────────────
+    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx — uses t_AC ─────────────────
     ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
     kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
-    H_y  = +(t        * postpend_op(ku_y, kag_s, 1, 3),
-              conj(t) * postpend_op(kd_y, kag_s, 3, 1); cutoff=cutoff)
+    H_y  = +(t_AC        * postpend_op(ku_y, kag_s, 1, 3),
+              conj(t_AC) * postpend_op(kd_y, kag_s, 3, 1); cutoff=cutoff)
 
-    # ── Inter-cell diagonal: C(n) ↔ B(n+Nx-1), shift ±(Nx-1) ────────────────
-    # Break suppresses C(0) ↔ B(Nx-1) same-row spurious bond (ix=0 source wraps)
+    # ── Inter-cell diagonal: C(n) ↔ B(n+Nx-1), shift ±(Nx-1) — uses t_BC ────
     ku_d = compose_power(ku, Nx - 1; apply_kwargs=apkw)
     kd_d = compose_power(kd, Nx - 1; apply_kwargs=apkw)
-    H_d  = +(t        * postpend_op(apply(brk_xn, ku_d; apkw...), kag_s, 2, 3),
-              conj(t) * postpend_op(apply(kd_d, brk_xn; apkw...), kag_s, 3, 2); cutoff=cutoff)
+    H_d  = +(t_BC        * postpend_op(apply(brk_xn, ku_d; apkw...), kag_s, 2, 3),
+              conj(t_BC) * postpend_op(apply(kd_d, brk_xn; apkw...), kag_s, 3, 2); cutoff=cutoff)
 
     # ── Assembly ───────────────────────────────────────────────────────────────
     H_total = +(H_intra, H_x;    cutoff=cutoff)
@@ -945,8 +954,7 @@ function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     H_total = +(H_total, H_d;    cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
-    # Kagomé spectrum: flat band at −2t, dispersive bands reaching up to +4t
-    scale = 4.5 * abs(t)
+    scale = 4.5 * max(abs(t_AB), abs(t_AC), abs(t_BC))
     return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
                          nothing, nothing, nothing, kag_s, :post, nothing, nothing, 0, nothing)
 end
@@ -990,29 +998,33 @@ end
 
 
 """
-    lieb_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+    lieb_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian
 
-Build a uniform Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
+Build a Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
 
-**Encoding** (L+1 sites total, L = Lx+Ly):
-- Sites 1…L : L position qubits for 2^L unit cells on a square Bravais lattice
-              (row-major: n = ix + iy·2^Lx)
-- Site  L+1 : dim-3 "Lieb" sublattice index (A=1, B=2, C=3), postpended
+**Encoding** (L+1 sites, L = Lx+Ly):
+- Sites 1…L : position qubits for 2^L unit cells on a square Bravais lattice
+- Site  L+1 : dim-3 "Lieb" sublattice index A=1 (corner), B=2 (x-edge), C=3 (y-edge)
 
-**Hopping structure** (uniform amplitude `t`):
+**Bond amplitudes**
 
-*Intra-cell* — two bonds within the unit-cell cross:
-  A-B, A-C
+| Kwarg | Bond | Intra-cell | Inter-cell direction    |
+|-------|------|------------|-------------------------|
+| `t_AB`| A↔B  | yes        | x  (shift ±1)           |
+| `t_AC`| A↔C  | yes        | y  (shift ±Nx)          |
 
-*Inter-cell*:
-  x (shift +1 ): B(n) ↔ A(n+1)  — break at ix=Nx-1
-  y (shift +Nx): C(n) ↔ A(n+Nx) — no x-break needed (pure y step)
+No B-C bond exists (corner connects to edges only).  Both default to `t`.
+```julia
+H = lieb_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.5)  # anisotropic Lieb
+```
 
-The spectrum has a flat band at E=0 and two dispersive bands at ±2t.
-Use `lieb_positions(Lx, Ly)` for real-space atom coordinates.
-The sublattice index is stored in `H.sublattice_s`; `H.aux_side = :post`.
+**Flat band** at E=0; dispersive bands at ±2√(t_AB²+t_AC²)/√2 (approx ±2t uniform).
+Real-space coordinates: `lieb_positions(Lx, Ly)`.
+`H.sublattice_s` stores the dim-3 index; `H.aux_side = :post`.
 """
 function lieb_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
+                           t_AB::Number = t,
+                           t_AC::Number = t,
                            cutoff::Real = 1e-8,
                            maxdim::Int  = 200)
     Nx = 2^Lx
@@ -1030,27 +1042,26 @@ function lieb_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
 
-    # ── Intra-cell: A↔B and A↔C within the same unit cell ────────────────────
-    H_intra = postpend_op(Id, lieb_s, t * Float64[0 1 1; 1 0 0; 1 0 0])
+    # ── Intra-cell: A↔B (t_AB) and A↔C (t_AC) ───────────────────────────────
+    H_intra = postpend_op(Id, lieb_s,
+        Float64[0 t_AB t_AC; t_AB 0 0; t_AC 0 0])
 
-    # ── Inter-cell x: B(n) ↔ A(n+1), shift ±1 ───────────────────────────────
-    # Break suppresses B(Nx-1) ↔ A(0) wrap-around across row boundary
-    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), lieb_s, 1, 2),
-             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), lieb_s, 2, 1); cutoff=cutoff)
+    # ── Inter-cell x: B(n) ↔ A(n+1), shift ±1 — uses t_AB ───────────────────
+    H_x = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), lieb_s, 1, 2),
+             conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), lieb_s, 2, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx ─────────────────────────────
+    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx — uses t_AC ─────────────────
     ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
     kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
-    H_y  = +(t        * postpend_op(ku_y, lieb_s, 1, 3),
-              conj(t) * postpend_op(kd_y, lieb_s, 3, 1); cutoff=cutoff)
+    H_y  = +(t_AC        * postpend_op(ku_y, lieb_s, 1, 3),
+              conj(t_AC) * postpend_op(kd_y, lieb_s, 3, 1); cutoff=cutoff)
 
     # ── Assembly ───────────────────────────────────────────────────────────────
     H_total = +(H_intra, H_x;    cutoff=cutoff)
     H_total = +(H_total, H_y;    cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
-    # Lieb spectrum: flat band at 0, dispersive bands up to ±2t
-    scale = 2.5 * abs(t)
+    scale = 2.5 * max(abs(t_AB), abs(t_AC))
     return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
                          nothing, nothing, nothing, lieb_s, :post, nothing, nothing, 0, nothing)
 end
@@ -1294,32 +1305,36 @@ end
 
 
 """
-    dice_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+    dice_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian
 
-Build a uniform dice (T3) tight-binding Hamiltonian as a `TBHamiltonian`.
+Build a dice (T3) tight-binding Hamiltonian as a `TBHamiltonian`.
 
-**Encoding** (L+1 sites total, L = Lx+Ly):
-- Sites 1…L : L position qubits for 2^L unit cells on a triangular Bravais lattice
-              (row-major: n = ix + iy·2^Lx)
-- Site  L+1 : dim-3 "Dice" sublattice index (A=1 hub, B=2 rim, C=3 rim), postpended
+**Encoding** (L+1 sites, L = Lx+Ly):
+- Sites 1…L : position qubits for 2^L unit cells on a triangular Bravais lattice
+- Site  L+1 : dim-3 "Dice" sublattice index A=1 (hub), B=2 (rim), C=3 (rim)
 
-**Hopping structure** (uniform amplitude `t`):
+**Bond amplitudes**
 
-*Intra-cell* — hub A connects to rim B only:
-  A-B
+The hub A has coordination 6 (three B neighbors, three C neighbors).
+Each kwarg controls all bonds of that type (intra- and inter-cell):
 
-*Inter-cell* — all bonds connect rim to hub A:
-  x    (shift +1   ): B(n) ↔ A(n+1)    — break at ix=Nx-1
-  x    (shift +1   ): C(n) ↔ A(n+1)    — break at ix=Nx-1
-  y    (shift +Nx  ): B(n) ↔ A(n+Nx)   — pure y step, no break
-  y    (shift +Nx  ): C(n) ↔ A(n+Nx)   — pure y step, no break
-  diag (shift +Nx-1): C(n) ↔ A(n+Nx-1) — break at ix=0
+| Kwarg | Bond | Intra-cell | Inter-cell directions              |
+|-------|------|------------|-------------------------------------|
+| `t_AB`| A↔B  | yes        | x (shift ±1), y (shift ±Nx)        |
+| `t_AC`| A↔C  | no         | x, y, diagonal (shift ±(Nx+1))     |
 
-Coordination: A=6, B=3, C=3.
-Use `dice_positions(Lx, Ly)` for real-space atom coordinates.
-The sublattice index is stored in `H.sublattice_s`; `H.aux_side = :post`.
+Both default to `t` (uniform dice).
+```julia
+H = dice_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.7)  # hub-to-B ≠ hub-to-C
+```
+
+**Spectrum**: doubly degenerate flat band at E=0; dispersive bands reaching ±3t.
+Real-space coordinates: `dice_positions(Lx, Ly)`.
+`H.sublattice_s` stores the dim-3 index; `H.aux_side = :post`.
 """
 function dice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
+                           t_AB::Number = t,
+                           t_AC::Number = t,
                            cutoff::Real = 1e-8,
                            maxdim::Int  = 200)
     Nx = 2^Lx
@@ -1336,32 +1351,30 @@ function dice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)   # zeros ix = Nx-1
-    brk_xn = _row_break_mpo(Lx, Ly, pos_sites; which=:xplain)  # zeros ix = 0
 
-    # ── Intra-cell: A↔B only (no A-C intra-cell bond) ────────────────────────
-    H_intra = postpend_op(Id, dice_s, t * Float64[0 1 0; 1 0 0; 0 0 0])
+    # ── Intra-cell: A↔B only (t_AB); no A-C intra-cell bond ─────────────────
+    H_intra = postpend_op(Id, dice_s,
+        Float64[0 t_AB 0; t_AB 0 0; 0 0 0])
 
-    # ── Inter-cell x: B(n) ↔ A(n+1) and C(n) ↔ A(n+1), shift ±1 ─────────────
-    # Break suppresses rim(Nx-1) ↔ A(0) wrap-around across row boundary
-    H_xB = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 2, 1),
-              conj(t) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 2); cutoff=cutoff)
-    H_xC = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 3, 1),
-              conj(t) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
+    # ── Inter-cell x: B(n) ↔ A(n+1) (t_AB) and C(n) ↔ A(n+1) (t_AC), shift ±1
+    H_xB = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 2, 1),
+              conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 2); cutoff=cutoff)
+    H_xC = +(t_AC        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 3, 1),
+              conj(t_AC) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
 
-    # ── Inter-cell y: B(n) ↔ A(n+Nx) and C(n) ↔ A(n+Nx), shift ±Nx ──────────
+    # ── Inter-cell y: B(n) ↔ A(n+Nx) (t_AB) and C(n) ↔ A(n+Nx) (t_AC), shift ±Nx
     ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
     kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
-    H_yB = +(t        * postpend_op(ku_y, dice_s, 2, 1),
-              conj(t) * postpend_op(kd_y, dice_s, 1, 2); cutoff=cutoff)
-    H_yC = +(t        * postpend_op(ku_y, dice_s, 3, 1),
-              conj(t) * postpend_op(kd_y, dice_s, 1, 3); cutoff=cutoff)
+    H_yB = +(t_AB        * postpend_op(ku_y, dice_s, 2, 1),
+              conj(t_AB) * postpend_op(kd_y, dice_s, 1, 2); cutoff=cutoff)
+    H_yC = +(t_AC        * postpend_op(ku_y, dice_s, 3, 1),
+              conj(t_AC) * postpend_op(kd_y, dice_s, 1, 3); cutoff=cutoff)
 
-    # ── Inter-cell diagonal: C(n) ↔ A(n+Nx+1), shift ±(Nx+1) ────────────────
-    # Break suppresses C(ix=Nx-1) ↔ A(ix=0) spurious wrap-around across row boundary
+    # ── Inter-cell diagonal: C(n) ↔ A(n+Nx+1) (t_AC), shift ±(Nx+1) ─────────
     ku_d = compose_power(ku, Nx + 1; apply_kwargs=apkw)
     kd_d = compose_power(kd, Nx + 1; apply_kwargs=apkw)
-    H_dC = +(t        * postpend_op(apply(brk_xp, ku_d; apkw...), dice_s, 3, 1),
-              conj(t) * postpend_op(apply(kd_d, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
+    H_dC = +(t_AC        * postpend_op(apply(brk_xp, ku_d; apkw...), dice_s, 3, 1),
+              conj(t_AC) * postpend_op(apply(kd_d, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
 
     # ── Assembly ───────────────────────────────────────────────────────────────
     H_total = +(H_intra, H_xB;  cutoff=cutoff)
@@ -1371,8 +1384,7 @@ function dice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     H_total = +(H_total, H_dC;  cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
-    # Dice spectrum: flat band at 0, dispersive bands; conservative scale
-    scale = 4.5 * abs(t)
+    scale = 4.5 * max(abs(t_AB), abs(t_AC))
     return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
                          nothing, nothing, nothing, dice_s, :post, nothing, nothing, 0, nothing)
 end
@@ -1613,4 +1625,95 @@ function build_hamiltonian(model::AbstractString, Lx::Integer, Ly::Integer;
     pos   = [p[k] for k in required]
     extra = Dict(k=>v for (k,v) in p if !(k in required))
     return fn(Lx, Ly, pos...; kw_defaults..., extra...)
+end
+
+
+# ============================================================
+# 10. Spatial LDOS plotting helpers for 2D sublattice lattices
+# ============================================================
+
+# Number of sublattices per geometry — used to extract the right atom rows
+_nsublat(::Val{:honeycomb}) = 2
+_nsublat(::Val{:kagome})    = 3
+_nsublat(::Val{:lieb})      = 3
+_nsublat(::Val{:dice})      = 3
+
+_geom_positions(::Val{:honeycomb}, Lx, Ly) = honeycomb_sublattice_positions(Lx, Ly)
+_geom_positions(::Val{:kagome},    Lx, Ly) = kagome_positions(Lx, Ly)
+_geom_positions(::Val{:lieb},      Lx, Ly) = lieb_positions(Lx, Ly)
+_geom_positions(::Val{:dice},      Lx, Ly) = dice_positions(Lx, Ly)
+
+"""
+    plot_ldos_2d(ldos_mat, ωlist, ω_target;
+                 geometry, Lx, Ly,
+                 markersize, colormap, colorbar, clims, title, kwargs...)
+        -> Plot
+
+Scatter plot of the spatial LDOS at the energy in `ωlist` nearest to `ω_target`.
+Each atom in the geometry is drawn as a coloured dot.
+
+**Arguments**
+
+- `ldos_mat` : `(Nω × n_atoms)` matrix as returned by `get_ldos_spatial` with
+  `num_x = H.N`.  Column `k` maps to atom `k` in the positions matrix of the
+  geometry (interleaved order `[A₀, B₀, …]`).  Pass the full-lattice matrix from
+  `get_ldos_spatial` directly — no sublattice filtering required:
+  - `proj_sl=k` result: only sublattice `k` atoms carry weight, others are zero.
+  - `proj_sl=nothing` result: every atom carries its own sublattice LDOS.
+- `geometry` : `:honeycomb`, `:kagome`, `:lieb`, or `:dice`.
+- `Lx`, `Ly` : log₂ grid dimensions (same values passed to the constructor).
+
+An assertion checks that `size(ldos_mat, 2) == n_atoms`; the error message
+reminds the user to call `get_ldos_spatial` with `num_x = H.N`.
+
+Examples
+--------
+```julia
+# Single sublattice (only A atoms lit up, B atoms zero)
+p1 = plot_ldos_2d(ldos_A, ωlist, 0.5; geometry=:honeycomb, Lx=2, Ly=2)
+
+# All sublattices — every atom coloured by its own LDOS
+ldos_all = get_ldos_spatial(H_kg, 100, ωlist; num_x=H_kg.N)
+p  = plot_ldos_2d(ldos_all, ωlist, -2.0; geometry=:kagome, Lx=2, Ly=2,
+                  markersize=14, colormap=:plasma)
+```
+"""
+function plot_ldos_2d(ldos_mat::AbstractMatrix, ωlist, ω_target;
+                      geometry::Symbol = :honeycomb,
+                      Lx::Int,
+                      Ly::Int,
+                      markersize::Real = 12.0,
+                      colormap::Symbol = :inferno,
+                      colorbar::Bool   = true,
+                      clims            = nothing,
+                      title::String    = "",
+                      kwargs...)
+    positions_all = _geom_positions(Val(geometry), Lx, Ly)
+    n_atoms       = size(positions_all, 1)
+    n_cols        = size(ldos_mat, 2)
+    n_atoms == n_cols || error(
+        "plot_ldos_2d: ldos_mat has $n_cols columns but geometry has $n_atoms atoms. " *
+        "Call get_ldos_spatial with num_x=H.N so each column maps to one atom.")
+
+    ω_arr    = collect(ωlist)
+    ω_idx    = argmin(abs.(ω_arr .- ω_target))
+    ω_actual = ω_arr[ω_idx]
+    vals     = ldos_mat[ω_idx, :]   # one value per atom, already in positions order
+
+    cl   = isnothing(clims) ? (0.0, maximum(vals) + eps(Float64)) : clims
+    tstr = isempty(title)   ? "LDOS  ω ≈ $(round(ω_actual; digits=3))" : title
+
+    Plots.scatter(positions_all[:, 1], positions_all[:, 2];
+                  marker_z          = vals,
+                  color             = colormap,
+                  colorbar          = colorbar,
+                  clims             = cl,
+                  markersize        = markersize,
+                  markerstrokewidth = 0,
+                  xlabel            = "x",
+                  ylabel            = "y",
+                  aspect_ratio      = :equal,
+                  title             = tstr,
+                  label             = "",
+                  kwargs...)
 end
