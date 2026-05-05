@@ -175,22 +175,22 @@ function get_Hamiltonian(geometry::String, params;
     elseif geometry == "custom"
         return _build_custom(params, L, N, sites; scale, tol, maxdim, kwargs...)
 
-    # ---- multi-atom unit-cell lattices (kagomé, Lieb, honeycomb) ----
-    elseif geometry in ("kagome", "lieb", "honeycomb", "dice")
+    # ---- multi-atom unit-cell lattices (kagomé, Lieb, honeycomb, dice) ----
+    elseif geometry in ("kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
         return _build_sublattice(geometry, params, L; scale, tol, maxdim, kwargs...)
 
     # ---- preset models routed through build_hamiltonian ----
     elseif geometry in ("ssh", "aah", "uniform",
-                        "square_2d", "hex_2d", "triangular_2d",
+                        "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                         "chern8", "chernhex", "qc2dsquare")
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
         known = ("chain_1d", "haldane", "custom",
                  "uniform", "ssh", "aah",
-                 "square_2d", "hex_2d", "triangular_2d",
+                 "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
-                 "kagome", "lieb", "honeycomb", "dice")
+                 "kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
         error("Unknown geometry \"$geometry\". Supported: $(join(known, ", ")).")
     end
 end
@@ -212,6 +212,17 @@ function _tri_geometry(Nx)
         ix = (i-1) % Nx
         iy = (i-1) ÷ Nx
         x  = Float64(ix) + 0.5 * (iy % 2)
+        y  = iy * sqrt(3) / 2
+        return Float64[x, y]
+    end
+    return pos
+end
+
+function _tri_bravais_geometry(Nx)
+    function pos(i)
+        ix = (i-1) % Nx
+        iy = (i-1) ÷ Nx
+        x  = Float64(ix) + 0.5 * iy
         y  = iy * sqrt(3) / 2
         return Float64[x, y]
     end
@@ -326,11 +337,14 @@ function _build_sublattice(geometry, params, L;
     t  = params isa Number                                           ? params      :
          params isa NamedTuple && hasfield(typeof(params), :t)      ? params.t    :
          params isa AbstractDict && haskey(params, :t)              ? params[:t]  : 1.0
+    t2 = params isa NamedTuple && hasfield(typeof(params), :t2)     ? params.t2   :
+         params isa AbstractDict && haskey(params, :t2)             ? params[:t2] : 0.0
 
-    H = geometry == "kagome"    ? kagome_hamiltonian(               Lx, Ly, t; cutoff=tol, maxdim=maxdim) :
-        geometry == "lieb"      ? lieb_hamiltonian(                Lx, Ly, t; cutoff=tol, maxdim=maxdim) :
-        geometry == "dice"      ? dice_hamiltonian(                Lx, Ly, t; cutoff=tol, maxdim=maxdim) :
-                                  honeycomb_sublattice_hamiltonian(Lx, Ly, t; cutoff=tol, maxdim=maxdim)
+    H = geometry == "kagome"        ? kagome_hamiltonian(               Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
+        geometry == "lieb"          ? lieb_hamiltonian(                 Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
+        geometry == "dice"          ? dice_hamiltonian(                 Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
+        geometry == "honeycomb_nnn" ? honeycomb_nnn_hamiltonian(        Lx, Ly, t, t2; cutoff=tol, maxdim=maxdim) :
+                                      honeycomb_sublattice_hamiltonian( Lx, Ly, t;     cutoff=tol, maxdim=maxdim)
 
     rs         = geometry == "kagome"    ? kagome_positions(                 Lx, Ly) :
                  geometry == "lieb"      ? lieb_positions(                   Lx, Ly) :
@@ -346,7 +360,8 @@ function _preset_geometry(geometry, Nx)
     geometry in ("uniform", "ssh", "aah", "chain_1d") && return _chain_geometry()
     geometry == "square_2d"    && return _square_geometry(Nx)
     geometry == "hex_2d"       && return _hex_geometry(Nx)
-    geometry == "triangular_2d"&& return _tri_geometry(Nx)
+    geometry == "triangular_2d"     && return _tri_geometry(Nx)
+    geometry == "triangular_bravais" && return _tri_bravais_geometry(Nx)
     return nothing
 end
 
@@ -361,7 +376,8 @@ function _estimate_scale(geometry, params)
     geometry == "uniform"      && return 2.5 * t
     geometry == "square_2d"    && return 4.4 * t
     geometry == "hex_2d"       && return 4.0 * t
-    geometry == "triangular_2d"&& return 7.0 * t
+    geometry == "triangular_2d"     && return 7.0 * t
+    geometry == "triangular_bravais" && return 7.0 * t
     geometry in ("chern8","chernhex","qc2dsquare") && return 6.0 * t
     return 5.0 * t   # conservative fallback
 end
@@ -419,6 +435,22 @@ function triangular_positions(L::Int; Lx::Int = L ÷ 2)
     N  = 2^L
     Nx = 2^Lx
     g  = _tri_geometry(Nx)
+    rs = Matrix{Float64}(undef, N, 2)
+    for i in 1:N; rs[i, :] = g(i); end
+    return rs
+end
+
+"""
+    triangular_bravais_positions(L; Lx=L÷2) -> Matrix{Float64}
+
+Physical positions for the `2^L`-site Bravais triangular lattice in quantics
+row-major encoding `n = ix + iy·2^Lx`, bond length = 1.
+Bravais vectors a1=(1,0), a2=(1/2,√3/2):  `x = ix + iy/2`,  `y = iy·√3/2`.
+"""
+function triangular_bravais_positions(L::Int; Lx::Int = L ÷ 2)
+    N  = 2^L
+    Nx = 2^Lx
+    g  = _tri_bravais_geometry(Nx)
     rs = Matrix{Float64}(undef, N, 2)
     for i in 1:N; rs[i, :] = g(i); end
     return rs

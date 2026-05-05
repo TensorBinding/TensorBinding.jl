@@ -478,6 +478,31 @@ end
 
 
 """
+    kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping; apply_kwargs) -> MPO
+
+Bravais triangular-lattice third-bond hopping: (Δix=+1, Δiy=−1), linear shift 1−Nx.
+Mirrors `kineticinterNNNSWNE` with kd/ku swapped.  Row x-wrap at ix=Nx−1 is
+suppressed by `_row_break_mpo(:xplus)`.
+"""
+function kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping::MPO;
+                                          apply_kwargs = NamedTuple())
+    L  = Lx + Ly
+    Nx = 2^Lx
+    @assert L == length(sites)
+    ku   = generate_kin_u(sites, 2^L)
+    kd   = generate_kin_d(sites, 2^L)
+    kd_n = compose_power(kd, Nx - 1; side=:right, apply_kwargs)
+    ku_n = compose_power(ku, Nx - 1; side=:left,  apply_kwargs)
+    hop_fwd = apply(hopping, kd_n; apply_kwargs...)
+    hop_bwd = apply(ku_n, dag(hopping); apply_kwargs...)
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
+    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
+    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+end
+
+
+"""
     kineticintra2DNNhex(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
 Intra-row hopping for a honeycomb lattice.  Applies `_row_break_mpo(:xplus)`
@@ -638,6 +663,34 @@ function HUniform2Dtri(Lx::Integer, Ly::Integer, t;
     Htot = +(HintraNN,   HinterNN;   cutoff=cutoff)
     Htot = +(Htot,       HinterSWNE; cutoff=cutoff)
     return  +(Htot,      HinterSENW; cutoff=cutoff)
+end
+
+
+"""
+    HUniform2Dtri_bravais(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
+
+Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` triangular lattice with proper
+Bravais vectors a1=(1,0), a2=(1/2,√3/2).  Exactly three bond types per unit cell:
+- (Δix=+1, Δiy= 0): intra-row x  via `kineticintra2DNNN`
+- (Δix= 0, Δiy=+1): y-hop        via `kineticNNN(…, Nx)`
+- (Δix=+1, Δiy=-1): Bravais diag via `kineticinterNNNtri_bravais_diag`
+"""
+function HUniform2Dtri_bravais(Lx::Integer, Ly::Integer, t;
+                                tol_quantics::Real       = 1e-8,
+                                maxbonddim_quantics::Int = 10,
+                                cutoff::Real             = 1e-10)
+    Nx    = 2^Lx
+    L     = Lx + Ly
+    N     = Nx * 2^Ly
+    sites = siteinds("Qubit", L)
+    xvals = 0:N-1
+    hops  = qtt_mpo(L, xvals, sites, _ -> t;
+                    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    Hintra = kineticintra2DNNN(Lx, Ly, sites, hops, 1)
+    Hy     = kineticNNN(L,      sites, hops, Nx)
+    Hdiag  = kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hops)
+    Htot   = +(Hintra, Hy;    cutoff=cutoff)
+    return   +(Htot,   Hdiag; cutoff=cutoff)
 end
 
 
@@ -1110,6 +1163,94 @@ function honeycomb_sublattice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 
 end
 
 
+"""
+    honeycomb_nnn_hamiltonian(Lx, Ly[, t[, t2]]; cutoff, maxdim) -> TBHamiltonian
+
+Build a honeycomb tight-binding Hamiltonian with both nearest-neighbor (NN)
+and next-nearest-neighbor (NNN) hopping, as a `TBHamiltonian`.
+
+Encoding is identical to `honeycomb_sublattice_hamiltonian`: L+1 sites, with
+the last site being the dim-2 sublattice index (A=1, B=2, postpended).
+
+**Hopping structure**
+
+*NN* (amplitude `t`): same three bonds as `honeycomb_sublattice_hamiltonian`
+(intra-cell A↔B, x-shift B↔A, y-shift B↔A).
+
+*NNN* (amplitude `t2`): connects same-sublattice atoms along the three
+triangular Bravais directions.  The sublattice operator is the 2×2 identity
+(both A↔A and B↔B hop with the same amplitude `t2`):
+
+- x-direction (shift ±1):          A(n) ↔ A(n±1),  B(n) ↔ B(n±1)
+- y-direction (shift ±Nx):         A(n) ↔ A(n±Nx), B(n) ↔ B(n±Nx)
+- diagonal (shift ±(1−Nx)):        A(n) ↔ A(n±(1−Nx)), same for B
+
+`t2` may be complex; `conj(t2)` is used for the backward hop so that the
+Hamiltonian is Hermitian.  For Haldane-type NNN (sublattice-dependent phases)
+construct the NN and NNN terms manually.
+"""
+function honeycomb_nnn_hamiltonian(Lx::Integer, Ly::Integer,
+                                   t::Number = 1.0, t2::Number = 0.0;
+                                   cutoff::Real = 1e-8,
+                                   maxdim::Int  = 200)
+    Nx = 2^Lx
+    L  = Lx + Ly
+    N  = 2^L
+
+    pos_sites = siteinds("Qubit", L)
+    hc_s      = Index(2, "Honeycomb")
+    all_sites = [pos_sites; hc_s]
+
+    ku   = generate_kin_u(pos_sites, N)
+    kd   = generate_kin_d(pos_sites, N)
+    Id   = MPO(pos_sites, "Id")
+    apkw = (; cutoff = cutoff, maxdim = maxdim)
+
+    brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
+
+    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
+    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+
+    # ── NN terms (same as honeycomb_sublattice_hamiltonian) ───────────────────
+    H_intra = postpend_op(Id, hc_s, t * Float64[0 1; 1 0])
+
+    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), hc_s, 2, 1),
+             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), hc_s, 1, 2); cutoff=cutoff)
+
+    H_y = +(t        * postpend_op(ku_y, hc_s, 2, 1),
+             conj(t) * postpend_op(kd_y, hc_s, 1, 2); cutoff=cutoff)
+
+    # ── NNN terms: sublattice matrix = I₂ (A↔A and B↔B with same amplitude) ──
+    I2 = Float64[1 0; 0 1]
+
+    # ±a₁ (x-direction, shift ±1)
+    H_nnn_x = +(t2        * postpend_op(apply(brk_xp, ku;  apkw...), hc_s, I2),
+                conj(t2)  * postpend_op(apply(kd, brk_xp; apkw...), hc_s, I2); cutoff=cutoff)
+
+    # ±a₂ (y-direction, shift ±Nx)
+    H_nnn_y = +(t2        * postpend_op(ku_y, hc_s, I2),
+                conj(t2)  * postpend_op(kd_y, hc_s, I2); cutoff=cutoff)
+
+    # ±(a₁−a₂) (diagonal, shift +(1−Nx) and −(1−Nx))
+    K_fwd = apply(compose_power(kd, Nx; apply_kwargs=apkw), apply(brk_xp, ku; apkw...); apkw...)
+    K_bwd = apply(compose_power(ku, Nx; apply_kwargs=apkw), apply(kd, brk_xp; apkw...); apkw...)
+    H_nnn_d = +(t2        * postpend_op(K_fwd, hc_s, I2),
+                conj(t2)  * postpend_op(K_bwd, hc_s, I2); cutoff=cutoff)
+
+    # ── Assembly ───────────────────────────────────────────────────────────────
+    H_total = +(H_intra, H_x;     cutoff=cutoff)
+    H_total = +(H_total, H_y;     cutoff=cutoff)
+    H_total = +(H_total, H_nnn_x; cutoff=cutoff)
+    H_total = +(H_total, H_nnn_y; cutoff=cutoff)
+    H_total = +(H_total, H_nnn_d; cutoff=cutoff)
+    ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+
+    scale = 3.5 * abs(t) + 3.5 * abs(t2)
+    return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
+                         nothing, nothing, nothing, hc_s, :post, nothing, nothing, 0, nothing)
+end
+
+
 # ============================================================
 # 8d. Dice (T3) lattice
 # ============================================================
@@ -1350,7 +1491,8 @@ const MODEL_REGISTRY = Dict{String, Tuple{Symbol,Int,Vector{Symbol},NamedTuple}}
     "aah"             => (:HAAH,             1, [:V, :phi, :t],(; b=(1+sqrt(5))/2, tol_quantics=1e-8, maxbonddim_quantics=50)),
     "square_2d"       => (:HUniform2Dsquare, 2, [:t],          (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
     "hex_2d"          => (:HUniform2Dhex,    2, [:t],          (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
-    "triangular_2d"   => (:HUniform2Dtri,    2, [:t],          (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
+    "triangular_2d"        => (:HUniform2Dtri,         2, [:t], (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
+    "triangular_bravais"   => (:HUniform2Dtri_bravais, 2, [:t], (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
     "chern8"          => (:HChern8,          2, [:V, :t],      (; t2=0.2, tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
     "chernhex"        => (:H2DChernhex,      2, [:t, :t2, :ms],(; uniformhaldane=false, uniformsemenoff=false,
                                                                    tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10)),
