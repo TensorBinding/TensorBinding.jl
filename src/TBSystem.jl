@@ -799,27 +799,37 @@ Nambu (particle–hole) index.
 The BdG structure is:
     H_BdG = τ_z ⊗ H_kin  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
 
-- **Spinless** (default): simple spinless BdG; `H_pair = Δ(r) · I`.
-- **Spinful** (`add_spin!` called first): singlet pairing;
-  `H_pair = (i·σ_y)_spin ⊗ Δ(r)`, the standard BCS Cooper-pair operator.
+- **Spinless + p-wave** (`type=:pwave`, or auto-selected when spinless + `:swave`):
+  `H_pair = Δ·(K_forward − K_backward)`, the antisymmetric nearest-neighbour
+  matrix required by Fermi statistics (`Δ(i,j) = −Δ(j,i)`).  This is the
+  Kitaev chain.  `Δ` must be a `Number`.
+- **Spinful + s-wave** (`add_spin!` called first, `type=:swave`):
+  `H_pair = (i·σ_y)_spin ⊗ Δ(r)`, the standard BCS singlet Cooper-pair operator.
+  On-site (s-wave) pairing is allowed here because the antisymmetry is carried
+  by the spin singlet factor `i·σ_y`.  `Δ` can be a `Number` or 1-arg `Function`.
+- **Custom** (`type=:custom`): arbitrary pairing matrix via 2-arg function `Δ(i,j)`,
+  compressed with TCI.
 
-`Δ` can be:
-- a `Number`   — uniform on-site gap (s-wave, `type=:swave`)
-- a `Function` `Δ(i)` — spatially varying diagonal gap (`type=:swave`)
-- a `Function` `Δ(i,j)` — general pairing matrix compressed via TCI (`type=:custom`)
+**Note on spinless s-wave**: on-site pairing is forbidden for spinless fermions
+(`Δ(i,i) = 0` by antisymmetry).  Calling with `type=:swave` on a spinless chain
+automatically redirects to `:pwave` (uniform `Δ`) or errors (spatially varying `Δ`).
 
 `type`:
-- `:swave`  (default) — diagonal pairing, `H_pair = diag(Δ(1),…,Δ(N))`
-- `:custom` — off-diagonal (p-wave, d-wave …); pass a 2-arg function `Δ(i,j)`
+- `:swave`  (default) — diagonal pairing for spinful chains; auto-redirects to
+  `:pwave` for spinless chains when `Δ isa Number`
+- `:pwave`  — antisymmetric NN pairing `Δ·(K_f − K_b)` for spinless chains; `Δ` must be a `Number`
+- `:custom` — arbitrary `Δ(i,j)`; pass a 2-arg function
 
 Errors if BdG has already been applied.  Invalidates all caches.
 
 Examples
 --------
 ```julia
-add_superconductivity!(H, 0.1)                      # uniform s-wave
-add_superconductivity!(H, i -> i < N÷2 ? 0.1 : 0.0) # half-system gap
-add_superconductivity!(H, (i,j) -> ...; type=:custom) # p-wave
+add_superconductivity!(H_spinless, 0.1)              # auto p-wave (Kitaev chain)
+add_superconductivity!(H_spinless, 0.1; type=:pwave) # explicit p-wave
+add_superconductivity!(H_spinful,  0.1)              # singlet s-wave (spinful required)
+add_superconductivity!(H_spinful,  i -> i < N÷2 ? 0.1 : 0.0)  # spatially varying s-wave
+add_superconductivity!(H, (i,j) -> ...; type=:custom)          # general pairing
 ```
 """
 function add_superconductivity!(H::TBHamiltonian, Δ;
@@ -833,17 +843,40 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     pos   = something(position, H.aux_side)
     pos_s = _pos_sites(H)
 
+    # ── Spinless + :swave redirect ───────────────────────────────────────────
+    if H.spin_s === nothing && type === :swave
+        if Δ isa Number
+            println("Info: on-site (s-wave) pairing is forbidden for spinless fermions ",
+                    "(Δ(i,i) = 0 by Fermi antisymmetry).  ",
+                    "Constructing nearest-neighbour p-wave instead.")
+            type = :pwave
+        else
+            error("On-site (s-wave) pairing is forbidden for spinless fermions.  " *
+                  "For spatially varying spinless pairing use type=:custom with a 2-arg Function Δ(i,j).")
+        end
+    end
+
     # ── Build the pairing MPO in position space ──────────────────────────────
-    H_pair_pos = if type === :swave
+    H_pair_pos = if type === :pwave
+        H.spin_s === nothing ||
+            error("type=:pwave is only for spinless chains.  " *
+                  "For spinful p-wave use type=:custom with a 2-arg Function Δ(i,j).")
+        Δ isa Number ||
+            error("For type=:pwave, Δ must be a Number.  " *
+                  "For spatially varying spinless pairing use type=:custom with a 2-arg Function Δ(i,j).")
+        # H_pair = Δ·(Kf − Kb): antisymmetric NN pairing matrix.
+        # The τ- ⊗ H_pair† term handles the hole-particle sector automatically.
+        pairingNNN(H.L, pos_s, Δ * MPO(pos_s, "Id"), 1)
+    elseif type === :swave
         Δ isa Number   ? Δ * MPO(pos_s, "Id")            :
         Δ isa Function ? get_diagonal_mpo(H.L, pos_s, Δ) :
         error("For type=:swave, Δ must be a Number or a 1-arg Function.")
     elseif type === :custom
         Δ isa Function ||
             error("For type=:custom, Δ must be a 2-arg Function Δ(i,j).")
-        hopping2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
+        pairing2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
     else
-        error("Unknown pairing type :$type.  Use :swave or :custom.")
+        error("Unknown pairing type :$type.  Use :swave, :pwave, or :custom.")
     end
 
     # ── Lift pairing to spin space if needed ─────────────────────────────────
