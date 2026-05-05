@@ -1379,6 +1379,73 @@ end
 
 
 # ============================================================
+# 8f. SSH chain with explicit sublattice index
+# ============================================================
+
+"""
+    ssh_sublattice_hamiltonian(L[, t[, d]]; cutoff, maxdim) -> TBHamiltonian
+
+Build an SSH (Su-Schrieffer-Heeger) tight-binding Hamiltonian with an explicit
+2-component sublattice index, as a `TBHamiltonian`.
+
+**Encoding** (L+1 sites total):
+- Sites 1…L : L position qubits for 2^L unit cells
+- Site  L+1 : dim-2 "SSH" sublattice index (A=1, B=2), postpended
+
+**Hopping structure**:
+- *Intra-cell* (amplitude `t+d`): A↔B within each unit cell
+- *Inter-cell* (amplitude `t-d`): B(n) ↔ A(n+1)
+
+**Geometry** (unit cell width = 1, 1-indexed site `i` over `2·2^L` atoms):
+- A atom in unit cell `n = (i-1)÷2`: position `[n]`
+- B atom in unit cell `n`: position `[n + 0.5]`
+
+`geometry_uc` returns `[n]` for every atom in unit cell `n` (same for A and B).
+
+The chain has periodic boundary conditions (B(N-1) ↔ A(0) inter-cell bond from
+the binary-increment wrap-around), consistent with all other QTT Hamiltonians.
+"""
+function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0;
+                                    cutoff::Real = 1e-8,
+                                    maxdim::Int  = 200)
+    N  = 2^L
+
+    pos_sites = siteinds("Qubit", L)
+    ssh_s     = Index(2, "SSH")
+    all_sites = [pos_sites; ssh_s]
+
+    t1 = t + d   # intra-cell hopping amplitude
+    t2 = t - d   # inter-cell hopping amplitude
+
+    ku = generate_kin_u(pos_sites, N)
+    kd = generate_kin_d(pos_sites, N)
+    Id = MPO(pos_sites, "Id")
+
+    # Intra-cell: A(n) ↔ B(n) — Hermitian matrix [0 t1; conj(t1) 0]
+    H_intra = postpend_op(Id, ssh_s, ComplexF64[0 t1; conj(t1) 0])
+
+    # Inter-cell: B(n) ↔ A(n+1), i.e. K_u ⊗ |A⟩⟨B| + K_d ⊗ |B⟩⟨A|
+    H_inter = +(t2       * postpend_op(ku, ssh_s, 1, 2),
+                conj(t2) * postpend_op(kd, ssh_s, 2, 1); cutoff=cutoff)
+
+    H_total = +(H_intra, H_inter; cutoff=cutoff)
+    ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+
+    scale = (abs(t1) + abs(t2)) * 1.1
+
+    geom_f    = let
+        i -> [Float64((i - 1) ÷ 2) + 0.5 * ((i - 1) % 2)]
+    end
+    geom_uc_f = let
+        i -> [Float64((i - 1) ÷ 2)]
+    end
+
+    return TBHamiltonian(L, N, all_sites, H_total, geom_f, geom_uc_f, scale, 0.0,
+                         nothing, nothing, nothing, ssh_s, :post, nothing, nothing, 0, nothing)
+end
+
+
+# ============================================================
 # 9. Antiferromagnetic / Néel initial-guess density matrices
 #    Used as seeds for mean-field SCF on interacting models.
 #    Return (density_MPO, density_MPS).

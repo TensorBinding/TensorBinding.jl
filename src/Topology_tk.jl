@@ -3,30 +3,44 @@
 # Implements real-space Chern markers and winding numbers for arbitrary
 # tight-binding systems encoded in the quantics representation.
 #
-# The key observable is the real-space Chern marker C(r):
-#   C(r) = 4π Im⟨r| P [x, P] [y, P] |r⟩
+# The key observables are:
 #
-# where P is the ground-state projector and [A, B] = AB − BA.
-# Integrating C(r) over the bulk gives the integer Chern number.
+#   Chern marker (2D):   C(r) = 4π Im⟨r| P [x̂, P] [ŷ, P] |r⟩
+#   Winding number (1D): W(r) = ⟨r| σ_z (P x̂ Q + Q x̂ P) |r⟩
 #
-# Position operators are specified as two-argument scalar functions:
-#   xfunc(i::Int, L_chain::Int) -> Float64   x-coordinate of site i (0-indexed)
-#   yfunc(i::Int, L_chain::Int) -> Float64   y-coordinate of site i (0-indexed)
+# where P is the ground-state projector, Q = I − P, and [A,B] = AB − BA.
+# Integrating C(r) or W(r) over the bulk gives the integer invariant.
 #
-# Two modes are supported (controlled by the `quenched` kwarg):
+# == Position functions ==
+#
+# xfunc/yfunc are two-argument scalar functions:
+#   xfunc(i::Int, L_chain::Int) -> Float64
+# where i is a 0-indexed PHYSICAL site number and L_chain = 2^(L÷2).
+#
+# For plain (non-sublattice) models, i ∈ {0, …, 2^L − 1}.
+# For sublattice models (n_sub atoms per UC), i ∈ {0, …, n_sub·2^L − 1}.
+# Position MPOs are built on the L position qubits only and then extended
+# to the full site chain via postpend_op(⋅, sublattice_s, I).
+#
+# get_C and get_W both accept xfunc=nothing / yfunc=nothing, in which case
+# they auto-derive from H.geometry_uc (sublattice models) or H.geometry:
+#   xfunc(i, _) = geom(i+1)[1],   yfunc(i, _) = geom(i+1)[2]
+# geometry_uc returns the same Bravais UC position for all sublattice atoms
+# in the same unit cell, so the position operator is constant across sublattice.
+#
+# == Quenching ==
 #
 #   quenched=true (default):
-#       Position operators are quenched via sin/cos of xfunc/Λ and yfunc/Λ.
-#       The Chern marker is computed via a 4-term trig decomposition.
-#       A Λ² prefactor is applied (since sin(x/Λ) ≈ x/Λ, using sin divides
-#       each coordinate by Λ; Λ² restores physical units).
-#       Removes the PBC discontinuity.
+#       Position operators are quenched via sin/cos(xfunc/Λ), removing PBC
+#       discontinuities.  The Chern marker uses a 4-term trig decomposition
+#       (4 α-independent MPO products, combined in the closure).
+#       Λ² prefactor restores physical units (sin(x/Λ) ≈ x/Λ).
 #
 #   quenched=false:
-#       Position operators use xfunc/yfunc directly without sin/cos wrapping.
-#       No additional prefactor — formula is 2πi (Q x P y Q − P x Q y P).
+#       Position operators use xfunc/yfunc directly (no sin/cos).
+#       Formula: C = 2πi (Q x P y Q − P x Q y P).  Best for OBC or averages.
 #
-# Ground-state projector P can be obtained via:
+# == Projector methods ==
 #   method=:KPM      — KPM Chebyshev expansion (uses cached Tn if available)
 #   method=:mcweeny  — McWeeny purification (uses density cache if available)
 #   method=:sp2      — SP2 purification (uses density cache if available)
@@ -89,7 +103,7 @@ end
 # ============================================================
 
 """
-    get_W(H::TBHamiltonian, xfunc, sz_func;
+    get_W(H::TBHamiltonian, xfunc=nothing;
           method=:KPM, fermi=0.0, Nchebychev=300,
           maxdim=15, cutoff=1e-8, Nel=nothing,
           quenched=true, l=nothing, Λ=10) -> Function
@@ -100,32 +114,30 @@ number density at any site `α` (1-indexed).
 
 The winding number operator is
 
-    W_op = σ(r) · (P x̂ Q + Q x̂ P)
+    W_op = σ_z · (P x̂ Q + Q x̂ P)
 
 where `P` is the occupied-band projector, `Q = I − P`, `x̂` is the position
-operator centred at `α`, and `σ` is the chirality / sublattice operator.
+operator, and `σ_z` is the sublattice chirality (A → +1, B → -1).
+
+`H` must have a 2-component sublattice index (`H.sublattice_s` with dim 2).
+`σ_z` is built automatically as the diagonal operator `diag(+1, −1)` on that
+index tensored with identity on the position qubits.
 
 # Coordinate function
 
-`xfunc(i, L_chain) -> Float64` accepts a **0-indexed** site number and
-returns the raw x-coordinate.  For the SSH model with two sites per unit cell
-at the same position: `xfunc(i, L_chain) = Float64(div(i, 2))`.
-
-`sz_func(i) -> Float64` receives a 1-indexed site index (as from
-`get_diagonal_mpo`) and returns the sublattice / chirality sign.
-For SSH: `sz_func(i) = Float64((-1)^(i+1))`.
+`xfunc(i, L_chain) -> Float64` accepts a **0-indexed** physical site number
+and returns the raw x-coordinate.  Defaults to `nothing`, in which case it is
+auto-derived from `H.geometry_uc` (preferred) or `H.geometry`:
+`xfunc(i, _) = geom(i+1)[1]`.  Because `geometry_uc` returns the same
+Bravais position for both sublattice atoms in a unit cell, this correctly
+assigns the same x-coordinate to both A and B sites of each UC.
 
 # Quenched vs flat mode
 
-- `quenched=true` (default): uses the trig identity
-      sin((x_r − x_α)/Λ) = sinX_r cos(x_α/Λ) − cosX_r sin(x_α/Λ)
-  to pre-compute two α-independent MPOs W1 and W2, then combines them with
-  scalar trig factors in the closure.  Prefactor Λ restores physical units.
-
+- `quenched=true` (default): pre-computes two α-independent MPOs W1 and W2.
       W(α) = Λ · ⟨α| cos(x_α/Λ) W1 − sin(x_α/Λ) W2 |α⟩
-
-- `quenched=false`: builds a global (uncentred) position operator from `xfunc`
-  and returns a closure over the resulting W_op MPO.
+- `quenched=false`: builds a global position operator and returns a closure
+  over the resulting W_op MPO.
 
 # Arguments
 - `method`    : `:KPM`, `:mcweeny`, or `:sp2` (see `_get_projector`).
@@ -138,9 +150,11 @@ For SSH: `sz_func(i) = Float64((-1)^(i+1))`.
 - `Λ`         : quenching period (angle = xfunc/Λ); sets the Λ prefactor.
 
 # Returns
-`calculate_winding(α::Int) -> ComplexF64` where `α` is 1-indexed.
+`calculate_winding(uc::Int) -> ComplexF64` where `uc` is a 1-indexed unit
+cell number (1 … 2^L).  The value is the sum of the winding marker over both
+sublattice atoms (A and B) within that unit cell.
 """
-function get_W(H::TBHamiltonian, xfunc, sz_func;
+function get_W(H::TBHamiltonian, xfunc=nothing;
                method::Symbol   = :KPM,
                fermi::Real      = 0.0,
                Nchebychev::Int  = 300,
@@ -150,17 +164,47 @@ function get_W(H::TBHamiltonian, xfunc, sz_func;
                quenched::Bool   = true,
                l                = nothing,
                Λ::Real          = 10)
+    H.sublattice_s === nothing || dim(H.sublattice_s) == 2 ||
+        error("get_W requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
+    H.sublattice_s !== nothing ||
+        error("get_W requires H.sublattice_s to be set (n_sub=2 sublattice model).")
+
+    if xfunc === nothing
+        geom = H.geometry_uc !== nothing ? H.geometry_uc :
+               H.geometry   !== nothing ? H.geometry   :
+               error("H has no geometry function; provide xfunc explicitly.")
+        xfunc = (i, _) -> geom(i + 1)[1]
+    end
+
+    pos_sites = _pos_sites(H)
+    sub_s     = H.sublattice_s
+    I_mat     = Matrix{Float64}(LinearAlgebra.I, 2, 2)
+    σ_z_mat   = Float64[1 0; 0 -1]
+
+    # σ_z on sublattice tensored with identity on position qubits
+    sz = postpend_op(MPO(pos_sites, "Id"), sub_s, σ_z_mat)
+
+    # xfunc for position MPOs (2^L UC positions, 0-indexed)
+    xfunc_pos = (i, Lc) -> xfunc(i * 2, Lc)
+
     P       = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                               maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     Q       = MPO(H.sites, "Id") - P
     l_bits  = l === nothing ? div(H.L, 2) : l
     L_chain = 2^l_bits
-    sz      = get_diagonal_mpo(H.L, H.sites, sz_func)
+
+    all_sites = collect(H.sites)
+    make_alpha_mps = alpha -> begin
+        n_cell   = (alpha - 1) ÷ 2
+        sub      = (alpha - 1) % 2 + 1
+        pos_bits = [((n_cell >> (H.L - i)) & 1) + 1 for i in 1:H.L]
+        _product_state_mps(all_sites, [pos_bits; sub])
+    end
 
     if quenched
-        # W1 = σ (P sinX Q + Q sinX P),  W2 = σ (P cosX Q + Q cosX P)
-        sinX_op = get_sinx_op(H.L, H.sites, L_chain, Λ, xfunc)
-        cosX_op = get_cosx_op(H.L, H.sites, L_chain, Λ, xfunc)
+        # W1 = σ_z (P sinX Q + Q sinX P),  W2 = σ_z (P cosX Q + Q cosX P)
+        sinX_op = postpend_op(get_sinx_op(H.L, pos_sites, L_chain, Λ, xfunc_pos), sub_s, I_mat)
+        cosX_op = postpend_op(get_cosx_op(H.L, pos_sites, L_chain, Λ, xfunc_pos), sub_s, I_mat)
         T1s = apply(P, apply(sinX_op, Q; maxdim, cutoff); maxdim, cutoff)
         T2s = apply(Q, apply(sinX_op, P; maxdim, cutoff); maxdim, cutoff)
         W1  = apply(sz, +(T1s, T2s; maxdim, cutoff); maxdim, cutoff)
@@ -168,21 +212,28 @@ function get_W(H::TBHamiltonian, xfunc, sz_func;
         T2c = apply(Q, apply(cosX_op, P; maxdim, cutoff); maxdim, cutoff)
         W2  = apply(sz, +(T1c, T2c; maxdim, cutoff); maxdim, cutoff)
 
-        calculate_winding = alpha -> begin
-            α = binary_to_MPS(alpha - 1, H.L, H.sites)
-            x = xfunc(alpha - 1, L_chain)
-            Λ * (cos(x / Λ) * inner(α', W1, α) - sin(x / Λ) * inner(α', W2, α))
+        calculate_winding = uc -> begin
+            sum(sub -> begin
+                alpha = (uc - 1) * 2 + sub
+                α = make_alpha_mps(alpha)
+                x = xfunc(alpha - 1, L_chain)
+                Λ * (cos(x / Λ) * inner(α', W1, α) - sin(x / Λ) * inner(α', W2, α))
+            end, 1:2)
         end
 
     else
-        x_op = get_diagonal_mpo(H.L, H.sites, i -> xfunc(i - 1, L_chain))
-        T1   = apply(P, apply(x_op, Q; maxdim, cutoff); maxdim, cutoff)
-        T2   = apply(Q, apply(x_op, P; maxdim, cutoff); maxdim, cutoff)
-        W_op = apply(sz, +(T1, T2; maxdim, cutoff); maxdim, cutoff)
+        x_op_p = get_diagonal_mpo(H.L, pos_sites, i -> xfunc_pos(i - 1, L_chain))
+        x_op   = postpend_op(x_op_p, sub_s, I_mat)
+        T1     = apply(P, apply(x_op, Q; maxdim, cutoff); maxdim, cutoff)
+        T2     = apply(Q, apply(x_op, P; maxdim, cutoff); maxdim, cutoff)
+        W_op   = apply(sz, +(T1, T2; maxdim, cutoff); maxdim, cutoff)
 
-        calculate_winding = alpha -> begin
-            α = binary_to_MPS(alpha - 1, H.L, H.sites)
-            inner(α', W_op, α)
+        calculate_winding = uc -> begin
+            sum(sub -> begin
+                alpha = (uc - 1) * 2 + sub
+                α = make_alpha_mps(alpha)
+                inner(α', W_op, α)
+            end, 1:2)
         end
     end
 
@@ -194,18 +245,18 @@ end
 # 2D — quenched (periodic) position operator builders
 # ============================================================
 #
-# xfunc(i::Int, L_chain::Int) -> Float64  (i is 0-indexed)
-# quenching angle = xfunc(i, L_chain) / Λ
-#
-# Inside get_diagonal_mpo the function receives 1-indexed site values;
-# these builders convert to 0-indexed before calling xfunc / yfunc.
+# These are low-level helpers called by get_C_op_MPO_from_P.
+# `sites` must be the L position-qubit indices only (not the full H.sites
+# for sublattice models); callers extend the result with postpend_op.
+# xfunc(i, L_chain) receives a 0-indexed UC number (0 … 2^L−1) and returns
+# the raw coordinate; get_diagonal_mpo receives it 1-indexed and converts.
 
 """
     get_sinx_op(L, sites, L_chain, Λ, xfunc) -> MPO
 
-Diagonal MPO for `sin(xfunc(i, L_chain) / Λ)`.
-`xfunc(i, L_chain)` receives a 0-indexed site number and returns the raw
-x-coordinate; dividing by `Λ` gives the quenching angle.
+Diagonal MPO for `sin(xfunc(i, L_chain) / Λ)` over the `L`-qubit position
+chain given by `sites`.  `xfunc(i, L_chain)` receives a 0-indexed site/UC
+number and returns the raw x-coordinate.
 """
 function get_sinx_op(L, sites, L_chain, Λ, xfunc)
     f(i) = sin(xfunc(i - 1, L_chain) / Λ)
@@ -227,7 +278,7 @@ end
 """
     get_siny_op(L, sites, L_chain, Λ, yfunc) -> MPO
 
-Diagonal MPO for `sin(yfunc(i, L_chain) / Λ)`.
+Diagonal MPO for `sin(yfunc(i, L_chain) / Λ)`.  See `get_sinx_op`.
 """
 function get_siny_op(L, sites, L_chain, Λ, yfunc)
     f(i) = sin(yfunc(i - 1, L_chain) / Λ)
@@ -238,7 +289,7 @@ end
 """
     get_cosy_op(L, sites, L_chain, Λ, yfunc) -> MPO
 
-Diagonal MPO for `cos(yfunc(i, L_chain) / Λ)`.  See `get_siny_op`.
+Diagonal MPO for `cos(yfunc(i, L_chain) / Λ)`.  See `get_sinx_op`.
 """
 function get_cosy_op(L, sites, L_chain, Λ, yfunc)
     f(i) = cos(yfunc(i - 1, L_chain) / Λ)
@@ -256,70 +307,74 @@ end
                         quenched=true) -> Function
 
 Build the real-space Chern marker and return a closure `calculate_chern_number(α)`
-that evaluates it at any lattice site `α` (1-indexed).
+that evaluates it at any physical site `α` (1-indexed).
 
 # Coordinate functions
 
-Both `xfunc(i, L_chain)` and `yfunc(i, L_chain)` must accept a **0-indexed**
-site number `i ∈ 0…2^L−1` and the number of sites per row `L_chain`.
-They return the raw coordinate (not yet quenched).  Examples for a square lattice:
+`xfunc(i, L_chain)` and `yfunc(i, L_chain)` accept a **0-indexed** physical
+site number `i` and return the raw coordinate (not yet quenched).
 
-    xfunc(i, L_chain) = Float64(mod(i, L_chain))   # x ∈ 0…L_chain-1
-    yfunc(i, L_chain) = Float64(div(i, L_chain))   # y ∈ 0…L_chain-1
-
-For the SSH model (both sublattice sites at the same unit-cell position):
-
-    xfunc(i, L_chain) = Float64(div(i, 2))
+- Plain models (`length(sites) == L`): `i ∈ 0…2^L−1`.  Examples:
+      xfunc(i, L_chain) = Float64(mod(i, L_chain))   # square x
+      yfunc(i, L_chain) = Float64(div(i, L_chain))   # square y
+- Sublattice models (`length(sites) == L+1`, last index has dim `n_sub`):
+  `i ∈ 0…n_sub·2^L−1`.  The function should return the same coordinate for
+  all `n_sub` atoms within the same unit cell — typically the Bravais position.
+  The auto-derived functions from `H.geometry_uc` satisfy this automatically.
+  Internally, position MPOs are built on the L position qubits only and extended
+  to the full chain via `postpend_op(⋅, sub_s, I)`.
 
 # Quenched mode (`quenched=true`, default)
 
 Position operators are quenched: `sin(xfunc/Λ)`, `cos(xfunc/Λ)`, and similarly
-for y.  The Chern marker is computed via a **4-term trig decomposition** that
-pre-computes 4 α-independent MPOs (C1–C4) and combines them in the closure:
+for y.  The Chern marker uses a **4-term trig decomposition** that pre-computes
+4 α-independent MPOs (C1–C4) and combines them per site in the closure:
 
     C(α) = 2πi Λ² [ cos_xα cos_yα ⟨α|C1|α⟩ + sin_xα sin_yα ⟨α|C2|α⟩
                    − cos_xα sin_yα ⟨α|C3|α⟩ − sin_xα cos_yα ⟨α|C4|α⟩ ]
 
-This exploits the identity sin(θ_r − θ_α) = sinθ_r cosθ_α − cosθ_r sinθ_α to
-avoid building a centred-at-α MPO for every site, reducing the cost from
-O(2^L) MPO products to 4 products computed once.
-
-The Λ² prefactor restores physical units: since sin(x/Λ) ≈ x/Λ, using sin as
-the position operator implicitly divides each coordinate by Λ, so multiplying
-by Λ² recovers the true Chern marker.
+Exploits `sin(θ_r − θ_α) = sinθ_r cosθ_α − cosθ_r sinθ_α` to reduce cost from
+O(N) MPO products to 4 products computed once.  Λ² restores physical units.
 
 # Flat mode (`quenched=false`)
 
-Position operators use xfunc/yfunc directly (no sin/cos wrapping):
+Position operators use xfunc/yfunc directly:
 
     C_op = 2πi · (Q x P y Q − P x Q y P)
 
-The Chern marker is evaluated for each site directly from `C_op`.  This mode
-does **not** centre the position operator at each reference site, so it is
-most accurate for OBC systems or bulk-averaged quantities.
+Most accurate for OBC systems or bulk-averaged quantities (no per-site centring).
 
 # Arguments
-- `P`         : density matrix MPO
-- `L`         : total number of quantics bits (system has `2^L` sites)
-- `sites`     : ITensor site index list
-- `xfunc(i, L_chain)`, `yfunc(i, L_chain)` : coordinate functions (0-indexed `i`)
-- `l`         : qubits per spatial direction; inferred as `L ÷ 2` if `nothing`
-- `Λ`         : quenching period (angle = coord/Λ)
-- `maxdim`    : MPO bond dimension during all multiplications
-- `cutoff`    : truncation threshold during all multiplications and subtractions
-- `quenched`  : `true` = 4-term sin/cos decomposition; `false` = flat operators
+- `P`       : ground-state projector MPO (over `sites`)
+- `L`       : number of position qubits; system has `2^L` unit cells
+- `sites`   : full ITensor site index list (`length == L` or `L+1` for sublattice)
+- `xfunc`, `yfunc` : coordinate functions; `i` is 0-indexed over all physical sites
+- `l`       : qubits per spatial direction; inferred as `L ÷ 2` if `nothing`
+- `Λ`       : quenching period (quenching angle = coord / Λ)
+- `maxdim`  : MPO bond dimension during all multiplications
+- `cutoff`  : truncation threshold during all multiplications and subtractions
+- `quenched`: `true` = 4-term sin/cos decomposition; `false` = flat operators
 
 # Returns
-`calculate_chern_number(α::Int) -> ComplexF64`
-where `α` is 1-indexed.  Take `real(·)` for the Chern number density.
+`calculate_chern_number(uc::Int) -> ComplexF64` where `uc` is a 1-indexed
+unit cell number (1 … 2^L).  For sublattice models the value is the sum of
+the Chern marker over all `n_sub` atoms within that unit cell.
+Take `real(·)` for the Chern number density.
 
 # Example — quenched square lattice
 ```julia
-L_chain  = 2^(L ÷ 2)
-xfunc(i, L_chain) = Float64(mod(i, L_chain))
-yfunc(i, L_chain) = Float64(div(i, L_chain))
+L_chain = 2^(L ÷ 2)
+xfunc(i, _) = Float64(mod(i, L_chain))
+yfunc(i, _) = Float64(div(i, L_chain))
 C_at  = get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc; Λ=L_chain, maxdim=100)
 chern = real(sum(C_at(α) for α in 1:2^L)) / L_chain^2
+```
+
+# Example — honeycomb via get_C (auto-derived geometry)
+```julia
+C_at  = get_C(H)   # xfunc/yfunc from H.geometry_uc automatically
+N_sub = 2 * H.N
+chern = real(sum(C_at(α) for α in 1:N_sub)) / (2^(H.L ÷ 2))^2
 ```
 """
 function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
@@ -331,13 +386,55 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
     l_bits  = l === nothing ? div(L, 2) : l
     L_chain = 2^l_bits
 
+    # Detect sublattice: when sites has L+1 entries the last one is the aux index.
+    # n_sub > 1 means pos MPOs are built on pos_sites only, then extended via
+    # postpend_op(⋅, sub_s, I) so their site indices match H.sites throughout.
+    n_sub     = length(sites) > L ? dim(sites[L+1]) : 1
+    has_sub   = n_sub > 1
+    pos_sites = has_sub ? collect(sites[1:L]) : collect(sites)
+    sub_s     = has_sub ? sites[L+1] : nothing
+    I_mat     = has_sub ? Matrix{Float64}(LinearAlgebra.I, n_sub, n_sub) : nothing
+
+    # For building position MPOs over 2^L unit cells, adapt xfunc/yfunc:
+    # xfunc_pos(i_uc, Lc) maps 0-indexed UC number to x-coordinate.
+    # For sublattice, UC i_uc has physical site index i_uc*n_sub (0-indexed).
+    xfunc_pos = has_sub ? ((i, Lc) -> xfunc(i * n_sub, Lc)) : xfunc
+    yfunc_pos = has_sub ? ((i, Lc) -> yfunc(i * n_sub, Lc)) : yfunc
+
+    # Unit cell area from the cross product of the two primitive lattice vectors.
+    # a1: one step in the fast (x) direction; a2: one step in the slow (y) direction.
+    a1x = xfunc_pos(1, L_chain) - xfunc_pos(0, L_chain)
+    a1y = yfunc_pos(1, L_chain) - yfunc_pos(0, L_chain)
+    a2x = xfunc_pos(L_chain, L_chain) - xfunc_pos(0, L_chain)
+    a2y = yfunc_pos(L_chain, L_chain) - yfunc_pos(0, L_chain)
+    A_cell = abs(a1x * a2y - a1y * a2x)
+
     Q = MPO(sites, "Id") - P
 
+    # Closure that builds the basis MPS for physical site alpha (1-indexed).
+    # For sublattice: big-endian position bits + sublattice index via _product_state_mps.
+    make_alpha_mps = if has_sub
+        all_sites = collect(sites)
+        alpha -> begin
+            n_cell   = (alpha - 1) ÷ n_sub
+            sub      = (alpha - 1) % n_sub + 1
+            pos_bits = [((n_cell >> (L - i)) & 1) + 1 for i in 1:L]
+            _product_state_mps(all_sites, [pos_bits; sub])
+        end
+    else
+        alpha -> binary_to_MPS(alpha - 1, L, sites)
+    end
+
     if quenched
-        sinX_op = get_sinx_op(L, sites, L_chain, Λ, xfunc)
-        cosX_op = get_cosx_op(L, sites, L_chain, Λ, xfunc)
-        sinY_op = get_siny_op(L, sites, L_chain, Λ, yfunc)
-        cosY_op = get_cosy_op(L, sites, L_chain, Λ, yfunc)
+        sinX_op_p = get_sinx_op(L, pos_sites, L_chain, Λ, xfunc_pos)
+        cosX_op_p = get_cosx_op(L, pos_sites, L_chain, Λ, xfunc_pos)
+        sinY_op_p = get_siny_op(L, pos_sites, L_chain, Λ, yfunc_pos)
+        cosY_op_p = get_cosy_op(L, pos_sites, L_chain, Λ, yfunc_pos)
+
+        sinX_op = has_sub ? postpend_op(sinX_op_p, sub_s, I_mat) : sinX_op_p
+        cosX_op = has_sub ? postpend_op(cosX_op_p, sub_s, I_mat) : cosX_op_p
+        sinY_op = has_sub ? postpend_op(sinY_op_p, sub_s, I_mat) : sinY_op_p
+        cosY_op = has_sub ? postpend_op(cosY_op_p, sub_s, I_mat) : cosY_op_p
 
         # Pre-multiply the 8 P/Q × sin/cos combinations
         sinY_P = apply(sinY_op, P;  maxdim=maxdim, cutoff=cutoff)
@@ -382,23 +479,28 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
         println("C4 done")
 
-        calculate_chern_number = alpha -> begin
-            α      = binary_to_MPS(alpha - 1, L, sites)
-            x      = xfunc(alpha - 1, L_chain)
-            y      = yfunc(alpha - 1, L_chain)
-            cos_x, sin_x = cos(x / Λ), sin(x / Λ)
-            cos_y, sin_y = cos(y / Λ), sin(y / Λ)
-            ch  =  cos_x * cos_y * inner(α', C1, α)
-            ch +=  sin_x * sin_y * inner(α', C2, α)
-            ch -=  cos_x * sin_y * inner(α', C3, α)
-            ch -=  sin_x * cos_y * inner(α', C4, α)
-            ch * 2im * π * Λ^2
+        calculate_chern_number = uc -> begin
+            sum(sub -> begin
+                alpha  = (uc - 1) * n_sub + sub
+                α      = make_alpha_mps(alpha)
+                x      = xfunc(alpha - 1, L_chain)
+                y      = yfunc(alpha - 1, L_chain)
+                cos_x, sin_x = cos(x / Λ), sin(x / Λ)
+                cos_y, sin_y = cos(y / Λ), sin(y / Λ)
+                ch  =  cos_x * cos_y * inner(α', C1, α)
+                ch +=  sin_x * sin_y * inner(α', C2, α)
+                ch -=  cos_x * sin_y * inner(α', C3, α)
+                ch -=  sin_x * cos_y * inner(α', C4, α)
+                ch * 2im * π * Λ^2
+            end, 1:n_sub) / A_cell
         end
 
     else
         # Flat mode: build global position MPOs directly from xfunc/yfunc
-        x_op = get_diagonal_mpo(L, sites, i -> xfunc(i - 1, L_chain))
-        y_op = get_diagonal_mpo(L, sites, i -> yfunc(i - 1, L_chain))
+        x_op_p = get_diagonal_mpo(L, pos_sites, i -> xfunc_pos(i - 1, L_chain))
+        y_op_p = get_diagonal_mpo(L, pos_sites, i -> yfunc_pos(i - 1, L_chain))
+        x_op   = has_sub ? postpend_op(x_op_p, sub_s, I_mat) : x_op_p
+        y_op   = has_sub ? postpend_op(y_op_p, sub_s, I_mat) : y_op_p
 
         T1   = apply(Q, apply(x_op, apply(P, apply(y_op, Q;
                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
@@ -409,9 +511,12 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         C_op = 2im * π * +(T1, -1.0 * T2; maxdim=maxdim, cutoff=cutoff)
         ITensorMPS.truncate!(C_op; maxdim=maxdim, cutoff=cutoff)
 
-        calculate_chern_number = alpha -> begin
-            α = binary_to_MPS(alpha - 1, L, sites)
-            inner(α', C_op, α)
+        calculate_chern_number = uc -> begin
+            sum(sub -> begin
+                alpha = (uc - 1) * n_sub + sub
+                α = make_alpha_mps(alpha)
+                inner(α', C_op, α)
+            end, 1:n_sub) / A_cell
         end
     end
 
@@ -424,7 +529,7 @@ end
 # ============================================================
 
 """
-    get_C(H::TBHamiltonian, xfunc, yfunc;
+    get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
           method=:KPM, fermi=0.0, l=nothing, Λ=10,
           Nchebychev=300, maxdim=500, cutoff=1e-8,
           Nel=nothing, quenched=true) -> Function
@@ -432,17 +537,30 @@ end
 High-level wrapper: compute the ground-state projector via `method` and
 return the Chern marker closure from `get_C_op_MPO_from_P`.
 
+`xfunc(i, L_chain)` and `yfunc(i, L_chain)` accept a **0-indexed** physical
+site number `i` and return raw x/y coordinates.  Both default to `nothing`,
+in which case they are auto-derived:
+
+- If `H.geometry_uc` is set (sublattice models: honeycomb, kagome, lieb, dice,
+  ssh_sublattice): uses `geometry_uc(i+1)[1/2]`, which returns the same
+  Bravais unit-cell position for all sublattice atoms in the same UC.
+- Otherwise falls back to `H.geometry(i+1)[1/2]`.
+
+When `xfunc`/`yfunc` are auto-derived for a sublattice model, `α` in the
+returned closure ranges over `1 … n_sub·2^L` (all physical sites).
+
 Reuses `H._tn_cache` or `H._density_cache` when available.  `maxdim` and
 `cutoff` are forwarded uniformly to the projector computation and to all
 MPO multiplications in the Chern marker assembly.
 
-See `get_C_op_MPO_from_P` for the full documentation of `xfunc`, `yfunc`,
-`l`, `Λ`, `maxdim`, `cutoff`, and `quenched`.
+See `get_C_op_MPO_from_P` for full documentation of the remaining arguments.
 
 # Returns
-`calculate_chern_number(α::Int) -> ComplexF64` (α is 1-indexed)
+`calculate_chern_number(uc::Int) -> ComplexF64` where `uc` is a 1-indexed
+unit cell number; the closure sums the marker over all `n_sub` sublattice
+atoms in that UC.  Take `real(·)` for the density.
 """
-function get_C(H::TBHamiltonian, xfunc, yfunc;
+function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                method::Symbol   = :KPM,
                fermi::Real      = 0.0,
                l                = nothing,
@@ -452,6 +570,13 @@ function get_C(H::TBHamiltonian, xfunc, yfunc;
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
                quenched::Bool   = true)
+    if xfunc === nothing || yfunc === nothing
+        geom = H.geometry_uc !== nothing ? H.geometry_uc :
+               H.geometry   !== nothing ? H.geometry   :
+               error("H has no geometry function; provide xfunc and yfunc explicitly.")
+        xfunc === nothing && (xfunc = (i, _) -> geom(i + 1)[1])
+        yfunc === nothing && (yfunc = (i, _) -> geom(i + 1)[2])
+    end
     P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
