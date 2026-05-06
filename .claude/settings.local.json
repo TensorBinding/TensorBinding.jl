@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 c:\\\\temp_docs\\\\make_gs.py)",
+      "Bash(python3 \"c:/temp_docs/make_gs.py\")",
+      "Bash(python3 \"c:/temp_docs/make_geom.py\")"
+    ]
+  }
+}

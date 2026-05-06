@@ -39,9 +39,9 @@
 \newcommand{\pkg}[1]{\texttt{#1}}
 \newcommand{\fn}[1]{\texttt{#1}}
 
-\title{\textbf{TensorBinding.jl: Quantics Tensor-Network Methods\\for Tight-Binding Systems}}
-\author{[Author names to be completed]\\
-        \small [Institution to be completed]}
+\title{\textbf{TensorBinding.jl: Tensor-Network Methods\\for Tight-Binding Systems}}
+\author{Tiago V. C. Antão, Anouar Moustaj, Yitao Sun, Jose L. Lado\\
+        \small Department of Applied Physics, Aalto University, Espoo, Finland}
 \date{}
 
 \begin{document}
@@ -57,17 +57,17 @@ tight-binding Hamiltonians as Matrix Product Operators (MPOs) using the
 \emph{quantics} (QTT) representation \citep{khoromskij2011}.
 A system of $N = 2^L$ sites is encoded in $L$ two-level qubit sites via the
 binary expansion of the site index; this encoding allows the MPO bond dimension
-of many physically relevant Hamiltonians to remain small (typically $\leq 10$)
+of many physically relevant Hamiltonians to remain small (typically $\mathcal{O}(10)$)
 regardless of system size.
 Arbitrary two-body hopping functions are compressed into MPOs via
-Quantics Tensor Cross Interpolation (QTCI) \citep{ritter2024}, enabling
+Quantics Tensor Cross Interpolation (QTCI) \citep{ritter2024,nunez2025}, enabling
 $O(L^2)$-cost construction even for long-range or spatially modulated models.
 
 The package exposes a single high-level object, \fn{TBHamiltonian}, that carries
 the MPO, the ITensor site indices \citep{fishman2022}, spectral-bounds
 information, and caches for the Chebyshev expansion and the density matrix.
-All subsequent physical calculations --- spectral functions, band structure,
-topological invariants, real-time evolution --- operate directly on this object
+All subsequent physical calculations, including spectral functions, band structure,
+topological invariants, real-time evolution, operate directly on this object
 without any explicit matrix diagonalisation.
 
 % ============================================================
@@ -88,12 +88,11 @@ models.
 
 Packages such as Kwant \citep{groth2014} construct and diagonalise tight-binding
 Hamiltonians efficiently as sparse matrices, but do not expose tensor-network
-structures and therefore cannot exploit MPO compression for large or
-higher-dimensional systems.
+structures and therefore cannot exploit MPO compression for the colossal amount of sites required for real space analysis of moiré or quasicrystalline systems.
 \pkg{TensorBinding.jl} fills this gap by combining the expressiveness of the
 quantics representation with a broad library of physical methods, making it
-practical to study systems with $N \gtrsim 10^4$ sites where matrix-based
-approaches are memory-limited.
+practical to study systems with billions of sites \citep{sun2025,moustaj2025},
+where matrix-based approaches are memory-limited.
 
 % ============================================================
 \section{Functionality}
@@ -173,10 +172,8 @@ and the 1D winding-number density
   \langle\mathbf{r}|\,\sigma_z\,(P\hat{x}Q + Q\hat{x}P)\,|\mathbf{r}\rangle
 \end{equation}
 are implemented in \fn{get\_C} and \fn{get\_W}.
-Position operators are \emph{quenched} --- replaced by
-$\sin(x/\Lambda)$, $\cos(x/\Lambda)$ --- to remove the periodic-boundary
-discontinuity while preserving the integer invariant via a factor $\Lambda^2$
-(respectively $\Lambda$) \citep{resta2011}.
+Position operators are \emph{quenched}, i.e. replaced by
+$\sin(x/\Lambda)$, $\cos(x/\Lambda)$ in order to mitigate bond dimension growth and errors stemming from unbounded operators.
 Both functions auto-derive their coordinate functions and the sublattice
 $\sigma_z$ operator from \texttt{H.geometry\_uc}, returning a closure
 \fn{C\_at(uc)} (resp.\ \fn{W\_at(uc)}) that evaluates the unit-cell-summed
@@ -184,11 +181,11 @@ marker at any unit cell without further operator construction.
 
 \subsection{Many-Body and Real-Time Methods}
 
-For strongly correlated extensions the package wraps ITensorMPS DMRG for
+The package wraps ITensorMPS DMRG for
 ground-state optimisation and provides Time-Dependent Variational Principle
 (TDVP) real-time evolution with both fixed and time-dependent Hamiltonians.
-A Random Phase Approximation (RPA) module computes the magnetic susceptibility,
-and a self-consistent mean-field solver handles the paramagnetic Hubbard model.
+A Random Phase Approximation (RPA) module can be used to compute the electric susceptibility,
+and a self-consistent mean-field solver is also included.
 
 % ============================================================
 \section{Example}
@@ -233,7 +230,16 @@ The ITensors ecosystem \citep{fishman2022} provides the underlying MPS/MPO engin
 used here; \pkg{TensorBinding.jl} adds the quantics encoding, the lattice
 constructors, and the condensed-matter observable layer on top.
 The QTCI compression used for arbitrary hopping functions follows the algorithm
-of \citet{ritter2024}.
+of \citet{ritter2024}; further algorithmic developments and the reference
+implementation of the underlying cross-interpolation library are described in
+\citet{nunez2025} and \citet{jeannin2024}.
+The quantics representation has also been applied to large-scale partial differential
+equations \citep{niedermeier2026} and computational chemistry \citep{li2026}.
+Prior work from our group employing this framework includes tensor-network spectral
+methods for super-moir\'e systems with self-consistent correlations \citep{sun2025},
+momentum-resolved spectral functions via QFT conjugation \citep{moustaj2025},
+and real-space topological invariants in quasicrystalline Chern mosaics
+\citep{antao2026}.
 
 % ============================================================
 \section*{Acknowledgements}
@@ -245,6 +251,12 @@ infrastructure this package is built.
 % ============================================================
 \bibliographystyle{plainnat}
 \begin{thebibliography}{99}
+
+\bibitem[Antão et al.(2026)]{antao2026}
+Antão, T.~V.~C., Sun, Y., Fumega, A.~O., \& Lado, J.~L. (2026).
+Tensor network method for real-space topology in quasicrystal Chern mosaics.
+\textit{Physical Review Letters}, \textbf{136}, 156601.
+\href{https://doi.org/10.48550/arXiv.2506.05230}{arXiv:2506.05230}
 
 \bibitem[Bianco \& Resta(2011)]{bianco2011}
 Bianco, R., \& Resta, R. (2011).
@@ -264,6 +276,13 @@ Kwant: a software package for quantum transport.
 \textit{New Journal of Physics}, \textbf{16}, 063065.
 \href{https://doi.org/10.1088/1367-2630/16/6/063065}{doi:10.1088/1367-2630/16/6/063065}
 
+\bibitem[Jeannin et al.(2024)]{jeannin2024}
+Jeannin, M., N\'u\~nez-Fern\'andez, Y., Kloss, T., Parcollet, O., \& Waintal, X. (2024).
+Cross-extrapolation reconstruction of low-rank functions and application to
+quantum many-body observables in the strong coupling regime.
+\textit{Physical Review B}, \textbf{110}, 035124.
+\href{https://doi.org/10.1103/PhysRevB.110.035124}{doi:10.1103/PhysRevB.110.035124}
+
 \bibitem[Haldane(1988)]{haldane1988}
 Haldane, F.~D.~M. (1988).
 Model for a Quantum Hall Effect without Landau Levels.
@@ -276,6 +295,13 @@ Efficient numerical simulations with Tensor Networks: Tensor Network Python (TeN
 \textit{SciPost Physics Lecture Notes}, \textbf{5}.
 \href{https://doi.org/10.21468/SciPostPhysLectNotes.5}{doi:10.21468/SciPostPhysLectNotes.5}
 
+\bibitem[Li et al.(2026)]{li2026}
+Li, J.-W., Jolly, N., \& Waintal, X. (2026).
+Tailoring tensor network techniques to the quantics representation for highly
+inhomogeneous problems and few-body problems.
+\textit{arXiv preprint}.
+\href{https://doi.org/10.48550/arXiv.2604.09337}{arXiv:2604.09337}
+
 \bibitem[Khoromskij(2011)]{khoromskij2011}
 Khoromskij, B.~N. (2011).
 $O(d\log N)$-Quantics Approximation of $N$-$d$ Tensors in High-Dimensional
@@ -283,11 +309,30 @@ Numerical Modeling.
 \textit{Constructive Approximation}, \textbf{34}, 257--280.
 \href{https://doi.org/10.1007/s00365-011-9131-1}{doi:10.1007/s00365-011-9131-1}
 
+\bibitem[Moustaj et al.(2025)]{moustaj2025}
+Moustaj, A., Sun, Y., Antão, T.~V.~C., \& Lado, J.~L. (2025).
+Momentum-resolved spectral functions of super-moir\'e systems using tensor networks.
+\textit{Physical Review Research} (submitted).
+\href{https://doi.org/10.48550/arXiv.2512.18397}{arXiv:2512.18397}
+
 \bibitem[McWeeny(1960)]{mcweeny1960}
 McWeeny, R. (1960).
 Some Recent Advances in Density Matrix Theory.
 \textit{Reviews of Modern Physics}, \textbf{32}, 335--369.
 \href{https://doi.org/10.1103/RevModPhys.32.335}{doi:10.1103/RevModPhys.32.335}
+
+\bibitem[Niedermeier et al.(2026)]{niedermeier2026}
+Niedermeier, M., Moulinas, A., Louvet, T., Lado, J.~L., \& Waintal, X. (2026).
+Solving the Gross--Pitaevskii equation on multiple different scales using the
+quantics tensor train representation.
+\textit{Physical Review Research}, \textbf{8}, 023006.
+\href{https://doi.org/10.1103/PhysRevResearch.8.023006}{doi:10.1103/PhysRevResearch.8.023006}
+
+\bibitem[Núñez Fernández et al.(2025)]{nunez2025}
+N\'u\~nez Fern\'andez, Y., et al. (2025).
+Learning tensor networks with tensor cross interpolation: new algorithms and libraries.
+\textit{SciPost Physics}, \textbf{18}, 104.
+\href{https://doi.org/10.21468/SciPostPhys.18.3.104}{doi:10.21468/SciPostPhys.18.3.104}
 
 \bibitem[Niklasson(2002)]{niklasson2002}
 Niklasson, A.~M.~N. (2002).
@@ -307,6 +352,13 @@ Quantics Tensor Cross Interpolation for High-Resolution, Parsimonious
 Representations of Multivariate Functions in Physics and Beyond.
 \textit{Physical Review Letters}, \textbf{132}, 056501.
 \href{https://doi.org/10.1103/PhysRevLett.132.056501}{doi:10.1103/PhysRevLett.132.056501}
+
+\bibitem[Sun et al.(2025)]{sun2025}
+Sun, Y., Niedermeier, M., Antão, T.~V.~C., Fumega, A.~O., \& Lado, J.~L. (2025).
+Self-consistent tensor network method for correlated super-moir\'e matter beyond
+one billion sites.
+\textit{Physical Review Research}.
+\href{https://doi.org/10.1103/PhysRevResearch.7.043231}{doi:10.1103/PhysRevResearch.7.043231}
 
 \bibitem[Su et al.(1979)]{su1979}
 Su, W.~P., Schrieffer, J.~R., \& Heeger, A.~J. (1979).
