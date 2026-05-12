@@ -87,7 +87,9 @@ function mcweeny_purify(ρ0::MPO;
     for iter in 1:maxiters
         ρ2  = _mpo_sq(ρ; maxdim, cutoff)
         err = _idempotency_error(ρ, ρ2)
-        verbose && println("McWeeny iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+        if iter%15 == 0 && verbose
+            println("McWeeny iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+        end
         err < tol && break
         # ρ³ = ρ² · ρ
         ρ3 = apply(ρ2, ρ; maxdim, cutoff)

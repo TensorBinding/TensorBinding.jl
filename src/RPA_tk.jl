@@ -82,6 +82,33 @@ end
 
 
 """
+    interleave_mpo_tb(op, sites_A, sites_B, which) -> MPO
+
+Generalization of `interleave_mpo` for heterogeneous site spaces (Layer,
+Qubit, Honeycomb, etc.).  Embeds an `N`-site MPO `op` into the `2N`-site
+product space whose physical indices are ordered as
+
+    [sites_A[1], sites_B[1], sites_A[2], sites_B[2], …, sites_A[N], sites_B[N]]
+
+so every consecutive pair `(sites_A[i], sites_B[i])` shares the same
+dimension regardless of site type.
+
+- `which = :A` : `op` acts on `sites_A` (odd positions), identity on `sites_B`
+- `which = :B` : `op` acts on `sites_B` (even positions), identity on `sites_A`
+"""
+function interleave_mpo_tb(op::MPO,
+                            sites_A::Vector{<:Index},
+                            sites_B::Vector{<:Index},
+                            which::Symbol)
+    N = length(op)
+    @assert length(sites_A) == length(sites_B) == N "sites_A, sites_B and op must all have length N"
+    sites_combined = reduce(vcat, [[sa, sb] for (sa, sb) in zip(sites_A, sites_B)])
+    n = (which == :A) ? 1 : 0
+    return interleave_mpo(op, sites_combined, n)
+end
+
+
+"""
     swap_every_other_legs(MPOin, newsites) -> MPO
 
 Replace site indices and additionally swap bra↔ket on every even-numbered
@@ -142,8 +169,13 @@ end
 Embed an `L`-site MPO into a `2L`-site space by interleaving it with
 identity operators.  `phys_sites` must have length `2L`.
 
-- `n = 0` : operator sits at odd positions (1, 3, 5, …), identities at even
-- `n = 1` : operator sits at even positions (2, 4, 6, …), identities at odd
+- `n = 0` : operator sits at even positions (2, 4, 6, …), identities at odd
+- `n = 1` : operator sits at odd positions (1, 3, 5, …), identities at even
+
+**Note**: `phys_sites` must be interleaved as `[A[1], B[1], A[2], B[2], …]`
+so that each operator site lands on an index with the correct dimension.
+For heterogeneous site spaces (layer, sublattice, …), use `interleave_mpo_tb`
+which builds the interleaved site list automatically.
 """
 function interleave_mpo(target_mpo, phys_sites, n)
     N_old = length(target_mpo)
@@ -473,16 +505,14 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
 end
 
 
-function _build_heff(H1_mpo::MPO, H2_mpo::MPO, sites_combined::Vector{<:Index})
-    L      = length(H1_mpo)
-    sites1 = sites_combined[1:L]
-    sites2 = sites_combined[L+1:end]
-    id1    = MPO(sites1, "Id")
-    id2    = MPO(sites2, "Id")
-    H2op   = interleave_mpo(H2_mpo, sites_combined, 1)
-    Iop2   = interleave_mpo(id2,    sites_combined, 1)
-    Iop1   = interleave_mpo(id1,    sites_combined, 0)
-    H1op   = interleave_mpo(H1_mpo, sites_combined, 0)
+function _build_heff(H1_mpo::MPO, H2_mpo::MPO,
+                     sites1::Vector{<:Index}, sites2::Vector{<:Index})
+    id1  = MPO(sites1, "Id")
+    id2  = MPO(sites2, "Id")
+    H2op = interleave_mpo_tb(H2_mpo, sites1, sites2, :B)
+    Iop2 = interleave_mpo_tb(id2,    sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1,    sites1, sites2, :A)
+    H1op = interleave_mpo_tb(H1_mpo, sites1, sites2, :A)
     return apply(Iop1, H2op) - apply(H1op, Iop2)
 end
 
@@ -536,32 +566,36 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     sites1 = H1.sites
     sites2 = H2.sites
 
-    sites_combined = vcat(sites1, sites2)
+    # Interleaved combined sites: [s1[1], s2[1], s1[2], s2[2], …]
+    # This ensures each (A, B) pair has matching dimensions regardless of site type
+    # (Layer dim=5, Qubit dim=2, Honeycomb dim=2, etc.), making interleave_mpo_tb safe.
+    sites_combined = reduce(vcat, [[s1, s2] for (s1, s2) in zip(sites1, sites2)])
 
     # ---- Density matrices ----
-    verbose && println("RPA: computing P1 (P_method=$P_method)...")
+    verbose && println("Polarization bubble: computing P1 (P_method=$P_method)...")
     P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
                               purify_method, purify_maxdim, purify_maxiters,
                               purify_tol, verbose)
-    verbose && println("RPA: computing P2...")
+    verbose && println("Polarization bubble: computing P2...")
     P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
                               purify_method, purify_maxdim, purify_maxiters,
                               purify_tol, verbose)
 
-    # ---- Numerator: P1⊗I₂ − I₁⊗P₂ ----
+    # ---- Numerator: I₁⊗P₂ − P₁⊗I₂ ----
     id1  = MPO(sites1, "Id")
     id2  = MPO(sites2, "Id")
-    P2op = interleave_mpo(P2,  sites_combined, 1)
-    Iop2 = interleave_mpo(id2, sites_combined, 1)
-    Iop1 = interleave_mpo(id1, sites_combined, 0)
-    P1op = interleave_mpo(P1,  sites_combined, 0)
+    P2op = interleave_mpo_tb(P2,  sites1, sites2, :B)
+    Iop2 = interleave_mpo_tb(id2, sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1, sites1, sites2, :A)
+    P1op = interleave_mpo_tb(P1,  sites1, sites2, :A)
     numerator = ITensorMPS.truncate!(
         apply(Iop1, P2op; maxdim, cutoff) - apply(P1op, Iop2; maxdim, cutoff);
         cutoff=cutoff)
-    verbose && println("RPA: computed numerator")
+    verbose && println("Polarization bubble: computed numerator")
 
     # ---- GF of Heff = I⊗H₂ − H₁⊗I ----
-    Heff = _build_heff(H1.mpo, H2.mpo, sites_combined)
+    Heff = _build_heff(H1.mpo, H2.mpo, sites1, sites2)
+    verbose && println("Polarization bubble: Heff maxlinkdim = ", maxlinkdim(Heff))
     if GF_method == :kpm
         # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
         Tn_listeff, scaleeff, centereff = KPM_Tn(Heff, Ncheb, sites_combined;
@@ -577,14 +611,16 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     else
         error("Unknown GF_method: $GF_method. Choose :kpm or :krylov")
     end
-    verbose && println("RPA: computed Heff GF (GF_method=$GF_method)")
+    verbose && println("Polarization bubble: computed Heff GF (GF_method=$GF_method)")
 
     # ---- Bubble: GF_eff · numerator ----
     bubble2L = ITensorMPS.truncate!(apply(GF_mpo, numerator; maxdim, cutoff); cutoff=cutoff)
-    verbose && println("RPA: assembled bubble")
+    verbose && println("Polarization bubble: assembled bubble")
 
     # ---- Collapse 2L-site MPO → L-site Π₀ on H1.sites ----
-    finalsites = siteinds("Qubit", 2L)
+    # finalsites mirrors sites_combined dims so swap_every_other_legs never hits a
+    # dimension mismatch, even when sites1 contains heterogeneous indices (Layer, Honeycomb…).
+    finalsites = [Index(dim(s), "Bubble,n=$i") for (i, s) in enumerate(sites_combined)]
     bubble_iv  = swap_every_other_legs(bubble2L, finalsites)
     return collapse_mpo_pairs(bubble_iv, H1.sites)
 end
@@ -651,8 +687,8 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
         error("get_rpa_susceptibility: unknown mode=$mode. Choose :charge or :magnetic")
     end
 
-    finalsites = siteinds("Qubit", 2 * H.L)
-    return rpa_from_bubble_diag(Π, MPOV, finalsites, out_sites;
+    finalsites = siteinds("Qubit", 2 * length(H.sites))
+    return rpa_from_bubble_diag(Π, MPOV, finalsites, H.sites;
                                  nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
 end
 

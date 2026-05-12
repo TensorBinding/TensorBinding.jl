@@ -110,7 +110,7 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
         T_k_minus_1 = T_k
         push!(Tn_list, T_k)
         if verbose
-            if k%10 == 0 || k == N+1 # print info every 10 iterations and at the end
+            if k%5 == 0 || k == N+1 # print info every 5 iterations and at the end
                 println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(T_k))
             end 
         end
