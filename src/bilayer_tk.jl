@@ -9,6 +9,11 @@
 #   Site 1      : Layer index (dim = n_layers)
 #   Sites 2…L+1 : L position qubits (quantics binary, row-major)
 #
+# With sublattice=true the site order is:
+#   Site 1        : Layer index (dim = n_layers)
+#   Sites 2...L+1 : L unit-cell position qubits
+#   Site L+2      : Sublattice index
+#
 # Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl, twisted_tk.jl
 
 
@@ -54,6 +59,65 @@ couples on-site to the same site in layer 2.  The coupling operator is
 simply `t_inter * Identity`.
 """
 _aa_interlayer_mpo(sites; t_inter::Number = 1.0) = t_inter * MPO(sites, "Id")
+
+function _explicit_sublattice_monolayer(lattice::Symbol, Lx::Int, Ly::Int,
+                                        pos_sites, sub_s;
+                                        t::Number = 1.0,
+                                        cutoff::Real = 1e-8,
+                                        maxdim::Int = 200)
+    lattice === :honeycomb ||
+        error("sublattice=true is currently implemented for :honeycomb multilayers only.")
+    H_mono = honeycomb_sublattice_hamiltonian(Lx, Ly, t; cutoff=cutoff, maxdim=maxdim)
+    fix_sites(H_mono.mpo, [pos_sites; sub_s])
+    rs = honeycomb_sublattice_positions(Lx, Ly)
+    geom = let m = rs
+        i -> m[i, :]
+    end
+    Nx_uc = 2^Lx
+    sq3_2 = sqrt(3) / 2
+    geom_uc = let Nx = Nx_uc, sq3_2 = sq3_2
+        i -> begin
+            n_cell = (i - 1) ÷ 2
+            ix = n_cell % Nx
+            iy = n_cell ÷ Nx
+            [ix + iy * 0.5, iy * sq3_2]
+        end
+    end
+    return H_mono.mpo, geom, geom_uc
+end
+
+function _explicit_sublattice_interlayer_pair(lattice::Symbol, stacking::Symbol,
+                                              pos_sites, sub_s, layer_s,
+                                              k::Int, l::Int;
+                                              t_inter::Number = 1.0,
+                                              cutoff::Real = 1e-8)
+    Id_pos = MPO(pos_sites, "Id")
+    n_sub  = dim(sub_s)
+
+    V_fwd, V_bwd = if stacking === :AA
+        I_sub = Matrix{ComplexF64}(I, n_sub, n_sub)
+        (postpend_op(Id_pos, sub_s, t_inter * I_sub),
+         postpend_op(Id_pos, sub_s, conj(t_inter) * I_sub))
+
+    elseif stacking === :Bernal
+        lattice === :honeycomb ||
+            error(":Bernal stacking is defined only for :honeycomb lattice; got :$lattice.")
+        n_sub == 2 ||
+            error(":Bernal stacking with sublattice=true requires a 2-component honeycomb sublattice.")
+        lower_A_to_upper_B = zeros(ComplexF64, n_sub, n_sub)
+        upper_B_to_lower_A = zeros(ComplexF64, n_sub, n_sub)
+        lower_A_to_upper_B[2, 1] = t_inter
+        upper_B_to_lower_A[1, 2] = conj(t_inter)
+        (postpend_op(Id_pos, sub_s, lower_A_to_upper_B),
+         postpend_op(Id_pos, sub_s, upper_B_to_lower_A))
+
+    else
+        error("Unknown stacking :$stacking.  Supported: :AA, :Bernal.")
+    end
+
+    return +(prepend_layer_hopping(V_fwd, layer_s, l, k),
+             prepend_layer_hopping(V_bwd, layer_s, k, l); cutoff=cutoff)
+end
 
 
 """
@@ -136,10 +200,36 @@ function bilayer_hamiltonian(
     stacking::Symbol = :AA,
     t_intra::Number  = 1.0,
     t_inter::Number  = 0.3,
+    sublattice::Bool = false,
     cutoff::Real     = 1e-8,
     maxdim::Int      = 200,
 )
     L = Lx + Ly
+
+    if sublattice
+        layer_s   = siteinds("Qubit", 1)[1]
+        pos_sites = siteinds("Qubit", L)
+        sub_s     = Index(2, "Honeycomb")
+        ext_sites = [layer_s; pos_sites; sub_s]
+
+        H_mono, geom, geom_uc =
+            _explicit_sublattice_monolayer(lattice, Lx, Ly, pos_sites, sub_s;
+                                           t=t_intra, cutoff=cutoff, maxdim=maxdim)
+        H_intra = +(prepend_layer_projector(H_mono, layer_s, 1),
+                    prepend_layer_projector(H_mono, layer_s, 2); cutoff=cutoff)
+
+        H_inter = _explicit_sublattice_interlayer_pair(lattice, stacking,
+                                                       pos_sites, sub_s, layer_s,
+                                                       1, 2;
+                                                       t_inter=t_inter,
+                                                       cutoff=cutoff)
+
+        H_total = +(H_intra, H_inter; cutoff=cutoff)
+        ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+        return TBHamiltonian(L, 2^L, ext_sites, H_total, geom, geom_uc,
+                             0.0, 0.0, nothing, nothing, layer_s, sub_s, :pre,
+                             nothing, nothing, 0, nothing)
+    end
 
     # Layer encoded as a Qubit site (dim=2) so the full ext_sites vector
     # is all-Qubit — required for KPM_Tn / MPO(sites, "Id") to work.
@@ -187,11 +277,44 @@ function multilayer_hamiltonian(
     stacking::Symbol = :AA,
     t_intra::Number  = 1.0,
     t_inter::Number  = 0.3,
+    sublattice::Bool = false,
     cutoff::Real     = 1e-8,
     maxdim::Int      = 200,
 )
     n_layers ≥ 2 || error("Need at least 2 layers; got $n_layers.")
     L = Lx + Ly
+
+    if sublattice
+        layer_s   = Index(n_layers, "Layer")
+        pos_sites = siteinds("Qubit", L)
+        sub_s     = Index(2, "Honeycomb")
+        ext_sites = [layer_s; pos_sites; sub_s]
+
+        H_mono, geom, geom_uc =
+            _explicit_sublattice_monolayer(lattice, Lx, Ly, pos_sites, sub_s;
+                                           t=t_intra, cutoff=cutoff, maxdim=maxdim)
+        H_intra = prepend_layer_projector(H_mono, layer_s, 1)
+        for k in 2:n_layers
+            H_intra = +(H_intra,
+                        prepend_layer_projector(H_mono, layer_s, k); cutoff=cutoff)
+        end
+
+        H_inter = nothing
+        for k in 1:(n_layers - 1)
+            term = _explicit_sublattice_interlayer_pair(lattice, stacking,
+                                                        pos_sites, sub_s, layer_s,
+                                                        k, k + 1;
+                                                        t_inter=t_inter,
+                                                        cutoff=cutoff)
+            H_inter = H_inter === nothing ? term : +(H_inter, term; cutoff=cutoff)
+        end
+
+        H_total = +(H_intra, H_inter; cutoff=cutoff)
+        ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
+        return TBHamiltonian(L, 2^L, ext_sites, H_total, geom, geom_uc,
+                             0.0, 0.0, nothing, nothing, layer_s, sub_s, :pre,
+                             nothing, nothing, 0, nothing)
+    end
 
     layer_s   = Index(n_layers, "Layer")
     pos_sites = siteinds("Qubit", L)

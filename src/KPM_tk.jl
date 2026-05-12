@@ -748,6 +748,21 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
                       layer_proj, proj_layer, sublat_proj, proj_sl)
 
+    # ── Bernal top-view guard ─────────────────────────────────────────────────
+    if layer_proj && isnothing(proj_layer) && !isnothing(sublat_s_det)
+        n_lay = dim(layer_s_det::Index)
+        @warn """get_ldos_spatial: proj_layer=nothing on a layered+sublattice Hamiltonian.
+  Result accumulates sublattice columns by label across all $n_lay layers.
+  For Bernal stacking this is NOT the physical top-view: even layers have their
+  sublattice-A/B registries physically swapped in 2D, so the sum is misleading.
+  This call is also $(n_lay)× slower than a single-layer call.
+  For a correct Bernal top-view use:
+    ldos_layers = [get_ldos_spatial(H, Nc, ωlist; proj_layer=k, ...) for k in 1:$n_lay]
+    plot_ldos_multilayer(ldos_layers, ωlist, ω; stacking=:Bernal, ...)
+  For AA stacking the label-wise sum is physically correct (this warning fires
+  regardless of stacking type; shown only once per session).""" maxlog=1
+    end
+
     # ── Sublattice layout ─────────────────────────────────────────────────────
     # When H.sublattice_s is set, the result always covers every atom:
     #   shape = (Nω, ng × n_sub),  col = (ig-1)*n_sub + s
@@ -933,17 +948,17 @@ Stochastic full DOS via random trace estimation (MPS Chebyshev, 3 MPS per sample
 
 **Auxiliary DOF projections**
 
-When any `*_proj=true` flag is set (same interface as `get_bands` and
-`get_ldos_spatial`), the function samples only from position-basis states with the
-specified aux-sector values instead of the full `D`-dimensional Hilbert space:
+Unlike `get_ldos_spatial`, projections are **not** auto-enabled here.  The
+default is full Hilbert-space sampling over all D states — always correct and
+cheapest.  Projections must be requested explicitly:
 
-- `proj_sl=k` (or `proj_s`, `proj_nambu`, `proj_layer`): sample from `|x, σ=k⟩`
-  states; `N_phys` effective states.
-- `proj_sl=nothing` with `sublat_proj=true`: iterate all sublattice sectors per
-  sample; all selected channels are accumulated into one result.
+- `layer_proj=true, proj_layer=k` — DOS on layer k only.
+- `sublat_proj=true, proj_sl=k` — DOS on sublattice k only.
+- Combining multiple `*_proj=true` flags is supported.
 
-This gives `DOS_σ(ω) = Σ_x ⟨x,σ|δ(ω−H)|x,σ⟩` for the selected sectors.
-With `normalize=true` the result is per position (averaged over `H.N` unit cells).
+When any flag is set the function samples from position-basis states with fixed
+aux sectors (`N_phys` effective states), which is `n_sectors×` slower than the
+default.  Only use projections when you actually need a sector-resolved DOS.
 
 **Exciton stratification** (no aux projections)
 
@@ -988,8 +1003,6 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              sublat_proj::Bool = false,
                              proj_sl           = nothing)
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
     I_mpo = MPO(H.sites, "Id")
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)

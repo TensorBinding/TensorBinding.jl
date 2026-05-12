@@ -656,56 +656,135 @@ end
 
 
 """
-    add_onsite!(H, f; sublat=nothing, tol=1e-8) -> H
+    add_onsite!(H, f; layer=nothing, sublat=nothing, Lx=nothing,
+                tol=1e-8, maxdim=nothing) -> H
 
 Add a diagonal (on-site) potential to `H`.
 
-**`f` argument**
+**`f` argument** — same conventions as `add_hopping_2D!`
 
 - `f::Number` — uniform constant; builds `f · Id` directly (no QTCI).
-- `f(i)` — 1-arg `Function` for site `i ∈ {1, …, N}`, QTCI-compressed via
-  `get_diagonal_mpo`.
+- `f(n)` — 1-arg function; `n ∈ {0, …, N-1}` is the 0-indexed unit-cell index.
+- `f(ix, iy)` — 2-arg function; `ix, iy` are 0-indexed 2D coordinates
+  (`ix = n % Nx`, `iy = n ÷ Nx`). Requires `Lx=` keyword so that `Nx = 2^Lx`.
 
 **`sublat` keyword** (`H.sublattice_s` must be set)
 
-- `sublat=nothing` (default) — applies `f` equally to all sublattices:
-  `f(i) · Id_sublat ⊗ Id_pos`.
-- `sublat=k` — restricts the potential to sublattice `k` only by postpending
-  the projector `|k⟩⟨k|`: `f(i) · Id_pos ⊗ |k⟩⟨k|_sublat`.
+- `sublat=nothing` (default) — applies `f` equally to all sublattices.
+- `sublat=k` — restricts the potential to sublattice `k` only via `|k⟩⟨k|`.
 
-  The canonical use-case is a **Semenoff mass** on a honeycomb Hamiltonian:
+  Canonical use-case — **Semenoff mass** on a honeycomb Hamiltonian:
   ```julia
   add_onsite!(H_hc, +M; sublat=1)   # +M on sublattice A
   add_onsite!(H_hc, -M; sublat=2)   # −M on sublattice B  → gap = 2M
   ```
 
   Works for any sublattice-carrying `TBHamiltonian` (kagome, Lieb, dice, …)
-  and for spatially-varying `f(i)` as well.
+  and for spatially-varying `f` as well.
+
+**`layer` keyword** (`H.layer_s` must be set)
+
+- `layer=nothing` — apply the same onsite term to every layer.
+- `layer=k` — apply only to layer `k`.
+- `layer=[...]` — apply to the selected layers.
+
+For layered sublattice Hamiltonians, the onsite term is first built on the
+`position ⊗ sublattice` monolayer space, then wrapped with the selected layer
+projectors.
 
 Invalidates all caches.
 """
-function add_onsite!(H::TBHamiltonian, f; sublat=nothing, tol=1e-8)
-    pos_s    = _pos_sites(H)
-    # For a scalar, do x -> f.
-    diag_mpo = f isa Number ? get_diagonal_mpo(H.L, pos_s, x -> f) :
-                              get_diagonal_mpo(H.L, pos_s, f)
+function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
+                     Lx=nothing, tol=1e-8, maxdim=nothing)
+    if H.layer_s !== nothing
+        (H.spin_s === nothing && H.nambu_s === nothing) ||
+            error("Layered add_onsite! currently supports layer/position/sublattice Hamiltonians only.")
 
-    if !isnothing(sublat)
-        isnothing(H.sublattice_s) &&
-            error("add_onsite! with sublat=$sublat requires H.sublattice_s to be set.")
+        pos_s = _pos_sites(H)
+        term_sites = H.sublattice_s === nothing ? pos_s : [pos_s; H.sublattice_s]
+        zero_mpo = H.sublattice_s === nothing ?
+            0.0 * MPO(pos_s, "Id") :
+            0.0 * postpend_op(MPO(pos_s, "Id"), H.sublattice_s,
+                               Matrix{Float64}(I, dim(H.sublattice_s), dim(H.sublattice_s)))
+
+        layers = _resolve_layer_selection(H.layer_s, layer)
+        H_layered_term = nothing
+        for ell in layers
+            H_pos = TBHamiltonian(H.L, H.N, term_sites, copy(zero_mpo),
+                                  H.geometry, H.geometry_uc, 0.0, 0.0,
+                                  nothing, nothing, nothing, H.sublattice_s, :post,
+                                  nothing, nothing, 0, nothing)
+            add_onsite!(H_pos, f; layer=nothing, sublat=sublat,
+                        Lx=Lx, tol=tol, maxdim=maxdim)
+            term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
+            H_layered_term = H_layered_term === nothing ? term :
+                +(H_layered_term, term; cutoff=tol)
+        end
+
+        H.mpo = isnothing(maxdim) ?
+            +(H.mpo, H_layered_term; cutoff=tol) :
+            +(H.mpo, H_layered_term; cutoff=tol, maxdim=maxdim)
+        _invalidate_cache!(H)
+        return H
+    end
+
+    layer === nothing ||
+        error("add_onsite!: `layer` was provided but H.layer_s is not set.")
+
+    pos_s = _pos_sites(H)
+    L     = H.L
+
+    fkind = if f isa Number
+        :scalar
+    elseif applicable(f, 0, 0)   # f(ix, iy) — 0-indexed 2D
+        :pos2d
+    elseif applicable(f, 0)      # f(n) — 0-indexed 1D
+        :pos1d
+    else
+        error("add_onsite!: unsupported f signature.\n" *
+              "Supported: Number, f(n), f(ix, iy)")
+    end
+
+    Nx = if fkind === :pos2d
+        Lx !== nothing ||
+            error("add_onsite! with f(ix,iy) requires Lx=... keyword.")
+        2^Lx
+    else
+        nothing
+    end
+
+    diag_mpo = if fkind === :scalar
+        get_diagonal_mpo(L, pos_s, x -> f)
+    elseif fkind === :pos1d
+        get_diagonal_mpo(L, pos_s, i -> f(round(Int, i) - 1))
+    else  # :pos2d
+        get_diagonal_mpo(L, pos_s, i -> (n = round(Int, i) - 1; f(n % Nx, n ÷ Nx)))
+    end
+
+    if H.sublattice_s !== nothing
         sl_s  = H.sublattice_s
         n     = dim(sl_s)
-        proj  = zeros(Float64, n, n);  proj[sublat, sublat] = 1.0
-        # Detect side from position of sublattice index in H.sites
-        sl_pos  = findfirst(==(sl_s), H.sites)
+        sl_pos = findfirst(==(sl_s), H.sites)
+
+        mat = if !isnothing(sublat)
+            proj = zeros(Float64, n, n);  proj[sublat, sublat] = 1.0
+            proj
+        else
+            Matrix{Float64}(I, n, n)
+        end
         new_term = sl_pos == length(H.sites) ?
-                   postpend_op(diag_mpo, sl_s, proj) :
-                   prepend_op(diag_mpo, sl_s, proj)
+                   postpend_op(diag_mpo, sl_s, mat) :
+                   prepend_op(diag_mpo, sl_s, mat)
+    elseif !isnothing(sublat)
+        isnothing(H.sublattice_s) &&
+            error("add_onsite! with sublat=$sublat requires H.sublattice_s to be set.")
     else
         new_term = diag_mpo
     end
 
-    H.mpo = +(H.mpo, new_term; cutoff=tol)
+    H.mpo = isnothing(maxdim) ?
+        +(H.mpo, new_term; cutoff=tol) :
+        +(H.mpo, new_term; cutoff=tol, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end

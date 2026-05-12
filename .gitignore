@@ -9,3 +9,5 @@ gen_diagram.jl
 examples/local_testing.ipynb
 examples/local_testing2.ipynb
 src/RSI_tk.jl
+RhombGraph.ipynb
+logo_tensorBinding.svg
