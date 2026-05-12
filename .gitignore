@@ -6,3 +6,6 @@ Testing_Notebook.ipynb
 dense_matrix_tests.ipynb
 notes.txt
 gen_diagram.jl
+examples/local_testing.ipynb
+examples/local_testing2.ipynb
+src/RSI_tk.jl
