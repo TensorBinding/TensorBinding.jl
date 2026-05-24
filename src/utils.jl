@@ -25,7 +25,7 @@ ITensors.op(::OpName"sigma_minus", ::SiteType"Qubit") =
 # Shift MPO:  (Q f)(x) = f(x + q)  on a binary-encoded chain
 # ---------------------------------------------------------------------
 
-function build_shift_mpo(sites, q)
+function build_shift_mpo(sites, q,cyclic=true)
     N      = length(sites)
     q_bits = [(q >> (N - i)) & 1 for i in 1:N]
     links  = [Index(2, "Link,l$n") for n in 0:N+1]
@@ -49,7 +49,11 @@ function build_shift_mpo(sites, q)
     end
 
     mpo[N] *= onehot(links[N+1] => 2)
-    mpo[1] *= (onehot(links[1] => 1) + onehot(links[1] => 2))  # cyclic
+    if cyclic
+        mpo[1] *= (onehot(links[1] => 1) + onehot(links[1] => 2)) # cyclic
+    else
+        mpo[1] *= onehot(links[1] => 2)
+    end
 
     return mpo
 end

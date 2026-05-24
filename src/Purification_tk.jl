@@ -92,10 +92,11 @@ function mcweeny_purify(ρ0::MPO;
         end
         err < tol && break
         # ρ³ = ρ² · ρ
-        ρ3 = apply(ρ2, ρ; maxdim, cutoff)
-        ITensorMPS.truncate!(ρ3; maxdim, cutoff)
+        #ρ3 = apply(ρ2, ρ; maxdim, cutoff)
+        #ITensorMPS.truncate!(ρ3; maxdim, cutoff)
         # 3ρ² - 2ρ³
-        ρ = +(3.0 * ρ2, -2.0 * ρ3; cutoff)
+        ρ_inte = +(3.0 * ρ , -2.0 * ρ2; cutoff)
+        ρ  = apply(ρ, ρ_inte; maxdim, cutoff) 
         ITensorMPS.truncate!(ρ; maxdim, cutoff)
     end
     return ρ

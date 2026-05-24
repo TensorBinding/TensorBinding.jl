@@ -69,11 +69,13 @@ Supported: Ising SOC, Rashba SOC, uniform or site-dependent Zeeman, singlet *s*-
 **Many-body methods**
 - DMRG ground state and LDoS via DMRG (`dmrg_gs`, `dmrg_spectral`)
 - Random Phase Approximation (RPA) for susceptibility via Dyson equation
-- Self-consistent Hartree–Fock mean field for the Hubbard model
 
 **Topological invariants**
 - Chern number and local Chern marker for Haldane and general 2D models
 - Winding number for SSH and general 1D models
 
+**Non-hermitian system**
+
+**Mean-field calculation**
 
 The package is under active development. A full function reference is available in `TensorBinding_overview.txt` and example notebooks are in `examples/`.
