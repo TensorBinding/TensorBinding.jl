@@ -65,7 +65,16 @@ mutable struct TBHamiltonian
     _tn_mps_cache  :: Union{Nothing, Vector{MPS}}   # MPS Chebyshev list (mode=:mps)
     _tn_Ncheb      :: Int
     _density_cache :: Union{Nothing, MPO}
+    Lx             :: Union{Nothing, Int}           # x-qubit count for 2D (Ly = L - Lx); nothing for 1D
 end
+
+# Backward-compatible 17-arg constructor (pre-Lx callers); inserts Lx=nothing.
+TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
+    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache, nothing)
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -363,8 +372,11 @@ function _build_preset(geometry, params, L, N, sites;
         mpo_sites = ref_sites
     end
     sc   = something(scale, _estimate_scale(geometry, params))
-    geom = _preset_geometry(geometry, dim == 2 ? 2^get(kwargs, :Lx, L ÷ 2) : nothing)
-    return TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    lx_2d = dim == 2 ? get(kwargs, :Lx, L ÷ 2) : nothing
+    geom = _preset_geometry(geometry, isnothing(lx_2d) ? nothing : 2^lx_2d)
+    H = TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    H.Lx = lx_2d
+    return H
 end
 
 function _build_sublattice(geometry, params, L;
@@ -404,6 +416,7 @@ function _build_sublattice(geometry, params, L;
     end
 
     isnothing(scale) || (H.scale = Float64(scale))
+    H.Lx = Lx
     return H
 end
 
@@ -579,6 +592,12 @@ function add_hopping!(H::TBHamiltonian, f;
                       sublat           = nothing,
                       sublat_from      = nothing,
                       sublat_to        = nothing)
+    if !isnothing(H.Lx)
+        (!isnothing(sublat) || !isnothing(sublat_from) || !isnothing(sublat_to)) &&
+            error("add_hopping! sublat keywords are not supported for 2D Hamiltonians; use add_hopping_2D! directly.")
+        return add_hopping_2D!(H, f; Lx=H.Lx, Ly=H.L - H.Lx, nn=Int(nn), maxdim=maxdim, tol=tol)
+    end
+
     any_sublat_kw = !isnothing(sublat) || !isnothing(sublat_from)
 
     if any_sublat_kw

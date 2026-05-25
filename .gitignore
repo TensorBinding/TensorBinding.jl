@@ -8,4 +8,8 @@ notes.txt
 gen_diagram.jl
 examples/local_testing.ipynb
 examples/local_testing2.ipynb
+examples/local_testing3.ipynb
 src/RSI_tk.jl
+docs/src/joss.txt
+docs/src/oam_rabi.tex
+docs/src/bubble_lehmann.tex
