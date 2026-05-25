@@ -1643,6 +1643,11 @@ _geom_positions(::Val{:kagome},    Lx, Ly) = kagome_positions(Lx, Ly)
 _geom_positions(::Val{:lieb},      Lx, Ly) = lieb_positions(Lx, Ly)
 _geom_positions(::Val{:dice},      Lx, Ly) = dice_positions(Lx, Ly)
 
+_geom_n_sub(::Val{:honeycomb}) = 2
+_geom_n_sub(::Val{:kagome})    = 3
+_geom_n_sub(::Val{:lieb})      = 3
+_geom_n_sub(::Val{:dice})      = 4
+
 """
     plot_ldos_2d(ldos_mat, ωlist, ω_target;
                  geometry, Lx, Ly,
@@ -1715,5 +1720,100 @@ function plot_ldos_2d(ldos_mat::AbstractMatrix, ωlist, ω_target;
                   aspect_ratio      = :equal,
                   title             = tstr,
                   label             = "",
+                  kwargs...)
+end
+
+
+"""
+    plot_ldos_multilayer(ldos_layers, ωlist, ω_target;
+                         stacking=:Bernal, geometry=:honeycomb, Lx, Ly,
+                         markersize, colormap, colorbar, clims, title, kwargs...)
+        -> Plot
+
+Scatter plot of the multilayer LDOS **as seen from above** at the energy
+nearest to `ω_target`.
+
+`ldos_layers` is a `Vector` of `(Nω × n_atoms)` matrices, one per layer, as
+returned by
+
+```julia
+ldos_layers = [get_ldos_spatial(H, Nc, ωlist;
+                   proj_layer=k, num_x=H.N) for k in 1:n_layers]
+```
+
+**Geometry**
+
+For `:AA` stacking all layers share the same 2D positions; the result is a
+single honeycomb with LDOS summed over all layers.
+
+For `:Bernal` stacking the odd and even layers form two physically distinct
+groups: odd layers (1, 3, …) sit at the standard honeycomb positions and even
+layers (2, 4, …) are displaced by the intra-cell A→B bond vector τ.  The
+function plots both groups together — a total of `2 × n_atoms` scatter points
+— giving a visual picture of the two interlocked honeycomb sublattices that
+make up the Bernal stack viewed from above.  LDOS is summed independently
+within each group (odd / even) without sublattice permutation, since the τ
+shift already places even-layer atoms at their correct visual registry.
+"""
+function plot_ldos_multilayer(ldos_layers::AbstractVector{<:AbstractMatrix},
+                               ωlist, ω_target;
+                               stacking::Symbol = :Bernal,
+                               geometry::Symbol = :honeycomb,
+                               Lx::Int,
+                               Ly::Int,
+                               markersize::Real = 10.0,
+                               colormap::Symbol = :inferno,
+                               colorbar::Bool   = true,
+                               clims            = nothing,
+                               title::String    = "",
+                               kwargs...)
+    stacking ∈ (:AA, :Bernal) ||
+        error("plot_ldos_multilayer: unknown stacking :$stacking. Supported: :AA, :Bernal.")
+
+    rs   = _geom_positions(Val(geometry), Lx, Ly)   # (n_atoms, 2)
+    Nω   = size(ldos_layers[1], 1)
+    ω_arr  = collect(ωlist)
+    ω_idx  = argmin(abs.(ω_arr .- ω_target))
+    ω_actual = ω_arr[ω_idx]
+
+    if stacking === :AA
+        # All layers share the same positions: simple sum.
+        vals = sum(ldos_k[ω_idx, :] for ldos_k in ldos_layers)
+        cl   = isnothing(clims) ? (0.0, maximum(vals) + eps(Float64)) : clims
+        tstr = isempty(title) ? "LDOS (AA top view)  ω ≈ $(round(ω_actual; digits=3))" : title
+        return Plots.scatter(rs[:, 1], rs[:, 2];
+                             marker_z=vals, color=colormap, clims=cl,
+                             colorbar=colorbar, markersize=markersize,
+                             markerstrokewidth=0, aspect_ratio=:equal,
+                             xlabel="x", ylabel="y", title=tstr, label="",
+                             kwargs...)
+    end
+
+    # ── Bernal: two groups of layers at two shifted honeycomb lattices ────────
+    # τ = intra-cell A→B bond vector (first unit cell).
+    τ = rs[2, :] - rs[1, :]          # (2,) displacement
+
+    vals_odd  = zeros(size(rs, 1))   # group 1: layers 1, 3, 5, …
+    vals_even = zeros(size(rs, 1))   # group 2: layers 2, 4, …
+    for (k, ldos_k) in enumerate(ldos_layers)
+        if isodd(k)
+            vals_odd  .+= ldos_k[ω_idx, :]
+        else
+            vals_even .+= ldos_k[ω_idx, :]
+        end
+    end
+
+    rs_even  = rs .+ τ'              # even-layer honeycomb, shifted by τ
+    all_pos  = vcat(rs, rs_even)     # (2*n_atoms, 2)
+    all_vals = vcat(vals_odd, vals_even)
+
+    cl   = isnothing(clims) ? (0.0, maximum(all_vals) + eps(Float64)) : clims
+    tstr = isempty(title) ? "LDOS (Bernal top view)  ω ≈ $(round(ω_actual; digits=3))" : title
+
+    Plots.scatter(all_pos[:, 1], all_pos[:, 2];
+                  marker_z=all_vals, color=colormap, clims=cl,
+                  colorbar=colorbar, markersize=markersize,
+                  markerstrokewidth=0, aspect_ratio=:equal,
+                  xlabel="x", ylabel="y", title=tstr, label="",
                   kwargs...)
 end

@@ -141,7 +141,9 @@ end
 # ============================================================
 
 """
-    add_hopping_2D!(H, f; Lx, Ly, nn=1, maxdim=50, tol=1e-8) -> H
+    add_hopping_2D!(H, f; Lx, Ly, nn=1, layer=nothing,
+                    lattice=nothing, geometry=nothing,
+                    maxdim=50, tol=1e-8) -> H
 
 Add the `nn`-th nearest-neighbor hopping to a 2D `TBHamiltonian`.
 
@@ -162,6 +164,12 @@ Add the `nn`-th nearest-neighbor hopping to a 2D `TBHamiltonian`.
   is applied at the **destination** of the forward hop: forward term uses
   `apply(V, K_fwd)`, the Hermitian conjugate uses `apply(K_bwd, dag(V))`.
 - `Lx`, `Ly`: qubit factorisation of `H.L` into x-bits and y-bits (required).
+- `layer`: for layered Hamiltonians, `nothing` applies the hopping to every
+  layer, an integer targets one layer, and a collection targets those layers.
+- `lattice` / `geometry`: optional geometry hints for layered Hamiltonians whose
+  `H.geometry` is not set. `lattice` may be `:square`, `:triangular`, or
+  `:honeycomb`; `geometry` may be either a function `i -> r_i` or a coordinate
+  matrix with one row per position site, or per atom when `H.sublattice_s` is set.
 - `nn`: neighbor shell index (1 = nearest, 2 = next-nearest, …).
 
 **Compatibility**
@@ -190,8 +198,51 @@ function add_hopping_2D!(H::TBHamiltonian, f;
                           Lx::Int,
                           Ly::Int,
                           nn::Int     = 1,
+                          layer       = nothing,
+                          lattice     = nothing,
+                          geometry    = nothing,
                           maxdim::Int = 50,
                           tol::Real   = 1e-8)
+    if H.layer_s !== nothing
+        (H.spin_s === nothing && H.nambu_s === nothing) ||
+            error("Layered add_hopping_2D! currently supports layer/position/sublattice Hamiltonians only.")
+
+        pos_s  = _pos_sites(H)
+        geom   = _resolve_2d_geometry(H, lattice, geometry, Lx, Ly)
+        layers = _resolve_layer_selection(H.layer_s, layer)
+        term_sites = H.sublattice_s === nothing ? pos_s : [pos_s; H.sublattice_s]
+        zero_mpo = H.sublattice_s === nothing ?
+            0.0 * MPO(pos_s, "Id") :
+            0.0 * postpend_op(MPO(pos_s, "Id"), H.sublattice_s,
+                               Matrix{Float64}(I, dim(H.sublattice_s), dim(H.sublattice_s)))
+
+        H_layered_term = nothing
+        for ell in layers
+            H_pos = TBHamiltonian(H.L, H.N, term_sites, copy(zero_mpo),
+                                  geom, 0.0, 0.0,
+                                  nothing, nothing, nothing, H.sublattice_s, :post,
+                                  nothing, nothing, 0, nothing)
+            add_hopping_2D!(H_pos, f;
+                            Lx=Lx, Ly=Ly, nn=nn,
+                            maxdim=maxdim, tol=tol)
+            term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
+            H_layered_term = H_layered_term === nothing ? term :
+                +(H_layered_term, term; cutoff=tol)
+        end
+
+        H.mpo = +(H.mpo, H_layered_term; cutoff=tol, maxdim=maxdim)
+        ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+        _invalidate_cache!(H)
+        return H
+    end
+
+    layer === nothing ||
+        error("add_hopping_2D!: `layer` was provided but H.layer_s is not set.")
+
+    if H.geometry === nothing && (lattice !== nothing || geometry !== nothing)
+        H.geometry = _resolve_2d_geometry(H, lattice, geometry, Lx, Ly)
+    end
+
     apkw   = (; cutoff=tol, maxdim=maxdim)
     n_sub  = H.sublattice_s === nothing ? 1 : dim(H.sublattice_s)
     pos_s  = _pos_sites(H)
@@ -286,6 +337,53 @@ function add_hopping_2D!(H::TBHamiltonian, f;
     ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
+end
+
+function _resolve_layer_selection(layer_s::Index, layer)
+    n_layers = dim(layer_s)
+    layers = if layer === nothing
+        collect(1:n_layers)
+    elseif layer isa Integer
+        [Int(layer)]
+    else
+        Int.(collect(layer))
+    end
+    all(l -> 1 <= l <= n_layers, layers) ||
+        error("layer selection $layers is outside 1:$n_layers.")
+    return layers
+end
+
+function _resolve_2d_geometry(H::TBHamiltonian, lattice, geometry, Lx::Int, Ly::Int)
+    if geometry !== nothing
+        if geometry isa AbstractMatrix
+            n_geom = H.sublattice_s === nothing ? H.N : dim(H.sublattice_s) * H.N
+            size(geometry, 1) == n_geom ||
+                error("geometry matrix has $(size(geometry, 1)) rows, expected $n_geom.")
+            return let m = Float64.(geometry)
+                i -> m[i, :]
+            end
+        elseif geometry isa Function
+            return geometry
+        else
+            error("geometry must be a function i -> r_i or an Nxd matrix.")
+        end
+    end
+
+    H.geometry !== nothing && return H.geometry
+
+    lattice !== nothing ||
+        error("Layered add_hopping_2D! needs `lattice=:square/:triangular/:honeycomb` " *
+              "or `geometry=...` because H.geometry is not set.")
+    lat = lattice isa Symbol ? lattice : Symbol(lattice)
+    rs = H.sublattice_s === nothing ? lattice_positions(lat, Lx, Ly) :
+         lat === :honeycomb         ? honeycomb_sublattice_positions(Lx, Ly) :
+         error("lattice=:$lat with H.sublattice_s is not supported by add_hopping_2D!.")
+    n_geom = H.sublattice_s === nothing ? H.N : dim(H.sublattice_s) * H.N
+    size(rs, 1) == n_geom ||
+        error("geometry for :$lat returned $(size(rs, 1)) sites, expected $n_geom.")
+    return let m = Float64.(rs)
+        i -> m[i, :]
+    end
 end
 
 
