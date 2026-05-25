@@ -273,6 +273,199 @@ function scf_pair_distance_hartree_builder(L::Int, sites, distance_or_terms, wei
     end
 end
 
+function _scf_project_aux_block(mpo::MPO, aux_s::Index, row::Int, col::Int; tag::String="")
+    aux_pos = findfirst(n -> any(i -> i == aux_s || (!isempty(tag) && hastags(i, tag)),
+                                 siteinds(mpo, n)),
+                        1:length(mpo))
+    aux_pos === nothing && error("_scf_project_aux_block: auxiliary index not found")
+
+    proj = ITensor(ComplexF64, aux_s', aux_s)
+    proj[aux_s' => row, aux_s => col] = 1.0
+
+    tensors = ITensor[mpo[i] for i in 1:length(mpo)]
+    contracted = tensors[aux_pos] * proj
+
+    if length(tensors) == 1
+        return MPO(ITensor[])
+    elseif aux_pos == 1
+        tensors[2] = contracted * tensors[2]
+        return MPO(tensors[2:end])
+    else
+        tensors[aux_pos - 1] = tensors[aux_pos - 1] * contracted
+        return MPO(vcat(tensors[1:aux_pos - 1], tensors[aux_pos + 1:end]))
+    end
+end
+
+function _scf_pairing_profile_mps(delta, L::Int, sites;
+                                  type=ComplexF64,
+                                  tol::Real=1e-8)
+    if delta isa MPS
+        return delta
+    elseif delta isa Number
+        return scf_constant_mps(collect(sites), delta)
+    elseif delta isa Function
+        return scf_profile_mps(L, sites, delta; type=type, tol=tol)
+    else
+        error("Unsupported pairing profile $(typeof(delta)); use Number, Function, or MPS.")
+    end
+end
+
+function _scf_bdg_from_pairing(H0::TBHamiltonian, delta_mps::MPS;
+                               mu::Real=0.0,
+                               scale::Union{Nothing,Real}=nothing,
+                               center::Real=0.0,
+                               maxdim::Int=100,
+                               cutoff::Real=1e-8)
+    H0_work = H0
+    if H0_work.spin_s === nothing
+        H0_work = deepcopy(H0)
+        add_spin!(H0_work; cutoff=cutoff, maxdim=maxdim)
+    end
+
+    H_up, H_dn = _scf_spin_channel_bases(H0_work)
+    sites = H_up.sites
+    Id = MPO(sites, "Id")
+    Hkin_up = +(H_up.mpo, (-mu) * Id; maxdim=maxdim, cutoff=cutoff)
+    Hkin_dn = +(H_dn.mpo, (-mu) * Id; maxdim=maxdim, cutoff=cutoff)
+
+    H_pair = mps_to_diagonal_mpo(delta_mps, sites)
+    spin_s = H0_work.spin_s
+    nambu_s = nambu_index()
+    Hbdg_mpo = bdg_spin_hamiltonian(Hkin_up, Hkin_dn, H_pair, spin_s, nambu_s;
+                                    cutoff=cutoff)
+    ITensorMPS.truncate!(Hbdg_mpo; maxdim=maxdim, cutoff=cutoff)
+
+    return TBHamiltonian(
+        H_up.L, H_up.N, [nambu_s; spin_s; sites], Hbdg_mpo,
+        H_up.geometry, H_up.geometry_uc,
+        Float64(something(scale, H0.scale == 0.0 ? 0.0 : H0.scale)),
+        Float64(center),
+        spin_s, nambu_s, H0_work.layer_s, H0_work.sublattice_s,
+        :pre,
+        nothing, nothing, 0, nothing
+    )
+end
+
+"""
+    scf_swave_anomalous_profile(density_mpo, Hbdg; maxdim=100, cutoff=1e-8) -> MPS
+
+Extract the local singlet anomalous profile from a spinful s-wave BdG density
+matrix. The returned MPS is the diagonal of the Nambu particle-hole block
+projected onto the spin-singlet tensor `(i sigma_y)`.
+"""
+function scf_swave_anomalous_profile(density_mpo::MPO, Hbdg::TBHamiltonian;
+                                     maxdim::Int=100,
+                                     cutoff::Real=1e-8)
+    Hbdg.nambu_s === nothing && error("scf_swave_anomalous_profile requires a BdG Hamiltonian.")
+    Hbdg.spin_s === nothing && error("scf_swave_anomalous_profile requires a spinful BdG Hamiltonian.")
+
+    ph = _scf_project_aux_block(density_mpo, Hbdg.nambu_s, 1, 2; tag="Nambu")
+    f_ud = _scf_project_aux_block(ph, Hbdg.spin_s, 1, 2; tag="Spin")
+    f_du = _scf_project_aux_block(ph, Hbdg.spin_s, 2, 1; tag="Spin")
+    singlet = +(0.5 * f_ud, -0.5 * f_du; maxdim=maxdim, cutoff=cutoff)
+    ITensorMPS.truncate!(singlet; maxdim=maxdim, cutoff=cutoff)
+    return extract_diagonal_to_mps(singlet)
+end
+
+"""
+    scf_swave_superconducting(H0, g; kwargs...) -> NamedTuple
+
+Minimal spin-singlet s-wave pairing SCF. The normal Hamiltonian is fixed, while
+the on-site pairing profile is updated as
+
+```text
+Delta_new(i) = pairing_sign * g * F_singlet(i)
+```
+
+where `F_singlet` is extracted from the Nambu off-diagonal block of the BdG
+density matrix. If `H0` is spinless, a spin degree of freedom is added to a
+working copy before building BdG Hamiltonians.
+"""
+function scf_swave_superconducting(H0::TBHamiltonian, g::Number;
+                                   initial_delta = 0.1,
+                                   pairing_sign::Real = -1.0,
+                                   mu::Real = 0.0,
+                                   density_method::Symbol = :mcweeny,
+                                   Ncheb::Int = 100,
+                                   scale::Union{Nothing,Real} = nothing,
+                                   max_scf_iter::Int = 30,
+                                   scf_tol::Real = 1e-6,
+                                   mix::Real = 0.4,
+                                   maxdim::Int = 100,
+                                   cutoff::Real = 1e-8,
+                                   purif_maxiter::Int = 40,
+                                   purif_tol::Real = 1e-6,
+                                   verbose::Bool = true)
+    H_base_up, _ = _scf_spin_channel_bases(H0.spin_s === nothing ? (Htmp = deepcopy(H0); add_spin!(Htmp; cutoff=cutoff, maxdim=maxdim); Htmp) : H0)
+    sites = H_base_up.sites
+    delta = _scf_pairing_profile_mps(initial_delta, H_base_up.L, sites;
+                                     type=ComplexF64, tol=cutoff)
+
+    history = NamedTuple[]
+    density_mpo = nothing
+    anomalous_mps = nothing
+    Hbdg = nothing
+    err = Inf
+
+    for iter in 1:max_scf_iter
+        Hbdg = _scf_bdg_from_pairing(H0, delta;
+                                     mu=mu,
+                                     scale=scale,
+                                     maxdim=maxdim,
+                                     cutoff=cutoff)
+        full_dim = prod(dim(s) for s in Hbdg.sites)
+        Nel_bdg = div(full_dim, 2)
+
+        density_mpo = get_density(Hbdg;
+                                  method=density_method,
+                                  ϵF=0.0,
+                                  Ncheb=Ncheb,
+                                  maxdim=maxdim,
+                                  cutoff=Float64(cutoff),
+                                  Nel=Nel_bdg,
+                                  maxiters=purif_maxiter,
+                                  tol=Float64(purif_tol),
+                                  verbose=false)
+        anomalous_mps = scf_swave_anomalous_profile(density_mpo, Hbdg;
+                                                    maxdim=maxdim,
+                                                    cutoff=cutoff)
+        delta_new = (pairing_sign * g) * anomalous_mps
+        err = scf_rms_error(delta_new, delta)
+
+        push!(history, (iter=iter, rms_error=err,
+                        maxlinkdim_H=ITensorMPS.maxlinkdim(Hbdg.mpo),
+                        maxlinkdim_density=ITensorMPS.maxlinkdim(density_mpo),
+                        maxlinkdim_delta=ITensorMPS.maxlinkdim(delta_new)))
+        verbose && println("s-wave SCF iter=$iter rms=$err")
+
+        delta_mixed = +(mix * delta_new, (1.0 - mix) * delta;
+                        maxdim=maxdim, cutoff=cutoff)
+        delta = delta_mixed
+
+        err < scf_tol && return (
+            converged=true,
+            iterations=iter,
+            rms_error=err,
+            delta_mps=delta,
+            anomalous_mps=anomalous_mps,
+            density_mpo=density_mpo,
+            ham=Hbdg,
+            history=history,
+        )
+    end
+
+    return (
+        converged=false,
+        iterations=max_scf_iter,
+        rms_error=err,
+        delta_mps=delta,
+        anomalous_mps=anomalous_mps,
+        density_mpo=density_mpo,
+        ham=Hbdg,
+        history=history,
+    )
+end
+
 """
     scf_cdw_hartree_builder(U; background=0.5, maxdim=100, cutoff=1e-8)
 
