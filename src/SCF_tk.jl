@@ -407,3 +407,81 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
         history=history,
     )
 end
+
+
+
+
+# ============================================================
+# 9. Antiferromagnetic / Néel initial-guess density matrices
+#    Used as seeds for mean-field SCF on interacting models.
+#    Return (density_MPO, density_MPS).
+# ============================================================
+
+"""
+    initial_guess_trivial_up_1D(L, sites) -> (MPO, MPS)
+
+Diagonal density MPO with occupation `x % 2` on site `x` (spin-up Néel seed for 1D).
+"""
+function initial_guess_trivial_up_1D(L, sites)
+    xvals = range(0, 2^L - 1; length=2^L)
+    qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, x -> Float64(Int(x) % 2), xvals;
+                maxbonddim=10, tolerance=1e-8)[1]
+    mps   = MPS(TCI.tensortrain(qtt.tci); sites)
+    mpo   = outer(mps', mps)
+    for i in 1:L; mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i]); end
+    return mpo, mps
+end
+
+
+"""
+    initial_guess_trivial_down_1D(L, sites) -> (MPO, MPS)
+
+Diagonal density MPO with occupation `(x+1) % 2` on site `x` (spin-down Néel seed for 1D).
+"""
+function initial_guess_trivial_down_1D(L, sites)
+    xvals = range(0, 2^L - 1; length=2^L)
+    qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, x -> Float64((Int(x)+1) % 2), xvals;
+                maxbonddim=10, tolerance=1e-8)[1]
+    mps   = MPS(TCI.tensortrain(qtt.tci); sites)
+    mpo   = outer(mps', mps)
+    for i in 1:L; mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i]); end
+    return mpo, mps
+end
+
+
+"""
+    initial_guess_Neel_up(Lx, Ly, sites) -> (MPO, MPS)
+
+Checkerboard spin-up density seed for 2D Hubbard: occupation 1 where `(ix+iy)` is even.
+"""
+function initial_guess_Neel_up(Lx, Ly, sites)
+    Nx    = 2^Lx
+    L     = Lx + Ly
+    N     = Nx * 2^Ly
+    xvals = 0:N-1
+    f     = i -> isodd(i%Nx + i÷Nx) ? 0.0 : 1.0
+    qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, f, xvals; maxbonddim=10, tolerance=1e-8)[1]
+    mps   = MPS(TCI.tensortrain(qtt.tci); sites)
+    mpo   = outer(mps', mps)
+    for i in 1:L; mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i]); end
+    return mpo, mps
+end
+
+
+"""
+    initial_guess_Neel_dn(Lx, Ly, sites) -> (MPO, MPS)
+
+Checkerboard spin-down density seed for 2D Hubbard: occupation 1 where `(ix+iy)` is odd.
+"""
+function initial_guess_Neel_dn(Lx, Ly, sites)
+    Nx    = 2^Lx
+    L     = Lx + Ly
+    N     = Nx * 2^Ly
+    xvals = 0:N-1
+    f     = i -> isodd(i%Nx + i÷Nx) ? 1.0 : 0.0
+    qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, f, xvals; maxbonddim=10, tolerance=1e-8)[1]
+    mps   = MPS(TCI.tensortrain(qtt.tci); sites)
+    mpo   = outer(mps', mps)
+    for i in 1:L; mpo.data[i] = Quantics._asdiagonal(mps.data[i], sites[i]); end
+    return mpo, mps
+end
