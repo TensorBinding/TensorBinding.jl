@@ -147,7 +147,12 @@ function _scf_copy_with_mpo(H0::TBHamiltonian, mpo::MPO; scale=0.0, center=0.0)
                          Float64(scale), Float64(center),
                          H0.spin_s, H0.nambu_s, H0.layer_s, H0.sublattice_s,
                          H0.aux_side,
-                         nothing, nothing, 0, nothing)
+                          nothing, nothing, 0, nothing)
+end
+
+function _scf_spin_channel_bases(H0::TBHamiltonian)
+    H0.spin_s === nothing && return H0, H0
+    return _project_spin_sector(H0, 1), _project_spin_sector(H0, 2)
 end
 
 """
@@ -260,16 +265,18 @@ end
     scf_staggered_magnetic_initial(H; amplitude=0.05, background=0.5)
         -> (rho_up, rho_dn)
 
-Build a simple antiferromagnetic initial guess for a spinful Hubbard mean-field
-loop represented as two spinless density profiles.
+Build a simple antiferromagnetic initial guess for a Hubbard mean-field loop.
+If `H` is spinful, the spin core is first projected out so the returned
+profiles live on the same spinless position/sublattice sites as each spin block.
 """
 function scf_staggered_magnetic_initial(H::TBHamiltonian;
                                         amplitude::Real = 0.05,
                                         background::Real = 0.5)
-    rho_up = scf_profile_mps(H.L, H.sites,
+    H_up, _ = _scf_spin_channel_bases(H)
+    rho_up = scf_profile_mps(H_up.L, H_up.sites,
                              n -> background + amplitude * (-1)^n;
                              type=Float64)
-    rho_dn = scf_profile_mps(H.L, H.sites,
+    rho_dn = scf_profile_mps(H_up.L, H_up.sites,
                              n -> background - amplitude * (-1)^n;
                              type=Float64)
     return rho_up, rho_dn
@@ -285,15 +292,15 @@ end
 """
     scf_magnetic_hubbard(H0, U; kwargs...) -> NamedTuple
 
-Two-channel collinear magnetic mean-field loop for the on-site Hubbard model:
+Two-channel collinear magnetic mean-field loop for the on-site Hubbard model.
+If `H0` is spinful, the spin-up and spin-down one-body blocks are obtained by
+projecting out the spin core, matching the magnetic RPA convention. If `H0` is
+spinless, the previous two-copy behavior is retained.
 
 ```text
-H_up = H0 + U * diag(n_down - background)
-H_dn = H0 + U * diag(n_up   - background)
+H_up = H0_up + U * diag(n_down - background)
+H_dn = H0_dn + U * diag(n_up   - background)
 ```
-
-The spin channels are represented by two spinless `TBHamiltonian`s. This keeps
-the first implementation simple and makes the AF/CDW distinction explicit.
 """
 function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
                               initial_up::Union{Nothing,MPS}=nothing,
@@ -313,7 +320,8 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
                               purif_maxiter::Int = 40,
                               purif_tol::Real = 1e-6,
                               verbose::Bool = true)
-    sites = H0.sites
+    H0_up, H0_dn = _scf_spin_channel_bases(H0)
+    sites = H0_up.sites
     if initial_up === nothing || initial_dn === nothing
         rho_up, rho_dn = scf_staggered_magnetic_initial(H0; background=background)
         initial_up === nothing || (rho_up = initial_up)
@@ -325,8 +333,8 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
     history = NamedTuple[]
     density_up_mpo = nothing
     density_dn_mpo = nothing
-    Hup = H0
-    Hdn = H0
+    Hup = H0_up
+    Hdn = H0_dn
     err = Inf
 
     for iter in 1:max_scf_iter
@@ -335,9 +343,9 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
         V_dn = _scf_local_hartree_from_density(rho_up, sites, U, background;
                                                maxdim=maxdim, cutoff=cutoff)
 
-        Hup = _scf_copy_with_mpo(H0, +(H0.mpo, V_up; maxdim=maxdim, cutoff=cutoff);
+        Hup = _scf_copy_with_mpo(H0_up, +(H0_up.mpo, V_up; maxdim=maxdim, cutoff=cutoff);
                                  scale=something(scale, 0.0), center=0.0)
-        Hdn = _scf_copy_with_mpo(H0, +(H0.mpo, V_dn; maxdim=maxdim, cutoff=cutoff);
+        Hdn = _scf_copy_with_mpo(H0_dn, +(H0_dn.mpo, V_dn; maxdim=maxdim, cutoff=cutoff);
                                  scale=something(scale, 0.0), center=0.0)
 
         density_up_mpo = get_density(Hup;
