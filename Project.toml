@@ -10,13 +10,9 @@ ITensorMPS = "0d1a4710-d33b-49a5-8f18-73bdf49b47e2"
 ITensors = "9136182c-28ba-11e9-034c-db9fb085ebd5"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 NDTensors = "23ae76d9-e61a-49c4-8f12-3f1a16adf9cf"
-Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
-PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
-PyPlot = "d330b81b-6aea-500a-939a-2ce795aea3ee"
 Quantics = "87f76fb3-a40a-40c9-a63c-29fcfe7b7547"
 QuanticsGrids = "634c7f73-3e90-4749-a1bd-001b8efc642d"
 QuanticsTCI = "b11687fd-3a1c-4c41-97d0-998ab401d50e"
-TCIITensorConversion = "9f0aa9f4-9415-4e6a-8795-331ebf40aa04"
 TensorCrossInterpolation = "b261b2ec-6378-4871-b32e-9173bb050604"
 
 [compat]
