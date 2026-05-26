@@ -8,12 +8,8 @@ using ITensorMPS
 using Quantics
 using QuanticsTCI
 using QuanticsGrids
-using TCIITensorConversion
 using TensorCrossInterpolation
 import TensorCrossInterpolation as TCI
-using PyCall
-using PyPlot
-using Plots
 using FFTW
 using Base.Threads
 

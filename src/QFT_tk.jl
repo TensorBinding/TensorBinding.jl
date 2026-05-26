@@ -108,6 +108,84 @@ function conjugate_by_qft(W; tol=1e-9, maxdim::Int=100)
 end
 
 
+"""
+    conjugate_by_qft(H::TBHamiltonian, W::MPO; tol, maxdim) -> MPO
+
+TBHamiltonian-aware version of `conjugate_by_qft`.  Applies `U·W·U†` where
+`U` is the QFT acting **only on the position (Qubit) sites** of `H`, with
+identity operators at all auxiliary sites (Layer, spin, sublattice, Nambu).
+
+Use this overload whenever `W` lives on the full `H.sites` space (including
+aux indices), as is the case in the bubble pipeline after `replace_sites`.
+"""
+function conjugate_by_qft(H::TBHamiltonian, W::MPO; tol=1e-9, maxdim::Int=100)
+    pos_s = _pos_sites(H)
+    R     = length(pos_s)
+    FTirev_pos = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true))), pos_s)
+    FTrev_pos  = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true))), pos_s)
+    FTirev = _embed_in_full_sites(H, FTirev_pos)
+    FTrev  = _embed_in_full_sites(H, FTrev_pos)
+    Op1    = apply(W,                        FTirev; cutoff=tol, maxdim=maxdim)
+    Op2    = apply(swapprime(FTrev, 0 => 1), Op1;   cutoff=tol, maxdim=maxdim)
+    return TCI.truncate(Op2; cutoff=tol, maxdim=maxdim)
+end
+
+
+"""
+    _embed_in_full_sites(H, mpo_pos) -> MPO
+
+Embed `mpo_pos` (which lives on `_pos_sites(H)`) into the full `H.sites`
+space by prepending/appending dim-1 identity tensors at each auxiliary site.
+"""
+function _embed_in_full_sites(H::TBHamiltonian, mpo_pos::MPO)
+    pos_set  = Set(_pos_sites(H))
+    first_pos = findfirst(s -> s ∈ pos_set, H.sites)
+    last_pos  = findlast( s -> s ∈ pos_set, H.sites)
+    pre_aux  = H.sites[1:first_pos-1]
+    post_aux = H.sites[last_pos+1:end]
+    result   = mpo_pos
+    for s in reverse(pre_aux)
+        result = mpo_kron(MPO([dense(delta(s, prime(s)))]), result)
+    end
+    for s in post_aux
+        result = mpo_kron(result, MPO([dense(delta(s, prime(s)))]))
+    end
+    return result
+end
+
+
+"""
+    _embed_displacement_in_full_sites(H, mpo_pos) -> MPO
+
+Like `_embed_in_full_sites` but pads auxiliary sites with all-ones matrices
+instead of identity.  Required for current-operator construction: the
+displacement (xᵣ − xᵣ′) depends only on position, so it must be broadcast
+uniformly across all auxiliary (sublattice, layer, spin, Nambu) index pairs,
+including off-diagonal ones where physical hoppings exist.
+
+Using identity at an aux site with off-diagonal hoppings (e.g. sublattice A↔B
+in honeycomb, or inter-layer tunneling in bilayers) would set those current
+matrix elements to zero and give σ = 0.
+"""
+function _embed_displacement_in_full_sites(H::TBHamiltonian, mpo_pos::MPO)
+    pos_set   = Set(_pos_sites(H))
+    first_pos = findfirst(s -> s ∈ pos_set, H.sites)
+    last_pos  = findlast( s -> s ∈ pos_set, H.sites)
+    pre_aux   = H.sites[1:first_pos-1]
+    post_aux  = H.sites[last_pos+1:end]
+    result    = mpo_pos
+    for s in reverse(pre_aux)
+        ones_t = dense(ITensor(ones(Float64, dim(s), dim(s)), prime(s), s))
+        result = mpo_kron(MPO([ones_t]), result)
+    end
+    for s in post_aux
+        ones_t = dense(ITensor(ones(Float64, dim(s), dim(s)), prime(s), s))
+        result = mpo_kron(result, MPO([ones_t]))
+    end
+    return result
+end
+
+
 # ============================================================
 # 2. Legacy sublattice projection  (mask sandwich)
 #

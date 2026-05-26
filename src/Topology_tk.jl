@@ -565,11 +565,13 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                fermi::Real      = 0.0,
                l                = nothing,
                Λ::Real          = 10,
+               Lambda           = nothing,  # ASCII alias for Λ
                Nchebychev::Int  = 300,
                maxdim::Int      = 500,
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
                quenched::Bool   = true)
+    Λ_val = Lambda !== nothing ? Float64(Lambda) : Λ
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -580,7 +582,7 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
     P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
-                                l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
+                                l=l, Λ=Λ_val, maxdim=maxdim, cutoff=cutoff,
                                 quenched=quenched)
 end
 
