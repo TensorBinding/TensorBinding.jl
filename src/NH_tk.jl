@@ -3,11 +3,11 @@
 # The core construction here hermitizes a non-Hermitian single-particle MPO by
 # adding one dim-2 auxiliary block index:
 #
-#       H_NH(z) = [ 0        H - zI ;
-#                  (H - zI)'     0  ]
+#       H_NH(z) = [ 0        zI - H ;
+#                  (zI - H)'     0  ]
 #
 # In TensorBinding terms this is
-#       |1><2| x (H - zI) + |2><1| x (H - zI)'
+#       |1><2| x (zI - H) + |2><1| x (zI - H)'
 # using the same prepend_op machinery used for layers and BdG/Nambu blocks.
 
 """
@@ -19,7 +19,7 @@ block Hamiltonian.
 Fields
 ------
 - `parent`     : original `TBHamiltonian`, not modified in-place
-- `z`          : complex reference point used in `H - zI`
+- `z`          : complex reference point used in `zI - H`
 - `block_s`    : dim-2 auxiliary Index tagged `"NHBlock"`
 - `hermitized` : Hermitian `TBHamiltonian` on `[block_s; parent.sites...]`
 
@@ -51,8 +51,8 @@ nh_block_index() = Index(2, "Qubit,NHBlock")
 Return the Hermitian block Hamiltonian
 
 ```text
-[ 0        H - zI ;
-  (H-zI)'  0      ]
+[ 0        zI - H ;
+  (zI-H)'  0      ]
 ```
 
 as a `TBHamiltonian` whose site order is `[block_s; H.sites...]`.
@@ -64,7 +64,7 @@ function hermitized_hamiltonian(H::TBHamiltonian;
                                 cutoff::Real = 1e-8,
                                 maxdim::Int = 200,
                                 scale::Real = 0.0,
-                                convention::Symbol = :H_minus_z)
+                                convention::Symbol = :z_minus_H)
     convention in (:H_minus_z, :z_minus_H) ||
         error("convention must be :H_minus_z or :z_minus_H; got :$convention")
     I_H     = MPO(H.sites, "Id")
@@ -95,7 +95,7 @@ function hermitize(H::TBHamiltonian;
                    cutoff::Real = 1e-8,
                    maxdim::Int = 200,
                    scale::Real = 0.0,
-                   convention::Symbol = :H_minus_z)
+                   convention::Symbol = :z_minus_H)
     block_s = nh_block_index()
     Hh = hermitized_hamiltonian(H;
                                 z=z,
@@ -118,7 +118,7 @@ function hermitize(NH::NonHermitianHamiltonian;
                    cutoff::Real = 1e-8,
                    maxdim::Int = 200,
                    scale::Real = 0.0,
-                   convention::Symbol = :H_minus_z)
+                   convention::Symbol = :z_minus_H)
     return hermitize(NH.parent; z=z, cutoff=cutoff, maxdim=maxdim, scale=scale,
                      convention=convention)
 end
