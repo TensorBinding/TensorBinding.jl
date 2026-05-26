@@ -16,30 +16,10 @@ sigma_minus acting as binary increment / decrement operators across
 the L qubit sites.  Hopping amplitude = 1; scale by multiplying the result.
 """
 function kinetic_1d_nn(L, sites)
-    kinetic = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_minus", j)
-        end
-        kinetic += os
-    end
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_plus", j)
-        end
-        kinetic += os
-    end
-    return MPO(kinetic, sites)
+    @assert L == length(sites) "L must equal length(sites)"
+    K = build_shift_mpo(sites, 1, true)
+    Kdag = swapprime(dag(K), 0, 1)
+    return +(K, Kdag; cutoff=1e-12)
 end
 
 
@@ -51,36 +31,11 @@ encoded as a diagonal MPO `hopping`.  Useful for spatially varying
 hopping amplitudes (e.g. SSH model, quasicrystals).
 """
 function kinetic_1d_nn_custom(L, sites, hopping)
-    kinetic_1 = OpSum()
-    kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_minus", j)
-        end
-        kinetic_1 += os
-    end
-    k_mpo_1    = MPO(kinetic_1, sites)
-    true_hop_1 = apply(hopping, k_mpo_1)
-
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_plus", j)
-        end
-        kinetic_2 += os
-    end
-    k_mpo_2    = MPO(kinetic_2, sites)
-    true_hop_2 = apply(k_mpo_2, hopping)
-    return +(true_hop_1, true_hop_2; cutoff=1e-8)
+    @assert L == length(sites) "L must equal length(sites)"
+    K = build_shift_mpo(sites, 1, true)
+    Kdag = swapprime(dag(K), 0, 1)
+    return +(apply(hopping, K),
+             apply(Kdag, hopping); cutoff=1e-8)
 end
 
 # ============================================================
@@ -302,6 +257,11 @@ via `compose_power` for consistency). Larger `nn` extends the reach without repe
 """
 function kineticNNN(L, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     @assert L == length(sites) "L must equal length(sites)"
+    @assert nn >= 1 "nn must be >= 1"
+    K = build_shift_mpo(sites, nn, true)
+    Kdag = swapprime(dag(K), 0, 1)
+    return +(apply(hopping, K; apply_kwargs...),
+             apply(Kdag, dag(hopping); apply_kwargs...); cutoff=1e-12)
     @assert nn ≥ 1             "nn must be ≥ 1"
     kinetic_1 = OpSum()
     kinetic_2 = OpSum()
