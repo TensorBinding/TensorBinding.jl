@@ -127,6 +127,115 @@ function scf_hartree_mpo_from_density(density_mps::MPS, interaction_op::MPO, sit
     return mps_to_diagonal_mpo(coeff_mps, sites)
 end
 
+@inline function _scf_bra_ket(sij)
+    @assert length(sij) == 2 "MPO site tensor should have exactly 2 site legs"
+    return plev(sij[1]) == 1 ? (sij[1], sij[2]) : (sij[2], sij[1])
+end
+
+function _scf_replace_sites(MPOin::MPO, newsites)
+    L = length(MPOin)
+    @assert length(newsites) == L
+    indsMPO = siteinds(MPOin)
+    T = MPO(L)
+    for n in 1:L
+        bra_old, ket_old = _scf_bra_ket(indsMPO[n])
+        T[n] = MPOin[n] *
+               delta(bra_old, prime(newsites[n])) *
+               delta(ket_old, newsites[n])
+    end
+    return T
+end
+
+"""
+    scf_hadamard_mpo(A, B, out_sites; maxdim=100, cutoff=1e-8) -> MPO
+
+Site-wise Hadamard product of two MPO matrices:
+
+```text
+C[i, j] = A[i, j] * B[i, j]
+```
+
+This is the SCF-facing version of the RPA Hadamard helper. `out_sites` may be
+the original Hamiltonian sites; the implementation internally uses fresh site
+indices and maps the result back to `out_sites`.
+"""
+function scf_hadamard_mpo(A::MPO, B::MPO, out_sites;
+                          maxdim::Int = 100,
+                          cutoff::Real = 1e-8)
+    L = length(A)
+    @assert length(B) == L && length(out_sites) == L
+    sindsA = siteinds(A)
+    sindsB = siteinds(B)
+    fresh_sites = [sim(out_sites[n]) for n in 1:L]
+
+    tens = Vector{ITensor}(undef, L)
+    for n in 1:L
+        bra_A, ket_A = _scf_bra_ket(sindsA[n])
+        bra_B, ket_B = _scf_bra_ket(sindsB[n])
+        bra_out = prime(fresh_sites[n])
+        ket_out = fresh_sites[n]
+        bra_B_f = sim(bra_B)
+        ket_B_f = sim(ket_B)
+        B_n = replaceinds(B[n], [bra_B, ket_B], [bra_B_f, ket_B_f])
+        W = A[n] * B_n
+        W = W * delta(bra_A, bra_B_f, bra_out)
+        W = W * delta(ket_A, ket_B_f, ket_out)
+        tens[n] = W
+    end
+
+    if L > 1
+        Cs = Vector{ITensor}(undef, L - 1)
+        for b in 1:L-1
+            lA = only(commoninds(A[b], A[b+1]))
+            lB = only(commoninds(B[b], B[b+1]))
+            Cs[b] = combiner(lA, lB; tags="Link,l=$b")
+        end
+        tens[1] = tens[1] * Cs[1]
+        for n in 2:L-1
+            tens[n] = tens[n] * Cs[n-1] * Cs[n]
+        end
+        tens[L] = tens[L] * Cs[L-1]
+    end
+
+    mpo = _scf_replace_sites(MPO(tens), out_sites)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cutoff)
+    return mpo
+end
+
+"""
+    scf_fock_mpo_from_density(density_mpo, interaction_op, sites;
+                              sign=-1, maxdim=100, cutoff=1e-8) -> MPO
+
+Build a Fock/exchange MPO from a density matrix and a two-body interaction
+kernel by element-wise multiplication:
+
+```text
+F[i, j] = sign * V[i, j] * rho[i, j]
+```
+
+For the usual exchange term use the default `sign=-1`.
+"""
+function scf_fock_mpo_from_density(density_mpo::MPO, interaction_op::MPO, sites;
+                                   sign::Number = -1,
+                                   maxdim::Int = 100,
+                                   cutoff::Real = 1e-8)
+    fock = scf_hadamard_mpo(interaction_op, density_mpo, sites;
+                            maxdim=maxdim, cutoff=cutoff)
+    return sign == 1 ? fock : sign * fock
+end
+
+function scf_fock_builder(interaction_op::MPO;
+                          sign::Number = -1,
+                          maxdim::Int = 100,
+                          cutoff::Real = 1e-8)
+    return function (density_mpo::MPO, sites)
+        return scf_fock_mpo_from_density(density_mpo, interaction_op, sites;
+                                         sign=sign,
+                                         maxdim=maxdim,
+                                         cutoff=cutoff)
+    end
+end
+
 """
     scf_dense_interaction_mpo(L, sites, V; type=Float64, tol=1e-8) -> MPO
 
@@ -855,6 +964,8 @@ Returns a named tuple with density, Hartree term, final Hamiltonian, and history
 function scf_meanfield(H0::TBHamiltonian, hartree_builder;
                        initial_density::Union{Nothing,MPS}=nothing,
                        initial_hartree::Union{Nothing,MPO}=nothing,
+                       fock_builder = nothing,
+                       initial_fock::Union{Nothing,MPO}=nothing,
                        density_method::Symbol = :sp2,
                        density_mode::Symbol = :direct,
                        Nel::Int = H0.N ÷ 2,
@@ -878,6 +989,7 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
     hartree_mpo = initial_hartree === nothing ?
         hartree_builder(density_mps, sites) :
         initial_hartree
+    fock_mpo = initial_fock === nothing ? nothing : initial_fock
 
     history = NamedTuple[]
     best_error = Inf
@@ -885,6 +997,8 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
 
     for iter in 1:max_scf_iter
         Hmf_mpo = +(H0.mpo, hartree_mpo; maxdim=maxdim, cutoff=cutoff)
+        fock_mpo === nothing ||
+            (Hmf_mpo = +(Hmf_mpo, fock_mpo; maxdim=maxdim, cutoff=cutoff))
         Hmf = _scf_copy_with_mpo(H0, Hmf_mpo;
                                  scale=something(scale, 0.0), center=0.0)
 
@@ -918,7 +1032,8 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
         if err < best_error
             best_error = err
             best_state = (density_mpo=density_mpo, density_mps=density_new,
-                          hartree_mpo=hartree_mpo, ham=Hmf)
+                          hartree_mpo=hartree_mpo, fock_mpo=fock_mpo,
+                          ham=Hmf)
         elseif stop_on_increase
             verbose && println("SCF residual increased; returning best previous state.")
             return (converged=false, stopped_by_residual_increase=true,
@@ -933,11 +1048,13 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
             return (converged=true, stopped_by_residual_increase=false,
                     iterations=iter, history=history, rms_error=err,
                     density_mpo=density_mpo, density_mps=mixed_density,
-                    hartree_mpo=hartree_mpo, ham=Hmf)
+                    hartree_mpo=hartree_mpo, fock_mpo=fock_mpo, ham=Hmf)
         end
 
         density_mps = mixed_density
         hartree_mpo = hartree_builder(density_mps, sites)
+        fock_builder === nothing ||
+            (fock_mpo = fock_builder(density_mpo, sites))
     end
 
     return (converged=false, stopped_by_residual_increase=false,
