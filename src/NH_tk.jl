@@ -301,10 +301,9 @@ function _nh_directional_hop(pos_s, N::Int, amplitude, nn::Integer, direction::S
                              maxdim::Int,
                              type)
     nn >= 1 || error("nn must be >= 1 for directional hopping.")
-    K = direction === :forward ? generate_kin_u(pos_s, N) :
-        direction === :backward ? generate_kin_d(pos_s, N) :
+    K_nn = direction === :forward ? shift_mpo(pos_s, nn; cyclic=false) :
+        direction === :backward ? shift_mpo(pos_s, -nn; cyclic=false) :
         error("direction must be :forward or :backward.")
-    K_nn = compose_power(K, nn; apply_kwargs=(; cutoff=tol, maxdim=maxdim))
 
     if amplitude isa Number
         return ComplexF64(amplitude) * K_nn

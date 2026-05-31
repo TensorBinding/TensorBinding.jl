@@ -58,6 +58,39 @@ function build_shift_mpo(sites, q,cyclic=true)
     return mpo
 end
 
+build_shift_mpo(sites, q::Integer; cyclic::Bool=false) =
+    build_shift_mpo(sites, q, cyclic)
+
+build_cyclic_shift_mpo(sites, q::Integer) = build_shift_mpo(sites, q, true)
+
+shift_adjoint_mpo(K::MPO) = swapprime(dag(K), 0, 1)
+
+function shift_mpo(sites, q::Integer; cyclic::Bool=false)
+    q >= 0 && return build_shift_mpo(sites, q, cyclic)
+    K = build_shift_mpo(sites, -q, cyclic)
+    return shift_adjoint_mpo(K)
+end
+
+function shift_pair_mpos(sites, q::Integer; cyclic::Bool=false)
+    K = shift_mpo(sites, q; cyclic=cyclic)
+    return K, shift_adjoint_mpo(K)
+end
+
+function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
+                           cyclic::Bool=false,
+                           maxdim::Int=typemax(Int),
+                           cutoff::Real=1e-12,
+                           apply_kwargs=NamedTuple())
+    K, Kdag = shift_pair_mpos(sites, q; cyclic=cyclic)
+    apkw = isempty(apply_kwargs) ?
+        (maxdim == typemax(Int) ? (; cutoff=cutoff) : (; cutoff=cutoff, maxdim=maxdim)) :
+        apply_kwargs
+    return +(apply(hopping, K; apkw...),
+             apply(Kdag, dag(hopping); apkw...);
+             cutoff=cutoff,
+             (maxdim == typemax(Int) ? NamedTuple() : (; maxdim=maxdim))...)
+end
+
 
 """
     to_binary_vector(n, L) -> Vector{String}
@@ -457,4 +490,3 @@ function get_matrix(mpo, sites)
     return mat
 end
 get_matrix(mpo, ::Int, sites) = get_matrix(mpo, sites)
-

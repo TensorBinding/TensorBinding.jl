@@ -217,8 +217,7 @@ function scf_pair_distance_interaction_mpo(L::Int, sites, distance::Integer, wei
     (d == 0 || d >= N) && error("distance must be in 1:$(N - 1), got $distance.")
 
     D = _scf_distance_weight_mpo(L, sites, weight; type=type, tol=tol)
-    K_fwd = build_shift_mpo(sites, d, false)
-    K_bwd = swapprime(dag(K_fwd), 0, 1)
+    K_fwd, K_bwd = shift_pair_mpos(sites, d; cyclic=false)
 
     term_fwd = apply(K_fwd, D; maxdim=maxdim, cutoff=cutoff)
     term_bwd = apply(D, K_bwd; maxdim=maxdim, cutoff=cutoff)
@@ -591,8 +590,7 @@ function _scf_pwave_bond_mpo(delta_mps::MPS, sites, distance::Integer;
     0 < distance < N || error("p-wave bond distance must satisfy 0 < distance < N.")
 
     D = mps_to_diagonal_mpo(delta_mps, sites)
-    K_fwd = build_shift_mpo(sites, distance, false)
-    K_bwd = swapprime(dag(K_fwd), 0, 1)
+    K_fwd, K_bwd = shift_pair_mpos(sites, distance; cyclic=false)
 
     upper = apply(D, K_bwd; maxdim=maxdim, cutoff=cutoff)
     lower = apply(K_fwd, D; maxdim=maxdim, cutoff=cutoff)
@@ -655,7 +653,7 @@ function _scf_pwave_bond_profile(anom_mpo::MPO, sites, distance::Integer;
                                  maxdim::Int=100,
                                  cutoff::Real=1e-8)
     N = prod(dim(s) for s in sites)
-    K_fwd = build_shift_mpo(sites, distance, false)
+    K_fwd = shift_mpo(sites, distance; cyclic=false)
     bond_diag = apply(anom_mpo, K_fwd; maxdim=maxdim, cutoff=cutoff)
     ITensorMPS.truncate!(bond_diag; maxdim=maxdim, cutoff=cutoff)
     return extract_diagonal_to_mps(bond_diag)
