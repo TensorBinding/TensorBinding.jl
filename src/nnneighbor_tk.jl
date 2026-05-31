@@ -20,7 +20,6 @@
 
 Kinetic MPO that shifts the quantics unit-cell index by `dx + dy*Nx`.
 
-<<<<<<< Updated upstream
 - Builds the full linear displacement directly with `build_shift_mpo`.
 - A source-cell mask removes bonds whose destination would leave the finite
   `2^Lx × 2^Ly` grid, including row wrap-arounds.
@@ -28,30 +27,18 @@ Kinetic MPO that shifts the quantics unit-cell index by `dx + dy*Nx`.
 `ku`, `kd`, `Id`, `brk_xp` must be pre-built from the same `pos_sites` for
 backward compatibility with the old call signature; the shift-MPO path only
 uses `Id` to recover the site indices.
-=======
-The implementation uses the shared non-cyclic `shift_mpo` helper and multiplies
-by a source mask so bonds that would leave the finite `Nx`-by-`Ny` grid vanish.
-
-The legacy `ku`, `kd`, and `brk_xp` arguments are kept for API compatibility
-with the caller, but the shift itself is built through the shared helper.
->>>>>>> Stashed changes
 """
 function _shift_mpo(dx::Int, dy::Int,
                     ku::MPO, kd::MPO, Id::MPO, brk_xp::MPO,
                     Nx::Int;
                     apkw = (; cutoff=1e-8, maxdim=100))
-<<<<<<< Updated upstream
     Δix == 0 && Δiy == 0 && return Id
-=======
-    dx == 0 && dy == 0 && return Id
->>>>>>> Stashed changes
 
     sites = [siteind(Id, n) for n in 1:length(Id)]
     L = length(sites)
     Lx = Int(round(log2(Nx)))
     Ly = L - Lx
     Ny = 1 << Ly
-<<<<<<< Updated upstream
     q = Δix + Δiy * Nx
     q == 0 && return Id
 
@@ -68,20 +55,6 @@ function _shift_mpo(dx::Int, dy::Int,
         end;
         type=Float64)
     return apply(K, valid_source; apkw...)
-=======
-    q = dx + dy * Nx
-    K = shift_mpo(sites, q; cyclic=false)
-    valid_source = get_diagonal_mpo(L, sites,
-        i -> begin
-            n = round(Int, i) - 1
-            ix = n % Nx
-            iy = div(n, Nx)
-            0 <= ix + dx < Nx && 0 <= iy + dy < Ny ? 1.0 : 0.0
-        end;
-        type=Float64)
-    return apply(K, valid_source; apkw...)
-
->>>>>>> Stashed changes
 end
 
 
@@ -210,17 +183,11 @@ Works for all 2D geometries registered in `get_Hamiltonian`:
   `postpend_op`.
 
 **Complexity**
-<<<<<<< Updated upstream
 Shell detection uses a reference patch of `(2nn+3)²` unit cells — O(nn²) work,
 independent of system size.  MPO construction uses a direct `build_shift_mpo`
 per displacement, plus a simple diagonal source mask to remove finite-grid
 wrap-around bonds.  QTCI-based spatial modulation adds O(2^L) function
 evaluations.
-=======
-Shell detection uses a small reference patch independent of system size. MPO
-construction uses the shared direct shift MPO plus a finite-grid source mask.
-QTCI-based spatial modulation adds O(2^L) function evaluations.
->>>>>>> Stashed changes
 
 ```julia
 H = get_Hamiltonian("honeycomb_nnn", (t=1.0, t2=0.0); L=8, Lx=4, Ly=4)
