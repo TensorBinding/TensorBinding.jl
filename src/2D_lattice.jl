@@ -1,4 +1,4 @@
-# 2D_lattice.jl — MPO building blocks for 2D lattice geometries
+﻿# 2D_lattice.jl -MPO building blocks for 2D lattice geometries
 #
 # Provides hopping MPOs for square, triangular, and honeycomb lattices
 # built from the quantics binary representation.
@@ -22,18 +22,18 @@ ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 """
     generate_kin_u(sites, num_site) -> MPO
 
-Binary-increment MPO: |n⟩ → |n+1⟩ (mod 2^L) on L = log2(num_site) qubits.
+Binary-increment MPO: |n>->|n+1>(mod 2^L) on L = log2(num_site) qubits.
 Each term i handles one carry level: sigma_plus at bit i, sigma_minus on all
 lower bits (the bits that were 1 and get reset by the carry).
 """
 function generate_kin_u(sites, num_site)
     L  = Int(log2(num_site))
     @assert L == length(sites) "num_site must match the number of qubit sites"
-    return build_shift_mpo(sites, 1, true)
+    return shift_mpo(sites, 1; cyclic=true)
     os = OpSum()
     for i in 1:L                               # i = 1 is LSB, i = L is MSB
         term  = OpSum()
-        term += 1, "sigma_plus",  L - (i-1)   # flip bit i: 0 → 1
+        term += 1, "sigma_plus",  L - (i-1)   # flip bit i: 0 ->1
         for j in 1:L-i;   term *= ("Id",          j); end
         for j in L+2-i:L; term *= ("sigma_minus",  j); end  # reset lower bits (carry-in)
         os += term
@@ -45,18 +45,17 @@ end
 """
     generate_kin_d(sites, num_site) -> MPO
 
-Binary-decrement MPO: |n⟩ → |n-1⟩ (mod 2^L). Hermitian conjugate of
+Binary-decrement MPO: |n>->|n-1>(mod 2^L). Hermitian conjugate of
 `generate_kin_u`; each term handles one borrow level.
 """
 function generate_kin_d(sites, num_site)
     L  = Int(log2(num_site))
     @assert L == length(sites) "num_site must match the number of qubit sites"
-    K = build_shift_mpo(sites, 1, true)
-    return swapprime(dag(K), 0, 1)
+    return shift_mpo(sites, -1; cyclic=true)
     os = OpSum()
     for i in 1:L
         term  = OpSum()
-        term += 1, "sigma_minus", L - (i-1)   # flip bit i: 1 → 0
+        term += 1, "sigma_minus", L - (i-1)   # flip bit i: 1 ->0
         for j in 1:L-i;   term *= ("Id",         j); end
         for j in L+2-i:L; term *= ("sigma_plus",  j); end  # set lower bits (borrow-in)
         os += term
@@ -73,18 +72,17 @@ end
     intrachain_hopping(L_chain, num_site, sites; hopping=Id, t=1) -> MPO
 
 NN hopping along rows (x-direction) of a 2D lattice with `L_chain` sites per
-row.  Hops that would wrap ix = Nx-1 → 0 are suppressed by `_row_break_mpo`.
+row.  Hops that would wrap ix = Nx-1 ->0 are suppressed by `_row_break_mpo`.
 """
 function intrachain_hopping(L_chain, num_site, sites;
                             hopping=MPO(sites, "Id"), t=1)
     Lx  = Int(log2(L_chain))
     Ly  = Int(log2(num_site)) - Lx
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    ku  = generate_kin_u(sites, num_site)
-    kd  = generate_kin_d(sites, num_site)
-    # brk placed opposite the shift direction to kill the wrap-around bond
-    hop_fwd = apply(brk, apply(ku, hopping))
-    hop_bwd = apply(apply(hopping, kd), brk)
+    K   = shift_mpo(sites, 1; cyclic=false)
+    Kd  = shift_adjoint_mpo(K)
+    hop_fwd = apply(apply(K, brk), hopping)
+    hop_bwd = apply(apply(hopping, Kd), brk)
     return +(t * hop_fwd, conj(t) * hop_bwd; cutoff=1e-8)
 end
 
@@ -97,10 +95,10 @@ One column step = linear shift by L_chain sites = ku composed L_chain times.
 """
 function interchain_hopping_square(L_chain, num_site, sites;
                                    hopping=MPO(sites, "Id"), t=1)
-    ku      = generate_kin_u(sites, num_site)
-    kd      = generate_kin_d(sites, num_site)
-    hop_fwd = apply(apply(hopping, ku), compose_power(ku, L_chain - 1))
-    hop_bwd = apply(compose_power(kd, L_chain - 1), apply(kd, hopping))
+    K       = shift_mpo(sites, L_chain; cyclic=false)
+    Kd      = shift_adjoint_mpo(K)
+    hop_fwd = apply(hopping, K)
+    hop_bwd = apply(Kd, hopping)
     return t * hop_fwd + conj(t) * hop_bwd
 end
 
@@ -116,11 +114,10 @@ function interchain_hopping_square_2nd_plus(L_chain, num_site, sites;
     Lx  = Int(log2(L_chain))
     Ly  = Int(log2(num_site)) - Lx
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    ku  = generate_kin_u(sites, num_site)
-    kd  = generate_kin_d(sites, num_site)
-    # one masked x-step then L_chain y-steps
-    hop_fwd = apply(compose_power(ku, L_chain), apply(hopping, apply(brk, ku)))
-    hop_bwd = apply(compose_power(kd, L_chain), apply(apply(kd, brk), hopping))
+    K   = shift_mpo(sites, L_chain + 1; cyclic=false)
+    Kd  = shift_adjoint_mpo(K)
+    hop_fwd = apply(hopping, apply(K, brk))
+    hop_bwd = apply(apply(brk, Kd), hopping)
     return t2 * hop_fwd + conj(t2) * hop_bwd
 end
 
@@ -128,18 +125,18 @@ end
 """
     interchain_hopping_square_2nd_minus(L_chain, num_site, sites; hopping=Id, t2=1) -> MPO
 
-NNN hopping in the (+x,−y) diagonal direction (linear shift −(L_chain−1)).
+NNN hopping in the (+x,-y) diagonal direction (linear shift -(L_chain-1))..
 The single x-step is masked to prevent row wrap-around.
 """
 function interchain_hopping_square_2nd_minus(L_chain, num_site, sites;
                                              hopping=MPO(sites, "Id"), t2=1)
     Lx  = Int(log2(L_chain))
     Ly  = Int(log2(num_site)) - Lx
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    ku  = generate_kin_u(sites, num_site)
-    kd  = generate_kin_d(sites, num_site)
-    hop_fwd = apply(apply(hopping, apply(brk, ku)), compose_power(ku, L_chain - 2))
-    hop_bwd = apply(compose_power(kd, L_chain - 2), apply(apply(kd, brk), hopping))
+    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
+    K   = shift_mpo(sites, L_chain - 1; cyclic=false)
+    Kd  = shift_adjoint_mpo(K)
+    hop_fwd = apply(hopping, apply(K, brk))
+    hop_bwd = apply(apply(brk, Kd), hopping)
     return t2 * hop_fwd + conj(t2) * hop_bwd
 end
 
@@ -153,7 +150,7 @@ end
 
 Diagonal mask: 0 where ix == 1 (second column, 0-indexed), 1 elsewhere.
 Used in the triangular lattice to exclude the wrap-around bond that enters
-at ix = 1 when shifting by L_chain − 1 sites.
+at ix = 1 when shifting by L_chain -1 sites.
 """
 function skeleton(L_chain, num_site, sites)
     L     = Int(log2(num_site))
@@ -171,19 +168,22 @@ end
     interchain_hopping_triangle(L_chain, num_site, sites) -> MPO
 
 Inter-row hopping for a triangular lattice.  Two diagonal bonds:
-- SW→NE (shift +L_chain): pure row hop, no masking needed.
-- SE→NW (shift +L_chain−1): row hop + one step back in x; `skeleton`
+- SW->NE (shift +L_chain): pure row hop, no masking needed.
+- SE->NW (shift +L_chain-1): row hop + one step back in x; `skeleton`
   suppresses the spurious ix=1 wrap-around entry.
 """
 function interchain_hopping_triangle(L_chain, num_site, sites)
-    ku   = generate_kin_u(sites, num_site)
-    kd   = generate_kin_d(sites, num_site)
     skel = skeleton(L_chain, num_site, sites)
 
-    hop_swne_fwd = compose_power(ku, L_chain)
-    hop_swne_bwd = compose_power(kd, L_chain)
-    hop_senw_fwd = apply(skel, compose_power(ku, L_chain - 1))
-    hop_senw_bwd = apply(compose_power(kd, L_chain - 1), skel)
+    K_y  = shift_mpo(sites, L_chain; cyclic=false)
+    K_ym = shift_adjoint_mpo(K_y)
+    K_d  = shift_mpo(sites, L_chain - 1; cyclic=false)
+    K_dm = shift_adjoint_mpo(K_d)
+
+    hop_swne_fwd = K_y
+    hop_swne_bwd = K_ym
+    hop_senw_fwd = apply(K_d, skel)
+    hop_senw_bwd = apply(skel, K_dm)
 
     return hop_swne_fwd + hop_swne_bwd + hop_senw_fwd + hop_senw_bwd
 end
@@ -209,9 +209,9 @@ end
 """
     even_template(L_chain, num_site, sites) -> MPO
 
-Diagonal mask: 1 where ix is odd AND ix ≠ 1.  Selects B-sublattice columns
+Diagonal mask: 1 where ix is odd AND ix ~=1.  Selects B-sublattice columns
 (odd ix, excluding the boundary ix = 1 column which wraps into the next row).
-Computed as proj_{odd ix} − proj_{ix=1}.
+Computed as proj_{odd ix} -proj_{ix=1}.
 """
 function even_template(L_chain, num_site, sites)
     L  = Int(log2(num_site))
@@ -232,7 +232,7 @@ function odd_skeleton(L_chain, num_site, sites)
     L  = Int(log2(num_site))
     Ly = L - Int(log2(L_chain))
     os = OpSum()
-    os += 1, "sigma_u", Ly   # site Ly is LSB of iy; = 0 → even row
+    os += 1, "sigma_u", Ly   # site Ly is LSB of iy; = 0 ->even row
     return MPO(os, sites)
 end
 
@@ -246,7 +246,7 @@ function even_skeleton(L_chain, num_site, sites)
     L  = Int(log2(num_site))
     Ly = L - Int(log2(L_chain))
     os = OpSum()
-    os += 1, "sigma_d", Ly   # site Ly is LSB of iy; = 1 → odd row
+    os += 1, "sigma_d", Ly   # site Ly is LSB of iy; = 1 ->odd row
     return MPO(os, sites)
 end
 
@@ -257,21 +257,23 @@ end
 Inter-row hopping for a honeycomb lattice with `L_chain` sites per row.
 Two inequivalent inter-row bonds, each with a forward and backward term:
 - Upper bond (shift +L_chain+1): connectivity mask = odd_template * odd_skeleton
-- Lower bond (shift +L_chain−1): connectivity mask = even_template * even_skeleton
+- Lower bond (shift +L_chain-1): connectivity mask = even_template * even_skeleton
 """
 function interchain_hopping_honeycomb(L_chain, num_site, sites)
-    ku = generate_kin_u(sites, num_site)
-    kd = generate_kin_d(sites, num_site)
-
     mask_up = apply(odd_template( L_chain, num_site, sites),
                     odd_skeleton( L_chain, num_site, sites))
     mask_dn = apply(even_template(L_chain, num_site, sites),
                     even_skeleton(L_chain, num_site, sites))
 
-    hop_up_fwd = apply(mask_up, compose_power(ku, L_chain + 1))
-    hop_up_bwd = apply(compose_power(kd, L_chain + 1), mask_up)
-    hop_dn_fwd = apply(mask_dn, compose_power(ku, L_chain - 1))
-    hop_dn_bwd = apply(compose_power(kd, L_chain - 1), mask_dn)
+    K_up = shift_mpo(sites, L_chain + 1; cyclic=false)
+    D_up = shift_adjoint_mpo(K_up)
+    K_dn = shift_mpo(sites, L_chain - 1; cyclic=false)
+    D_dn = shift_adjoint_mpo(K_dn)
+
+    hop_up_fwd = apply(K_up, mask_up)
+    hop_up_bwd = apply(mask_up, D_up)
+    hop_dn_fwd = apply(K_dn, mask_dn)
+    hop_dn_bwd = apply(mask_dn, D_dn)
 
     return hop_up_fwd + hop_up_bwd + hop_dn_fwd + hop_dn_bwd
 end
@@ -279,17 +281,17 @@ end
 
 # ============================================================
 # 5. Row/column/checkerboard mask MPOs (diagonal, exact)
-#    Bit layout: sites 1..Ly → iy (MSB first), sites Ly+1..L → ix (MSB first)
+#    Bit layout: sites 1..Ly ->iy (MSB first), sites Ly+1..L ->ix (MSB first)
 # ============================================================
 
 """
     _row_break_mpo(Lx, Ly, sites; which) -> MPO
 
 Diagonal mask that zeroes wrap-around couplings at row boundaries of a
-`2^Lx × 2^Ly` grid (row-major encoding).
+`2^Lx x 2^Ly` grid (row-major encoding).
 
-- `which = :xplus`  → 0 where ix == 2^Lx − 1  (end of each row)
-- `which = :xplain` → 0 where ix == 0           (start of each row)
+- `which = :xplus`  ->0 where ix == 2^Lx -1  (end of each row)
+- `which = :xplain` ->0 where ix == 0           (start of each row)
 
 Multiply a kinetic MPO by this mask on the appropriate side to suppress the
 bond that crosses a row boundary.
@@ -312,10 +314,10 @@ end
 """
     _row_select_mpo(_, Ly, sites; keep=:even) -> MPO
 
-Diagonal mask that retains only even or odd rows of a `2^Lx × 2^Ly` grid.
+Diagonal mask that retains only even or odd rows of a `2^Lx x 2^Ly` grid.
 
-- `keep = :even` → 1 where iy % 2 == 1  (0-based; LSB of iy = 1)
-- `keep = :odd`  → 1 where iy % 2 == 0  (0-based; LSB of iy = 0)
+- `keep = :even` ->1 where iy % 2 == 1  (0-based; LSB of iy = 1)
+- `keep = :odd`  ->1 where iy % 2 == 0  (0-based; LSB of iy = 0)
 """
 function _row_select_mpo(::Any, Ly, sites; keep::Symbol = :even)
     proj = keep === :even ? "sigma_d" :
@@ -330,10 +332,10 @@ end
 """
     _col_select_mpo(Lx, Ly, sites; keep=:even) -> MPO
 
-Diagonal mask that retains only even or odd columns of a `2^Lx × 2^Ly` grid.
+Diagonal mask that retains only even or odd columns of a `2^Lx x 2^Ly` grid.
 
-- `keep = :even` → 1 where ix % 2 == 1  (0-based; LSB of ix = 1)
-- `keep = :odd`  → 1 where ix % 2 == 0  (0-based; LSB of ix = 0)
+- `keep = :even` ->1 where ix % 2 == 1  (0-based; LSB of ix = 1)
+- `keep = :odd`  ->1 where ix % 2 == 0  (0-based; LSB of ix = 0)
 """
 function _col_select_mpo(Lx, Ly, sites; keep::Symbol = :even)
     proj = keep === :even ? "sigma_d" :
@@ -365,26 +367,23 @@ end
 #    Pattern for every function:
 #      1. Build ku = generate_kin_u, kd = generate_kin_d
 #      2. Raise to the nn-th power with compose_power
-#      3. Apply hopping weights: hop_fwd = h * ku^n,  hop_bwd = kd^n * h†
+#      3. Apply hopping weights: hop_fwd = h * ku^n,  hop_bwd = kd^n * h-
 #      4. Mask with _row_break_mpo and optionally _row_select/_checker
 # ============================================================
 
 """
     kineticintra2DNNN(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range intra-row hopping on a `2^Lx × 2^Ly` square lattice (nn bonds
+Long-range intra-row hopping on a `2^Lx x 2^Ly` square lattice (nn bonds
 along x).  Row wrap-around at ix = Nx-1 is suppressed by `_row_break_mpo(:xplus)`.
 """
 function kineticintra2DNNN(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    @assert L == length(sites) && nn ≥ 1
-    K = build_shift_mpo(sites, nn, true)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    @assert L == length(sites) && nn >= 1
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
+    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -402,19 +401,16 @@ end
 """
     kineticinterNNNSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range inter-row hopping along the SW↗NE diagonal of a `2^Lx × 2^Ly`
+Long-range inter-row hopping along the SW->NE diagonal of a `2^Lx x 2^Ly`
 square lattice.  Row end-wrap suppressed by `_row_break_mpo(:xplus)`.
 """
 function kineticinterNNNSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    @assert L == length(sites) && nn ≥ 1
-    K = build_shift_mpo(sites, nn, true)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    @assert L == length(sites) && nn >= 1
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
+    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -432,19 +428,16 @@ end
 """
     kineticinterNNNSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-Long-range inter-row hopping along the SE↖NW diagonal.
+Long-range inter-row hopping along the SE->NW diagonal.
 Row start-wrap suppressed by `_row_break_mpo(:xplain)`.
 """
 function kineticinterNNNSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    @assert L == length(sites) && nn ≥ 1
-    K = build_shift_mpo(sites, nn, true)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    @assert L == length(sites) && nn >= 1
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
+    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -462,21 +455,19 @@ end
 """
     kineticinterNNNtriSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-SW↗NE diagonal inter-row hopping for a triangular lattice.
+SW->NE diagonal inter-row hopping for a triangular lattice.
 Applies `_row_break_mpo(:xplus)` and `_row_select_mpo(:even)` to restrict
 hops to the correct sublattice rows.
 """
 function kineticinterNNNtriSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    @assert L == length(sites) && nn ≥ 1
-    K = build_shift_mpo(sites, nn, true)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    @assert L == length(sites) && nn >= 1
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
     sel = _row_select_mpo(Lx, Ly, sites; keep=:even)
-    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
-    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
+    src = apply(brk, sel; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
+    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -495,20 +486,18 @@ end
 """
     kineticinterNNNtriSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
 
-SE↖NW diagonal inter-row hopping for a triangular lattice.
+SE->NW diagonal inter-row hopping for a triangular lattice.
 Applies `_row_break_mpo(:xplain)` and `_row_select_mpo(:odd)`.
 """
 function kineticinterNNNtriSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    @assert L == length(sites) && nn ≥ 1
-    K = build_shift_mpo(sites, nn, true)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    @assert L == length(sites) && nn >= 1
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
     sel = _row_select_mpo(Lx, Ly, sites; keep=:odd)
-    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
-    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
+    src = apply(brk, sel; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
+    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -527,8 +516,8 @@ end
 """
     kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping; apply_kwargs) -> MPO
 
-Bravais triangular-lattice third-bond hopping: (Δix=+1, Δiy=−1), linear shift 1−Nx.
-Mirrors `kineticinterNNNSWNE` with kd/ku swapped.  Row x-wrap at ix=Nx−1 is
+Bravais triangular-lattice third-bond hopping: (dix=+1, diy=-1), linear shift 1-Nx.
+Mirrors `kineticinterNNNSWNE` with kd/ku swapped.  Row x-wrap at ix=Nx- is
 suppressed by `_row_break_mpo(:xplus)`.
 """
 function kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping::MPO;
@@ -536,13 +525,11 @@ function kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping::MPO;
     L  = Lx + Ly
     Nx = 2^Lx
     @assert L == length(sites)
-    K = swapprime(dag(build_shift_mpo(sites, Nx - 1, true)), 0, 1)
-    Kdag = swapprime(dag(K), 0, 1)
-    hop_fwd = apply(hopping, K; apply_kwargs...)
-    hop_bwd = apply(Kdag, dag(hopping); apply_kwargs...)
+    K = shift_mpo(sites, -(Nx - 1); cyclic=false)
+    Kdag = shift_adjoint_mpo(K)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
+    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
     ku   = generate_kin_u(sites, 2^L)
     kd   = generate_kin_d(sites, 2^L)
@@ -565,16 +552,12 @@ and `_row_checker_mpo` to implement the alternating A/B sublattice pattern.
 """
 function kineticintra2DNNhex(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
+    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
     chk = _row_checker_mpo(Lx, Ly, sites)
-    hop_fwd = apply(chk, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
-    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), chk; apply_kwargs...)
+    src = apply(brk, chk; apply_kwargs...)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
+    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
@@ -611,7 +594,7 @@ end
 """
     HSSH(L, t, d; tol_quantics=1e-8, maxbonddim_quantics=10, nn=1) -> MPO
 
-SSH (Su-Schrieffer-Heeger) Hamiltonian: dimerized hopping `t±d` on alternating bonds.
+SSH (Su-Schrieffer-Heeger) Hamiltonian: dimerized hopping `t+/-d` on alternating bonds.
 """
 function HSSH(L::Integer, t, d;
               tol_quantics::Real       = 1e-8,
@@ -627,10 +610,10 @@ end
 
 
 """
-    HAAH(L, V, phi, t; b=(1+√5)/2, tol_quantics=1e-8, maxbonddim_quantics=50) -> MPO
+    HAAH(L, V, phi, t; b=(1+-)/2, tol_quantics=1e-8, maxbonddim_quantics=50) -> MPO
 
-Aubry–André–Harper quasicrystal:
-    H = t * Σ c†_{i+1}c_i + V * cos(2π b i + φ) * n_i
+Aubry-Andre-Harper quasicrystal:
+    H = t * sum c_{i+1}c_i + V * cos(2pi b i + phi) * n_i
 """
 function HAAH(L::Integer, V, phi, t;
               b::Real                  = (1 + sqrt(5)) / 2,
@@ -640,7 +623,7 @@ function HAAH(L::Integer, V, phi, t;
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
     hops_MPO   = qtt_mpo(L, xvals, sites, _ -> t;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    onsite_MPO = qtt_mpo(L, xvals, sites, x -> V * cos(2π * b * x + phi);
+    onsite_MPO = qtt_mpo(L, xvals, sites, x -> V * cos(2pi * b * x + phi);
                          tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     return +(kineticNNN(L, sites, hops_MPO, 1), onsite_MPO; cutoff=1e-8)
 end
@@ -651,8 +634,8 @@ end
 """
     HUniform2Dsquare(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` square lattice (row-major encoding).
-Intra-row: `kineticintra2DNNN(…, nn=1)`.  Inter-row: `kineticNNN(…, nn=Nx)`.
+Uniform tight-binding Hamiltonian on a `2^Lx x 2^Ly` square lattice (row-major encoding).
+Intra-row: `kineticintra2DNNN(- nn=1)`.  Inter-row: `kineticNNN(- nn=Nx)`.
 """
 function HUniform2Dsquare(Lx::Integer, Ly::Integer, t;
                           tol_quantics::Real       = 1e-8,
@@ -673,8 +656,8 @@ end
 """
     HUniform2Dhex(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` hexagonal lattice.
-Intra-row uses `kineticintra2DNNhex` (checkerboard mask); inter-row uses `kineticNNN(…, Nx)`.
+Uniform tight-binding Hamiltonian on a `2^Lx x 2^Ly` hexagonal lattice.
+Intra-row uses `kineticintra2DNNhex` (checkerboard mask); inter-row uses `kineticNNN(- Nx)`.
 """
 function HUniform2Dhex(Lx::Integer, Ly::Integer, t;
                        tol_quantics::Real       = 1e-8,
@@ -695,11 +678,11 @@ end
 """
     HUniform2Dtri(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` triangular lattice.
+Uniform tight-binding Hamiltonian on a `2^Lx x 2^Ly` triangular lattice.
 Three kinetic terms:
-- `kineticintra2DNNN(…, 1)` — intra-row NN
-- `kineticinterNNNtriSWNE(…, Nx+1)` — SW↗NE diagonal
-- `kineticinterNNNtriSENW(…, Nx-1)` — SE↖NW diagonal
+- `kineticintra2DNNN(- 1)` -intra-row NN
+- `kineticinterNNNtriSWNE(- Nx+1)` -SW->NE diagonal
+- `kineticinterNNNtriSENW(- Nx-1)` -SE->NW diagonal
 """
 function HUniform2Dtri(Lx::Integer, Ly::Integer, t;
                        tol_quantics::Real       = 1e-8,
@@ -724,11 +707,11 @@ end
 """
     HUniform2Dtri_bravais(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
-Uniform tight-binding Hamiltonian on a `2^Lx × 2^Ly` triangular lattice with proper
-Bravais vectors a1=(1,0), a2=(1/2,√3/2).  Exactly three bond types per unit cell:
-- (Δix=+1, Δiy= 0): intra-row x  via `kineticintra2DNNN`
-- (Δix= 0, Δiy=+1): y-hop        via `kineticNNN(…, Nx)`
-- (Δix=+1, Δiy=-1): Bravais diag via `kineticinterNNNtri_bravais_diag`
+Uniform tight-binding Hamiltonian on a `2^Lx x 2^Ly` triangular lattice with proper
+Bravais vectors a1=(1,0), a2=(1/2,-/2).  Exactly three bond types per unit cell:
+- (dix=+1, diy= 0): intra-row x  via `kineticintra2DNNN`
+- (dix= 0, diy=+1): y-hop        via `kineticNNN(- Nx)`
+- (dix=+1, diy=-1): Bravais diag via `kineticinterNNNtri_bravais_diag`
 """
 function HUniform2Dtri_bravais(Lx::Integer, Ly::Integer, t;
                                 tol_quantics::Real       = 1e-8,
@@ -770,13 +753,13 @@ function HChern8(Lx::Integer, Ly::Integer, V, t;
     alt_hop_x(x) = (-1)^mod(x + 1, Nx) * t
 
     function func8fold(x, y)
-        Ka1 = (2π/a) .* [1.0, 0.0];  Kb1 = (2π/a) .* [0.0, 1.0]
-        θ = deg2rad(45.0);  Rt = [cos(θ) sin(θ); -sin(θ) cos(θ)]
+        Ka1 = (2pi/a) .* [1.0, 0.0];  Kb1 = (2pi/a) .* [0.0, 1.0]
+        theta = deg2rad(45.0);  Rt = [cos(theta) sin(theta); -sin(theta) cos(theta)]
         K = (Ka1, Kb1, Rt*Ka1, Rt*Kb1)
         return sum(1im * V * t2 * cos(dot(k, [x, y]))^2 for k in K)
     end
 
-    wrap(f) = i -> f(i % Nx, i ÷ Nx)
+    wrap(f) = i -> f(i % Nx, div(i, Nx))
 
     w_alt = wrap((x,y) -> alt_hop_x(x))
     w1    = wrap((x,y) -> t)
@@ -804,7 +787,7 @@ end
 
 Haldane-type Chern insulator on a hexagonal lattice.
 - NN hopping `t` (intra-row hex + vertical inter-row)
-- Complex NNN hopping `±i·T2(x,y)` (checkerboard alternation) for next-nearest
+- Complex NNN hopping `+/-i*T2(x,y)` (checkerboard alternation) for next-nearest
 - Semenoff mass `Ms(x,y)` on-site term
 - Domain wall in t2 and Ms along x = Nx/2 by default
   (`uniformhaldane=true` and `uniformsemenoff=true` override to uniform fields)
@@ -830,7 +813,7 @@ function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
     alt_hop_xy(x,y) = isodd(x+y) ? -1im*T2(x,y) : 1im*T2(x,y)
     semenoff(x,y)   = isodd(x+y) ? Ms(x,y) : -Ms(x,y)
 
-    wrap(f) = i -> f(i % Nx, i ÷ Nx)
+    wrap(f) = i -> f(i % Nx, div(i, Nx))
 
     hops_MPO      = qtt_mpo(L, xvals, sites, wrap((x,y) -> t);               tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     hops_MPOalter = qtt_mpo(L, xvals, sites, wrap((x,y) -> alt_hop_xy(x,y)); tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
@@ -855,7 +838,7 @@ end
 
 Quasicrystal-modulated square lattice.  The hopping amplitude at each bond is evaluated
 at the bond midpoint using an 8-fold modulation with two competing wavevectors
-`b1 = 5√5 a/2` and `b2 = √3 Nx a/16`.
+`b1 = 5- a/2` and `b2 = - Nx a/16`.
 """
 function HQC2Dsquare(Lx::Integer, Ly::Integer, t::Real = 1.0;
                      tol_quantics::Real       = 1e-8,
@@ -871,15 +854,15 @@ function HQC2Dsquare(Lx::Integer, Ly::Integer, t::Real = 1.0;
         a  = 1
         b1 = 5*sqrt(5)*a/2
         b2 = sqrt(3)*(Nx*a/16)
-        Ka1 = 2π .* [1.0, 0.0]; Kb1 = 2π .* [0.0, 1.0]
+        Ka1 = 2pi .* [1.0, 0.0]; Kb1 = 2pi .* [0.0, 1.0]
         tht = deg2rad(45.0); Rt = [cos(tht) sin(tht); -sin(tht) cos(tht)]
         K   = (Ka1, Kb1, Rt*Ka1, Rt*Kb1)
         xy  = [x - Nx/2, y - Nx/2]
         return t * (1 + 0.1 * sum(2.5*cos(dot(k,xy)/b1) + cos(dot(k,xy)/b2) for k in K))
     end
 
-    intra = i -> func8fold(i%Nx + 0.5, i÷Nx)
-    inter = i -> func8fold(i%Nx,        i÷Nx + 0.5)
+    intra = i -> func8fold(i%Nx + 0.5, div(i, Nx))
+    inter = i -> func8fold(i%Nx,        div(i, Nx) + 0.5)
 
     hops_intra = qtt_mpo(L, xvals, sites, intra; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     hops_inter = qtt_mpo(L, xvals, sites, inter; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
@@ -891,24 +874,24 @@ end
 
 
 # ============================================================
-# 8. Kagomé lattice
+# 8. Kagome lattice
 # ============================================================
 
 """
     kagome_positions(Lx, Ly) -> Matrix{Float64}
 
-Return the (3·2^L × 2) real-space atom-position matrix for a kagomé lattice
-of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
+Return the (3*2^L x 2) real-space atom-position matrix for a kagome lattice
+of 2^Lx x 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
 
 For total 1-indexed site i:
-  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
+  n_cell  = div(i-1, 3)          (0-indexed unit cell, row-major)
   s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+  ix = n_cell % Nx,  iy = n_cell div Nx
 
-Atom positions (lattice vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,        iy·√3/2       )
-  B: (ix + iy/2 + ½,    iy·√3/2       )
-  C: (ix + iy/2 + ¼,    iy·√3/2 + √3/4)
+Atom positions (lattice vectors a_(1,0), a_(1/2,-/2)):
+  A: (ix + iy/2,        iy*-/2       )
+  B: (ix + iy/2 + 1/2,    iy*-/2       )
+  C: (ix + iy/2 + 1/4,    iy*-/2 + -/4)
 """
 function kagome_positions(Lx::Int, Ly::Int)
     Nx    = 2^Lx
@@ -918,7 +901,7 @@ function kagome_positions(Lx::Int, Ly::Int)
     sq3_4 = sqrt(3) / 4
     for n in 0:N_uc-1
         ix   = n % Nx
-        iy   = n ÷ Nx
+        iy   = div(n, Nx)
         ax   = ix + iy * 0.5
         ay   = iy * sq3_2
         base = 3n + 1
@@ -933,10 +916,10 @@ end
 """
     kagome_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, t_BC, cutoff, maxdim) -> TBHamiltonian
 
-Build a kagomé tight-binding Hamiltonian as a `TBHamiltonian`.
+Build a kagome tight-binding Hamiltonian as a `TBHamiltonian`.
 
 **Encoding** (L+1 sites, L = Lx+Ly):
-- Sites 1…L : position qubits for 2^L unit cells (row-major: n = ix + iy·2^Lx)
+- Sites 1..L : position qubits for 2^L unit cells (row-major: n = ix + iy*2^Lx)
 - Site  L+1 : dim-3 "Kagome" sublattice index A=1, B=2, C=3 (postpended)
 
 **Bond amplitudes**
@@ -946,17 +929,17 @@ inter-cell hopping term along the corresponding lattice direction:
 
 | Kwarg | Bond  | Intra-cell | Inter-cell direction       |
 |-------|-------|------------|---------------------------|
-| `t_AB`| A↔B   | yes        | x  (shift ±1)             |
-| `t_AC`| A↔C   | yes        | y  (shift ±Nx)            |
-| `t_BC`| B↔C   | yes        | diag (shift ±(Nx-1))      |
+| `t_AB`| A->B   | yes        | x  (shift +/-1)             |
+| `t_AC`| A->C   | yes        | y  (shift +/-Nx)            |
+| `t_BC`| B->C   | yes        | diag (shift +/-(Nx-1))      |
 
-All three default to `t` (uniform kagomé).  For anisotropic / breathing kagomé
+All three default to `t` (uniform kagome).  For anisotropic / breathing kagome
 pass individual values:
 ```julia
 H = kagome_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.8, t_BC=0.6)
 ```
 
-**Flat band**: at `E = −2t` (uniform case); dispersive bands reach up to `+4t`.
+**Flat band**: at `E = -t` (uniform case); dispersive bands reach up to `+4t`.
 Boundary wrapping is suppressed.  Real-space coordinates: `kagome_positions(Lx, Ly)`.
 `H.sublattice_s` stores the dim-3 sublattice index; `H.aux_side = :post`.
 """
@@ -974,36 +957,36 @@ function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     kag_s     = Index(3, "Kagome")
     all_sites = [pos_sites; kag_s]
 
-    ku   = generate_kin_u(pos_sites, N)
-    kd   = generate_kin_d(pos_sites, N)
     Id   = MPO(pos_sites, "Id")
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)   # zeros ix = Nx-1
     brk_xn = _row_break_mpo(Lx, Ly, pos_sites; which=:xplain)  # zeros ix = 0
 
-    # ── Intra-cell: 3×3 bond matrix (A=1, B=2, C=3) ──────────────────────────
+    # -- Intra-cell: 3x3 bond matrix (A=1, B=2, C=3) --------------------------
     # t_AB: A-B bond,  t_AC: A-C bond,  t_BC: B-C bond
     H_intra = postpend_op(Id, kag_s,
         Float64[0 t_AB t_AC; t_AB 0 t_BC; t_AC t_BC 0])
 
-    # ── Inter-cell x: A(n) ↔ B(n+1), shift ±1 — uses t_AB ───────────────────
-    H_x = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), kag_s, 1, 2),
-             conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), kag_s, 2, 1); cutoff=cutoff)
+    # -- Inter-cell x: B(n) ->A(n+1), shift +/-1 -uses t_AB -------------------
+    K_x = shift_mpo(pos_sites, 1; cyclic=false)
+    D_x = shift_adjoint_mpo(K_x)
+    H_x = +(t_AB        * postpend_op(apply(K_x, brk_xp;  apkw...), kag_s, 1, 2),
+             conj(t_AB) * postpend_op(apply(brk_xp, D_x; apkw...), kag_s, 2, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx — uses t_AC ─────────────────
-    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
-    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+    # -- Inter-cell y: C(n) ->A(n+Nx), shift +/-Nx -uses t_AC -----------------
+    ku_y = shift_mpo(pos_sites, Nx; cyclic=false)
+    kd_y = shift_adjoint_mpo(ku_y)
     H_y  = +(t_AC        * postpend_op(ku_y, kag_s, 1, 3),
               conj(t_AC) * postpend_op(kd_y, kag_s, 3, 1); cutoff=cutoff)
 
-    # ── Inter-cell diagonal: C(n) ↔ B(n+Nx-1), shift ±(Nx-1) — uses t_BC ────
-    ku_d = compose_power(ku, Nx - 1; apply_kwargs=apkw)
-    kd_d = compose_power(kd, Nx - 1; apply_kwargs=apkw)
-    H_d  = +(t_BC        * postpend_op(apply(brk_xn, ku_d; apkw...), kag_s, 2, 3),
-              conj(t_BC) * postpend_op(apply(kd_d, brk_xn; apkw...), kag_s, 3, 2); cutoff=cutoff)
+    # -- Inter-cell diagonal: C(n) ->B(n+Nx-1), shift +/-(Nx-1) -uses t_BC ----
+    ku_d = shift_mpo(pos_sites, Nx - 1; cyclic=false)
+    kd_d = shift_adjoint_mpo(ku_d)
+    H_d  = +(t_BC        * postpend_op(apply(ku_d, brk_xn; apkw...), kag_s, 2, 3),
+              conj(t_BC) * postpend_op(apply(brk_xn, kd_d; apkw...), kag_s, 3, 2); cutoff=cutoff)
 
-    # ── Assembly ───────────────────────────────────────────────────────────────
+    # -- Assembly ---------------------------------------------------------------
     H_total = +(H_intra, H_x;    cutoff=cutoff)
     H_total = +(H_total, H_y;    cutoff=cutoff)
     H_total = +(H_total, H_d;    cutoff=cutoff)
@@ -1023,15 +1006,15 @@ end
 """
     lieb_positions(Lx, Ly) -> Matrix{Float64}
 
-Return the (3·2^L × 2) real-space atom-position matrix for a Lieb lattice
-of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
+Return the (3*2^L x 2) real-space atom-position matrix for a Lieb lattice
+of 2^Lx x 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
 
 For total 1-indexed site i:
-  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
+  n_cell  = div(i-1, 3)          (0-indexed unit cell, row-major)
   s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+  ix = n_cell % Nx,  iy = n_cell div Nx
 
-Atom positions (lattice vectors a₁=(1,0), a₂=(0,1)):
+Atom positions (lattice vectors a_(1,0), a_(0,1)):
   A: (ix,       iy      )   corner
   B: (ix + 0.5, iy      )   x-edge center
   C: (ix,       iy + 0.5)   y-edge center
@@ -1042,7 +1025,7 @@ function lieb_positions(Lx::Int, Ly::Int)
     rs   = Matrix{Float64}(undef, 3 * N_uc, 2)
     for n in 0:N_uc-1
         ix   = n % Nx
-        iy   = n ÷ Nx
+        iy   = div(n, Nx)
         base = 3n + 1
         rs[base,   :] = [ix,       iy       ]   # A
         rs[base+1, :] = [ix + 0.5, iy       ]   # B
@@ -1058,22 +1041,22 @@ end
 Build a Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
 
 **Encoding** (L+1 sites, L = Lx+Ly):
-- Sites 1…L : position qubits for 2^L unit cells on a square Bravais lattice
+- Sites 1..L : position qubits for 2^L unit cells on a square Bravais lattice
 - Site  L+1 : dim-3 "Lieb" sublattice index A=1 (corner), B=2 (x-edge), C=3 (y-edge)
 
 **Bond amplitudes**
 
 | Kwarg | Bond | Intra-cell | Inter-cell direction    |
 |-------|------|------------|-------------------------|
-| `t_AB`| A↔B  | yes        | x  (shift ±1)           |
-| `t_AC`| A↔C  | yes        | y  (shift ±Nx)          |
+| `t_AB`| A->B  | yes        | x  (shift +/-1)           |
+| `t_AC`| A->C  | yes        | y  (shift +/-Nx)          |
 
 No B-C bond exists (corner connects to edges only).  Both default to `t`.
 ```julia
 H = lieb_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.5)  # anisotropic Lieb
 ```
 
-**Flat band** at E=0; dispersive bands at ±2√(t_AB²+t_AC²)/√2 (approx ±2t uniform).
+**Flat band** at E=0; dispersive bands at +/-2-t_AB^2+t_AC^2)/- (approx +/-2t uniform).
 Real-space coordinates: `lieb_positions(Lx, Ly)`.
 `H.sublattice_s` stores the dim-3 index; `H.aux_side = :post`.
 """
@@ -1090,28 +1073,28 @@ function lieb_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     lieb_s    = Index(3, "Lieb")
     all_sites = [pos_sites; lieb_s]
 
-    ku   = generate_kin_u(pos_sites, N)
-    kd   = generate_kin_d(pos_sites, N)
     Id   = MPO(pos_sites, "Id")
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
 
-    # ── Intra-cell: A↔B (t_AB) and A↔C (t_AC) ───────────────────────────────
+    # -- Intra-cell: A->B (t_AB) and A->C (t_AC) -------------------------------
     H_intra = postpend_op(Id, lieb_s,
         Float64[0 t_AB t_AC; t_AB 0 0; t_AC 0 0])
 
-    # ── Inter-cell x: B(n) ↔ A(n+1), shift ±1 — uses t_AB ───────────────────
-    H_x = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), lieb_s, 1, 2),
-             conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), lieb_s, 2, 1); cutoff=cutoff)
+    # -- Inter-cell x: B(n) ->A(n+1), shift +/-1 -uses t_AB -------------------
+    K_x = shift_mpo(pos_sites, 1; cyclic=false)
+    D_x = shift_adjoint_mpo(K_x)
+    H_x = +(t_AB        * postpend_op(apply(K_x, brk_xp;  apkw...), lieb_s, 1, 2),
+             conj(t_AB) * postpend_op(apply(brk_xp, D_x; apkw...), lieb_s, 2, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: C(n) ↔ A(n+Nx), shift ±Nx — uses t_AC ─────────────────
-    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
-    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+    # -- Inter-cell y: C(n) ->A(n+Nx), shift +/-Nx -uses t_AC -----------------
+    ku_y = shift_mpo(pos_sites, Nx; cyclic=false)
+    kd_y = shift_adjoint_mpo(ku_y)
     H_y  = +(t_AC        * postpend_op(ku_y, lieb_s, 1, 3),
               conj(t_AC) * postpend_op(kd_y, lieb_s, 3, 1); cutoff=cutoff)
 
-    # ── Assembly ───────────────────────────────────────────────────────────────
+    # -- Assembly ---------------------------------------------------------------
     H_total = +(H_intra, H_x;    cutoff=cutoff)
     H_total = +(H_total, H_y;    cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
@@ -1129,18 +1112,18 @@ end
 """
     honeycomb_sublattice_positions(Lx, Ly) -> Matrix{Float64}
 
-Return the (2·2^L × 2) real-space atom-position matrix for a honeycomb
-lattice of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
+Return the (2*2^L x 2) real-space atom-position matrix for a honeycomb
+lattice of 2^Lx x 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
 site ordering.
 
 For total 1-indexed site i:
-  n_cell = (i-1) ÷ 2          (0-indexed unit cell, row-major)
+  n_cell = (i-1) div 2          (0-indexed unit cell, row-major)
   s      = (i-1) % 2 + 1      (sublattice: A=1, B=2)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+  ix = n_cell % Nx,  iy = n_cell div Nx
 
-Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,       iy·√3/2          )
-  B: (ix + iy/2 + ½,   iy·√3/2 + √3/6  )   displaced along the intra-cell bond
+Atom positions (triangular Bravais vectors a_(1,0), a_(1/2,-/2)):
+  A: (ix + iy/2,       iy*-/2          )
+  B: (ix + iy/2 + 1/2,   iy*-/2 + -/6  )   displaced along the intra-cell bond
 """
 function honeycomb_sublattice_positions(Lx::Int, Ly::Int)
     Nx    = 2^Lx
@@ -1150,7 +1133,7 @@ function honeycomb_sublattice_positions(Lx::Int, Ly::Int)
     sq3_6 = sqrt(3) / 6
     for n in 0:N_uc-1
         ix   = n % Nx
-        iy   = n ÷ Nx
+        iy   = div(n, Nx)
         ax   = ix + iy * 0.5
         ay   = iy * sq3_2
         base = 2n + 1
@@ -1168,18 +1151,18 @@ Build a uniform honeycomb tight-binding Hamiltonian with an explicit 2-component
 sublattice index, as a `TBHamiltonian`.
 
 **Encoding** (L+1 sites total, L = Lx+Ly):
-- Sites 1…L : L position qubits for 2^L unit cells on a triangular Bravais lattice
-              (row-major: n = ix + iy·2^Lx)
+- Sites 1..L : L position qubits for 2^L unit cells on a triangular Bravais lattice
+              (row-major: n = ix + iy*2^Lx)
 - Site  L+1 : dim-2 "Honeycomb" sublattice index (A=1, B=2), postpended
 
 **Hopping structure** (uniform amplitude `t`):
 
-*Intra-cell* — one bond per unit cell:
+*Intra-cell* -one bond per unit cell:
   A-B  (same unit cell)
 
 *Inter-cell*:
-  x (shift +1 ): B(n) ↔ A(n+1)  — break at ix=Nx-1
-  y (shift +Nx): B(n) ↔ A(n+Nx) — no x-break needed (pure y step)
+  x (shift +1 ): B(n) ->A(n+1)  -break at ix=Nx-1
+  y (shift +Nx): B(n) ->A(n+Nx) -no x-break needed (pure y step)
 
 The spectrum has two Dirac cones touching at E=0 (gapless for uniform t).
 Use `honeycomb_sublattice_positions(Lx, Ly)` for real-space atom coordinates.
@@ -1196,33 +1179,33 @@ function honeycomb_sublattice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 
     hc_s      = Index(2, "Honeycomb")
     all_sites = [pos_sites; hc_s]
 
-    ku   = generate_kin_u(pos_sites, N)
-    kd   = generate_kin_d(pos_sites, N)
     Id   = MPO(pos_sites, "Id")
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
 
-    # ── Intra-cell: A↔B within the same unit cell ────────────────────────────
+    # -- Intra-cell: A->B within the same unit cell ----------------------------
     H_intra = postpend_op(Id, hc_s, t * Float64[0 1; 1 0])
 
-    # ── Inter-cell x: B(n) ↔ A(n+1), shift ±1 ───────────────────────────────
-    # Break suppresses B(Nx-1) ↔ A(0) wrap-around across row boundary
-    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), hc_s, 2, 1),
-             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), hc_s, 1, 2); cutoff=cutoff)
+    # -- Inter-cell x: B(n) ->A(n+1), shift +/-1 -------------------------------
+    # Break suppresses B(Nx-1) ->A(0) wrap-around across row boundary
+    K_x = shift_mpo(pos_sites, 1; cyclic=false)
+    D_x = shift_adjoint_mpo(K_x)
+    H_x = +(t        * postpend_op(apply(K_x, brk_xp;  apkw...), hc_s, 1, 2),
+             conj(t) * postpend_op(apply(brk_xp, D_x; apkw...), hc_s, 2, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: B(n) ↔ A(n+Nx), shift ±Nx ─────────────────────────────
-    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
-    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
-    H_y  = +(t        * postpend_op(ku_y, hc_s, 2, 1),
-              conj(t) * postpend_op(kd_y, hc_s, 1, 2); cutoff=cutoff)
+    # -- Inter-cell y: B(n) ->A(n+Nx), shift +/-Nx -----------------------------
+    ku_y = shift_mpo(pos_sites, Nx; cyclic=false)
+    kd_y = shift_adjoint_mpo(ku_y)
+    H_y  = +(t        * postpend_op(ku_y, hc_s, 1, 2),
+              conj(t) * postpend_op(kd_y, hc_s, 2, 1); cutoff=cutoff)
 
-    # ── Assembly ───────────────────────────────────────────────────────────────
+    # -- Assembly ---------------------------------------------------------------
     H_total = +(H_intra, H_x;    cutoff=cutoff)
     H_total = +(H_total, H_y;    cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
-    # Honeycomb spectrum: Dirac bands at ±3t bandwidth
+    # Honeycomb spectrum: Dirac bands at +/-3t bandwidth
     scale = 3.5 * abs(t)
     return TBHamiltonian(L, N, all_sites, H_total, nothing, scale, 0.0,
                          nothing, nothing, nothing, hc_s, :post, nothing, nothing, 0, nothing)
@@ -1241,15 +1224,15 @@ the last site being the dim-2 sublattice index (A=1, B=2, postpended).
 **Hopping structure**
 
 *NN* (amplitude `t`): same three bonds as `honeycomb_sublattice_hamiltonian`
-(intra-cell A↔B, x-shift B↔A, y-shift B↔A).
+(intra-cell A->B, x-shift B->A, y-shift B->A).
 
 *NNN* (amplitude `t2`): connects same-sublattice atoms along the three
-triangular Bravais directions.  The sublattice operator is the 2×2 identity
-(both A↔A and B↔B hop with the same amplitude `t2`):
+triangular Bravais directions.  The sublattice operator is the 2x2 identity
+(both A->A and B->B hop with the same amplitude `t2`):
 
-- x-direction (shift ±1):          A(n) ↔ A(n±1),  B(n) ↔ B(n±1)
-- y-direction (shift ±Nx):         A(n) ↔ A(n±Nx), B(n) ↔ B(n±Nx)
-- diagonal (shift ±(1−Nx)):        A(n) ↔ A(n±(1−Nx)), same for B
+- x-direction (shift +/-1):          A(n) ->A(n+/-1),  B(n) ->B(n+/-1)
+- y-direction (shift +/-Nx):         A(n) ->A(n+/-Nx), B(n) ->B(n+/-Nx)
+- diagonal (shift +/-(1-Nx)):        A(n) ->A(n+/-(1-Nx)), same for B
 
 `t2` may be complex; `conj(t2)` is used for the backward hop so that the
 Hamiltonian is Hermitian.  For Haldane-type NNN (sublattice-dependent phases)
@@ -1267,43 +1250,45 @@ function honeycomb_nnn_hamiltonian(Lx::Integer, Ly::Integer,
     hc_s      = Index(2, "Honeycomb")
     all_sites = [pos_sites; hc_s]
 
-    ku   = generate_kin_u(pos_sites, N)
-    kd   = generate_kin_d(pos_sites, N)
     Id   = MPO(pos_sites, "Id")
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)
 
-    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
-    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
+    K_x = shift_mpo(pos_sites, 1; cyclic=false)
+    D_x = shift_adjoint_mpo(K_x)
+    ku_y = shift_mpo(pos_sites, Nx; cyclic=false)
+    kd_y = shift_adjoint_mpo(ku_y)
 
-    # ── NN terms (same as honeycomb_sublattice_hamiltonian) ───────────────────
+    # -- NN terms (same as honeycomb_sublattice_hamiltonian) -------------------
     H_intra = postpend_op(Id, hc_s, t * Float64[0 1; 1 0])
 
-    H_x = +(t        * postpend_op(apply(brk_xp, ku;  apkw...), hc_s, 2, 1),
-             conj(t) * postpend_op(apply(kd, brk_xp; apkw...), hc_s, 1, 2); cutoff=cutoff)
+    H_x = +(t        * postpend_op(apply(K_x, brk_xp;  apkw...), hc_s, 1, 2),
+             conj(t) * postpend_op(apply(brk_xp, D_x; apkw...), hc_s, 2, 1); cutoff=cutoff)
 
-    H_y = +(t        * postpend_op(ku_y, hc_s, 2, 1),
-             conj(t) * postpend_op(kd_y, hc_s, 1, 2); cutoff=cutoff)
+    H_y = +(t        * postpend_op(ku_y, hc_s, 1, 2),
+             conj(t) * postpend_op(kd_y, hc_s, 2, 1); cutoff=cutoff)
 
-    # ── NNN terms: sublattice matrix = I₂ (A↔A and B↔B with same amplitude) ──
+    # -- NNN terms: sublattice matrix = I_(A->A and B->B with same amplitude) --
     I2 = Float64[1 0; 0 1]
 
-    # ±a₁ (x-direction, shift ±1)
-    H_nnn_x = +(t2        * postpend_op(apply(brk_xp, ku;  apkw...), hc_s, I2),
-                conj(t2)  * postpend_op(apply(kd, brk_xp; apkw...), hc_s, I2); cutoff=cutoff)
+    # +/-a_(x-direction, shift +/-1)
+    H_nnn_x = +(t2        * postpend_op(apply(K_x, brk_xp;  apkw...), hc_s, I2),
+                conj(t2)  * postpend_op(apply(brk_xp, D_x; apkw...), hc_s, I2); cutoff=cutoff)
 
-    # ±a₂ (y-direction, shift ±Nx)
+    # +/-a_(y-direction, shift +/-Nx)
     H_nnn_y = +(t2        * postpend_op(ku_y, hc_s, I2),
                 conj(t2)  * postpend_op(kd_y, hc_s, I2); cutoff=cutoff)
 
-    # ±(a₁−a₂) (diagonal, shift +(1−Nx) and −(1−Nx))
-    K_fwd = apply(compose_power(kd, Nx; apply_kwargs=apkw), apply(brk_xp, ku; apkw...); apkw...)
-    K_bwd = apply(compose_power(ku, Nx; apply_kwargs=apkw), apply(kd, brk_xp; apkw...); apkw...)
+    # +/-(a1-a2a_ (diagonal, shift +(1-Nx) and -1-Nx))
+    K_diag = shift_mpo(pos_sites, 1 - Nx; cyclic=false)
+    D_diag = shift_adjoint_mpo(K_diag)
+    K_fwd = apply(K_diag, brk_xp; apkw...)
+    K_bwd = apply(brk_xp, D_diag; apkw...)
     H_nnn_d = +(t2        * postpend_op(K_fwd, hc_s, I2),
                 conj(t2)  * postpend_op(K_bwd, hc_s, I2); cutoff=cutoff)
 
-    # ── Assembly ───────────────────────────────────────────────────────────────
+    # -- Assembly ---------------------------------------------------------------
     H_total = +(H_intra, H_x;     cutoff=cutoff)
     H_total = +(H_total, H_y;     cutoff=cutoff)
     H_total = +(H_total, H_nnn_x; cutoff=cutoff)
@@ -1324,19 +1309,19 @@ end
 """
     dice_positions(Lx, Ly) -> Matrix{Float64}
 
-Return the (3·2^L × 2) real-space atom-position matrix for a dice (T3)
-lattice of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
+Return the (3*2^L x 2) real-space atom-position matrix for a dice (T3)
+lattice of 2^Lx x 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
 site ordering.
 
 For total 1-indexed site i:
-  n_cell = (i-1) ÷ 3          (0-indexed unit cell, row-major)
+  n_cell = div(i-1, 3)          (0-indexed unit cell, row-major)
   s      = (i-1) % 3 + 1      (sublattice: A=1 hub, B=2 rim, C=3 rim)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
+  ix = n_cell % Nx,  iy = n_cell div Nx
 
-Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,        iy·√3/2        )   at 0·(a₁+a₂)/3
-  B: (ix + iy/2 + ½,    iy·√3/2 + √3/6)   at 1·(a₁+a₂)/3
-  C: (ix + iy/2 + 1,    iy·√3/2 + √3/3)   at 2·(a₁+a₂)/3
+Atom positions (triangular Bravais vectors a_(1,0), a_(1/2,-/2)):
+  A: (ix + iy/2,        iy*-/2        )   at 0*(a_a_/3
+  B: (ix + iy/2 + 1/2,    iy*-/2 + -/6)   at 1*(a_a_/3
+  C: (ix + iy/2 + 1,    iy*-/2 + -/3)   at 2*(a_a_/3
 """
 function dice_positions(Lx::Int, Ly::Int)
     Nx    = 2^Lx
@@ -1347,7 +1332,7 @@ function dice_positions(Lx::Int, Ly::Int)
     sq3_3 = sqrt(3) / 3
     for n in 0:N_uc-1
         ix   = n % Nx
-        iy   = n ÷ Nx
+        iy   = div(n, Nx)
         ax   = ix + iy * 0.5
         ay   = iy * sq3_2
         base = 3n + 1
@@ -1365,7 +1350,7 @@ end
 Build a dice (T3) tight-binding Hamiltonian as a `TBHamiltonian`.
 
 **Encoding** (L+1 sites, L = Lx+Ly):
-- Sites 1…L : position qubits for 2^L unit cells on a triangular Bravais lattice
+- Sites 1..L : position qubits for 2^L unit cells on a triangular Bravais lattice
 - Site  L+1 : dim-3 "Dice" sublattice index A=1 (hub), B=2 (rim), C=3 (rim)
 
 **Bond amplitudes**
@@ -1375,15 +1360,15 @@ Each kwarg controls all bonds of that type (intra- and inter-cell):
 
 | Kwarg | Bond | Intra-cell | Inter-cell directions              |
 |-------|------|------------|-------------------------------------|
-| `t_AB`| A↔B  | yes        | x (shift ±1), y (shift ±Nx)        |
-| `t_AC`| A↔C  | no         | x, y, diagonal (shift ±(Nx+1))     |
+| `t_AB`| A->B  | yes        | x (shift +/-1), y (shift +/-Nx)        |
+| `t_AC`| A->C  | no         | x, y, diagonal (shift +/-(Nx+1))     |
 
 Both default to `t` (uniform dice).
 ```julia
-H = dice_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.7)  # hub-to-B ≠ hub-to-C
+H = dice_hamiltonian(Lx, Ly; t_AB=1.0, t_AC=0.7)  # hub-to-B ~=hub-to-C
 ```
 
-**Spectrum**: doubly degenerate flat band at E=0; dispersive bands reaching ±3t.
+**Spectrum**: doubly degenerate flat band at E=0; dispersive bands reaching +/-3t.
 Real-space coordinates: `dice_positions(Lx, Ly)`.
 `H.sublattice_s` stores the dim-3 index; `H.aux_side = :post`.
 """
@@ -1400,38 +1385,38 @@ function dice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     dice_s    = Index(3, "Dice")
     all_sites = [pos_sites; dice_s]
 
-    ku   = generate_kin_u(pos_sites, N)
-    kd   = generate_kin_d(pos_sites, N)
     Id   = MPO(pos_sites, "Id")
     apkw = (; cutoff = cutoff, maxdim = maxdim)
 
     brk_xp = _row_break_mpo(Lx, Ly, pos_sites; which=:xplus)   # zeros ix = Nx-1
 
-    # ── Intra-cell: A↔B only (t_AB); no A-C intra-cell bond ─────────────────
+    # -- Intra-cell: A->B only (t_AB); no A-C intra-cell bond -----------------
     H_intra = postpend_op(Id, dice_s,
         Float64[0 t_AB 0; t_AB 0 0; 0 0 0])
 
-    # ── Inter-cell x: B(n) ↔ A(n+1) (t_AB) and C(n) ↔ A(n+1) (t_AC), shift ±1
-    H_xB = +(t_AB        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 2, 1),
-              conj(t_AB) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 2); cutoff=cutoff)
-    H_xC = +(t_AC        * postpend_op(apply(brk_xp, ku;  apkw...), dice_s, 3, 1),
-              conj(t_AC) * postpend_op(apply(kd, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
+    # -- Inter-cell x: B(n) ->A(n+1) (t_AB) and C(n) ->A(n+1) (t_AC), shift +/-1
+    K_x = shift_mpo(pos_sites, 1; cyclic=false)
+    D_x = shift_adjoint_mpo(K_x)
+    H_xB = +(t_AB        * postpend_op(apply(K_x, brk_xp;  apkw...), dice_s, 1, 2),
+              conj(t_AB) * postpend_op(apply(brk_xp, D_x; apkw...), dice_s, 2, 1); cutoff=cutoff)
+    H_xC = +(t_AC        * postpend_op(apply(K_x, brk_xp;  apkw...), dice_s, 1, 3),
+              conj(t_AC) * postpend_op(apply(brk_xp, D_x; apkw...), dice_s, 3, 1); cutoff=cutoff)
 
-    # ── Inter-cell y: B(n) ↔ A(n+Nx) (t_AB) and C(n) ↔ A(n+Nx) (t_AC), shift ±Nx
-    ku_y = compose_power(ku, Nx; apply_kwargs=apkw)
-    kd_y = compose_power(kd, Nx; apply_kwargs=apkw)
-    H_yB = +(t_AB        * postpend_op(ku_y, dice_s, 2, 1),
-              conj(t_AB) * postpend_op(kd_y, dice_s, 1, 2); cutoff=cutoff)
-    H_yC = +(t_AC        * postpend_op(ku_y, dice_s, 3, 1),
-              conj(t_AC) * postpend_op(kd_y, dice_s, 1, 3); cutoff=cutoff)
+    # -- Inter-cell y: B(n) ->A(n+Nx) (t_AB) and C(n) ->A(n+Nx) (t_AC), shift +/-Nx
+    ku_y = shift_mpo(pos_sites, Nx; cyclic=false)
+    kd_y = shift_adjoint_mpo(ku_y)
+    H_yB = +(t_AB        * postpend_op(ku_y, dice_s, 1, 2),
+              conj(t_AB) * postpend_op(kd_y, dice_s, 2, 1); cutoff=cutoff)
+    H_yC = +(t_AC        * postpend_op(ku_y, dice_s, 1, 3),
+              conj(t_AC) * postpend_op(kd_y, dice_s, 3, 1); cutoff=cutoff)
 
-    # ── Inter-cell diagonal: C(n) ↔ A(n+Nx+1) (t_AC), shift ±(Nx+1) ─────────
-    ku_d = compose_power(ku, Nx + 1; apply_kwargs=apkw)
-    kd_d = compose_power(kd, Nx + 1; apply_kwargs=apkw)
-    H_dC = +(t_AC        * postpend_op(apply(brk_xp, ku_d; apkw...), dice_s, 3, 1),
-              conj(t_AC) * postpend_op(apply(kd_d, brk_xp; apkw...), dice_s, 1, 3); cutoff=cutoff)
+    # -- Inter-cell diagonal: C(n) ->A(n+Nx+1) (t_AC), shift +/-(Nx+1) ---------
+    ku_d = shift_mpo(pos_sites, Nx + 1; cyclic=false)
+    kd_d = shift_adjoint_mpo(ku_d)
+    H_dC = +(t_AC        * postpend_op(apply(ku_d, brk_xp; apkw...), dice_s, 1, 3),
+              conj(t_AC) * postpend_op(apply(brk_xp, kd_d; apkw...), dice_s, 3, 1); cutoff=cutoff)
 
-    # ── Assembly ───────────────────────────────────────────────────────────────
+    # -- Assembly ---------------------------------------------------------------
     H_total = +(H_intra, H_xB;  cutoff=cutoff)
     H_total = +(H_total, H_xC;  cutoff=cutoff)
     H_total = +(H_total, H_yB;  cutoff=cutoff)
@@ -1456,20 +1441,20 @@ Build an SSH (Su-Schrieffer-Heeger) tight-binding Hamiltonian with an explicit
 2-component sublattice index, as a `TBHamiltonian`.
 
 **Encoding** (L+1 sites total):
-- Sites 1…L : L position qubits for 2^L unit cells
+- Sites 1..L : L position qubits for 2^L unit cells
 - Site  L+1 : dim-2 "SSH" sublattice index (A=1, B=2), postpended
 
 **Hopping structure**:
-- *Intra-cell* (amplitude `t+d`): A↔B within each unit cell
-- *Inter-cell* (amplitude `t-d`): B(n) ↔ A(n+1)
+- *Intra-cell* (amplitude `t+d`): A->B within each unit cell
+- *Inter-cell* (amplitude `t-d`): B(n) ->A(n+1)
 
-**Geometry** (unit cell width = 1, 1-indexed site `i` over `2·2^L` atoms):
-- A atom in unit cell `n = (i-1)÷2`: position `[n]`
+**Geometry** (unit cell width = 1, 1-indexed site `i` over `2*2^L` atoms):
+- A atom in unit cell `n = (i-1)div2`: position `[n]`
 - B atom in unit cell `n`: position `[n + 0.5]`
 
 `geometry_uc` returns `[n]` for every atom in unit cell `n` (same for A and B).
 
-The chain has periodic boundary conditions (B(N-1) ↔ A(0) inter-cell bond from
+The chain has periodic boundary conditions (B(N-1) ->A(0) inter-cell bond from
 the binary-increment wrap-around), consistent with all other QTT Hamiltonians.
 """
 function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0;
@@ -1488,10 +1473,10 @@ function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0
     kd = generate_kin_d(pos_sites, N)
     Id = MPO(pos_sites, "Id")
 
-    # Intra-cell: A(n) ↔ B(n) — Hermitian matrix [0 t1; conj(t1) 0]
+    # Intra-cell: A(n) ->B(n) -Hermitian matrix [0 t1; conj(t1) 0]
     H_intra = postpend_op(Id, ssh_s, ComplexF64[0 t1; conj(t1) 0])
 
-    # Inter-cell: B(n) ↔ A(n+1), i.e. K_u ⊗ |A⟩⟨B| + K_d ⊗ |B⟩⟨A|
+    # Inter-cell: B(n) ->A(n+1), i.e. K_u *|A><B| + K_d *|B><A|
     H_inter = +(t2       * postpend_op(ku, ssh_s, 1, 2),
                 conj(t2) * postpend_op(kd, ssh_s, 2, 1); cutoff=cutoff)
 
@@ -1501,10 +1486,10 @@ function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0
     scale = (abs(t1) + abs(t2)) * 1.1
 
     geom_f    = let
-        i -> [Float64((i - 1) ÷ 2) + 0.5 * ((i - 1) % 2)]
+        i -> [Float64(div(i - 1, 2)) + 0.5 * ((i - 1) % 2)]
     end
     geom_uc_f = let
-        i -> [Float64((i - 1) ÷ 2)]
+        i -> [Float64(div(i - 1, 2))]
     end
 
     return TBHamiltonian(L, N, all_sites, H_total, geom_f, geom_uc_f, scale, 0.0,
@@ -1513,7 +1498,7 @@ end
 
 
 # ============================================================
-# 9. Antiferromagnetic / Néel initial-guess density matrices
+# 9. Antiferromagnetic / Neel initial-guess density matrices
 #    Used as seeds for mean-field SCF on interacting models.
 #    Return (density_MPO, density_MPS).
 # ============================================================
@@ -1521,7 +1506,7 @@ end
 """
     initial_guess_trivial_up_1D(L, sites) -> (MPO, MPS)
 
-Diagonal density MPO with occupation `x % 2` on site `x` (spin-up Néel seed for 1D).
+Diagonal density MPO with occupation `x % 2` on site `x` (spin-up Neel seed for 1D).
 """
 function initial_guess_trivial_up_1D(L, sites)
     xvals = range(0, 2^L - 1; length=2^L)
@@ -1537,7 +1522,7 @@ end
 """
     initial_guess_trivial_down_1D(L, sites) -> (MPO, MPS)
 
-Diagonal density MPO with occupation `(x+1) % 2` on site `x` (spin-down Néel seed for 1D).
+Diagonal density MPO with occupation `(x+1) % 2` on site `x` (spin-down Neel seed for 1D).
 """
 function initial_guess_trivial_down_1D(L, sites)
     xvals = range(0, 2^L - 1; length=2^L)
@@ -1560,7 +1545,7 @@ function initial_guess_Neel_up(Lx, Ly, sites)
     L     = Lx + Ly
     N     = Nx * 2^Ly
     xvals = 0:N-1
-    f     = i -> isodd(i%Nx + i÷Nx) ? 0.0 : 1.0
+    f     = i -> isodd(i%Nx + div(i, Nx)) ? 0.0 : 1.0
     qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, f, xvals; maxbonddim=10, tolerance=1e-8)[1]
     mps   = MPS(TCI.tensortrain(qtt.tci); sites)
     mpo   = outer(mps', mps)
@@ -1579,7 +1564,7 @@ function initial_guess_Neel_dn(Lx, Ly, sites)
     L     = Lx + Ly
     N     = Nx * 2^Ly
     xvals = 0:N-1
-    f     = i -> isodd(i%Nx + i÷Nx) ? 1.0 : 0.0
+    f     = i -> isodd(i%Nx + div(i, Nx)) ? 1.0 : 0.0
     qtt   = QuanticsTCI.quanticscrossinterpolate(Float64, f, xvals; maxbonddim=10, tolerance=1e-8)[1]
     mps   = MPS(TCI.tensortrain(qtt.tci); sites)
     mpo   = outer(mps', mps)
@@ -1595,7 +1580,7 @@ end
 """
     _parse_param_string(s) -> Dict{Symbol,Any}
 
-Parse `"key1=val1, key2=val2, …"` into a Dict. Values are auto-typed
+Parse `"key1=val1, key2=val2, -` into a Dict. Values are auto-typed
 as Bool, Int, Float64, or String.
 """
 function _parse_param_string(s::AbstractString)
@@ -1618,7 +1603,7 @@ function _parse_param_string(s::AbstractString)
 end
 
 
-# Maps model name → (function, dim, required_params, kw_defaults)
+# Maps model name ->(function, dim, required_params, kw_defaults)
 const MODEL_REGISTRY = Dict{String, Tuple{Symbol,Int,Vector{Symbol},NamedTuple}}(
     "uniform"         => (:HUniform,         1, [:t],          (; v=1e-6, tol_quantics=1e-8, maxbonddim_quantics=10, nn=1)),
     "ssh"             => (:HSSH,             1, [:t, :d],      (; tol_quantics=1e-8, maxbonddim_quantics=10, nn=1)),
@@ -1654,7 +1639,7 @@ function build_hamiltonian(model::AbstractString, L::Integer;
     key = lowercase(model)
     haskey(MODEL_REGISTRY, key) || error("Unknown model '$model'. Known: $(sort(collect(keys(MODEL_REGISTRY))))")
     fn_sym, dim, required, kw_defaults = MODEL_REGISTRY[key]
-    dim == 1 || error("Model '$model' is 2D; call build_hamiltonian(model, Lx, Ly; …)")
+    dim == 1 || error("Model '$model' is 2D; call build_hamiltonian(model, Lx, Ly; -")
     fn = getfield(@__MODULE__, fn_sym)
     p  = _parse_param_string(mparams)
     for (k,v) in mparam_dict; p[k] = v; end
@@ -1671,7 +1656,7 @@ function build_hamiltonian(model::AbstractString, Lx::Integer, Ly::Integer;
     key = lowercase(model)
     haskey(MODEL_REGISTRY, key) || error("Unknown model '$model'. Known: $(sort(collect(keys(MODEL_REGISTRY))))")
     fn_sym, dim, required, kw_defaults = MODEL_REGISTRY[key]
-    dim == 2 || error("Model '$model' is 1D; call build_hamiltonian(model, L; …)")
+    dim == 2 || error("Model '$model' is 1D; call build_hamiltonian(model, L; -")
     fn = getfield(@__MODULE__, fn_sym)
     p  = _parse_param_string(mparams)
     for (k,v) in mparam_dict; p[k] = v; end
@@ -1687,7 +1672,7 @@ end
 # 10. Spatial LDOS plotting helpers for 2D sublattice lattices
 # ============================================================
 
-# Number of sublattices per geometry — used to extract the right atom rows
+# Number of sublattices per geometry -used to extract the right atom rows
 _nsublat(::Val{:honeycomb}) = 2
 _nsublat(::Val{:kagome})    = 3
 _nsublat(::Val{:lieb})      = 3
@@ -1701,27 +1686,27 @@ _geom_positions(::Val{:dice},      Lx, Ly) = dice_positions(Lx, Ly)
 _geom_n_sub(::Val{:honeycomb}) = 2
 _geom_n_sub(::Val{:kagome})    = 3
 _geom_n_sub(::Val{:lieb})      = 3
-_geom_n_sub(::Val{:dice})      = 4
+_geom_n_sub(::Val{:dice})      = 3
 
 """
-    plot_ldos_2d(ldos_mat, ωlist, ω_target;
+    plot_ldos_2d(ldos_mat, omegalist, omega_target;
                  geometry, Lx, Ly,
                  markersize, colormap, colorbar, clims, title, kwargs...)
         -> Plot
 
-Scatter plot of the spatial LDOS at the energy in `ωlist` nearest to `ω_target`.
+Scatter plot of the spatial LDOS at the energy in `omegalist` nearest to `omega_target`.
 Each atom in the geometry is drawn as a coloured dot.
 
 **Arguments**
 
-- `ldos_mat` : `(Nω × n_atoms)` matrix as returned by `get_ldos_spatial` with
+- `ldos_mat` : `(Nomega x n_atoms)` matrix as returned by `get_ldos_spatial` with
   `num_x = H.N`.  Column `k` maps to atom `k` in the positions matrix of the
-  geometry (interleaved order `[A₀, B₀, …]`).  Pass the full-lattice matrix from
-  `get_ldos_spatial` directly — no sublattice filtering required:
+  geometry (interleaved order `[A0, B0, ...]`).  Pass the full-lattice matrix from
+  `get_ldos_spatial` directly -no sublattice filtering required:
   - `proj_sl=k` result: only sublattice `k` atoms carry weight, others are zero.
   - `proj_sl=nothing` result: every atom carries its own sublattice LDOS.
 - `geometry` : `:honeycomb`, `:kagome`, `:lieb`, or `:dice`.
-- `Lx`, `Ly` : log₂ grid dimensions (same values passed to the constructor).
+- `Lx`, `Ly` : log_grid dimensions (same values passed to the constructor).
 
 An assertion checks that `size(ldos_mat, 2) == n_atoms`; the error message
 reminds the user to call `get_ldos_spatial` with `num_x = H.N`.
@@ -1730,15 +1715,15 @@ Examples
 --------
 ```julia
 # Single sublattice (only A atoms lit up, B atoms zero)
-p1 = plot_ldos_2d(ldos_A, ωlist, 0.5; geometry=:honeycomb, Lx=2, Ly=2)
+p1 = plot_ldos_2d(ldos_A, omegalist, 0.5; geometry=:honeycomb, Lx=2, Ly=2)
 
-# All sublattices — every atom coloured by its own LDOS
-ldos_all = get_ldos_spatial(H_kg, 100, ωlist; num_x=H_kg.N)
-p  = plot_ldos_2d(ldos_all, ωlist, -2.0; geometry=:kagome, Lx=2, Ly=2,
+# All sublattices -every atom coloured by its own LDOS
+ldos_all = get_ldos_spatial(H_kg, 100, omegalist; num_x=H_kg.N)
+p  = plot_ldos_2d(ldos_all, omegalist, -2.0; geometry=:kagome, Lx=2, Ly=2,
                   markersize=14, colormap=:plasma)
 ```
 """
-function plot_ldos_2d(ldos_mat::AbstractMatrix, ωlist, ω_target;
+function plot_ldos_2d(ldos_mat::AbstractMatrix, omegalist, omega_target;
                       geometry::Symbol = :honeycomb,
                       Lx::Int,
                       Ly::Int,
@@ -1755,13 +1740,13 @@ function plot_ldos_2d(ldos_mat::AbstractMatrix, ωlist, ω_target;
         "plot_ldos_2d: ldos_mat has $n_cols columns but geometry has $n_atoms atoms. " *
         "Call get_ldos_spatial with num_x=H.N so each column maps to one atom.")
 
-    ω_arr    = collect(ωlist)
-    ω_idx    = argmin(abs.(ω_arr .- ω_target))
-    ω_actual = ω_arr[ω_idx]
-    vals     = ldos_mat[ω_idx, :]   # one value per atom, already in positions order
+    omega_arr    = collect(omegalist)
+    omega_idx    = argmin(abs.(omega_arr .- omega_target))
+    omega_actual = omega_arr[omega_idx]
+    vals     = ldos_mat[omega_idx, :]   # one value per atom, already in positions order
 
     cl   = isnothing(clims) ? (0.0, maximum(vals) + eps(Float64)) : clims
-    tstr = isempty(title)   ? "LDOS  ω ≈ $(round(ω_actual; digits=3))" : title
+    tstr = isempty(title)   ? "LDOS  omega ~=$(round(omega_actual; digits=3))" : title
 
     Plots.scatter(positions_all[:, 1], positions_all[:, 2];
                   marker_z          = vals,
@@ -1780,19 +1765,19 @@ end
 
 
 """
-    plot_ldos_multilayer(ldos_layers, ωlist, ω_target;
+    plot_ldos_multilayer(ldos_layers, omegalist, omega_target;
                          stacking=:Bernal, geometry=:honeycomb, Lx, Ly,
                          markersize, colormap, colorbar, clims, title, kwargs...)
         -> Plot
 
 Scatter plot of the multilayer LDOS **as seen from above** at the energy
-nearest to `ω_target`.
+nearest to `omega_target`.
 
-`ldos_layers` is a `Vector` of `(Nω × n_atoms)` matrices, one per layer, as
+`ldos_layers` is a `Vector` of `(Nomega x n_atoms)` matrices, one per layer, as
 returned by
 
 ```julia
-ldos_layers = [get_ldos_spatial(H, Nc, ωlist;
+ldos_layers = [get_ldos_spatial(H, Nc, omegalist;
                    proj_layer=k, num_x=H.N) for k in 1:n_layers]
 ```
 
@@ -1802,16 +1787,16 @@ For `:AA` stacking all layers share the same 2D positions; the result is a
 single honeycomb with LDOS summed over all layers.
 
 For `:Bernal` stacking the odd and even layers form two physically distinct
-groups: odd layers (1, 3, …) sit at the standard honeycomb positions and even
-layers (2, 4, …) are displaced by the intra-cell A→B bond vector τ.  The
-function plots both groups together — a total of `2 × n_atoms` scatter points
-— giving a visual picture of the two interlocked honeycomb sublattices that
+groups: odd layers (1, 3, - sit at the standard honeycomb positions and even
+layers (2, 4, - are displaced by the intra-cell A->B bond vector delta_vec.  The
+function plots both groups together -a total of `2 x n_atoms` scatter points
+-giving a visual picture of the two interlocked honeycomb sublattices that
 make up the Bernal stack viewed from above.  LDOS is summed independently
-within each group (odd / even) without sublattice permutation, since the τ
+within each group (odd / even) without sublattice permutation, since the delta_vec
 shift already places even-layer atoms at their correct visual registry.
 """
 function plot_ldos_multilayer(ldos_layers::AbstractVector{<:AbstractMatrix},
-                               ωlist, ω_target;
+                               omegalist, omega_target;
                                stacking::Symbol = :Bernal,
                                geometry::Symbol = :honeycomb,
                                Lx::Int,
@@ -1822,20 +1807,20 @@ function plot_ldos_multilayer(ldos_layers::AbstractVector{<:AbstractMatrix},
                                clims            = nothing,
                                title::String    = "",
                                kwargs...)
-    stacking ∈ (:AA, :Bernal) ||
+    stacking in (:AA, :Bernal) ||
         error("plot_ldos_multilayer: unknown stacking :$stacking. Supported: :AA, :Bernal.")
 
     rs   = _geom_positions(Val(geometry), Lx, Ly)   # (n_atoms, 2)
-    Nω   = size(ldos_layers[1], 1)
-    ω_arr  = collect(ωlist)
-    ω_idx  = argmin(abs.(ω_arr .- ω_target))
-    ω_actual = ω_arr[ω_idx]
+    Nomega   = size(ldos_layers[1], 1)
+    omega_arr  = collect(omegalist)
+    omega_idx  = argmin(abs.(omega_arr .- omega_target))
+    omega_actual = omega_arr[omega_idx]
 
     if stacking === :AA
         # All layers share the same positions: simple sum.
-        vals = sum(ldos_k[ω_idx, :] for ldos_k in ldos_layers)
+        vals = sum(ldos_k[omega_idx, :] for ldos_k in ldos_layers)
         cl   = isnothing(clims) ? (0.0, maximum(vals) + eps(Float64)) : clims
-        tstr = isempty(title) ? "LDOS (AA top view)  ω ≈ $(round(ω_actual; digits=3))" : title
+        tstr = isempty(title) ? "LDOS (AA top view)  omega ~=$(round(omega_actual; digits=3))" : title
         return Plots.scatter(rs[:, 1], rs[:, 2];
                              marker_z=vals, color=colormap, clims=cl,
                              colorbar=colorbar, markersize=markersize,
@@ -1844,26 +1829,26 @@ function plot_ldos_multilayer(ldos_layers::AbstractVector{<:AbstractMatrix},
                              kwargs...)
     end
 
-    # ── Bernal: two groups of layers at two shifted honeycomb lattices ────────
-    # τ = intra-cell A→B bond vector (first unit cell).
-    τ = rs[2, :] - rs[1, :]          # (2,) displacement
+    # -- Bernal: two groups of layers at two shifted honeycomb lattices --------
+    # delta_vec = intra-cell A->B bond vector (first unit cell).
+    delta_vec = rs[2, :] - rs[1, :]          # (2,) displacement
 
-    vals_odd  = zeros(size(rs, 1))   # group 1: layers 1, 3, 5, …
-    vals_even = zeros(size(rs, 1))   # group 2: layers 2, 4, …
+    vals_odd  = zeros(size(rs, 1))   # group 1: layers 1, 3, 5, -
+    vals_even = zeros(size(rs, 1))   # group 2: layers 2, 4, -
     for (k, ldos_k) in enumerate(ldos_layers)
         if isodd(k)
-            vals_odd  .+= ldos_k[ω_idx, :]
+            vals_odd  .+= ldos_k[omega_idx, :]
         else
-            vals_even .+= ldos_k[ω_idx, :]
+            vals_even .+= ldos_k[omega_idx, :]
         end
     end
 
-    rs_even  = rs .+ τ'              # even-layer honeycomb, shifted by τ
+    rs_even  = rs .+ delta_vec'              # even-layer honeycomb, shifted by delta_vec
     all_pos  = vcat(rs, rs_even)     # (2*n_atoms, 2)
     all_vals = vcat(vals_odd, vals_even)
 
     cl   = isnothing(clims) ? (0.0, maximum(all_vals) + eps(Float64)) : clims
-    tstr = isempty(title) ? "LDOS (Bernal top view)  ω ≈ $(round(ω_actual; digits=3))" : title
+    tstr = isempty(title) ? "LDOS (Bernal top view)  omega ~=$(round(omega_actual; digits=3))" : title
 
     Plots.scatter(all_pos[:, 1], all_pos[:, 2];
                   marker_z=all_vals, color=colormap, clims=cl,
@@ -1872,3 +1857,8 @@ function plot_ldos_multilayer(ldos_layers::AbstractVector{<:AbstractMatrix},
                   xlabel="x", ylabel="y", title=tstr, label="",
                   kwargs...)
 end
+
+
+
+
+

@@ -193,7 +193,7 @@ function get_Hamiltonian(geometry::String, params;
     N     = 2^L
 
     if geometry == "chain_1d"
-        return _build_chain_1d(params, L, N, sites; scale, tol, maxdim)
+        return _build_chain_1d(params, L, N, sites; scale, tol, maxdim, kwargs...)
 
     elseif geometry == "haldane"
         return _build_haldane(params, L, N, sites; scale, tol, maxdim, kwargs...)
@@ -277,8 +277,14 @@ function _hex_geometry(Nx)
     return pos
 end
 
-function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
-    mpo = t * kinetic_1d_nn(L, sites)
+function _build_chain_1d(t, L, N, sites;
+                         scale=nothing,
+                         tol=1e-8,
+                         maxdim=15,
+                         boundary::Symbol=:open,
+                         bc=nothing)
+    bc === nothing || (boundary = Symbol(bc))
+    mpo = t * kinetic_1d_nn(L, sites; boundary=boundary)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     sc  = something(scale, 2.5 * abs(t))
     return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
@@ -572,6 +578,8 @@ Invalidates all caches.
 """
 function add_hopping!(H::TBHamiltonian, f;
                       nn::Integer      = 1,
+                      boundary::Symbol = :open,
+                      bc               = nothing,
                       maxdim           = 15,
                       tol              = 1e-8,
                       type             = ComplexF64,
@@ -597,13 +605,16 @@ function add_hopping!(H::TBHamiltonian, f;
     pos_s = _pos_sites(H)
     sl_s  = H.sublattice_s
     apkw  = isempty(apply_kwargs) ? (; cutoff=tol, maxdim=maxdim) : apply_kwargs
+    bc === nothing || (boundary = Symbol(bc))
 
     # ── Build position-space hopping MPO (shared for all cases) ───────────────
     function pos_hop()
         if f isa Number
-            kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn; apply_kwargs)
+            kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn;
+                       apply_kwargs=apply_kwargs, boundary=boundary)
         elseif f isa Function && applicable(f, 1)
-            kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn; apply_kwargs)
+            kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn;
+                       apply_kwargs=apply_kwargs, boundary=boundary)
         else
             hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
         end
@@ -641,8 +652,7 @@ function add_hopping!(H::TBHamiltonian, f;
             # Intra-cell (zero position shift): Id_pos ⊗ (|to⟩⟨from| + |from⟩⟨to|)
             extend_with_sublat(MPO(pos_s, "Id"), mat_fwd + mat_bwd)
         else
-            ku_nn = compose_power(generate_kin_u(pos_s, H.N), nn; apply_kwargs=apkw)
-            kd_nn = compose_power(generate_kin_d(pos_s, H.N), nn; apply_kwargs=apkw)
+            ku_nn, kd_nn = shift_pair_mpos(pos_s, nn; cyclic=_tb_periodic_boundary(boundary))
             +(extend_with_sublat(ku_nn, mat_fwd),
               extend_with_sublat(kd_nn, mat_bwd); cutoff=tol)
         end

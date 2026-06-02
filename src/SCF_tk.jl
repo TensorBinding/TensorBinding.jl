@@ -326,8 +326,7 @@ function scf_pair_distance_interaction_mpo(L::Int, sites, distance::Integer, wei
     (d == 0 || d >= N) && error("distance must be in 1:$(N - 1), got $distance.")
 
     D = _scf_distance_weight_mpo(L, sites, weight; type=type, tol=tol)
-    K_fwd = build_shift_mpo(sites, d, false)
-    K_bwd = swapprime(dag(K_fwd), 0, 1)
+    K_fwd, K_bwd = shift_pair_mpos(sites, d; cyclic=false)
 
     term_fwd = apply(K_fwd, D; maxdim=maxdim, cutoff=cutoff)
     term_bwd = apply(D, K_bwd; maxdim=maxdim, cutoff=cutoff)
@@ -545,6 +544,7 @@ function scf_swave_superconducting(H0::TBHamiltonian, g::Number;
                                    normal_density_mode::Symbol = :particle,
                                    Ncheb::Int = 100,
                                    scale::Union{Nothing,Real} = nothing,
+                                   purification_scale_padding::Real = 1.05,
                                    max_scf_iter::Int = 30,
                                    scf_tol::Real = 1e-6,
                                    mix::Real = 0.4,
@@ -587,6 +587,9 @@ function scf_swave_superconducting(H0::TBHamiltonian, g::Number;
                                      scale=scale,
                                      maxdim=maxdim,
                                      cutoff=cutoff)
+        _scf_prepare_density_scale!(Hbdg, density_method;
+                                    scale=scale,
+                                    padding=purification_scale_padding)
         full_dim = prod(dim(s) for s in Hbdg.sites)
         Nel_bdg = div(full_dim, 2)
 
@@ -700,8 +703,7 @@ function _scf_pwave_bond_mpo(delta_mps::MPS, sites, distance::Integer;
     0 < distance < N || error("p-wave bond distance must satisfy 0 < distance < N.")
 
     D = mps_to_diagonal_mpo(delta_mps, sites)
-    K_fwd = build_shift_mpo(sites, distance, false)
-    K_bwd = swapprime(dag(K_fwd), 0, 1)
+    K_fwd, K_bwd = shift_pair_mpos(sites, distance; cyclic=false)
 
     upper = apply(D, K_bwd; maxdim=maxdim, cutoff=cutoff)
     lower = apply(K_fwd, D; maxdim=maxdim, cutoff=cutoff)
@@ -764,7 +766,7 @@ function _scf_pwave_bond_profile(anom_mpo::MPO, sites, distance::Integer;
                                  maxdim::Int=100,
                                  cutoff::Real=1e-8)
     N = prod(dim(s) for s in sites)
-    K_fwd = build_shift_mpo(sites, distance, false)
+    K_fwd = shift_mpo(sites, distance; cyclic=false)
     bond_diag = apply(anom_mpo, K_fwd; maxdim=maxdim, cutoff=cutoff)
     ITensorMPS.truncate!(bond_diag; maxdim=maxdim, cutoff=cutoff)
     return extract_diagonal_to_mps(bond_diag)
@@ -819,6 +821,7 @@ function scf_pwave_equalspin(H0::TBHamiltonian, V::Number;
                              density_method::Symbol = :mcweeny,
                              Ncheb::Int = 100,
                              scale::Union{Nothing,Real} = nothing,
+                             purification_scale_padding::Real = 1.05,
                              max_scf_iter::Int = 30,
                              scf_tol::Real = 1e-6,
                              mix::Real = 0.4,
@@ -849,6 +852,9 @@ function scf_pwave_equalspin(H0::TBHamiltonian, V::Number;
                                           scale=scale,
                                           maxdim=maxdim,
                                           cutoff=cutoff)
+        _scf_prepare_density_scale!(Hbdg, density_method;
+                                    scale=scale,
+                                    padding=purification_scale_padding)
         full_dim = prod(dim(s) for s in Hbdg.sites)
         Nel_bdg = div(full_dim, 2)
         density_mpo = get_density(Hbdg;
@@ -934,6 +940,210 @@ function scf_cdw_hartree_builder(U::Number;
     end
 end
 
+function _scf_channel(channel::Symbol)
+    s = lowercase(String(channel))
+    s in ("cdw", "charge", "hartree") && return :cdw
+    s in ("magnetic", "magnetism", "spin", "hubbard") && return :magnetic
+    s in ("swave", "s_wave", "s-wave", "superconducting", "superconductivity") && return :swave
+    s in ("pwave", "p_wave", "p-wave", "triplet") && return :pwave
+    error("Unknown SCF channel :$channel. Supported: :CDW, :magnetic, :swave, :pwave.")
+end
+
+function _scf_density_method(method::Symbol)
+    s = lowercase(String(method))
+    s in ("purification", "sp2") && return :sp2
+    s in ("mcweeny", "mcpurify") && return :mcweeny
+    s in ("kpm", "chebyshev") && return :kpm
+    return method
+end
+
+_scf_is_purification(method::Symbol) = method === :sp2 || method === :mcweeny
+
+function _scf_prepare_density_scale!(H::TBHamiltonian, method::Symbol;
+                                     scale::Union{Nothing,Real}=nothing,
+                                     spectral_bounds::Union{Nothing,Tuple{<:Real,<:Real}}=nothing,
+                                     padding::Real=1.05)
+    _scf_is_purification(method) || return H
+    padding >= 1.0 || error("purification_scale_padding must be >= 1.0, got $padding.")
+
+    if spectral_bounds !== nothing
+        emin, emax = spectral_bounds
+        emax > emin || error("spectral_bounds must satisfy emax > emin, got $spectral_bounds.")
+        H.center = Float64((emax + emin) / 2)
+        H.scale  = Float64((emax - emin) / 2 * padding)
+    elseif scale !== nothing
+        H.scale = Float64(scale * padding)
+    else
+        _ensure_scale!(H)
+        H.scale *= Float64(padding)
+    end
+    return H
+end
+
+function _scf_cdw_builder(H0::TBHamiltonian, U;
+                          interaction::Symbol,
+                          background,
+                          distance::Integer,
+                          maxdim::Int,
+                          cutoff::Real,
+                          tol::Real,
+                          kwargs...)
+    mode = lowercase(String(interaction))
+    if mode in ("local", "onsite", "on_site")
+        U isa Number || error("get_scf(..., :CDW; interaction=:local) requires numeric U.")
+        return scf_cdw_hartree_builder(U; background=background,
+                                       maxdim=maxdim, cutoff=cutoff)
+    elseif mode in ("dense", "longrange", "long_range")
+        return scf_dense_hartree_builder(U, H0.L, H0.sites;
+                                         background=background,
+                                         maxdim=maxdim,
+                                         cutoff=cutoff,
+                                         tol=tol,
+                                         kwargs...)
+    elseif mode in ("distance", "pair", "pairs")
+        if U isa AbstractVector
+            return scf_pair_distance_hartree_builder(H0.L, H0.sites, U;
+                                                     background=background,
+                                                     maxdim=maxdim,
+                                                     cutoff=cutoff,
+                                                     tol=tol)
+        else
+            return scf_pair_distance_hartree_builder(H0.L, H0.sites, distance, U;
+                                                     background=background,
+                                                     maxdim=maxdim,
+                                                     cutoff=cutoff,
+                                                     tol=tol)
+        end
+    end
+    error("Unknown CDW interaction :$interaction. Use :local, :dense, or :distance.")
+end
+
+"""
+    get_scf(H0, U, channel; kwargs...) -> NamedTuple
+
+Convenience front-end for the self-consistent mean-field solvers.
+
+Examples:
+
+```julia
+res = get_scf(H0, U, :CDW; tol=1e-5, maxiters=30, mixing=0.4)
+Hmf = res.ham
+```
+
+Supported channels are `:CDW`, `:magnetic`, `:swave`, and `:pwave`.
+The wrapper keeps the lower-level SCF routines available while providing a
+single `get_*` style entry point for notebooks.
+"""
+function get_scf(H0::TBHamiltonian, U, channel::Symbol;
+                 interaction::Symbol = :local,
+                 background::Real = 0.5,
+                 distance::Integer = 1,
+                 initial_density::Union{Nothing,MPS}=nothing,
+                 initial_hartree::Union{Nothing,MPO}=nothing,
+                 density_mode::Symbol = :direct,
+                 density_method::Symbol = :sp2,
+                 method::Union{Nothing,Symbol} = nothing,
+                 Nel::Int = H0.N ÷ 2,
+                 fermi::Real = 0.0,
+                 Ncheb::Int = 100,
+                 scale::Union{Nothing,Real} = nothing,
+                 spectral_bounds::Union{Nothing,Tuple{<:Real,<:Real}} = nothing,
+                 purification_scale_padding::Real = 1.05,
+                 tol::Real = 1e-6,
+                 maxiters::Int = 30,
+                 mixing::Real = 0.4,
+                 maxdim::Int = 100,
+                 cutoff::Real = 1e-8,
+                 purif_maxiter::Int = 40,
+                 purif_tol::Real = 1e-6,
+                 stop_on_increase::Bool = false,
+                 verbose::Bool = true,
+                 builder_kwargs...)
+    ch = _scf_channel(channel)
+    dmethod = _scf_density_method(method === nothing ? density_method : method)
+
+    if ch === :cdw
+        builder = _scf_cdw_builder(H0, U;
+                                   interaction=interaction,
+                                   background=background,
+                                   distance=distance,
+                                   maxdim=maxdim,
+                                   cutoff=cutoff,
+                                   tol=tol,
+                                   builder_kwargs...)
+        return scf_meanfield(H0, builder;
+                             initial_density=initial_density,
+                             initial_hartree=initial_hartree,
+                             density_method=dmethod,
+                             density_mode=density_mode,
+                             Nel=Nel,
+                             fermi=fermi,
+                             Ncheb=Ncheb,
+                             scale=scale,
+                             spectral_bounds=spectral_bounds,
+                             purification_scale_padding=purification_scale_padding,
+                             max_scf_iter=maxiters,
+                             scf_tol=tol,
+                             mix=mixing,
+                             maxdim=maxdim,
+                             cutoff=cutoff,
+                             purif_maxiter=purif_maxiter,
+                             purif_tol=purif_tol,
+                             stop_on_increase=stop_on_increase,
+                             verbose=verbose)
+    elseif ch === :magnetic
+        U isa Number || error("get_scf(..., :magnetic) requires numeric U.")
+        return scf_magnetic_hubbard(H0, U;
+                                    background=background,
+                                    density_method=dmethod,
+                                    fermi=fermi,
+                                    Ncheb=Ncheb,
+                                    scale=scale,
+                                    purification_scale_padding=purification_scale_padding,
+                                    max_scf_iter=maxiters,
+                                    scf_tol=tol,
+                                    mix=mixing,
+                                    maxdim=maxdim,
+                                    cutoff=cutoff,
+                                    purif_maxiter=purif_maxiter,
+                                    purif_tol=purif_tol,
+                                    verbose=verbose,
+                                    builder_kwargs...)
+    elseif ch === :swave
+        U isa Number || error("get_scf(..., :swave) requires numeric U.")
+        return scf_swave_hubbard(H0, U;
+                                 density_method=dmethod,
+                                 Ncheb=Ncheb,
+                                 scale=scale,
+                                 purification_scale_padding=purification_scale_padding,
+                                 max_scf_iter=maxiters,
+                                 scf_tol=tol,
+                                 mix=mixing,
+                                 maxdim=maxdim,
+                                 cutoff=cutoff,
+                                 purif_maxiter=purif_maxiter,
+                                 purif_tol=purif_tol,
+                                 verbose=verbose,
+                                 builder_kwargs...)
+    elseif ch === :pwave
+        U isa Number || error("get_scf(..., :pwave) requires numeric U.")
+        return scf_pwave_equalspin(H0, U;
+                                   density_method=dmethod,
+                                   Ncheb=Ncheb,
+                                   scale=scale,
+                                   purification_scale_padding=purification_scale_padding,
+                                   max_scf_iter=maxiters,
+                                   scf_tol=tol,
+                                   mix=mixing,
+                                   maxdim=maxdim,
+                                   cutoff=cutoff,
+                                   purif_maxiter=purif_maxiter,
+                                   purif_tol=purif_tol,
+                                   verbose=verbose,
+                                   builder_kwargs...)
+    end
+end
+
 function _scf_copy_with_mpo(H0::TBHamiltonian, mpo::MPO; scale=0.0, center=0.0)
     return TBHamiltonian(H0.L, H0.N, H0.sites, mpo,
                          H0.geometry, H0.geometry_uc,
@@ -973,6 +1183,7 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
                        Ncheb::Int = 100,
                        scale::Union{Nothing,Real} = nothing,
                        spectral_bounds::Union{Nothing,Tuple{<:Real,<:Real}} = nothing,
+                       purification_scale_padding::Real = 1.05,
                        max_scf_iter::Int = 30,
                        scf_tol::Real = 1e-6,
                        mix::Real = 0.4,
@@ -1001,13 +1212,10 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
             (Hmf_mpo = +(Hmf_mpo, fock_mpo; maxdim=maxdim, cutoff=cutoff))
         Hmf = _scf_copy_with_mpo(H0, Hmf_mpo;
                                  scale=something(scale, 0.0), center=0.0)
-
-        if spectral_bounds !== nothing && (density_method === :sp2 || density_method === :mcweeny)
-            emin, emax = spectral_bounds
-            sc = max(abs(emin), abs(emax), eps(Float64))
-            Hmf.scale = Float64(sc)
-            Hmf.center = 0.0
-        end
+        _scf_prepare_density_scale!(Hmf, density_method;
+                                    scale=scale,
+                                    spectral_bounds=spectral_bounds,
+                                    padding=purification_scale_padding)
 
         density_mpo = get_density(Hmf;
                                   method=density_method,
@@ -1113,6 +1321,7 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
                               fermi::Real = 0.0,
                               Ncheb::Int = 100,
                               scale::Union{Nothing,Real} = H0.scale == 0.0 ? nothing : H0.scale,
+                              purification_scale_padding::Real = 1.05,
                               max_scf_iter::Int = 30,
                               scf_tol::Real = 1e-6,
                               mix::Real = 0.4,
@@ -1148,6 +1357,12 @@ function scf_magnetic_hubbard(H0::TBHamiltonian, U::Number;
                                  scale=something(scale, 0.0), center=0.0)
         Hdn = _scf_copy_with_mpo(H0_dn, +(H0_dn.mpo, V_dn; maxdim=maxdim, cutoff=cutoff);
                                  scale=something(scale, 0.0), center=0.0)
+        _scf_prepare_density_scale!(Hup, density_method;
+                                    scale=scale,
+                                    padding=purification_scale_padding)
+        _scf_prepare_density_scale!(Hdn, density_method;
+                                    scale=scale,
+                                    padding=purification_scale_padding)
 
         density_up_mpo = get_density(Hup;
                                      method=density_method,
