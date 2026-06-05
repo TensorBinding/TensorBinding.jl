@@ -14,64 +14,6 @@
 # Requires: interleave_mpo (RPA_tk.jl), custom_mpo (utils.jl).
 
 
-"""
-    _identity_vec_mps(L, sites2) -> MPS
-
-Exact bond-2 MPS representing the identity matrix δ(i,j) in the interleaved
-2L-site quantics encoding.  Odd sites carry row bits, even sites carry column
-bits.  Each consecutive pair (row bit k, col bit k) contributes the state
-|0⟩_row|0⟩_col + |1⟩_row|1⟩_col, giving bond dimension 2 within each pair and
-bond dimension 1 between pairs.  No QTCI needed.
-"""
-function _identity_vec_mps(L::Int, sites2::Vector{<:Index})
-    N = 2L
-    @assert length(sites2) == N "sites2 must have length 2L = $(2L), got $(length(sites2))"
-    tensors = Vector{ITensor}(undef, N)
-
-    # Pre-create ALL bond indices before the loop so each Index object is
-    # created exactly once and shared between the two tensors it connects.
-    # Creating Index(...) inside the loop would give fresh unique IDs each
-    # time, so adjacent pairs would never share an index and contractions
-    # would accumulate dangling indices instead of canceling them.
-    lnk_inner   = [Index(2, "Link,l=$(2k-1)") for k in 1:L]     # within pair k
-    lnk_between = [Index(1, "Link,l=$(2k)")   for k in 1:L-1]    # between pairs k and k+1
-
-    for k in 1:L
-        s_row = sites2[2k - 1]
-        s_col = sites2[2k]
-        li    = lnk_inner[k]
-
-        # Row tensor: encodes the row bit onto the inner bond
-        if k == 1
-            T_row = ITensor(ComplexF64, s_row, li)
-            T_row[s_row => 1, li => 1] = 1.0
-            T_row[s_row => 2, li => 2] = 1.0
-        else
-            lb = lnk_between[k - 1]
-            T_row = ITensor(ComplexF64, lb, s_row, li)
-            T_row[lb => 1, s_row => 1, li => 1] = 1.0
-            T_row[lb => 1, s_row => 2, li => 2] = 1.0
-        end
-
-        # Col tensor: enforces col bit == row bit via the shared inner bond
-        if k == L
-            T_col = ITensor(ComplexF64, li, s_col)
-            T_col[li => 1, s_col => 1] = 1.0
-            T_col[li => 2, s_col => 2] = 1.0
-        else
-            rb = lnk_between[k]
-            T_col = ITensor(ComplexF64, li, s_col, rb)
-            T_col[li => 1, s_col => 1, rb => 1] = 1.0
-            T_col[li => 2, s_col => 2, rb => 1] = 1.0
-        end
-
-        tensors[2k - 1] = T_row
-        tensors[2k]     = T_col
-    end
-
-    return MPS(tensors)
-end
-
 
 """
     _vec_mps_from_mpo(G_mpo, sites2; cutoff, maxdim) -> MPS
@@ -142,7 +84,7 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
     z     = ComplexF64(ω_phys + im * η)
     ω_mpo = z * MPO(sites, "Id") - H_mpo
     Lop   = interleave_mpo(ω_mpo, sites2, 0)
-    rhs   = _identity_vec_mps(N, sites2)
+    rhs   = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
     x0    = isnothing(x0_mpo) ? deepcopy(rhs) :
                 _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
 

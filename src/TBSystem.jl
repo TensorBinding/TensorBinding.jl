@@ -43,6 +43,10 @@ Fields
 - `_tn_Ncheb`      : order of the cached Chebyshev expansion
 - `_density_cache` : cached density-matrix MPO
 
+**Stored interaction MPOs** (set via [`add_interaction!`](@ref))
+- `interaction_mpo` : Hartree/CDW interaction kernel (fully scaled); used by `get_scf(H, channel)`
+- `fock_mpo`        : Fock/exchange interaction kernel (fully scaled)
+
 Do not construct directly — use [`get_Hamiltonian`](@ref).
 """
 mutable struct TBHamiltonian
@@ -64,8 +68,20 @@ mutable struct TBHamiltonian
     _tn_cache      :: Union{Nothing, Vector{MPO}}   # MPO Chebyshev list (mode=:mpo)
     _tn_mps_cache  :: Union{Nothing, Vector{MPS}}   # MPS Chebyshev list (mode=:mps)
     _tn_Ncheb      :: Int
-    _density_cache :: Union{Nothing, MPO}
+    _density_cache  :: Union{Nothing, MPO}
+    # ---- stored interaction MPOs (set via add_interaction!) ----
+    interaction_mpo :: Union{Nothing, MPO}
+    fock_mpo        :: Union{Nothing, MPO}
 end
+
+# Backward-compatible 17-arg constructor (pre-interaction_mpo callers); appends nothing, nothing.
+TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
+    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+                  nothing, nothing)
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -818,6 +834,53 @@ function _pos_sites(H::TBHamiltonian)
     isnothing(H.sublattice_s) || push!(aux, H.sublattice_s)
     aux_set = Set(aux)
     return filter(s -> s ∉ aux_set, H.sites)
+end
+
+
+# ============================================================
+# Interaction storage
+# ============================================================
+
+"""
+    add_interaction!(H, V; channel=:hartree, type=Float64, tol=1e-8) -> H
+
+Store a pre-built interaction MPO in `H` for later use with `get_scf(H, channel)`.
+
+`V` can be:
+- `MPO`      — stored directly
+- `Number`   — scalar coupling; stored as `V · Id` on the position sites
+- `Function` with 1 arg — on-site potential `V(i)`, 0-indexed; stored as diagonal MPO
+- `Function` with 2 args — interaction kernel `V(i,j)`, 0-indexed; stored as full 2D MPO
+
+`channel`:
+- `:hartree` or `:default` → stored in `H.interaction_mpo` (used by `:cdw` and `:magnetic` SCF)
+- `:fock` or `:exchange`   → stored in `H.fock_mpo`
+"""
+function add_interaction!(H::TBHamiltonian, V;
+                          channel::Symbol = :hartree,
+                          type::Type = Float64,
+                          tol::Real = 1e-8,
+                          kwargs...)
+    pos_s = _pos_sites(H)
+    mpo = if V isa MPO
+        V
+    elseif V isa Number
+        V * MPO(collect(pos_s), "Id")
+    elseif V isa Function
+        get_mpo(H.L, pos_s, V; type=type, tol=tol, kwargs...)
+    else
+        error("add_interaction!: unsupported V type $(typeof(V)). Use Number, Function, or MPO.")
+    end
+
+    ch = lowercase(String(channel))
+    if ch in ("hartree", "default")
+        H.interaction_mpo = mpo
+    elseif ch in ("fock", "exchange")
+        H.fock_mpo = mpo
+    else
+        error("add_interaction!: unknown channel :$channel. Use :hartree or :fock.")
+    end
+    return H
 end
 
 

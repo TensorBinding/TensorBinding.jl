@@ -52,33 +52,7 @@ end
 # Site-index manipulation helpers
 # ============================================================
 
-# Identify (bra, ket) among the two site legs of an MPO site tensor.
-@inline function _bra_ket(sij)
-    @assert length(sij) == 2 "MPO site tensor should have exactly 2 site legs"
-    return plev(sij[1]) == 1 ? (sij[1], sij[2]) : (sij[2], sij[1])
-end
-
 nsitelegs(T::ITensor) = count(i -> hastags(i, "Site"), inds(T))
-
-
-"""
-    replace_sites(MPOin, newsites) -> MPO
-
-Replace the physical (bra + ket) indices of each site in `MPOin`
-with the corresponding index from `newsites`, preserving prime levels.
-"""
-function replace_sites(MPOin::MPO, newsites)
-    L      = length(MPOin)
-    indsMPO = siteinds(MPOin)
-    T = MPO(L)
-    for n in 1:L
-        bra_old, ket_old = _bra_ket(indsMPO[n])
-        T[n] = MPOin[n] *
-               delta(bra_old, prime(newsites[n])) *
-               delta(ket_old, newsites[n])
-    end
-    return T
-end
 
 
 """
@@ -1142,70 +1116,6 @@ function chebyshev2d_gf_coeffs(ω::Real, scale1::Real, center1::Real,
 end
 
 
-"""
-    _hadamard_mpo(A, B, out_sites) -> MPO
-
-Site-wise Kronecker (Hadamard) product of two L-site MPOs `A` (on H1.sites)
-and `B` (on H2.sites).  At each site n the result tensor is
-
-    C[n] = A[n] ⊗ B[n]
-
-with A's and B's physical (bra/ket) indices identified and mapped to `out_sites[n]`.
-Bond dimension of C equals dim(A) × dim(B).
-
-`out_sites` must be a fresh set of L Index objects distinct from the physical
-indices of both A and B (e.g. `siteinds("Qubit", L)`).
-"""
-function _hadamard_mpo(A::MPO, B::MPO, out_sites::Vector{<:Index};
-                       maxdim::Int = typemax(Int), cutoff::Real = 0.0)
-    L      = length(A)
-    @assert length(B) == L && length(out_sites) == L
-    sindsA = siteinds(A)
-    sindsB = siteinds(B)
-
-    # Give B fresh physical Index objects (via sim) so that A[n]*B_n never
-    # accidentally contracts indices that are shared between A and B — which
-    # happens when both MPOs were projected from the same parent Hamiltonian
-    # (i.e. H1.sites === H2.sites).  The 3-leg deltas then wire the fresh B
-    # physical indices to the same out_sites as A's physical indices, giving
-    # the correct Hadamard product (A⊙B)[σ',σ] = A[σ',σ] · B[σ',σ].
-    tens = Vector{ITensor}(undef, L)
-    for n in 1:L
-        bra_A, ket_A = _bra_ket(sindsA[n])
-        bra_B, ket_B = _bra_ket(sindsB[n])
-        bra_out = prime(out_sites[n])
-        ket_out = out_sites[n]
-        bra_B_f = sim(bra_B)
-        ket_B_f = sim(ket_B)
-        B_n = replaceinds(B[n], [bra_B, ket_B], [bra_B_f, ket_B_f])
-        W = A[n] * B_n
-        W = W * delta(bra_A, bra_B_f, bra_out)
-        W = W * delta(ket_A, ket_B_f, ket_out)
-        tens[n] = W
-    end
-
-    # tens[n] carries two sets of link indices (one from A, one from B).
-    # Fuse each bond pair into a single combined link with a combiner.
-    if L == 1
-        mpo = MPO(tens)
-        (maxdim < typemax(Int) || cutoff > 0.0) && ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cutoff)
-        return mpo
-    end
-    Cs = Vector{ITensor}(undef, L - 1)
-    for b in 1:L-1
-        lA = only(commoninds(A[b], A[b+1]))
-        lB = only(commoninds(B[b], B[b+1]))
-        Cs[b] = combiner(lA, lB; tags="Link,l=$b")
-    end
-    tens[1] = tens[1] * Cs[1]
-    for n in 2:L-1
-        tens[n] = tens[n] * Cs[n-1] * Cs[n]
-    end
-    tens[L] = tens[L] * Cs[L-1]
-    mpo = MPO(tens)
-    (maxdim < typemax(Int) || cutoff > 0.0) && ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cutoff)
-    return mpo
-end
 
 
 """
@@ -1229,7 +1139,7 @@ The bubble on L-site MPOs is assembled as
     Π₀(ω) = Σ_{mn} c_{mn}(ω) · D_{mn}
 
 where D_{mn} = (T_m(H̃₁)·P₁) ⊙ T_n(H̃₂) − T_m(H̃₁) ⊙ (T_n(H̃₂)·P₂)
-and ⊙ is the site-wise Hadamard product (`_hadamard_mpo`).
+and ⊙ is the site-wise Hadamard product (`hadamard_mpo`).
 
 **Online multi-ω sweep**: All coefficient matrices C[m,n](ω) are precomputed
 at once (cheap DCT scalars). The (m,n) double loop runs once; each D_{mn} is
@@ -1334,8 +1244,8 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
             n_computed += 1
 
             # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
-            had_A = _hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = _hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_A = hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_B = hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
             D_mn  = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
 
             # Accumulate c_mn(ω) · D_mn into each Π(ω) simultaneously
@@ -1495,8 +1405,8 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
         (isnothing(A_tuck[s1]) || isnothing(B_tuck[s2]) ||
          isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
 
-        had_A = _hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        had_B = _hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
+        had_A = hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
+        had_B = hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
         D_tuck[s1, s2] = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
 
         verbose && println("  ($s1,$s2)/($r_m,$r_n) done")
@@ -1632,8 +1542,8 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
             n_computed += 1
 
             # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
-            had_A = _hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = _hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_A = hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_B = hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
             D_mn  = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
 
             # QFT + diagonal extraction — done ONCE per (m,n), shared across all ω.
@@ -1810,8 +1720,8 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
 
             (isnothing(A_s) || isnothing(E_s)) && continue
 
-            had_A = _hadamard_mpo(A_s, B_s, out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = _hadamard_mpo(C_s, E_s, out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_A = hadamard_mpo(A_s, B_s, out_sites; maxdim=maxdim, cutoff=cutoff)
+            had_B = hadamard_mpo(C_s, E_s, out_sites; maxdim=maxdim, cutoff=cutoff)
             D     = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
 
             D_phys = replace_sites(D, H1.sites)
@@ -1979,8 +1889,8 @@ function get_bubble_diag_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
         (isnothing(A_tuck[s1]) || isnothing(B_tuck[s2]) ||
          isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
 
-        had_A = _hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        had_B = _hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
+        had_A = hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
+        had_B = hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
         D     = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
 
         D_phys          = replace_sites(D, H1.sites)

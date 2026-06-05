@@ -232,28 +232,165 @@ function mps2mpo(L, sites, density_mps)
 end
 
 
+@inline function _bra_ket(sij)
+    @assert length(sij) == 2 "MPO site tensor should have exactly 2 site legs"
+    return plev(sij[1]) == 1 ? (sij[1], sij[2]) : (sij[2], sij[1])
+end
+
 """
-    get_diagonal_mpo(L, sites, f; type=Float64) -> MPO
+    replace_sites(MPOin, newsites) -> MPO
 
-Build an MPO that is diagonal in the computational basis with entry
-`f(x)` at site `x in {1, ..., 2^L}`, using QTCI to compress the
-function into an MPS and then promoting it to a diagonal MPO.
+Replace the physical (bra + ket) indices of each site in `MPOin` with the
+corresponding index from `newsites`, preserving prime levels.
+"""
+function replace_sites(MPOin::MPO, newsites)
+    L = length(MPOin)
+    @assert length(newsites) == L
+    indsMPO = siteinds(MPOin)
+    T = MPO(L)
+    for n in 1:L
+        bra_old, ket_old = _bra_ket(indsMPO[n])
+        T[n] = MPOin[n] *
+               delta(bra_old, prime(newsites[n])) *
+               delta(ket_old, newsites[n])
+    end
+    return T
+end
 
-This is the primary way to represent any on-site potential or
-position-dependent modulation in the quantics framework.
+"""
+    hadamard_mpo(A, B, out_sites; maxdim=100, cutoff=1e-8) -> MPO
+
+Site-wise Hadamard product of two MPOs: `C[i,j] = A[i,j] * B[i,j]`.
+`out_sites` may be any index set, including A/B's own sites; fresh working
+indices are created internally and the result is remapped to `out_sites`.
+"""
+function hadamard_mpo(A::MPO, B::MPO, out_sites;
+                      maxdim::Int = 100,
+                      cutoff::Real = 1e-8)
+    L = length(A)
+    @assert length(B) == L && length(out_sites) == L
+    sindsA = siteinds(A)
+    sindsB = siteinds(B)
+    fresh_sites = [sim(out_sites[n]) for n in 1:L]
+
+    tens = Vector{ITensor}(undef, L)
+    for n in 1:L
+        bra_A, ket_A = _bra_ket(sindsA[n])
+        bra_B, ket_B = _bra_ket(sindsB[n])
+        bra_out = prime(fresh_sites[n])
+        ket_out = fresh_sites[n]
+        bra_B_f = sim(bra_B)
+        ket_B_f = sim(ket_B)
+        B_n = replaceinds(B[n], [bra_B, ket_B], [bra_B_f, ket_B_f])
+        W = A[n] * B_n
+        W = W * delta(bra_A, bra_B_f, bra_out)
+        W = W * delta(ket_A, ket_B_f, ket_out)
+        tens[n] = W
+    end
+
+    if L > 1
+        Cs = Vector{ITensor}(undef, L - 1)
+        for b in 1:L-1
+            lA = only(commoninds(A[b], A[b+1]))
+            lB = only(commoninds(B[b], B[b+1]))
+            Cs[b] = combiner(lA, lB; tags="Link,l=$b")
+        end
+        tens[1] = tens[1] * Cs[1]
+        for n in 2:L-1
+            tens[n] = tens[n] * Cs[n-1] * Cs[n]
+        end
+        tens[L] = tens[L] * Cs[L-1]
+    end
+
+    mpo = replace_sites(MPO(tens), out_sites)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cutoff)
+    return mpo
+end
+
+"""
+    eval_mps(A, n) -> Real
+
+Evaluate a profile MPS at the 0-indexed basis coordinate `n` using the
+big-endian convention of `binary_to_MPS`. Do not use `_eval_diag_mps` for
+this purpose — that helper uses LSB-first ordering for the QFT momentum
+convention.
+"""
+function eval_mps(A::MPS, n::Int)
+    sites = siteinds(A)
+    psi = binary_to_MPS(n, length(sites), sites)
+    return real(inner(psi, A))
+end
+
+"""
+    rms_error(a, b) -> Float64
+
+RMS distance between two MPS objects over all computational-basis states.
+"""
+function rms_error(a::MPS, b::MPS)
+    diff = a - b
+    n = prod(dim(s) for s in siteinds(a))
+    return sqrt(abs(real(inner(diff', diff))) / n)
+end
+
+"""
+    constant_mps(sites, value) -> MPS
+
+Rank-1 MPS whose amplitude is `value` on every computational-basis state.
+"""
+function constant_mps(sites::Vector{<:Index}, value::Number)
+    isempty(sites) && return MPS(ITensor[])
+    return extract_diagonal_to_mps(value * MPO(sites, "Id"))
+end
+
+"""
+    get_mps(L, sites, f; type=Float64, tol=1e-8) -> MPS
+
+Compress a scalar profile `f(n)` on `n = 0, ..., 2^L-1` into an MPS via QTCI.
+"""
+function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8)
+    xvals = range(1, 2^L; length=2^L)
+    qtt, _, _ = quanticscrossinterpolate(type, i -> f(round(Int, i) - 1), xvals; tolerance=tol)
+    tt = TensorCrossInterpolation.tensortrain(qtt.tci)
+    return MPS(tt; sites=collect(sites))
+end
+
+"""
+    get_mpo(L, sites, f; type=Float64, tol=1e-8, kwargs...) -> MPO
+
+Compress a function into an MPO via QTCI using 0-indexed coordinates
+`n = 0, ..., 2^L-1`. Dispatches on arity:
+
+- **1-argument** `f(n)`: builds a diagonal MPO (on-site potential).
+- **2-argument** `f(i, j)`: builds a full interaction MPO by 2D QTCI,
+  pairing the interleaved quantics legs into bra/ket via `custom_mpo`.
+"""
+function get_mpo(L::Int, sites, f; type=Float64, tol::Real=1e-8, kwargs...)
+    if applicable(f, 0, 0)
+        N = 1 << L
+        xvals = range(0, N - 1; length=N)
+        kernel = (x, y) -> f(round(Int, x), round(Int, y))
+        qtt, _, _ = quanticscrossinterpolate(type, kernel, [xvals, xvals];
+                                             tolerance=tol, kwargs...)
+        tt = TensorCrossInterpolation.tensortrain(qtt.tci)
+        return custom_mpo(MPS(tt), collect(sites))
+    else
+        return mps2mpo(L, sites, get_mps(L, sites, f; type=type, tol=tol))
+    end
+end
+
+"""
+    get_diagonal_mpo(L, sites, f; type=Float64, tol=1e-8) -> MPO
+
+Build a diagonal MPO with entry `f(x)` at 1-indexed site `x ∈ {1, ..., 2^L}`.
+Wraps `get_mpo` with a 1→0 index shift for backward compatibility.
 
 # Example
 ```julia
-# Uniform on-site energy gradient
 pot = get_diagonal_mpo(L, sites, x -> 0.01 * x)
 ```
 """
-function get_diagonal_mpo(L, sites, f; type=Float64)
-    xvals = range(1, 2^L; length=2^L)
-    qtt, _, _ = quanticscrossinterpolate(type, f, xvals; tolerance=1e-8)
-    tt         = TensorCrossInterpolation.tensortrain(qtt.tci)
-    density_mps = MPS(tt; sites)
-    return mps2mpo(L, sites, density_mps)
+function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
+    return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol)
 end
 
 
