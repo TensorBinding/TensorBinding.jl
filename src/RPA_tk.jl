@@ -762,6 +762,224 @@ function rpa_wynn_from_bubbles(Π0_list::Vector{<:MPO}, MPOV::MPO;
 end
 
 
+# ============================================================
+# Haydock recursion (operator-level Krylov)
+# ============================================================
+
+"""
+    haydock_cf(H_mpo, seed, N_steps; maxdim, cutoff, verbose)
+        -> (a, b, basis, norm0)
+
+Haydock (Lanczos) recursion with H_mpo acting on MPO vectors from the left.
+Starting from `seed`, builds an orthogonal Krylov basis under H_mpo using
+the Frobenius (Hilbert-Schmidt) inner product (A, B) = Tr[A† B].
+
+Three-term recurrence (Φ₀ = seed / β₀, β₀ = ||seed||_F):
+
+    Φₙ₊₁ = H·Φₙ − aₙ·Φₙ − bₙ·Φₙ₋₁    (b₁ = 0)
+
+Returns:
+- `a`    : diagonal coefficients a[1..N]
+- `b`    : b[1] = norm0 = ||seed||_F; b[2..N] = off-diagonal βₙ
+- `basis`: normalized Krylov MPOs {Φ₀, …, Φₙ₋₁}
+- `norm0`: sqrt(inner(seed, seed))
+
+The scalar projected GF ⟨seed|(z−H)⁻¹|seed⟩ is recovered via
+`eval_haydock_cf(a, b, z)`.  The full resolvent MPO (z−H)⁻¹|seed⟩ is
+recovered via `haydock_resolve_mpo(a, b, basis, z)`.
+"""
+function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
+                    maxdim::Int   = 200,
+                    cutoff::Real  = 1e-8,
+                    verbose::Bool = false)
+
+    a     = zeros(Float64, N_steps)
+    b     = zeros(Float64, N_steps)
+    basis = Vector{MPO}(undef, N_steps)
+
+    norm0    = sqrt(real(tr(apply(dag(seed), seed; cutoff=cutoff, maxdim=maxdim))))
+    b[1]     = norm0
+    Phi_prev = nothing
+    Phi_curr = (1.0 / norm0) * seed
+
+    actual_N = N_steps
+    for n in 1:N_steps
+        basis[n] = Phi_curr
+
+        HPhi = apply(H_mpo, Phi_curr; maxdim=maxdim, cutoff=cutoff)
+        a[n] = real(tr(apply(dag(Phi_curr), HPhi; cutoff=cutoff, maxdim=maxdim)))
+
+        r = +(HPhi, (-a[n]) * Phi_curr; maxdim=maxdim)
+        ITensorMPS.truncate!(r; cutoff=cutoff)
+        if n > 1
+            r = +(r, (-b[n]) * Phi_prev; maxdim=maxdim)
+            ITensorMPS.truncate!(r; cutoff=cutoff)
+        end
+
+        b_next = sqrt(max(0.0, real(tr(apply(dag(r), r; cutoff=cutoff, maxdim=maxdim)))))
+        verbose && println("  step $n: a=$(round(a[n];digits=5))  b_next=$(round(b_next;digits=5))  chi=$(maxlinkdim(Phi_curr))")
+
+        if b_next < 1e-12
+            verbose && println("  haydock_cf: invariant subspace at step $n")
+            actual_N = n
+            break
+        end
+
+        Phi_prev = Phi_curr
+        Phi_curr = (1.0 / b_next) * r
+        n < N_steps && (b[n + 1] = b_next)
+    end
+
+    return a[1:actual_N], b[1:actual_N], basis[1:actual_N], norm0
+end
+
+
+"""
+    eval_haydock_cf(a, b, z) -> ComplexF64
+
+Evaluate the Haydock continued fraction ⟨seed|(z−H)⁻¹|seed⟩ via backward
+recursion. `b[1]` must be norm0 = ||seed||_F (as returned by `haydock_cf`).
+
+    G(z) = b[1]² / (z − a[1] − b[2]²/(z − a[2] − b[3]²/…))
+
+Calling with truncated arrays a[1:N], b[1:N] gives the N-th CF convergent,
+whose sequence over N is suitable for Wynn ε-acceleration.
+"""
+function eval_haydock_cf(a::AbstractVector, b::AbstractVector, z::Number)
+    N = length(a)
+    f = ComplexF64(z) - a[N]
+    for n in N-1:-1:1
+        f = ComplexF64(z) - a[n] - b[n + 1]^2 / f
+    end
+    return b[1]^2 / f
+end
+
+
+"""
+    haydock_resolve_mpo(a, b, basis, z; maxdim, cutoff) -> MPO
+
+Reconstruct (z−H)⁻¹|seed⟩ as an MPO by solving the N×N Lanczos tridiagonal
+system and forming a linear combination of the Krylov basis MPOs:
+
+    (z·I − T) c = b[1]·e₁,   Π₀(z) = Σₙ c[n]·basis[n]
+
+where T has diagonal `a` and off-diagonal `b[2:]`, and b[1] = norm0.
+"""
+function haydock_resolve_mpo(a::AbstractVector, b::AbstractVector,
+                              basis::Vector{<:MPO}, z::Number;
+                              maxdim::Int  = 200,
+                              cutoff::Real = 1e-8)
+    N  = length(a)
+    zc = ComplexF64(z)
+    d  = [zc - a[n] for n in 1:N]
+    ev = N > 1 ? ComplexF64[-b[n] for n in 2:N] : ComplexF64[]
+    T  = Tridiagonal(ev, d, ev)
+    rhs       = zeros(ComplexF64, N)
+    rhs[1]    = b[1]
+    c         = T \ rhs
+
+    result = c[1] * basis[1]
+    for n in 2:N
+        result = +(result, c[n] * basis[n]; maxdim=maxdim)
+        ITensorMPS.truncate!(result; cutoff=cutoff)
+    end
+    return result
+end
+
+
+"""
+    get_bubble_mpo_haydock(H1, H2, ωlist; N_steps, η, maxdim, cutoff,
+                            ϵF, P_method, purify_method, purify_maxdim,
+                            purify_maxiters, purify_tol, Ncheb, verbose)
+        -> Vector{MPO}
+
+Compute the bare polarization bubble Π₀(ω) as an L-site MPO for each
+frequency in `ωlist` using Haydock recursion on H_eff = I⊗H₂ − H₁⊗I.
+
+The Krylov basis is built once from the seed Φ₀ = I⊗P₂ − P₁⊗I.  For each
+ω, the resolvent (ω+iη−H_eff)⁻¹Φ₀ is recovered by solving the N×N Lanczos
+tridiagonal system and forming a linear combination of the stored basis MPOs.
+
+Returns a `Vector{MPO}` compatible with `rpa_wynn_from_bubbles`.
+
+**Keyword arguments**
+- `N_steps`        : Haydock recursion depth. Default `30`.
+- `η`              : Lorentzian broadening. Default `1e-2`.
+- `maxdim`         : Maximum bond dimension. Default `200`.
+- `cutoff`         : SVD truncation cutoff. Default `1e-8`.
+- `ϵF`             : Fermi energy. Default `0.0`.
+- `P_method`       : `:purification` (default) or `:kpm`.
+- `purify_method`  : `:mcweeny` (default) or `:sp2`.
+- `purify_maxdim`  : Max bond dim during purification. Default `40`.
+- `purify_maxiters`: Max purification iterations. Default `30`.
+- `purify_tol`     : Purification convergence tolerance. Default `1e-5`.
+- `Ncheb`          : Chebyshev order for `:kpm` P_method. Default `150`.
+- `verbose`        : Print progress. Default `false`.
+"""
+function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
+                                  ωlist::AbstractVector{<:Real};
+                                  N_steps::Int          = 30,
+                                  η::Real               = 1e-2,
+                                  maxdim::Int           = 200,
+                                  cutoff::Real          = 1e-8,
+                                  ϵF::Real              = 0.0,
+                                  P_method::Symbol      = :purification,
+                                  purify_method::Symbol = :mcweeny,
+                                  purify_maxdim::Int    = 40,
+                                  purify_maxiters::Int  = 30,
+                                  purify_tol::Float64   = 1e-5,
+                                  Ncheb::Int            = 150,
+                                  verbose::Bool         = false)
+
+    L1 = H1.L; L2 = H2.L
+    @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    L              = L1
+    sites_combined = vcat(H1.sites, H2.sites)
+
+    # ---- Density matrices ----
+    verbose && println("Haydock bubble: computing P1 (P_method=$P_method)...")
+    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+    verbose && println("Haydock bubble: computing P2...")
+    P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+
+    # ---- Seed: I⊗P₂ − P₁⊗I on 2L-site combined space ----
+    id1  = MPO(H1.sites, "Id"); id2 = MPO(H2.sites, "Id")
+    P1op = interleave_mpo(P1,  sites_combined, 0)
+    Iop2 = interleave_mpo(id2, sites_combined, 1)
+    Iop1 = interleave_mpo(id1, sites_combined, 0)
+    P2op = interleave_mpo(P2,  sites_combined, 1)
+    seed = ITensorMPS.truncate!(
+        apply(Iop1, P2op; maxdim=maxdim, cutoff=cutoff) -
+        apply(P1op, Iop2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+    verbose && println("Haydock bubble: seed built, chi=$(maxlinkdim(seed))")
+
+    # ---- H_eff = I⊗H₂ − H₁⊗I ----
+    Heff = _build_heff(H1.mpo, H2.mpo, sites_combined)
+    verbose && println("Haydock bubble: H_eff built, chi=$(maxlinkdim(Heff))")
+
+    # ---- Haydock recursion (once, independent of ω) ----
+    verbose && println("Haydock bubble: running $N_steps steps...")
+    a, b, basis, norm0 = haydock_cf(Heff, seed, N_steps;
+                                     maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+    verbose && println("Haydock bubble: $(length(a)) steps completed, norm0=$(round(norm0;digits=4))")
+
+    # ---- Assemble Π₀(ω) for each frequency ----
+    finalsites = siteinds("Qubit", 2L)
+    bubbles    = Vector{MPO}(undef, length(ωlist))
+    for (i, ω) in enumerate(ωlist)
+        verbose && println("Haydock bubble: assembling Pi0 at omega=$ω ($i/$(length(ωlist)))...")
+        z          = ComplexF64(ω + im * η)
+        b2L        = haydock_resolve_mpo(a, b, basis, z; maxdim=maxdim, cutoff=cutoff)
+        biv        = swap_every_other_legs(b2L, finalsites)
+        bubbles[i] = collapse_mpo_pairs(biv, H1.sites)
+    end
+
+    return bubbles
+end
+
+
 """
     get_spect_k(W; tol, maxdim) -> Vector{ComplexF64}
 
