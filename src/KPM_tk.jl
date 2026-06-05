@@ -1383,7 +1383,7 @@ function get_density_quantics(A,L)
     qtt, ranks, errors = quanticscrossinterpolate(Float64, f,  xvals ; tolerance=1e-8)
 
     tt = TCI.tensortrain(qtt.tci)
-    density_mps = ITensors.MPS(tt;sites)
+    density_mps = MPS(tt;sites)
   
     density_mpo = outer(density_mps',density_mps)
     for i in 1:L

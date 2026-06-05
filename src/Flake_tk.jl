@@ -205,7 +205,7 @@ function mask_hamiltonian(H::TBHamiltonian, sdf;
     mask_raw(x) = mask_site(round(Int, x) + 1)
     xvals       = range(0, N - 1; length=N)
     qtt, _, _   = quanticscrossinterpolate(Float64, mask_raw, xvals; tolerance=tol)
-    mask_mps    = ITensors.MPS(TCI.tensortrain(qtt.tci); sites=sites)
+    mask_mps    = MPS(TCI.tensortrain(qtt.tci); sites=sites)
 
     # Promote MPS → diagonal MPO via _asdiagonal on each site tensor
     mask_mpo = outer(mask_mps', mask_mps)
