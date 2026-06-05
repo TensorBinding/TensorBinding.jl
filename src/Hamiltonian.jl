@@ -1,4 +1,4 @@
-# Hamiltonian.jl — MPO construction for tight-binding Hamiltonians
+﻿# Hamiltonian.jl - MPO construction for tight-binding Hamiltonians
 #
 # Functions here build Hamiltonian MPOs from hopping functions or
 # lattice parameters.  Low-level tensor utilities live in utils.jl.
@@ -7,80 +7,41 @@
 # 1D nearest-neighbour kinetic MPO (quantics binary encoding)
 # ============================================================
 
+function _tb_periodic_boundary(boundary::Symbol)
+    boundary in (:open, :obc, :OBC) && return false
+    boundary in (:periodic, :pbc, :PBC) && return true
+    error("Unsupported boundary :$boundary. Use :open or :periodic.")
+end
+
 """
-    kinetic_1d_nn(L, sites) -> MPO
+    kinetic_1d_nn(L, sites; boundary=:open) -> MPO
 
 Build the nearest-neighbour hopping MPO for a 1D chain of 2^L sites
-in the quantics binary representation.  Uses OpSum with sigma_plus /
-sigma_minus acting as binary increment / decrement operators across
-the L qubit sites.  Hopping amplitude = 1; scale by multiplying the result.
+in the quantics binary representation. Hopping amplitude = 1; scale by
+multiplying the result. The default `boundary=:open` preserves the package's
+open-chain convention; `boundary=:periodic` adds the wrap-around bond.
 """
-function kinetic_1d_nn(L, sites)
-    kinetic = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_minus", j)
-        end
-        kinetic += os
-    end
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_plus", j)
-        end
-        kinetic += os
-    end
-    return MPO(kinetic, sites)
+function kinetic_1d_nn(L, sites; boundary::Symbol=:open, bc=nothing)
+    @assert L == length(sites) "L must equal length(sites)"
+    bc === nothing || (boundary = Symbol(bc))
+    K, Kdag = shift_pair_mpos(sites, 1; cyclic=_tb_periodic_boundary(boundary))
+    return +(K, Kdag; cutoff=1e-12)
 end
 
 
 """
-    kinetic_1d_nn_custom(L, sites, hopping) -> MPO
+    kinetic_1d_nn_custom(L, sites, hopping; boundary=:open) -> MPO
 
 Nearest-neighbour 1D kinetic MPO with a site-dependent hopping
 encoded as a diagonal MPO `hopping`.  Useful for spatially varying
 hopping amplitudes (e.g. SSH model, quasicrystals).
 """
-function kinetic_1d_nn_custom(L, sites, hopping)
-    kinetic_1 = OpSum()
-    kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_minus", j)
-        end
-        kinetic_1 += os
-    end
-    k_mpo_1    = MPO(kinetic_1, sites)
-    true_hop_1 = apply(hopping, k_mpo_1)
-
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i - 1)
-        for j in 1:L-i
-            os *= ("Id", j)
-        end
-        for j in L+2-i:L
-            os *= ("sigma_plus", j)
-        end
-        kinetic_2 += os
-    end
-    k_mpo_2    = MPO(kinetic_2, sites)
-    true_hop_2 = apply(k_mpo_2, hopping)
-    return +(true_hop_1, true_hop_2; cutoff=1e-8)
+function kinetic_1d_nn_custom(L, sites, hopping; boundary::Symbol=:open, bc=nothing)
+    @assert L == length(sites) "L must equal length(sites)"
+    bc === nothing || (boundary = Symbol(bc))
+    return shift_hopping_mpo(hopping, sites, 1;
+                             cyclic=_tb_periodic_boundary(boundary),
+                             cutoff=1e-8)
 end
 
 # ============================================================
@@ -91,13 +52,13 @@ end
     hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                 unfoldingscheme=:interleaved) -> MPO
 
-Compress an arbitrary N×N hopping matrix `H[i,j] = f(i,j)` into an
+Compress an arbitrary NxN hopping matrix `H[i,j] = f(i,j)` into an
 MPO using Quantics Tensor Cross Interpolation on a 2D quantics grid
 (N must be a power of 2).
 
 `unfoldingscheme` controls the bit ordering of the 2D quantics grid:
-  - `:interleaved` (default) — row and column bits alternate: r_L c_L … r_1 c_1
-  - `:fused`                 — all row bits first, then column bits: r_L … r_1 c_L … c_1
+  - `:interleaved` (default): row and column bits alternate: r_L c_L ... r_1 c_1
+  - `:fused`: all row bits first, then column bits: r_L ... r_1 c_L ... c_1
 
 `initial_positions` seeds the TCI pivots; useful when the matrix has
 known structure (e.g. near-diagonal for short-time propagators).
@@ -133,7 +94,7 @@ end
     qtci_matrix_to_MPO(A_fun, L, sites; tol=1e-8, type=Float64,
                        initial_positions=[]) -> MPO
 
-Like `hopping2MPO` but works with a (2^L)×(2^L) matrix function and
+Like `hopping2MPO` but works with a (2^L)x(2^L) matrix function and
 applies an extra truncation step with `maxdim=20`.
 """
 function qtci_matrix_to_MPO(A_fun, L, sites;
@@ -184,8 +145,8 @@ function quasicrystal_modulation_30deg(i, L, L_chain, k, p)
     y_rel    = y - center_y
     modulation = 0.0
     for n in 0:Int(p/2 - 1)
-        θ         = 2π * n / p
-        r_proj    = x_rel * cos(θ) + y_rel * sin(θ)
+        theta     = 2pi * n / p
+        r_proj    = x_rel * cos(theta) + y_rel * sin(theta)
         modulation += cos(k * r_proj)
     end
     return modulation
@@ -220,7 +181,7 @@ end
 Compress a scalar function `func(x)` evaluated on the explicit integer grid `xvals`
 (typically `0:2^L-1`) into a **diagonal MPO** via Quantics Tensor Cross Interpolation.
 
-The result is `diag(func(0), func(1), …, func(2^L-1))` stored as an L-site MPO.
+The result is `diag(func(0), func(1), ..., func(2^L-1))` stored as an L-site MPO.
 Use this to encode spatially varying on-site potentials or hopping amplitudes as
 diagonal MPOs for use with `kineticNNN` and the 2D kinetic builders.
 
@@ -254,8 +215,8 @@ end
 Compose `base` with itself `nn` times using **exponentiation-by-squaring** (O(log n) applies).
 Replaces the old `arbitarty_offline` helper which used O(n) sequential applies.
 
-- `side = :right`  →  `acc = apply(acc, base)` at each set bit
-- `side = :left`   →  `acc = apply(base, acc)` at each set bit
+- `side = :right`: `acc = apply(acc, base)` at each set bit
+- `side = :left`: `acc = apply(base, acc)` at each set bit
 
 `apply_kwargs` (e.g. `(; cutoff=1e-8, maxdim=200)`) are forwarded to every `apply` call.
 `nn = 0` returns the identity MPO; `nn = 1` returns `base` unchanged.
@@ -263,7 +224,7 @@ Replaces the old `arbitarty_offline` helper which used O(n) sequential applies.
 function compose_power(base::MPO, nn::Integer;
                        side::Symbol    = :right,
                        apply_kwargs    = NamedTuple())
-    @assert nn ≥ 0 "nn must be non-negative"
+    @assert nn >= 0 "nn must be non-negative"
     nn == 0 && return MPO(siteinds(base), "Id")
     nn == 1 && return base
     acc = nothing
@@ -292,37 +253,21 @@ end
 Build a kinetic MPO for a 1D chain with a **spatially varying hopping field**
 encoded as the diagonal MPO `hopping`, and a neighbor reach controlled by `nn`.
 
-Construction:
-1. Build σ⁺·(Id…)·σ⁻ and σ⁻·(Id…)·σ⁺ base strings summed over all sites.
-2. Extend range: `An = compose_power(k1, nn; side=:right)`, `Am = compose_power(k2, nn; side=:left)`.
-3. Return `hopping · An + Am · dag(hopping)`.
+Construction uses the shared shift-hopping helper:
+`hopping * shift(nn) + shift(nn)' * dag(hopping)`.
 
-`nn=1` is the nearest-neighbour case (equivalent to `kinetic_1d_nn_custom` but written
-via `compose_power` for consistency). Larger `nn` extends the reach without repeated loops.
+`boundary=:open` is the default. Use `boundary=:periodic` (or `bc=:pbc`) for a
+cyclic shift on the quantics chain.
 """
-function kineticNNN(L, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
+function kineticNNN(L, sites, hopping::MPO, nn::Integer;
+                    apply_kwargs = NamedTuple(),
+                    boundary::Symbol = :open,
+                    bc = nothing)
     @assert L == length(sites) "L must equal length(sites)"
-    @assert nn ≥ 1             "nn must be ≥ 1"
-    kinetic_1 = OpSum()
-    kinetic_2 = OpSum()
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_plus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",         j); end
-        for j in (L+2-i):L; os *= ("sigma_minus", j); end
-        kinetic_1 += os
-    end
-    for i in 1:L
-        os = OpSum()
-        os += 1, "sigma_minus", L - (i-1)
-        for j in 1:L-i;     os *= ("Id",        j); end
-        for j in (L+2-i):L; os *= ("sigma_plus", j); end
-        kinetic_2 += os
-    end
-    k1 = MPO(kinetic_1, sites)
-    k2 = MPO(kinetic_2, sites)
-    An = compose_power(k1, nn; side=:right, apply_kwargs)
-    Am = compose_power(k2, nn; side=:left,  apply_kwargs)
-    return +(apply(hopping, An; apply_kwargs...),
-             apply(Am, dag(hopping); apply_kwargs...); cutoff=1e-12)
+    @assert nn >= 1 "nn must be >= 1"
+    bc === nothing || (boundary = Symbol(bc))
+    return shift_hopping_mpo(hopping, sites, nn;
+                             cyclic=_tb_periodic_boundary(boundary),
+                             cutoff=1e-12,
+                             apply_kwargs=apply_kwargs)
 end

@@ -43,6 +43,10 @@ Fields
 - `_tn_Ncheb`      : order of the cached Chebyshev expansion
 - `_density_cache` : cached density-matrix MPO
 
+**Stored interaction MPOs** (set via [`add_interaction!`](@ref))
+- `interaction_mpo` : Hartree/CDW interaction kernel (fully scaled); used by `get_scf(H, channel)`
+- `fock_mpo`        : Fock/exchange interaction kernel (fully scaled)
+
 Do not construct directly — use [`get_Hamiltonian`](@ref).
 """
 mutable struct TBHamiltonian
@@ -65,16 +69,21 @@ mutable struct TBHamiltonian
     _tn_mps_cache  :: Union{Nothing, Vector{MPS}}   # MPS Chebyshev list (mode=:mps)
     _tn_Ncheb      :: Int
     _density_cache :: Union{Nothing, MPO}
+    # ---- stored interaction MPOs (set via add_interaction!) ----
+    interaction_mpo :: Union{Nothing, MPO}
+    fock_mpo        :: Union{Nothing, MPO}
     Lx             :: Union{Nothing, Int}           # x-qubit count for 2D (Ly = L - Lx); nothing for 1D
 end
 
-# Backward-compatible 17-arg constructor (pre-Lx callers); inserts Lx=nothing.
+# Backward-compatible 17-arg constructor (pre-interaction_mpo/pre-fock_mpo/pre-Lx callers);
+# appends nothing, nothing, nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
               spin_s, nambu_s, layer_s, sublattice_s, aux_side,
               _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
     TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
                   spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache, nothing)
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+                  nothing, nothing, nothing)
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -202,7 +211,7 @@ function get_Hamiltonian(geometry::String, params;
     N     = 2^L
 
     if geometry == "chain_1d"
-        return _build_chain_1d(params, L, N, sites; scale, tol, maxdim)
+        return _build_chain_1d(params, L, N, sites; scale, tol, maxdim, kwargs...)
 
     elseif geometry == "haldane"
         return _build_haldane(params, L, N, sites; scale, tol, maxdim, kwargs...)
@@ -286,8 +295,14 @@ function _hex_geometry(Nx)
     return pos
 end
 
-function _build_chain_1d(t, L, N, sites; scale=nothing, tol=1e-8, maxdim=15)
-    mpo = t * kinetic_1d_nn(L, sites)
+function _build_chain_1d(t, L, N, sites;
+                         scale=nothing,
+                         tol=1e-8,
+                         maxdim=15,
+                         boundary::Symbol=:open,
+                         bc=nothing)
+    bc === nothing || (boundary = Symbol(bc))
+    mpo = t * kinetic_1d_nn(L, sites; boundary=boundary)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     sc  = something(scale, 2.5 * abs(t))
     return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
@@ -585,6 +600,8 @@ Invalidates all caches.
 """
 function add_hopping!(H::TBHamiltonian, f;
                       nn::Integer      = 1,
+                      boundary::Symbol = :open,
+                      bc               = nothing,
                       maxdim           = 15,
                       tol              = 1e-8,
                       type             = ComplexF64,
@@ -616,13 +633,16 @@ function add_hopping!(H::TBHamiltonian, f;
     pos_s = _pos_sites(H)
     sl_s  = H.sublattice_s
     apkw  = isempty(apply_kwargs) ? (; cutoff=tol, maxdim=maxdim) : apply_kwargs
+    bc === nothing || (boundary = Symbol(bc))
 
     # ── Build position-space hopping MPO (shared for all cases) ───────────────
     function pos_hop()
         if f isa Number
-            kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn; apply_kwargs)
+            kineticNNN(H.L, pos_s, f * MPO(pos_s, "Id"), nn;
+                       apply_kwargs=apply_kwargs, boundary=boundary)
         elseif f isa Function && applicable(f, 1)
-            kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn; apply_kwargs)
+            kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn;
+                       apply_kwargs=apply_kwargs, boundary=boundary)
         else
             hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
         end
@@ -660,8 +680,7 @@ function add_hopping!(H::TBHamiltonian, f;
             # Intra-cell (zero position shift): Id_pos ⊗ (|to⟩⟨from| + |from⟩⟨to|)
             extend_with_sublat(MPO(pos_s, "Id"), mat_fwd + mat_bwd)
         else
-            ku_nn = compose_power(generate_kin_u(pos_s, H.N), nn; apply_kwargs=apkw)
-            kd_nn = compose_power(generate_kin_d(pos_s, H.N), nn; apply_kwargs=apkw)
+            ku_nn, kd_nn = shift_pair_mpos(pos_s, nn; cyclic=_tb_periodic_boundary(boundary))
             +(extend_with_sublat(ku_nn, mat_fwd),
               extend_with_sublat(kd_nn, mat_bwd); cutoff=tol)
         end
@@ -827,6 +846,53 @@ function _pos_sites(H::TBHamiltonian)
     isnothing(H.sublattice_s) || push!(aux, H.sublattice_s)
     aux_set = Set(aux)
     return filter(s -> s ∉ aux_set, H.sites)
+end
+
+
+# ============================================================
+# Interaction storage
+# ============================================================
+
+"""
+    add_interaction!(H, V; channel=:hartree, type=Float64, tol=1e-8) -> H
+
+Store a pre-built interaction MPO in `H` for later use with `get_scf(H, channel)`.
+
+`V` can be:
+- `MPO`      — stored directly
+- `Number`   — scalar coupling; stored as `V · Id` on the position sites
+- `Function` with 1 arg — on-site potential `V(i)`, 0-indexed; stored as diagonal MPO
+- `Function` with 2 args — interaction kernel `V(i,j)`, 0-indexed; stored as full 2D MPO
+
+`channel`:
+- `:hartree` or `:default` → stored in `H.interaction_mpo` (used by `:cdw` and `:magnetic` SCF)
+- `:fock` or `:exchange`   → stored in `H.fock_mpo`
+"""
+function add_interaction!(H::TBHamiltonian, V;
+                          channel::Symbol = :hartree,
+                          type::Type = Float64,
+                          tol::Real = 1e-8,
+                          kwargs...)
+    pos_s = _pos_sites(H)
+    mpo = if V isa MPO
+        V
+    elseif V isa Number
+        V * MPO(collect(pos_s), "Id")
+    elseif V isa Function
+        get_mpo(H.L, pos_s, V; type=type, tol=tol, kwargs...)
+    else
+        error("add_interaction!: unsupported V type $(typeof(V)). Use Number, Function, or MPO.")
+    end
+
+    ch = lowercase(String(channel))
+    if ch in ("hartree", "default")
+        H.interaction_mpo = mpo
+    elseif ch in ("fock", "exchange")
+        H.fock_mpo = mpo
+    else
+        error("add_interaction!: unknown channel :$channel. Use :hartree or :fock.")
+    end
+    return H
 end
 
 

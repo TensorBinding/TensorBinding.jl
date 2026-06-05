@@ -1,6 +1,6 @@
-# utils.jl — shared infrastructure used across TensorBinding
+﻿# utils.jl - shared infrastructure used across TensorBinding
 #
-# Functions here are pure plumbing: binary ↔ MPS conversions,
+# Functions here are pure plumbing: binary <-> MPS conversions,
 # site-index manipulation, diagonal MPO construction, and debug
 # helpers.  No physics lives here.
 
@@ -41,7 +41,7 @@ function build_shift_mpo(sites, q,cyclic=true)
         for cin in 0:1, s_val in 0:1
             total   = s_val + qn + cin
             res_val = total % 2
-            cout    = total ÷ 2
+            cout    = div(total, 2)
             T[s' => (res_val + 1), s => (s_val + 1),
               l_in => (cin == 1 ? 1 : 2), l_out => (cout == 1 ? 1 : 2)] = 1.0
         end
@@ -58,6 +58,39 @@ function build_shift_mpo(sites, q,cyclic=true)
     return mpo
 end
 
+build_shift_mpo(sites, q::Integer; cyclic::Bool=false) =
+    build_shift_mpo(sites, q, cyclic)
+
+build_cyclic_shift_mpo(sites, q::Integer) = build_shift_mpo(sites, q, true)
+
+shift_adjoint_mpo(K::MPO) = swapprime(dag(K), 0, 1)
+
+function shift_mpo(sites, q::Integer; cyclic::Bool=false)
+    q >= 0 && return build_shift_mpo(sites, q, cyclic)
+    K = build_shift_mpo(sites, -q, cyclic)
+    return shift_adjoint_mpo(K)
+end
+
+function shift_pair_mpos(sites, q::Integer; cyclic::Bool=false)
+    K = shift_mpo(sites, q; cyclic=cyclic)
+    return K, shift_adjoint_mpo(K)
+end
+
+function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
+                           cyclic::Bool=false,
+                           maxdim::Int=typemax(Int),
+                           cutoff::Real=1e-12,
+                           apply_kwargs=NamedTuple())
+    K, Kdag = shift_pair_mpos(sites, q; cyclic=cyclic)
+    apkw = isempty(apply_kwargs) ?
+        (maxdim == typemax(Int) ? (; cutoff=cutoff) : (; cutoff=cutoff, maxdim=maxdim)) :
+        apply_kwargs
+    return +(apply(hopping, K; apkw...),
+             apply(Kdag, dag(hopping); apkw...);
+             cutoff=cutoff,
+             (maxdim == typemax(Int) ? NamedTuple() : (; maxdim=maxdim))...)
+end
+
 
 """
     to_binary_vector(n, L) -> Vector{String}
@@ -67,7 +100,7 @@ strings (big-endian), suitable as state labels for `MPS(sites, state)`.
 
 # Example
 ```julia
-to_binary_vector(5, 4)   # → ["0", "1", "0", "1"]
+to_binary_vector(5, 4)   # -> ["0", "1", "0", "1"]
 ```
 """
 function to_binary_vector(n::Integer, L::Integer)
@@ -78,13 +111,13 @@ end
 """
     binary_to_MPS(n, L, sites) -> MPS
 
-Return the computational-basis state |n⟩ as an `L`-site MPS, where
+Return the computational-basis state |n> as an `L`-site MPS, where
 `n` is encoded in big-endian binary across the `L` qubit sites.
 
 # Example
 ```julia
 sites = siteinds("Qubit", 4)
-psi   = binary_to_MPS(5, 4, sites)   # |0101⟩
+psi   = binary_to_MPS(5, 4, sites)   # |0101>
 ```
 """
 function binary_to_MPS(n::Integer, L::Integer, sites)
@@ -126,15 +159,15 @@ MPO conventions.
 """
 function custom_mpo(mps, new_sites)
     N     = length(mps)
-    new_N = N ÷ 2
+    new_N = div(N, 2)
     @assert new_N == length(new_sites) "MPS has $N sites but new_sites has $(length(new_sites)) sites; expected $new_N."
     new_mpo = MPO(new_N)
     for i in 1:new_N
         A          = mps[2i - 1]
         B          = mps[2i]
         combined_T = A * B
-        old_s1     = siteind(mps, 2i - 1)   # → bra (primed)
-        old_s2     = siteind(mps, 2i)       # → ket (unprimed)
+        old_s1     = siteind(mps, 2i - 1)   # -> bra (primed)
+        old_s2     = siteind(mps, 2i)       # -> ket (unprimed)
         new_mpo[i] = replaceinds(combined_T,
                                  [old_s1, old_s2] => [new_sites[i]', new_sites[i]])
     end
@@ -199,34 +232,171 @@ function mps2mpo(L, sites, density_mps)
 end
 
 
+@inline function _bra_ket(sij)
+    @assert length(sij) == 2 "MPO site tensor should have exactly 2 site legs"
+    return plev(sij[1]) == 1 ? (sij[1], sij[2]) : (sij[2], sij[1])
+end
+
 """
-    get_diagonal_mpo(L, sites, f; type=Float64) -> MPO
+    replace_sites(MPOin, newsites) -> MPO
 
-Build an MPO that is diagonal in the computational basis with entry
-`f(x)` at site `x ∈ {1, …, 2^L}`, using QTCI to compress the
-function into an MPS and then promoting it to a diagonal MPO.
+Replace the physical (bra + ket) indices of each site in `MPOin` with the
+corresponding index from `newsites`, preserving prime levels.
+"""
+function replace_sites(MPOin::MPO, newsites)
+    L = length(MPOin)
+    @assert length(newsites) == L
+    indsMPO = siteinds(MPOin)
+    T = MPO(L)
+    for n in 1:L
+        bra_old, ket_old = _bra_ket(indsMPO[n])
+        T[n] = MPOin[n] *
+               delta(bra_old, prime(newsites[n])) *
+               delta(ket_old, newsites[n])
+    end
+    return T
+end
 
-This is the primary way to represent any on-site potential or
-position-dependent modulation in the quantics framework.
+"""
+    hadamard_mpo(A, B, out_sites; maxdim=100, cutoff=1e-8) -> MPO
+
+Site-wise Hadamard product of two MPOs: `C[i,j] = A[i,j] * B[i,j]`.
+`out_sites` may be any index set, including A/B's own sites; fresh working
+indices are created internally and the result is remapped to `out_sites`.
+"""
+function hadamard_mpo(A::MPO, B::MPO, out_sites;
+                      maxdim::Int = 100,
+                      cutoff::Real = 1e-8)
+    L = length(A)
+    @assert length(B) == L && length(out_sites) == L
+    sindsA = siteinds(A)
+    sindsB = siteinds(B)
+    fresh_sites = [sim(out_sites[n]) for n in 1:L]
+
+    tens = Vector{ITensor}(undef, L)
+    for n in 1:L
+        bra_A, ket_A = _bra_ket(sindsA[n])
+        bra_B, ket_B = _bra_ket(sindsB[n])
+        bra_out = prime(fresh_sites[n])
+        ket_out = fresh_sites[n]
+        bra_B_f = sim(bra_B)
+        ket_B_f = sim(ket_B)
+        B_n = replaceinds(B[n], [bra_B, ket_B], [bra_B_f, ket_B_f])
+        W = A[n] * B_n
+        W = W * delta(bra_A, bra_B_f, bra_out)
+        W = W * delta(ket_A, ket_B_f, ket_out)
+        tens[n] = W
+    end
+
+    if L > 1
+        Cs = Vector{ITensor}(undef, L - 1)
+        for b in 1:L-1
+            lA = only(commoninds(A[b], A[b+1]))
+            lB = only(commoninds(B[b], B[b+1]))
+            Cs[b] = combiner(lA, lB; tags="Link,l=$b")
+        end
+        tens[1] = tens[1] * Cs[1]
+        for n in 2:L-1
+            tens[n] = tens[n] * Cs[n-1] * Cs[n]
+        end
+        tens[L] = tens[L] * Cs[L-1]
+    end
+
+    mpo = replace_sites(MPO(tens), out_sites)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cutoff)
+    return mpo
+end
+
+"""
+    eval_mps(A, n) -> Real
+
+Evaluate a profile MPS at the 0-indexed basis coordinate `n` using the
+big-endian convention of `binary_to_MPS`. Do not use `_eval_diag_mps` for
+this purpose — that helper uses LSB-first ordering for the QFT momentum
+convention.
+"""
+function eval_mps(A::MPS, n::Int)
+    sites = siteinds(A)
+    psi = binary_to_MPS(n, length(sites), sites)
+    return real(inner(psi, A))
+end
+
+"""
+    rms_error(a, b) -> Float64
+
+RMS distance between two MPS objects over all computational-basis states.
+"""
+function rms_error(a::MPS, b::MPS)
+    diff = a - b
+    n = prod(dim(s) for s in siteinds(a))
+    return sqrt(abs(real(inner(diff', diff))) / n)
+end
+
+"""
+    constant_mps(sites, value) -> MPS
+
+Rank-1 MPS whose amplitude is `value` on every computational-basis state.
+"""
+function constant_mps(sites::Vector{<:Index}, value::Number)
+    isempty(sites) && return MPS(ITensor[])
+    return extract_diagonal_to_mps(value * MPO(sites, "Id"))
+end
+
+"""
+    get_mps(L, sites, f; type=Float64, tol=1e-8) -> MPS
+
+Compress a scalar profile `f(n)` on `n = 0, ..., 2^L-1` into an MPS via QTCI.
+"""
+function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8)
+    xvals = range(1, 2^L; length=2^L)
+    qtt, _, _ = quanticscrossinterpolate(type, i -> f(round(Int, i) - 1), xvals; tolerance=tol)
+    tt = TensorCrossInterpolation.tensortrain(qtt.tci)
+    return MPS(tt; sites=collect(sites))
+end
+
+"""
+    get_mpo(L, sites, f; type=Float64, tol=1e-8, kwargs...) -> MPO
+
+Compress a function into an MPO via QTCI using 0-indexed coordinates
+`n = 0, ..., 2^L-1`. Dispatches on arity:
+
+- **1-argument** `f(n)`: builds a diagonal MPO (on-site potential).
+- **2-argument** `f(i, j)`: builds a full interaction MPO by 2D QTCI,
+  pairing the interleaved quantics legs into bra/ket via `custom_mpo`.
+"""
+function get_mpo(L::Int, sites, f; type=Float64, tol::Real=1e-8, kwargs...)
+    if applicable(f, 0, 0)
+        N = 1 << L
+        xvals = range(0, N - 1; length=N)
+        kernel = (x, y) -> f(round(Int, x), round(Int, y))
+        qtt, _, _ = quanticscrossinterpolate(type, kernel, [xvals, xvals];
+                                             tolerance=tol, kwargs...)
+        tt = TensorCrossInterpolation.tensortrain(qtt.tci)
+        return custom_mpo(MPS(tt), collect(sites))
+    else
+        return mps2mpo(L, sites, get_mps(L, sites, f; type=type, tol=tol))
+    end
+end
+
+"""
+    get_diagonal_mpo(L, sites, f; type=Float64, tol=1e-8) -> MPO
+
+Build a diagonal MPO with entry `f(x)` at 1-indexed site `x ∈ {1, ..., 2^L}`.
+Wraps `get_mpo` with a 1→0 index shift for backward compatibility.
 
 # Example
 ```julia
-# Uniform on-site energy gradient
 pot = get_diagonal_mpo(L, sites, x -> 0.01 * x)
 ```
 """
-function get_diagonal_mpo(L, sites, f; type=Float64)
-    xvals = range(1, 2^L; length=2^L)
-    qtt, _, _ = quanticscrossinterpolate(type, f, xvals; tolerance=1e-8)
-    tt         = TensorCrossInterpolation.tensortrain(qtt.tci)
-    density_mps = MPS(tt; sites)
-    return mps2mpo(L, sites, density_mps)
+function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
+    return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol)
 end
 
 
 
-# Exciton basis state |x, x⟩ on the interleaved electron-hole chain.
-# x is 1-indexed (x ∈ {1, …, 2^LPhys}), consistent with get_diagonal_mpo
+# Exciton basis state |x, x> on the interleaved electron-hole chain.
+# x is 1-indexed (x in {1, ..., 2^LPhys}), consistent with get_diagonal_mpo
 # and add_onsite! conventions in TensorBinding.
 function mpsexciton(x, sites)
     L     = length(sites)
@@ -245,14 +415,14 @@ end
 
 
 # ---------------------------------------------------------------------
-# MPS → diagonal MPO conversion
+# MPS -> diagonal MPO conversion
 # ---------------------------------------------------------------------
 
 """
     mps_to_diagonal_mpo(mps, sites) -> MPO
 
 Convert an MPS into a diagonal MPO on `sites` by replacing each physical
-index with a bra–ket pair tied by a 3-leg delta.  Used to convert the
+index with a bra-ket pair tied by a 3-leg delta.  Used to convert the
 output of a 2D QTCI (encoded as a flat MPS) into a diagonal MPO on the
 interleaved (e.g. electron-hole) site space.
 """
@@ -276,26 +446,26 @@ function mps_to_diagonal_mpo(mps, sites)
 end
 
 # ============================================================
-# Auxiliary site prepend — unified prepend_op
+# Auxiliary site prepend - unified prepend_op
 # ============================================================
 
 """
     prepend_op(H_mpo, s, mat)       -> MPO   explicit matrix
     prepend_op(H_mpo, s, op::Symbol)-> MPO   named op (Spin / Nambu index)
-    prepend_op(H_mpo, s, k, l)      -> MPO   sparse |k⟩⟨l|  (Layer / any index)
-    prepend_op(H_mpo, s, k)         -> MPO   projector |k⟩⟨k|
+    prepend_op(H_mpo, s, k, l)      -> MPO   sparse |k><l|  (Layer / any index)
+    prepend_op(H_mpo, s, k)         -> MPO   projector |k><k|
 
 Prepend a single-site operator on index `s` to `H_mpo`, extending it from
-L sites to L+1 sites.  The returned MPO has site indices `[s; original…]`.
+L sites to L+1 sites.  The returned MPO has site indices `[s; original...]`.
 
 **Dispatch rules**
-- Matrix form: `mat[i,j]` = ⟨i|op|j⟩ (1-indexed).  Element type is preserved.
+- Matrix form: `mat[i,j]` = <i|op|j> (1-indexed).  Element type is preserved.
 - Symbol form: named operator looked up by the type of `s` (tag `"Spin"` or
   `"Nambu"`).  Defined in Supercond_tk.jl after the op dictionaries.
 - Integer pair `(k, l)`: places a single 1 at row `k`, col `l` in a
-  `dim(s) × dim(s)` zero matrix.  Covers layer hops and projectors for any
+  `dim(s) x dim(s)` zero matrix.  Covers layer hops and projectors for any
   dimension Layer index.
-- Single integer `k`: shorthand for the projector `|k⟩⟨k|`.
+- Single integer `k`: shorthand for the projector `|k><k|`.
 """
 function prepend_op(H_mpo::MPO, s::Index, mat::AbstractMatrix{T}) where T <: Number
     Lh    = length(H_mpo)
@@ -328,11 +498,11 @@ prepend_op(H_mpo::MPO, s::Index, k::Int) = prepend_op(H_mpo, s, k, k)
 """
     postpend_op(H_mpo, s, mat)        -> MPO   explicit matrix
     postpend_op(H_mpo, s, op::Symbol) -> MPO   named op (Spin / Nambu index)
-    postpend_op(H_mpo, s, k, l)       -> MPO   sparse |k⟩⟨l|  (Layer / any index)
-    postpend_op(H_mpo, s, k)          -> MPO   projector |k⟩⟨k|
+    postpend_op(H_mpo, s, k, l)       -> MPO   sparse |k><l|  (Layer / any index)
+    postpend_op(H_mpo, s, k)          -> MPO   projector |k><k|
 
 Append a single-site operator on index `s` to the *end* of `H_mpo`, extending
-it from L sites to L+1 sites.  The returned MPO has site indices `[original…; s]`.
+it from L sites to L+1 sites.  The returned MPO has site indices `[original...; s]`.
 
 Symmetric counterpart of `prepend_op`; dispatch rules are identical.
 """
@@ -367,7 +537,7 @@ postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
 # ============================================================
 
 # Build a product-state MPS with an explicit 1-indexed value per site.
-# Works for any site types (Qubit, Layer, Spin, Nambu …).
+# Works for any site types (Qubit, Layer, Spin, Nambu, ...).
 function _product_state_mps(sites::Vector{<:Index}, vals::Vector{Int})
     n = length(sites)
     links   = [Index(1, "Link,l=$i") for i in 1:n-1]
@@ -401,7 +571,7 @@ function _basis_state_mps(k::Int, sites::Vector{<:Index})
     rem  = k
     for i in n:-1:1          # peel off LSB first (big-endian storage)
         vals[i] = rem % dims[i] + 1   # 1-based ITensors convention
-        rem      = rem ÷ dims[i]
+        rem      = div(rem, dims[i])
     end
     links   = [Index(1, "Link,l=$i") for i in 1:n-1]
     tensors = Vector{ITensor}(undef, n)
@@ -429,8 +599,8 @@ end
     matrix_checker(mpo, sites, i, j) -> Number
     matrix_checker(mpo, L, sites, i, j) -> Number   (L ignored)
 
-Return the matrix element ⟨i|mpo|j⟩.  Works for any site types
-(Qubit, Layer, Spin, Nambu …).  Intended for small-system validation.
+Return the matrix element <i|mpo|j>.  Works for any site types
+(Qubit, Layer, Spin, Nambu, ...).  Intended for small-system validation.
 """
 function matrix_checker(mpo, sites, i, j)
     psii = _basis_state_mps(Int(i), sites)
@@ -444,9 +614,9 @@ matrix_checker(mpo, ::Int, sites, i, j) = matrix_checker(mpo, sites, i, j)
     get_matrix(mpo, sites) -> Matrix{ComplexF64}
     get_matrix(mpo, L, sites) -> Matrix{ComplexF64}   (L ignored)
 
-Return the full `D × D` dense matrix of `mpo`, where `D = ∏ dim(sᵢ)`.
-Works for any site types (Qubit, Layer, Spin, Nambu …).
-Feasible only for small systems (D ≲ 512).
+Return the full `D x D` dense matrix of `mpo`, where `D = prod(dim(s_i))`.
+Works for any site types (Qubit, Layer, Spin, Nambu, ...).
+Feasible only for small systems (D <= 512).
 """
 function get_matrix(mpo, sites)
     sz  = prod(dim(s) for s in sites)
