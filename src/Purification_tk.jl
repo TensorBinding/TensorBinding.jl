@@ -309,3 +309,187 @@ function get_density(H::TBHamiltonian;
         error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")
     end
 end
+
+
+# ============================================================
+# Sign of an MPO via purification
+# ============================================================
+
+"""
+    sign_mpo(A::MPO, sites; scale=1.0, maxdim=500, cutoff=1e-8,
+             maxiters=30, tol=1e-5, verbose=false) -> MPO
+
+Compute `sign(A)` for a Hermitian MPO `A` via two McWeeny purifications:
+
+    sign(A) = θ(A) − θ(−A)
+
+where `θ(A)` is the projector onto the positive-eigenvalue subspace of `A`.
+The two initial guesses
+
+    ρ₀₊ = (I + A/scale) / 2   →  McWeeny  →  θ(A)
+    ρ₀₋ = (I − A/scale) / 2   →  McWeeny  →  θ(−A)
+
+map eigenvalues of ±A from [−scale, +scale] to [0, 1] before purification.
+`scale` must be ≥ the spectral radius of `A`; it defaults to 1.0, which is
+correct when A has already been constructed with normalised eigenvalues (e.g.
+from `get_valley_operator` whose spectrum lies in (−1, +1)).
+
+The returned MPO has eigenvalues in {−1, +1}.
+"""
+function sign_mpo(A::MPO, sites;
+                  scale::Real     = 1.0,
+                  maxdim::Int     = 500,
+                  cutoff::Float64 = 1e-8,
+                  maxiters::Int   = 30,
+                  tol::Float64    = 1e-5,
+                  verbose::Bool   = false)
+    Id = MPO(sites, "Id")
+
+    ρ0_p = 0.5 * +(Id,  (1.0 / scale) * A; maxdim=maxdim, cutoff=cutoff)
+    ITensorMPS.truncate!(ρ0_p; maxdim=maxdim, cutoff=cutoff)
+    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
+                                  cutoff=cutoff, tol=tol, verbose=verbose)
+
+    ρ0_m = 0.5 * +(Id, (-1.0 / scale) * A; maxdim=maxdim, cutoff=cutoff)
+    ITensorMPS.truncate!(ρ0_m; maxdim=maxdim, cutoff=cutoff)
+    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
+                                  cutoff=cutoff, tol=tol, verbose=verbose)
+
+    sA = +(ρ_p, -1.0 * ρ_m; maxdim=maxdim, cutoff=cutoff)
+    ITensorMPS.truncate!(sA; maxdim=maxdim, cutoff=cutoff)
+    return sA
+end
+
+
+# ============================================================
+# LDoS via finite-difference density matrix derivative
+# ============================================================
+
+"""
+    get_ldos_drho(H::TBHamiltonian, ω; mode=:mpo, dmu=0.05, maxdim=40,
+                  cutoff=1e-8, maxiters=30, tol=1e-5, verbose=false) -> MPO or MPS
+
+    get_ldos_drho(H::TBHamiltonian, ωs::AbstractVector; ...) -> Vector{MPO} or Vector{MPS}
+
+Compute the local density-of-states at energy `ω` as the finite-difference
+derivative of the McWeeny density matrix with respect to μ:
+
+    A(ω) ≈ [ρ(ω + δμ) − ρ(ω − δμ)] / (2δμ)
+
+where ρ(μ) = θ(μ − H) is the purified density matrix at Fermi level μ.
+
+# Modes
+
+- `mode=:mpo` (default): returns the full MPO `A(ω)`.  Its diagonal elements
+  give the LDoS: `LDoS(r, ω) = ⟨r|A(ω)|r⟩`.  Subtraction and truncation are
+  performed on the full MPO bond structure.
+
+- `mode=:mps`: extracts the diagonal of each ρ as an MPS via
+  `extract_diagonal_to_mps` before taking the difference.  The returned MPS
+  encodes `diag(ρ(ω+δμ)) − diag(ρ(ω−δμ))` scaled by `1/(2δμ)`.  This is
+  cheaper than `:mpo` since the subtraction and all subsequent operations
+  stay in the MPS bond space (no MPO–MPO off-diagonal contributions).
+
+# Arguments
+- `ω`       : energy (or `ωs`: vector) at which to evaluate LDoS
+- `mode`    : `:mpo` (full operator) or `:mps` (diagonal only, cheaper)
+- `dmu`     : finite-difference step / broadening
+- `maxdim`  : bond dimension for purification and the final combination
+- `cutoff`  : SVD truncation threshold throughout
+- `maxiters`: maximum McWeeny iterations per purification call
+- `tol`     : idempotency convergence threshold ‖ρ²−ρ‖/‖ρ‖
+- `verbose` : print McWeeny residuals
+"""
+function get_ldos_drho(H::TBHamiltonian, ω::Real;
+                       mode::Symbol    = :mpo,
+                       dmu::Real       = 0.05,
+                       maxdim::Int     = 40,
+                       cutoff::Float64 = 1e-8,
+                       maxiters::Int   = 30,
+                       tol::Float64    = 1e-5,
+                       verbose::Bool   = false)
+    mode in (:mpo, :mps) ||
+        error("get_ldos_drho: mode must be :mpo or :mps, got :$mode")
+    _ensure_scale!(H)
+
+    ρ0_p = purification_initial_guess(H; ϵF = ω + dmu, maxdim=maxdim, cutoff=cutoff)
+    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
+                                 cutoff=cutoff, tol=tol, verbose=verbose)
+
+    ρ0_m = purification_initial_guess(H; ϵF = ω - dmu, maxdim=maxdim, cutoff=cutoff)
+    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
+                                 cutoff=cutoff, tol=tol, verbose=verbose)
+
+    if mode == :mpo
+        dρ = (1.0 / (2dmu)) * +(ρ_p, -1.0 * ρ_m; maxdim=maxdim, cutoff=cutoff)
+        ITensorMPS.truncate!(dρ; maxdim=maxdim, cutoff=cutoff)
+        return dρ
+    else  # :mps
+        d_p = extract_diagonal_to_mps(ρ_p)
+        d_m = extract_diagonal_to_mps(ρ_m)
+        dρ_mps = (1.0 / (2dmu)) * +(d_p, -1.0 * d_m; maxdim=maxdim, cutoff=cutoff)
+        ITensorMPS.truncate!(dρ_mps; maxdim=maxdim, cutoff=cutoff)
+        return dρ_mps
+    end
+end
+
+"""
+    get_dos_drho(H::TBHamiltonian, ω; dmu=0.05, maxdim=40, cutoff=1e-8,
+                 maxiters=30, tol=1e-5, verbose=false) -> Float64
+
+    get_dos_drho(H::TBHamiltonian, ωs::AbstractVector; ...) -> Vector{Float64}
+
+Compute the total density of states at energy `ω` as the finite-difference
+derivative of Tr[ρ(μ)] with respect to μ:
+
+    DOS(ω) ≈ (Tr[ρ(ω + δμ)] − Tr[ρ(ω − δμ)]) / (2δμ)
+
+This is the cheapest variant: only the scalar trace of each purified density
+matrix is needed, so no MPO or MPS subtraction is performed.  All other
+arguments are identical to `get_ldos_drho`.
+"""
+function get_dos_drho(H::TBHamiltonian, ω::Real;
+                      dmu::Real       = 0.05,
+                      maxdim::Int     = 40,
+                      cutoff::Float64 = 1e-8,
+                      maxiters::Int   = 30,
+                      tol::Float64    = 1e-5,
+                      verbose::Bool   = false)
+    _ensure_scale!(H)
+
+    ρ0_p = purification_initial_guess(H; ϵF = ω + dmu, maxdim=maxdim, cutoff=cutoff)
+    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
+                                 cutoff=cutoff, tol=tol, verbose=verbose)
+
+    ρ0_m = purification_initial_guess(H; ϵF = ω - dmu, maxdim=maxdim, cutoff=cutoff)
+    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
+                                 cutoff=cutoff, tol=tol, verbose=verbose)
+
+    return real(tr(ρ_p) - tr(ρ_m)) / (2dmu)
+end
+
+function get_dos_drho(H::TBHamiltonian, ωs::AbstractVector{<:Real};
+                      dmu::Real       = 0.05,
+                      maxdim::Int     = 40,
+                      cutoff::Float64 = 1e-8,
+                      maxiters::Int   = 30,
+                      tol::Float64    = 1e-5,
+                      verbose::Bool   = false)
+    return [get_dos_drho(H, ω; dmu=dmu, maxdim=maxdim, cutoff=cutoff,
+                         maxiters=maxiters, tol=tol, verbose=verbose)
+            for ω in ωs]
+end
+
+
+function get_ldos_drho(H::TBHamiltonian, ωs::AbstractVector{<:Real};
+                       mode::Symbol    = :mpo,
+                       dmu::Real       = 0.05,
+                       maxdim::Int     = 40,
+                       cutoff::Float64 = 1e-8,
+                       maxiters::Int   = 30,
+                       tol::Float64    = 1e-5,
+                       verbose::Bool   = false)
+    return [get_ldos_drho(H, ω; mode=mode, dmu=dmu, maxdim=maxdim, cutoff=cutoff,
+                          maxiters=maxiters, tol=tol, verbose=verbose)
+            for ω in ωs]
+end

@@ -382,7 +382,9 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                               Λ::Real         = 10,
                               maxdim::Int     = 500,
                               cutoff::Float64 = 1e-8,
-                              quenched::Bool  = true)
+                              quenched::Bool  = true,
+                              sequential::Bool = false,
+                              pk_mpo          = nothing)
     l_bits  = l === nothing ? div(L, 2) : l
     L_chain = 2^l_bits
 
@@ -436,63 +438,114 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         sinY_op = has_sub ? postpend_op(sinY_op_p, sub_s, I_mat) : sinY_op_p
         cosY_op = has_sub ? postpend_op(cosY_op_p, sub_s, I_mat) : cosY_op_p
 
-        # Pre-multiply the 8 P/Q × sin/cos combinations
-        sinY_P = apply(sinY_op, P;  maxdim=maxdim, cutoff=cutoff)
-        cosY_P = apply(cosY_op, P;  maxdim=maxdim, cutoff=cutoff)
-        P_sinX = apply(P,  sinX_op; maxdim=maxdim, cutoff=cutoff)
-        P_cosX = apply(P,  cosX_op; maxdim=maxdim, cutoff=cutoff)
-        sinY_Q = apply(sinY_op, Q;  maxdim=maxdim, cutoff=cutoff)
-        cosY_Q = apply(cosY_op, Q;  maxdim=maxdim, cutoff=cutoff)
-        Q_sinX = apply(Q,  sinX_op; maxdim=maxdim, cutoff=cutoff)
-        Q_cosX = apply(Q,  cosX_op; maxdim=maxdim, cutoff=cutoff)
-        println("Quenched operator products done")
+        if sequential
+            # Sequential mode: skip C1–C4 MPO construction; instead apply MPOs to
+            # the basis MPS |α⟩ inside the closure.  Avoids expensive MPO×MPO products
+            # at the cost of more MPS-MPO applies per site.
+            #
+            # Uses the trig shift identity sin(A−B) = sinA cosB − cosA sinB to fold
+            # the 8-term Chern formula into 2 inner products:
+            #   ch = ⟨Qα|sinΔX|P sinΔY Qα⟩ − ⟨Pα|sinΔX|Q sinΔY Pα⟩
+            # where sinΔX = cos_x·sinX − sin_x·cosX and sinΔY = cos_y·sinY − sin_y·cosY.
+            # This reduces P applies from 5→3 and inner products from 8→4 per site.
+            calculate_chern_number = uc -> begin
+                sum(sub -> begin
+                    alpha = (uc - 1) * n_sub + sub
+                    α_raw = make_alpha_mps(alpha)
+                    α     = pk_mpo === nothing ? α_raw :
+                            apply(pk_mpo, α_raw; maxdim=maxdim, cutoff=cutoff)
+                    x     = xfunc(alpha - 1, L_chain)
+                    y     = yfunc(alpha - 1, L_chain)
+                    cos_x, sin_x = cos(x / Λ), sin(x / Λ)
+                    cos_y, sin_y = cos(y / Λ), sin(y / Λ)
 
-        # C1 = Q sinX P sinY Q − P sinX Q sinY P
-        C1 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
-        C1 = apply(C1,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
-        c1 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
-        c1 = apply(c1,     sinY_P; maxdim=maxdim, cutoff=cutoff)
-        C1 = +(C1, -1.0 * c1; maxdim=maxdim, cutoff=cutoff)
-        println("C1 done")
+                    Pα = apply(P, α; maxdim=maxdim, cutoff=cutoff)
+                    Qα = +(α, -1.0 * Pα; maxdim=maxdim, cutoff=cutoff)
 
-        # C2 = Q cosX P cosY Q − P cosX Q cosY P
-        C2 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
-        C2 = apply(C2,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
-        c2 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
-        c2 = apply(c2,     cosY_P; maxdim=maxdim, cutoff=cutoff)
-        C2 = +(C2, -1.0 * c2; maxdim=maxdim, cutoff=cutoff)
-        println("C2 done")
+                    sinY_Qα = apply(sinY_op, Qα; maxdim=maxdim, cutoff=cutoff)
+                    cosY_Qα = apply(cosY_op, Qα; maxdim=maxdim, cutoff=cutoff)
+                    sinY_Pα = apply(sinY_op, Pα; maxdim=maxdim, cutoff=cutoff)
+                    cosY_Pα = apply(cosY_op, Pα; maxdim=maxdim, cutoff=cutoff)
 
-        # C3 = Q sinX P cosY Q − P sinX Q cosY P
-        C3 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
-        C3 = apply(C3,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
-        c3 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
-        c3 = apply(c3,     cosY_P; maxdim=maxdim, cutoff=cutoff)
-        C3 = +(C3, -1.0 * c3; maxdim=maxdim, cutoff=cutoff)
-        println("C3 done")
+                    # sinΔY|Qα⟩ = (cos_y·sinY − sin_y·cosY)|Qα⟩  (cheap MPS combo)
+                    sinΔY_Qα = +(cos_y * sinY_Qα, -sin_y * cosY_Qα; maxdim=maxdim, cutoff=cutoff)
+                    sinΔY_Pα = +(cos_y * sinY_Pα, -sin_y * cosY_Pα; maxdim=maxdim, cutoff=cutoff)
 
-        # C4 = Q cosX P sinY Q − P cosX Q sinY P
-        C4 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
-        C4 = apply(C4,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
-        c4 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
-        c4 = apply(c4,     sinY_P; maxdim=maxdim, cutoff=cutoff)
-        C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
-        println("C4 done")
+                    P_sinΔY_Qα = apply(P, sinΔY_Qα; maxdim=maxdim, cutoff=cutoff)
+                    P_sinΔY_Pα = apply(P, sinΔY_Pα; maxdim=maxdim, cutoff=cutoff)
+                    Q_sinΔY_Pα = +(sinΔY_Pα, -1.0 * P_sinΔY_Pα; maxdim=maxdim, cutoff=cutoff)
 
-        calculate_chern_number = uc -> begin
-            sum(sub -> begin
-                alpha  = (uc - 1) * n_sub + sub
-                α      = make_alpha_mps(alpha)
-                x      = xfunc(alpha - 1, L_chain)
-                y      = yfunc(alpha - 1, L_chain)
-                cos_x, sin_x = cos(x / Λ), sin(x / Λ)
-                cos_y, sin_y = cos(y / Λ), sin(y / Λ)
-                ch  =  cos_x * cos_y * inner(α', C1, α)
-                ch +=  sin_x * sin_y * inner(α', C2, α)
-                ch -=  cos_x * sin_y * inner(α', C3, α)
-                ch -=  sin_x * cos_y * inner(α', C4, α)
-                ch * 2im * π * Λ^2
-            end, 1:n_sub) / A_cell
+                    # sinΔX = cos_x·sinX − sin_x·cosX; use 3-arg inner (no intermediate MPS)
+                    cq = cos_x * inner(Qα', sinX_op, P_sinΔY_Qα) -
+                         sin_x * inner(Qα', cosX_op, P_sinΔY_Qα)
+                    cp = cos_x * inner(Pα', sinX_op, Q_sinΔY_Pα) -
+                         sin_x * inner(Pα', cosX_op, Q_sinΔY_Pα)
+
+                    (cq - cp) * 2im * π * Λ^2
+                end, 1:n_sub) / A_cell
+            end
+
+        else
+            # Pre-multiply the 8 P/Q × sin/cos combinations
+            sinY_P = apply(sinY_op, P;  maxdim=maxdim, cutoff=cutoff)
+            cosY_P = apply(cosY_op, P;  maxdim=maxdim, cutoff=cutoff)
+            P_sinX = apply(P,  sinX_op; maxdim=maxdim, cutoff=cutoff)
+            P_cosX = apply(P,  cosX_op; maxdim=maxdim, cutoff=cutoff)
+            sinY_Q = apply(sinY_op, Q;  maxdim=maxdim, cutoff=cutoff)
+            cosY_Q = apply(cosY_op, Q;  maxdim=maxdim, cutoff=cutoff)
+            Q_sinX = apply(Q,  sinX_op; maxdim=maxdim, cutoff=cutoff)
+            Q_cosX = apply(Q,  cosX_op; maxdim=maxdim, cutoff=cutoff)
+            println("Quenched operator products done")
+
+            # C1 = Q sinX P sinY Q − P sinX Q sinY P
+            C1 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
+            C1 = apply(C1,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
+            c1 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
+            c1 = apply(c1,     sinY_P; maxdim=maxdim, cutoff=cutoff)
+            C1 = +(C1, -1.0 * c1; maxdim=maxdim, cutoff=cutoff)
+            println("C1 done")
+
+            # C2 = Q cosX P cosY Q − P cosX Q cosY P
+            C2 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
+            C2 = apply(C2,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
+            c2 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
+            c2 = apply(c2,     cosY_P; maxdim=maxdim, cutoff=cutoff)
+            C2 = +(C2, -1.0 * c2; maxdim=maxdim, cutoff=cutoff)
+            println("C2 done")
+
+            # C3 = Q sinX P cosY Q − P sinX Q cosY P
+            C3 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
+            C3 = apply(C3,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
+            c3 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
+            c3 = apply(c3,     cosY_P; maxdim=maxdim, cutoff=cutoff)
+            C3 = +(C3, -1.0 * c3; maxdim=maxdim, cutoff=cutoff)
+            println("C3 done")
+
+            # C4 = Q cosX P sinY Q − P cosX Q sinY P
+            C4 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
+            C4 = apply(C4,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
+            c4 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
+            c4 = apply(c4,     sinY_P; maxdim=maxdim, cutoff=cutoff)
+            C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
+            println("C4 done")
+
+            calculate_chern_number = uc -> begin
+                sum(sub -> begin
+                    alpha  = (uc - 1) * n_sub + sub
+                    α_raw  = make_alpha_mps(alpha)
+                    α      = pk_mpo === nothing ? α_raw :
+                             apply(pk_mpo, α_raw; maxdim=maxdim, cutoff=cutoff)
+                    x      = xfunc(alpha - 1, L_chain)
+                    y      = yfunc(alpha - 1, L_chain)
+                    cos_x, sin_x = cos(x / Λ), sin(x / Λ)
+                    cos_y, sin_y = cos(y / Λ), sin(y / Λ)
+                    ch  =  cos_x * cos_y * inner(α', C1, α)
+                    ch +=  sin_x * sin_y * inner(α', C2, α)
+                    ch -=  cos_x * sin_y * inner(α', C3, α)
+                    ch -=  sin_x * cos_y * inner(α', C4, α)
+                    ch * 2im * π * Λ^2
+                end, 1:n_sub) / A_cell
+            end
         end
 
     else
@@ -514,7 +567,9 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         calculate_chern_number = uc -> begin
             sum(sub -> begin
                 alpha = (uc - 1) * n_sub + sub
-                α = make_alpha_mps(alpha)
+                α_raw = make_alpha_mps(alpha)
+                α     = pk_mpo === nothing ? α_raw :
+                        apply(pk_mpo, α_raw; maxdim=maxdim, cutoff=cutoff)
                 inner(α', C_op, α)
             end, 1:n_sub) / A_cell
         end
@@ -569,7 +624,8 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                maxdim::Int      = 500,
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
-               quenched::Bool   = true)
+               quenched::Bool   = true,
+               sequential::Bool = false)
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -581,7 +637,144 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
                                 l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
-                                quenched=quenched)
+                                quenched=quenched, sequential=sequential)
+end
+
+
+# ============================================================
+# Valley operator and valley Chern number (honeycomb)
+# ============================================================
+
+"""
+    get_valley_operator(H::TBHamiltonian; maxdim=500, cutoff=1e-8) -> MPO
+
+Build the valley operator V for a 2D honeycomb Hamiltonian.
+
+V is constructed as the Haldane NNN Hamiltonian (φ = π/2, NN term zeroed)
+multiplied by an additional sublattice sign η_i: +1 on sublattice A (index 1),
+−1 on sublattice B (index 2).  The global prefactor is −i/(3√3):
+
+    t(dx,dy,fs,ts) = (−i / 3√3) · ν_{dx,dy,fs,ts} · η_{fs}
+
+where ν ∈ {±1} is the Haldane chirality (counterclockwise = +1).
+
+`H` must be a 2D honeycomb model with `H.Lx` set and a 2-component sublattice
+index.  The returned MPO shares the same site indices as `H.mpo`.
+"""
+function get_valley_operator(H::TBHamiltonian;
+                             maxdim::Int     = 500,
+                             cutoff::Float64 = 1e-8)
+    H.Lx !== nothing ||
+        error("get_valley_operator requires a 2D Hamiltonian (H.Lx must be set).")
+    H.sublattice_s !== nothing ||
+        error("get_valley_operator requires a sublattice Hamiltonian.")
+    dim(H.sublattice_s) == 2 ||
+        error("get_valley_operator requires 2 sublattices (honeycomb); got $(dim(H.sublattice_s)).")
+
+    Lx = H.Lx
+    Ly = H.L - Lx
+
+    # Deepcopy H and zero out its MPO so that add_hopping_2D! builds on
+    # exactly H.sites (including the sublattice index) — avoids the index
+    # mismatch that arises when get_Hamiltonian creates fresh site indices.
+    H_v = deepcopy(H)
+    H_v.mpo            = 0.0 * MPO(collect(H.sites), "Id")
+    H_v._density_cache = nothing
+    H_v._tn_cache      = nothing
+    H_v._tn_mps_cache  = nothing
+
+    haldane_ν = Dict(
+        (1,  0, 1, 1) =>  1,  (0,  1, 1, 1) => -1,  (1, -1, 1, 1) => -1,
+        (1,  0, 2, 2) => -1,  (0,  1, 2, 2) =>  1,  (1, -1, 2, 2) =>  1,
+    )
+    η = Dict(1 => 1, 2 => -1)
+
+    prefactor = -im / (3.0 * sqrt(3.0))
+    add_hopping_2D!(H_v,
+        (dx, dy, fs, ts) -> prefactor * get(haldane_ν, (dx, dy, fs, ts), 0) * η[fs];
+        Lx=Lx, Ly=Ly, nn=2, maxdim=maxdim, tol=cutoff)
+
+    return H_v.mpo
+end
+
+
+"""
+    get_valley_projectors(V_mpo, sites; maxdim=500, cutoff=1e-8) -> (PK, PK_prime)
+
+Return the two valley projectors from the valley operator `V_mpo`:
+
+    PK       = (I + V) / 2   (K  valley)
+    PK_prime = (I − V) / 2   (K′ valley)
+"""
+function get_valley_projectors(V_mpo::MPO, sites;
+                               maxdim::Int     = 500,
+                               cutoff::Float64 = 1e-8)
+    I_mpo    = MPO(sites, "Id")
+    PK       = 0.5 * +(I_mpo,        V_mpo; maxdim=maxdim, cutoff=cutoff)
+    PK_prime = 0.5 * +(I_mpo, -1.0 * V_mpo; maxdim=maxdim, cutoff=cutoff)
+    return PK, PK_prime
+end
+
+
+"""
+    get_valley_C(H, xfunc=nothing, yfunc=nothing;
+                 valley=:K, method=:mcweeny, fermi=0.0, l=nothing, Λ=10,
+                 Nchebychev=300, maxdim=500, cutoff=1e-8,
+                 Nel=nothing, quenched=true) -> Function
+
+Compute the valley-resolved Chern marker and return a closure
+`calculate_valley_chern(uc::Int) -> ComplexF64`.
+
+The valley operator V is built automatically via `get_valley_operator(H)`.
+The valley-projected occupied density matrix is then formed as
+
+    P_K = PK · P · PK,   PK = (I ± V) / 2
+
+where `P` is the ground-state projector and the sign is chosen by `valley`
+(`:K` → +, `:K_prime` → −).  The standard real-space Chern marker formula
+is then evaluated with `P_K` in place of `P` via `get_C_op_MPO_from_P`.
+
+# Arguments
+- `valley` : `:K` or `:K_prime`.
+
+All remaining arguments are forwarded to `_get_projector` and
+`get_C_op_MPO_from_P`; see those functions for documentation.
+"""
+function get_valley_C(H::TBHamiltonian,
+                      xfunc=nothing, yfunc=nothing;
+                      valley::Symbol  = :K,
+                      method::Symbol  = :mcweeny,
+                      fermi::Real     = 0.0,
+                      l               = nothing,
+                      Λ::Real         = 10,
+                      Nchebychev::Int = 300,
+                      maxdim::Int     = 500,
+                      cutoff::Float64 = 1e-8,
+                      Nel             = nothing,
+                      quenched::Bool  = true,
+                      sequential::Bool = false)
+    valley in (:K, :K_prime) ||
+        error("valley must be :K or :K_prime, got :$valley")
+
+    if xfunc === nothing || yfunc === nothing
+        geom = H.geometry_uc !== nothing ? H.geometry_uc :
+               H.geometry   !== nothing ? H.geometry   :
+               error("H has no geometry function; provide xfunc and yfunc explicitly.")
+        xfunc === nothing && (xfunc = (i, _) -> geom(i + 1)[1])
+        yfunc === nothing && (yfunc = (i, _) -> geom(i + 1)[2])
+    end
+
+    V_mpo = get_valley_operator(H; maxdim=maxdim, cutoff=cutoff)
+    P     = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
+                           maxdim=maxdim, cutoff=cutoff, Nel=Nel)
+    sign  = valley == :K ? 1.0 : -1.0
+    I_mpo = MPO(H.sites, "Id")
+    PK    = 0.5 * +(I_mpo, sign * V_mpo; maxdim=maxdim, cutoff=cutoff)
+
+    return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
+                                l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
+                                quenched=quenched, sequential=sequential,
+                                pk_mpo=PK)
 end
 
 

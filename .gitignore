@@ -15,3 +15,9 @@ logo_tensorBinding.svg
 docs/src/joss.txt
 docs/src/oam_rabi.tex
 docs/src/bubble_lehmann.tex
+tucker_rpa_jobs
+generate_jobs.jl
+examples/sec8_ocd_susceptibility.png
+examples/sec8_bp_ocd_time.png
+docs/src/TensorBinding_APSOS.tex
+docs/src/TensorBinding_APSOS.txt
