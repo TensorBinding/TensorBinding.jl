@@ -6,9 +6,9 @@ Testing_Notebook.ipynb
 dense_matrix_tests.ipynb
 notes.txt
 gen_diagram.jl
-examples/local_testing.ipynb
-examples/local_testing2.ipynb
-examples/local_testing3.ipynb
+examples/misc/local_testing.ipynb
+examples/misc/local_testing2.ipynb
+examples/misc/local_testing3.ipynb
 src/RSI_tk.jl
 RhombGraph.ipynb
 logo_tensorBinding.svg
@@ -19,3 +19,9 @@ TensorBinding_JOSS_AI.txt
 docs/src/joss.txt
 docs/src/oam_rabi.tex
 docs/src/bubble_lehmann.tex
+tucker_rpa_jobs
+generate_jobs.jl
+examples/sec8_ocd_susceptibility.png
+examples/sec8_bp_ocd_time.png
+docs/src/TensorBinding_APSOS.tex
+docs/src/TensorBinding_APSOS.txt
