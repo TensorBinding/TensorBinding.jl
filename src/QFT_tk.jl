@@ -949,7 +949,7 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           k_groups_override   = nothing,
                           xmin::Int       = 0,
                           xmax            = nothing,
-                          num_x::Int      = 10,
+                          num_x::Int      = 60,
                           num_avg::Int    = 1,
                           ymin::Int       = 0,
                           ymax            = nothing,
