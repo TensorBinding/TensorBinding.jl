@@ -42,6 +42,10 @@ function _shift_mpo(dx::Int, dy::Int,
     q = dx + dy * Nx
     q == 0 && return Id
 
+    # No cell has a valid destination: return zero MPO without calling QTCI
+    # (QTCI fails on an all-zero function)
+    (abs(dx) >= Nx || abs(dy) >= Ny) && return 0.0 * Id
+
     K = q > 0 ?
         build_shift_mpo(sites, q, false) :
         swapprime(dag(build_shift_mpo(sites, -q, false)), 0, 1)
