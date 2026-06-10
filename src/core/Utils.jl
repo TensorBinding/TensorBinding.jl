@@ -348,6 +348,13 @@ end
 Compress a scalar profile `f(n)` on `n = 0, ..., 2^L-1` into an MPS via QTCI.
 """
 function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8)
+    if L == 1
+        s = first(sites)
+        T = ITensor(type, s)
+        T[s => 1] = type(f(0))
+        T[s => 2] = type(f(1))
+        return MPS([T])
+    end
     xvals = range(1, 2^L; length=2^L)
     qtt, _, _ = quanticscrossinterpolate(type, i -> f(round(Int, i) - 1), xvals; tolerance=tol)
     tt = TensorCrossInterpolation.tensortrain(qtt.tci)

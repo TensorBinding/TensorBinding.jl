@@ -529,12 +529,19 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
             println("C4 done")
 
+            if pk_mpo !== nothing
+                wrap(C) = apply(pk_mpo, apply(C, pk_mpo; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
+                C1 = wrap(C1)
+                C2 = wrap(C2)
+                C3 = wrap(C3)
+                C4 = wrap(C4)
+                println("PK wrapping done")
+            end
+
             calculate_chern_number = uc -> begin
                 sum(sub -> begin
                     alpha  = (uc - 1) * n_sub + sub
-                    α_raw  = make_alpha_mps(alpha)
-                    α      = pk_mpo === nothing ? α_raw :
-                             apply(pk_mpo, α_raw; maxdim=maxdim, cutoff=cutoff)
+                    α      = make_alpha_mps(alpha)
                     x      = xfunc(alpha - 1, L_chain)
                     y      = yfunc(alpha - 1, L_chain)
                     cos_x, sin_x = cos(x / Λ), sin(x / Λ)
@@ -562,14 +569,15 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
         C_op = 2im * π * +(T1, -1.0 * T2; maxdim=maxdim, cutoff=cutoff)
+        if pk_mpo !== nothing
+            C_op = apply(pk_mpo, apply(C_op, pk_mpo; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
+        end
         ITensorMPS.truncate!(C_op; maxdim=maxdim, cutoff=cutoff)
 
         calculate_chern_number = uc -> begin
             sum(sub -> begin
                 alpha = (uc - 1) * n_sub + sub
-                α_raw = make_alpha_mps(alpha)
-                α     = pk_mpo === nothing ? α_raw :
-                        apply(pk_mpo, α_raw; maxdim=maxdim, cutoff=cutoff)
+                α     = make_alpha_mps(alpha)
                 inner(α', C_op, α)
             end, 1:n_sub) / A_cell
         end
@@ -727,16 +735,22 @@ Compute the valley-resolved Chern marker and return a closure
 `calculate_valley_chern(uc::Int) -> ComplexF64`.
 
 The valley operator V is built automatically via `get_valley_operator(H)`.
-The valley-projected occupied density matrix is then formed as
+Its sign S = sign(V) is computed via `sign_mpo` (McWeeny purification),
+giving eigenvalues in {−1, +1}.  The occupied K-valley projector is then
 
-    P_K = PK · P · PK,   PK = (I ± V) / 2
+    PK = P · (I ± S) / 2 · P
 
 where `P` is the ground-state projector and the sign is chosen by `valley`
-(`:K` → +, `:K_prime` → −).  The standard real-space Chern marker formula
-is then evaluated with `P_K` in place of `P` via `get_C_op_MPO_from_P`.
+(`:K` → +, `:K_prime` → −).  The PK is symmetrized and passed as `pk_mpo`
+to `get_C_op_MPO_from_P`, which evaluates the Chern marker as
+`⟨α|PK C_op PK|α⟩`.
 
 # Arguments
-- `valley` : `:K` or `:K_prime`.
+- `valley`   : `:K` or `:K_prime`.
+- `use_sign` : if `true` (default), sharpen V to eigenvalues {−1,+1} via
+               `sign_mpo` before forming the valley projector.  Set to
+               `false` to use V directly (cheaper but less accurate when
+               the valley operator spectrum is not already close to ±1).
 
 All remaining arguments are forwarded to `_get_projector` and
 `get_C_op_MPO_from_P`; see those functions for documentation.
@@ -744,6 +758,7 @@ All remaining arguments are forwarded to `_get_projector` and
 function get_valley_C(H::TBHamiltonian,
                       xfunc=nothing, yfunc=nothing;
                       valley::Symbol  = :K,
+                      use_sign::Bool  = true,
                       method::Symbol  = :mcweeny,
                       fermi::Real     = 0.0,
                       l               = nothing,
@@ -766,11 +781,14 @@ function get_valley_C(H::TBHamiltonian,
     end
 
     V_mpo = get_valley_operator(H; maxdim=maxdim, cutoff=cutoff)
+    S     = use_sign ? sign_mpo(V_mpo, collect(H.sites); maxdim=maxdim, cutoff=cutoff) : V_mpo
     P     = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                            maxdim=maxdim, cutoff=cutoff, Nel=Nel)
-    sign  = valley == :K ? 1.0 : -1.0
+    vsign = valley == :K ? 1.0 : -1.0
     I_mpo = MPO(H.sites, "Id")
-    PK    = 0.5 * +(I_mpo, sign * V_mpo; maxdim=maxdim, cutoff=cutoff)
+    PK_v  = 0.5 * +(I_mpo, vsign * S; maxdim=maxdim, cutoff=cutoff)
+    PK    = apply(P, apply(PK_v, P; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
+    PK    = 0.5 * +(PK, dag(swapprime(PK, 0, 1)); maxdim=maxdim, cutoff=cutoff)
 
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
                                 l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
