@@ -154,15 +154,14 @@ Pathway 1 — MPO × MPO cache  [legacy / rarely used]
   O(Ncheb × χ_T²).  Prefer Pathways 3 or 4 unless the cache is reused for
   multiple downstream calls.  Kept mainly for legacy compatibility.
 
-Pathway 2 — MPS cache  [exciton LDOS, fixed reference state]
+Pathway 2 — MPS cache  [legacy / fixed reference state]
   KPM_Tn(H, Ncheb; mode=:mps, psi0=ψ₀)  # cache {T_n(H̃)|ψ₀⟩} MPS on H
-  → get_exciton_ldos(H, X, ω; …)         # μₙ = ⟨X|T_n(H̃)|X⟩ reusing cache
   → get_ldos(H, ω; mode=:mps, psi0=ψ₀)  # μₙ = ⟨ψ₀|T_n(H̃)|ψ₀⟩ → scalar
 
   Propagates a single reference MPS and stores the full trajectory
   {|φ_n⟩ = T_n(H̃)|ψ₀⟩} for repeated re-use across many energy queries on the
-  same state.  Natural for exciton LDOS where many sites |X⟩ are probed
-  sequentially after building the cache once.
+  same state.  Kept for advanced workflows; the public LDOS helpers below avoid
+  storing this cache.
 
 Pathway 3 — Online MPO × MPO  [k-space and spatial spectral functions]
   get_bands(H, Ncheb, D, ωlist; …)       # k-resolved A(k,ω), QFT-conjugated
@@ -175,6 +174,8 @@ Pathway 3 — Online MPO × MPO  [k-space and spatial spectral functions]
 Pathway 4 — Online MPO × MPS  [single-particle default, most memory-efficient]
   get_ldos_online(H, Ncheb, X, ωlist; …) # LDOS at one site, all ω
   get_ldos_spatial(H, Ncheb, ωlist; mode=:mps; …)  # per-position MPS recursion
+  get_exciton_ldos_spatial(H, Ncheb, ωlist; …)      # bound-pair exciton LDOS
+  get_exciton_ldos(H, X, ωlist; …)                  # one-position wrapper
   get_dos_stochastic(H, Ncheb, ωlist; …) # stochastic trace DOS
 
   Propagates MPS states rather than full MPOs: only 3 MPS alive per sample/site.
@@ -654,35 +655,62 @@ end
 
 Spatially-resolved LDOS, real-space analogue of `get_bands`.
 
-**Return shape**
+**Sampling procedures (`reduce`)** — full detail in [`spatial_sampling_plan`](@ref).
 
-- **No sublattice DOF** (`H.sublattice_s === nothing`): `(Nω × ng)` where `ng = num_x`.
-- **With sublattice DOF** (`H.sublattice_s` set): `(Nω × ng×n_sub)` where `n_sub =
-  dim(H.sublattice_s)`.  Columns are interleaved in atom order matching the
-  corresponding `*_positions` function: `[A₀, B₀, A₁, B₁, …]` for 2-sublattice
-  lattices, `[A₀, B₀, C₀, …]` for 3-sublattice ones.  Pair directly with
-  `plot_ldos_2d` which consumes this column layout without further transformation.
+- `:point` (default) — read the LDOS *at* `num_x[×num_y]` sample cells; with
+  `box_half > 0` each pixel is the mean over a `(2·box_half+1)²` box. Cheap, but
+  a grid coarser than a feature's width **aliases** it (thin in-gap edge /
+  domain-wall channels can fall between pixels and be missed).
+- `:block` — partition the system into `num_x × num_y` blocks (powers of two) and
+  report the **integral** over each block, computed by tracing out the
+  within-block position bits (a partial contraction, cost independent of block
+  size). Gap-free: every cell belongs to one block, so a thin feature on a gapped
+  background **cannot** be missed. Use it for large-scale maps of edge networks.
+  Output columns are row-major over coarse pixels (`col = ixp + iyp·num_x + 1`);
+  block centres come from the plan. `:mpo` mode only.
 
-**Sublattice auto-detection**
+**Return shape (sublattice geometry-awareness)**
 
-`H.sublattice_s` is detected automatically.  When set:
-- `proj_sl=nothing` (default): a single Chebyshev pass fills *all* sublattice columns.
-- `proj_sl=k`: only sublattice `k` columns are filled; all others are zero.
-  `sublat_proj=true` is accepted for API compatibility but is no longer required.
+For a multi-atom unit cell (`H.sublattice_s` set) the layout depends on the
+*sampling scale*, decided by [`spatial_sampling_plan`](@ref) from the local
+stride (see `sublattice` below):
+
+- **resolved** (atomic scale — every unit cell probed, or `proj_sl=k`):
+  `(Nω × ng×n_sub)`, columns interleaved in atom order matching the
+  `*_positions` functions — `[A₀, B₀, A₁, B₁, …]` (2-sublattice),
+  `[A₀, B₀, C₀, …]` (3-sublattice). `proj_sl=k` fills only sublattice `k`.
+- **averaged** (large scale — the grid skips unit cells): `(Nω × ng)`, the
+  sublattice is traced out into one value per unit cell (mean over the `n_sub`
+  atoms).
+
+With no sublattice DOF the shape is always `(Nω × ng)`, `ng = num_x`.
+
+**`sublattice` (resolve vs average)**
+
+- `:auto` (default) — resolve when sampling at full unit-cell resolution
+  (`stride == 1`, e.g. zooming a small window and probing every cell); average
+  whenever the grid is coarser or `box_half > 0`.
+- `:resolve` — always emit per-atom columns. `:average` — always trace the
+  sublattice to one value per cell. `proj_sl=k` always resolves that one atom.
 
 **Sampling parameters**
 
-- `num_x`    : coarse position count (default `H.N` for full resolution).
-- `num_avg`  : sub-samples per coarse block for local averaging (default 1).
-- `x_start`, `x_end` : 1-indexed position range (defaults: `1` and `H.N`).
-- `x_groups` : explicit `Vector{Vector{Int}}` override.
+- `num_x`/`num_y` : sample counts (per axis for `grid=true`; `num_x` is the total
+  for the default 1D linear sweep). Default `H.N` = full resolution.
+- `num_avg`  : sub-samples per coarse block for local averaging (1D, default 1).
+- `x_start`, `x_end` : 1-indexed linear position range (1D layout).
+- `grid`     : `true` lays centers on a 2D `num_x × num_y` unit-cell grid.
+- `xwin`, `ywin` : 0-indexed unit-cell `(lo, hi)` windows for `grid=true` (e.g.
+  zoom into a patch of a large system).
+- `x_groups` : explicit `Vector{Vector{Int}}` override (treated as atomic).
+- `box_half` : 2D neighbourhood half-width (averages, forces sublattice averaging).
+- `reduce`   : `:point` (sample/box) or `:block` (block-integrate; see above).
 
 **Modes**
 
 - `:mpo` (default) — single Chebyshev pass; evaluates all positions simultaneously.
   Cost `∝ Ncheb × (MPO×MPO)`, independent of `num_x` or `n_sub`.
 - `:mps` — independent MPS recursion per (position, sector) combination.
-  Use for systems where MPO×MPO is too expensive.
 
 **Other auxiliary DOF projections** (same interface as `get_bands`):
 `nambu_proj`/`proj_nambu`, `spin_proj`/`proj_s`, `layer_proj`/`proj_layer`.
@@ -693,23 +721,35 @@ Examples
 # Standard 1D chain — shape (Nω × 8)
 ldos = get_ldos_spatial(H, 200, ωlist; num_x=8)
 
-# Kagome: full resolution, all sublattices — shape (Nω × 3*H.N)
-ldos_all = get_ldos_spatial(H_kg, 200, ωlist; num_x=H_kg.N)
+# Honeycomb, large-scale map — sublattice averaged, shape (Nω × 64)
+ldos_uc  = get_ldos_spatial(H_hc, 200, ωlist; num_x=64)
+
+# Honeycomb, atomic zoom into a 50×50 patch — sublattice resolved (Nω × 50*50*2)
+ldos_zoom = get_ldos_spatial(H_hc, 200, ωlist; grid=true,
+                             xwin=(1000, 1049), ywin=(1000, 1049))
+
+# Large 2^14×2^14 system: 128×128 block-integrated map — catches thin in-gap
+# edge channels that point sampling would alias away. Shape (Nω × 128*128).
+ldos_blk = get_ldos_spatial(H_big, 200, ωlist; reduce=:block, num_x=128, num_y=128)
 
 # Kagome: sublattice A only — only A columns filled, B/C columns zero
 ldos_A   = get_ldos_spatial(H_kg, 200, ωlist; proj_sl=1, num_x=H_kg.N)
-
-# BdG chain: particle sector only
-ldos_p   = get_ldos_spatial(H_bdg, 200, ωlist; nambu_proj=true, proj_nambu=1)
 ```
 """
 function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            num_x::Int     = H.N,
+                           num_y          = nothing,
                            num_avg::Int   = 1,
                            mode::Symbol   = :mpo,
                            x_start::Int   = 1,
                            x_end::Int     = H.N,
                            x_groups       = nothing,
+                           grid::Bool     = false,
+                           xwin           = nothing,
+                           ywin           = nothing,
+                           box_half::Int  = 0,
+                           reduce::Symbol = :point,
+                           sublattice::Symbol = :auto,
                            kernel::Symbol = :jackson,
                            lambda::Real   = 4.0,
                            maxdim::Int    = 100,
@@ -724,19 +764,33 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            sublat_proj::Bool = false,   # kept for backward compat; auto-on when H.sublattice_s is set
                            proj_sl           = nothing)
 
-    # ── Build x_groups ────────────────────────────────────────────────────────
-    groups = if x_groups !== nothing
-        x_groups isa AbstractVector{<:AbstractVector} ?
-            collect.(x_groups) : [[x] for x in x_groups]
-    else
-        window  = x_end - x_start + 1
-        dx      = window ÷ num_x
-        dx_sub  = max(1, dx ÷ num_avg)
-        [[ x_start + (i-1)*dx + k*dx_sub
-           for k in 0:num_avg-1
-           if x_start + (i-1)*dx + k*dx_sub <= x_end ]
-         for i in 1:num_x]
+    # ── Geometry-aware sampling plan (unit-cell groups + sublattice decision) ──
+    if box_half > 0 || grid || xwin !== nothing || ywin !== nothing || reduce === :block
+        isnothing(H.geometry) &&
+            error("get_ldos_spatial: box_half/grid/window/block sampling requires H.geometry to be set.")
+        length(H.geometry(1)) == 2 ||
+            error("get_ldos_spatial: box_half/grid/window/block sampling is only supported for 2D systems.")
     end
+    reduce === :block && mode === :mps &&
+        error("get_ldos_spatial: reduce=:block is only supported in mode=:mpo.")
+    Lx_uc   = something(H.Lx, H.L ÷ 2)
+    Ly_uc   = H.L - Lx_uc
+    n_sub_H = isnothing(H.sublattice_s) ? 1 : dim(H.sublattice_s)
+    plan = spatial_sampling_plan(H.L;
+        Lx       = Lx_uc,
+        grid     = grid,
+        reduce   = reduce,
+        n_sub    = n_sub_H,
+        num_x    = num_x, num_y = num_y, num_avg = num_avg,
+        x_start  = x_start, x_end = x_end,
+        xwin     = xwin, ywin = ywin,
+        x_groups = x_groups, box_half = box_half,
+        sublattice = sublattice)
+    groups   = plan.groups
+    is_block = plan.reduce === :block
+    block_a  = plan.a
+    block_b  = plan.b
+    nbx      = 2^block_a
 
     _ensure_scale!(H)
     nambu_proj, spin_proj, layer_proj, sublat_proj =
@@ -764,14 +818,19 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Sublattice layout ─────────────────────────────────────────────────────
-    # When H.sublattice_s is set, the result always covers every atom:
-    #   shape = (Nω, ng × n_sub),  col = (ig-1)*n_sub + s
-    # This matches the atom ordering of honeycomb/kagome/lieb positions functions.
-    # proj_sl=k  → fill only sublattice k (others stay 0)
-    # proj_sl=nothing → fill all sublattices (auto when sublat_proj=false too)
-    has_sublat = !isnothing(sublat_s_det)
-    n_sub      = has_sublat ? dim(sublat_s_det::Index) : 1
-    sl_fill    = has_sublat ?
+    # When H.sublattice_s is set the geometry-aware plan decides the layout:
+    #   • resolve (atomic scale, or proj_sl=k): one column per atom,
+    #       shape (Nω, ng × n_sub),  col = (ig-1)*n_sub + s   (matches the
+    #       honeycomb/kagome/lieb positions-function atom ordering; proj_sl=k
+    #       fills only sublattice k, others stay 0).
+    #   • average (large scale): the sublattice is traced out — one value per
+    #       unit cell, shape (Nω, ng),  col = ig  (mean over the n_sub atoms).
+    has_sublat   = !isnothing(sublat_s_det)
+    n_sub        = has_sublat ? dim(sublat_s_det::Index) : 1
+    # proj_sl=k pins a single sublattice → always resolved (that one column).
+    resolve_sl   = has_sublat && (plan.resolve_sublattice || !isnothing(proj_sl))
+    average_sl   = has_sublat && !resolve_sl
+    sl_fill      = has_sublat ?
         (isnothing(proj_sl) ? (1:n_sub) : (proj_sl:proj_sl)) :
         (1:1)
 
@@ -784,7 +843,8 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     ng     = length(groups)
-    n_cols = ng * n_sub
+    # Averaging collapses the n_sub atoms into one column per group.
+    n_cols = average_sl ? ng : ng * n_sub
     result = zeros(Float64, Nω, n_cols)
     L_tot  = length(H.sites)
 
@@ -814,8 +874,13 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                 end  # sector loop
             end  # x
 
-            for s in sl_fill
-                result[:, (ig-1)*n_sub + s] = grp_accum[:, s] ./ length(grp)
+            if average_sl
+                # Trace out the sublattice: one column per unit cell (mean atom).
+                result[:, ig] = vec(sum(grp_accum; dims=2)) ./ (n_sub * length(grp))
+            else
+                for s in sl_fill
+                    result[:, (ig-1)*n_sub + s] = grp_accum[:, s] ./ length(grp)
+                end
             end
 
             n_done += length(grp)
@@ -849,6 +914,21 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         local _layer_side  = layer_side_det
         local _sublat_side = sublat_side_det
 
+        # Reduce a diagonal profile MPS to per-pixel scalars, returning (u, value)
+        # pairs where u is the 1-indexed output pixel (column unit):
+        #   reduce=:point → mean of inner products over each group's cells,
+        #   reduce=:block → integral over each coarse block (_eval_block_mps).
+        function spatial_vals_cpu(diag_n)
+            if is_block
+                return [(ixp + iyp * nbx + 1,
+                         _eval_block_mps(diag_n, ixp, iyp, block_a, block_b, Lx_uc, Ly_uc))
+                        for iyp in 0:(2^block_b - 1) for ixp in 0:(nbx - 1)]
+            else
+                return [(ig, sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp))
+                        for (ig, grp) in enumerate(groups)]
+            end
+        end
+
         function accumulate_Tn!(Tk, n)
             # Non-sublattice projections (nambu → spin → layer)
             after_nambu = nambu_proj ?
@@ -871,28 +951,29 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             end
 
             if has_sublat
-                # Project per sublattice sector; each gets its own columns
+                # Project per sublattice sector. Resolved → each sector gets its
+                # own column; averaged (large scale) → all sectors fold into the
+                # single per-pixel column u (mean over the n_sub atoms).
                 for Tl in after_layer, s in sl_fill
                     Tp     = project_aux(Tl, sublat_s_det::Index, s; side=_sublat_side)
                     diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
-                    for (ig, grp) in enumerate(groups)
-                        val = sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp)
-                        col = (ig - 1) * n_sub + s
+                    scale  = average_sl ? 1.0 / n_sub : 1.0
+                    for (u, val) in spatial_vals_cpu(diag_n)
+                        col = average_sl ? u : (u - 1) * n_sub + s
                         for iω in 1:Nω
                             valid[iω] || continue
-                            accum[iω, col] += W[n, iω] * val
+                            accum[iω, col] += W[n, iω] * val * scale
                         end
                     end
                 end
             else
-                # No sublattice: one column per group (original behavior)
+                # No sublattice: one column per pixel (original behavior)
                 for Tp in after_layer
                     diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
-                    for (ig, grp) in enumerate(groups)
-                        val = sum(real(inner(psi_dict[x], diag_n)) for x in grp) / length(grp)
+                    for (u, val) in spatial_vals_cpu(diag_n)
                         for iω in 1:Nω
                             valid[iω] || continue
-                            accum[iω, ig] += W[n, iω] * val
+                            accum[iω, u] += W[n, iω] * val
                         end
                     end
                 end
@@ -931,8 +1012,8 @@ end
 
 """
     get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
-                       N_sample, N_bound, seed, normalize,
-                       kernel, lambda, maxdim, cutoff, verbose,
+                       N_sample, N_bound, seed, normalize, dos_weighting,
+                       kernel, lambda, eta, m_order, maxdim, cutoff, verbose,
                        nambu_proj, proj_nambu, spin_proj, proj_s,
                        layer_proj, proj_layer, sublat_proj, proj_sl)
         -> Vector{Float64}
@@ -941,10 +1022,13 @@ Stochastic full DOS via random trace estimation (MPS Chebyshev, 3 MPS per sample
 
 **Normalization**
 
-- `normalize=false` (default): returns the **total** spectral weight `Tr[δ(ω−H)]`,
-  which grows as `D` (Hilbert space dimension).
-- `normalize=true`: divides by `D`, giving a **per-state** DOS that is intensive
-  (independent of `L`) and directly comparable to `get_ldos_spatial` values.
+- `dos_weighting=:trace` (default): returns the trace DOS. With
+  `normalize=false` this is the total spectral weight `Tr[δ(ω-H)]`; with
+  `normalize=true` it is divided by the traced Hilbert-space dimension.
+- `dos_weighting=:sample`: returns the unweighted sample signal. For exciton
+  stratified runs this is `avg_full + avg_bound` (when `N_bound > 0`), with no
+  phase-space factor multiplying the continuum. This is intended for
+  visualising the bound peak; `normalize` is ignored in this mode.
 
 **Auxiliary DOF projections**
 
@@ -967,6 +1051,15 @@ dedicates `N_bound` samples to the bound sector `|x,x⟩` and `N_sample` to the
 full Hilbert space, combining with proper weights:
   `DOS = N_phys × avg_bound + (D − N_phys) × avg_scatter`.
 `N_bound = 0` (default) = uniform sampling over all D states.
+Set `dos_weighting=:sample` to inspect the sampled spectral signal before these
+sector-size weights are applied.
+
+**Reconstruction kernel**
+
+`kernel=:hodc` uses the Higher-Order Delta Chebyshev contour reconstruction
+(`eta`, `m_order` control it; `eta=0` → `1/(Ncheb+1)`), whose weights already
+carry the full KPM normalisation.  Other values are convolution kernels
+(`:jackson` default, `:lorentz` with `lambda`, `:fejer`, `:dirichlet`).
 
 Examples
 --------
@@ -988,8 +1081,11 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              N_bound::Int             = 0,
                              seed::Union{Int,Nothing} = 42,
                              normalize::Bool          = false,
+                             dos_weighting::Symbol    = :trace,
                              kernel::Symbol           = :jackson,
                              lambda::Real             = 4.0,
+                             eta::Real                = 0.0,
+                             m_order::Int             = 4,
                              maxdim::Int              = 100,
                              cutoff::Real             = 1e-8,
                              verbose::Bool            = false,
@@ -1003,6 +1099,8 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              sublat_proj::Bool = false,
                              proj_sl           = nothing)
     _ensure_scale!(H)
+    dos_weighting in (:trace, :sample) ||
+        error("get_dos_stochastic: dos_weighting must be :trace or :sample.")
 
     I_mpo = MPO(H.sites, "Id")
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
@@ -1017,13 +1115,13 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
     Nω     = length(ω_vals)
-    W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
+    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
+                                  kernel=kernel, lambda=lambda, eta=eta, m_order=m_order)
     valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     accum_full  = zeros(Float64, Nω)
     accum_bound = zeros(Float64, Nω)
-    norm        = π^2 * Ncheb
 
     if any_aux_proj
         # ── Projected DOS: sample position states with fixed aux sectors ─────
@@ -1049,9 +1147,13 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         result = zeros(Float64, Nω)
         for iω in 1:Nω
             valid[iω] || continue
-            result[iω] = D_eff * accum_full[iω] / (norm * sqrt(1 - ω_vals[iω]^2))
+            if dos_weighting == :sample
+                result[iω] = accum_full[iω] / denom[iω]
+            else
+                result[iω] = D_eff * accum_full[iω] / denom[iω]
+            end
         end
-        normalize && (result ./= N_phys)
+        normalize && dos_weighting == :trace && (result ./= D_eff)
         return result
     end
 
@@ -1080,15 +1182,17 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     result = zeros(Float64, Nω)
     for iω in 1:Nω
         valid[iω] || continue
-        denom = norm * sqrt(1 - ω_vals[iω]^2)
-        if N_bound > 0 && is_exc
+        if dos_weighting == :sample
+            result[iω] = (accum_full[iω] +
+                          ((N_bound > 0 && is_exc) ? accum_bound[iω] : 0.0)) / denom[iω]
+        elseif N_bound > 0 && is_exc
             result[iω] = ((D - N_phys) * accum_full[iω] +
-                          N_phys       * accum_bound[iω]) / denom
+                          N_phys       * accum_bound[iω]) / denom[iω]
         else
-            result[iω] = D * accum_full[iω] / denom
+            result[iω] = D * accum_full[iω] / denom[iω]
         end
     end
-    normalize && (result ./= N_phys)
+    normalize && dos_weighting == :trace && (result ./= D)
     return result
 end
 
@@ -1136,7 +1240,7 @@ end
 """
     get_ldos_hodc_from_mun(mun_list, N, E; eta=0.02, m_order=6) -> Real
 
-HODC (High-Order Damping Correction) variant of `get_ldos_from_mun`. Uses a
+HODC (Higher-Order Delta Chebyshev) variant of `get_ldos_from_mun`. Uses a
 contour-based kernel that gives sharper spectral features than the Jackson
 kernel, at the cost of `m_order` extra parameters.
 
@@ -1202,6 +1306,45 @@ function get_hodc_weights(y_target, N, eta, zl, wl)
     nu = FFTW.r2r(kernel_vals, FFTW.REDFT10) ./ N
     nu[1] /= 2.0
     return nu
+end
+
+"""
+    _dos_weight_matrix(Ncheb, ω_vals; kernel, lambda, eta, m_order)
+        -> (W::Matrix, denom::Vector)
+
+Stochastic-DOS reconstruction weights `W[n, iω]` and per-ω normalisation
+`denom[iω]` for a given KPM `kernel`.  The DOS is recovered from the (sample-
+averaged) Chebyshev moments `μ_n` as `Σ_n W[n,iω] μ_n / denom[iω]`.
+
+- Convolution kernels (`:jackson`, `:lorentz`, `:fejer`, `:dirichlet`):
+  `W` follows `_kpm_weight_matrix` and `denom = π²·Ncheb·√(1−ω²)`, matching
+  `get_ldos_from_mun`.
+- `:hodc`: the contour weights `νₙ(ω)` from `get_hodc_weights` already carry the
+  full normalisation (`denom = 1`), matching `get_ldos_hodc_from_mun`.  `eta=0`
+  falls back to `1/(Ncheb+1)`.
+
+Entries with `|ω| ≥ 1` are zeroed in `W` (outside the rescaled spectral support).
+"""
+function _dos_weight_matrix(Ncheb::Int, ω_vals;
+                            kernel::Symbol = :jackson,
+                            lambda::Real   = 4.0,
+                            eta::Real      = 0.0,
+                            m_order::Int   = 4)
+    Nω = length(ω_vals)
+    if kernel == :hodc
+        eta_   = eta == 0.0 ? 1 / (Ncheb + 1) : eta
+        zl, wl = compute_hodc_params(m_order)
+        W = zeros(Float64, Ncheb, Nω)
+        for iω in 1:Nω
+            abs(ω_vals[iω]) >= 1.0 && continue
+            W[:, iω] .= get_hodc_weights(ω_vals[iω], Ncheb, eta_, zl, wl)
+        end
+        return W, ones(Float64, Nω)
+    else
+        W     = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
+        denom = [π^2 * Ncheb * sqrt(max(1 - ω^2, 0.0)) for ω in ω_vals]
+        return W, denom
+    end
 end
 
 # Returns complex weights π*(ν_HT - i*ν_δ) for the retarded Green's function.
@@ -1436,20 +1579,13 @@ end
 
 
 """
-    get_exciton_ldos(H::TBHamiltonian, X::Int, ω_phys; Ncheb, kernel, eta, m_order,
-                     lambda, maxdim, cutoff, verbose) -> Real
+    _get_exciton_ldos_cached(H::TBHamiltonian, X::Int, omega; kwargs...) -> Real
 
-Exciton local spectral weight at physical energy `ω_phys` for the exciton state
-|X,X⟩, where `X ∈ {1, …, 2^L}` (1-indexed, consistent with `add_onsite!`).
-
-If `H._tn_mps_cache` already holds `Ncheb` Chebyshev states (from a prior
-`KPM_Tn(H, Ncheb, X)` call) they are reused — call `KPM_Tn(H, Ncheb, X)` first
-when sweeping over many energies for the same site.  Otherwise the Chebyshev
-states are built on the fly and cached for subsequent calls.
-
-Returns `0` when `|E| ≥ 1` (energy outside the rescaled spectral support).
+Internal legacy cache-backed scalar exciton LDOS helper. Public exciton LDOS now
+routes through `get_exciton_ldos_spatial`, which performs online MPS recursion
+without storing a Chebyshev cache on `H`.
 """
-function get_exciton_ldos(H::TBHamiltonian, X::Int, ω_phys::Real;
+function _get_exciton_ldos_cached(H::TBHamiltonian, X::Int, ω_phys::Real;
                            Ncheb::Int     = 200,
                            kernel::Symbol = :jackson,
                            lambda::Real   = 4.0,
@@ -1475,6 +1611,153 @@ function get_exciton_ldos(H::TBHamiltonian, X::Int, ω_phys::Real;
     return get_ldos_from_mun(mun, Ncheb, E;
                               kernel=kernel, lambda=lambda,
                               eta=eta_, m_order=m_order)
+end
+
+
+"""
+    get_exciton_ldos_spatial(H, Ncheb, omega_phys_vals; X_list, X_groups,
+                             num_x, num_avg, x_start, x_end, kernel,
+                             lambda, eta, m_order, maxdim, cutoff,
+                             verbose, printinfo) -> Matrix{Float64}
+
+CPU spatial exciton LDOS. For each bound exciton position `X` (electron = hole =
+`X`, 1-indexed in `1:H.N`) this runs an online MPS Chebyshev recursion from
+`|X,X>` and accumulates all requested energies in one pass. No Chebyshev cache is
+stored on `H`.
+
+Rows are energies, columns are positions/groups. `X_list` selects positions
+directly. `X_groups` (or alias `x_groups`) averages several bound-pair probes into
+one output column. If no explicit positions are provided, `num_x` coarse groups
+are generated over `x_start:x_end`, with `num_avg` subpositions per group.
+
+`kernel=:hodc` uses the HODC reconstruction (`eta`, `m_order`); otherwise the
+standard KPM kernels are available (`:jackson`, `:lorentz`, `:fejer`,
+`:dirichlet`).
+"""
+function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
+                                  X_list           = nothing,
+                                  X_groups         = nothing,
+                                  x_groups         = nothing,
+                                  num_x::Int       = H.N,
+                                  num_avg::Int     = 1,
+                                  x_start::Int     = 1,
+                                  x_end::Int       = H.N,
+                                  kernel::Symbol   = :jackson,
+                                  lambda::Real     = 4.0,
+                                  eta::Real        = 0.0,
+                                  m_order::Int     = 4,
+                                  maxdim::Int      = 100,
+                                  cutoff::Real     = 1e-8,
+                                  verbose::Bool    = false,
+                                  printinfo::Bool  = false)
+    _ensure_scale!(H)
+    length(H.sites) == 2 * H.L ||
+        error("get_exciton_ldos_spatial: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+
+    X_groups !== nothing && x_groups !== nothing &&
+        error("get_exciton_ldos_spatial: pass only one of X_groups or x_groups.")
+    X_list !== nothing && (X_groups !== nothing || x_groups !== nothing) &&
+        error("get_exciton_ldos_spatial: pass either X_list or grouped positions, not both.")
+
+    group_arg = X_groups !== nothing ? X_groups : x_groups
+    groups = if group_arg !== nothing
+        group_arg isa AbstractVector{<:AbstractVector} ?
+            [collect(Int, grp) for grp in group_arg] :
+            [[Int(x)] for x in group_arg]
+    elseif X_list !== nothing
+        [[Int(x)] for x in X_list]
+    else
+        num_x > 0 || error("get_exciton_ldos_spatial: num_x must be positive.")
+        num_avg > 0 || error("get_exciton_ldos_spatial: num_avg must be positive.")
+        1 <= x_start <= x_end <= H.N ||
+            error("get_exciton_ldos_spatial: expected 1 <= x_start <= x_end <= H.N.")
+        window = x_end - x_start + 1
+        num_x <= window ||
+            error("get_exciton_ldos_spatial: num_x=$num_x exceeds sampling window length $window.")
+        dx     = div(window, num_x)
+        dx_sub = max(1, div(dx, num_avg))
+        [[x_start + (i - 1) * dx + k * dx_sub
+          for k in 0:num_avg-1
+          if x_start + (i - 1) * dx + k * dx_sub <= x_end]
+         for i in 1:num_x]
+    end
+
+    isempty(groups) && error("get_exciton_ldos_spatial: no spatial groups were selected.")
+    for grp in groups
+        isempty(grp) && error("get_exciton_ldos_spatial: empty spatial group.")
+        all(x -> 1 <= x <= H.N, grp) ||
+            error("get_exciton_ldos_spatial: all positions must lie in 1:H.N.")
+    end
+
+    I_mpo = MPO(H.sites, "Id")
+    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+
+    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    Nomega     = length(omega_vals)
+    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
+                                    kernel=kernel, lambda=lambda,
+                                    eta=eta, m_order=m_order)
+    valid      = [abs(omega) < 1.0 for omega in omega_vals]
+
+    nX     = length(groups)
+    Xs     = first.(groups)
+    result = zeros(Float64, Nomega, nX)
+
+    for (j, group) in enumerate(groups)
+        last_linkdim = 0
+        accum_group  = zeros(Float64, Nomega)
+
+        for X in group
+            psi0 = mpsexciton(X, H.sites)
+            last_linkdim = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_group;
+                                         weight=1.0 / length(group),
+                                         cutoff=cutoff, maxdim=maxdim)
+        end
+
+        for iomega in 1:Nomega
+            valid[iomega] || continue
+            result[iomega, j] = accum_group[iomega] / denom[iomega]
+        end
+
+        (verbose || printinfo) && (j % 5 == 0 || j == nX) &&
+            println("  exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
+    end
+
+    return result
+end
+
+function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real;
+                          Ncheb::Int     = 200,
+                          kernel::Symbol = :jackson,
+                          lambda::Real   = 4.0,
+                          eta::Real      = 0.0,
+                          m_order::Int   = 4,
+                          maxdim::Int    = 40,
+                          cutoff::Real   = 1e-8,
+                          verbose::Bool  = false)
+    ldos = get_exciton_ldos_spatial(H, Ncheb, [omega_phys];
+                                    X_list=[X], kernel=kernel,
+                                    lambda=lambda, eta=eta,
+                                    m_order=m_order, maxdim=maxdim,
+                                    cutoff=cutoff, verbose=verbose)
+    return ldos[1, 1]
+end
+
+function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys_vals;
+                          Ncheb::Int     = 200,
+                          kernel::Symbol = :jackson,
+                          lambda::Real   = 4.0,
+                          eta::Real      = 0.0,
+                          m_order::Int   = 4,
+                          maxdim::Int    = 40,
+                          cutoff::Real   = 1e-8,
+                          verbose::Bool  = false)
+    ldos = get_exciton_ldos_spatial(H, Ncheb, omega_phys_vals;
+                                    X_list=[X], kernel=kernel,
+                                    lambda=lambda, eta=eta,
+                                    m_order=m_order, maxdim=maxdim,
+                                    cutoff=cutoff, verbose=verbose)
+    return vec(ldos[:, 1])
 end
 
 

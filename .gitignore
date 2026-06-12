@@ -13,7 +13,6 @@ src/RSI_tk.jl
 RhombGraph.ipynb
 logo_tensorBinding.svg
 examples/nontracked/
-GPU_tk.jl
 Conductivity_tk.jl
 TensorBinding_JOSS_AI.txt
 docs/src/joss.txt

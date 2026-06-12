@@ -321,6 +321,296 @@ function eval_mps(A::MPS, n::Int)
     return real(inner(psi, A))
 end
 
+# Block-integrated MPS element (reduce=:block): the sum of `A` over one coarse
+# block, obtained by tracing out the within-block position bits (contracted with
+# [1,1]) and pinning the kept top a/b block bits to the coarse pixel (ixp, iyp).
+# Big-endian site order [iy_MSB..iy_LSB, ix_MSB..ix_LSB]: sites 1..Ly carry iy,
+# Ly+1..L carry ix. See [`spatial_sampling_plan`](@ref) `reduce=:block`.
+function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
+                         a::Int, b::Int, Lx::Int, Ly::Int)
+    s   = siteinds(A)
+    ElT = eltype(A[1])
+    L   = Lx + Ly
+    acc = ITensor(one(ElT))
+    for i in 1:L
+        v_arr = zeros(ElT, dim(s[i]))
+        if i <= b                       # keep: iy block bit (b - i)
+            v_arr[((iyp >> (b - i)) & 1) + 1] = one(real(ElT))
+        elseif i <= Ly                  # sum: iy within-block bit
+            v_arr .= one(real(ElT))
+        elseif i <= Ly + a              # keep: ix block bit (a - (i - Ly))
+            v_arr[((ixp >> (a - (i - Ly))) & 1) + 1] = one(real(ElT))
+        else                            # sum: ix within-block bit
+            v_arr .= one(real(ElT))
+        end
+        acc *= A[i] * ITensor(v_arr, s[i])
+    end
+    return real(scalar(acc))
+end
+
+"""
+    spatial_sampling_plan(L; Lx, grid, reduce, n_sub, num_x, num_y, num_avg,
+                          x_start, x_end, xwin, ywin, x_groups, box_half, sublattice)
+        -> (; centers, groups, resolve_sublattice, n_sub, stride_x, stride_y,
+             grid, reduce, a, b)
+
+Geometry-aware real-space sampling plan shared by every spatial sampler
+([`eval_mps_spatial`](@ref), `get_ldos_spatial`, `get_ldos_spatial_gpu`,
+`get_scf_magnetization_gpu`). It decides **where** to sample, **how** each output
+pixel reduces the cells under it (`reduce`), and — for multi-atom unit cells —
+whether to **resolve** or **average** the sublattice.
+
+# The three sampling procedures (`reduce`)
+
+A spatial map of a `2^Lx × 2^Ly`-unit-cell system at a coarse output resolution
+can reduce the cells beneath each pixel in three qualitatively different ways.
+The right choice depends on whether the quantity is *smooth on the large scale*
+(e.g. a Chern marker, an SCF density envelope) or a *thin feature on a flat
+background* (e.g. in-gap edge/domain-wall LDOS, width ξ ≪ system size).
+
+1. **`:point` (default) — point / box sampling.**
+   Lay out `num_x[×num_y]` sample positions and read the profile *at* each one.
+   With `box_half > 0` each pixel is the **mean** over a `(2·box_half+1)²`
+   neighbourhood (smoothing). Cost ∝ (number of pixels) × (box cells).
+
+   *Aliasing caveat.* The pixels probe only the cells they land on (± `box_half`).
+   On a grid coarser than a feature's width this **misses** thin features that
+   fall between pixels: a domain-wall LDOS channel of width ξ sampled at stride
+   `s ≫ ξ` is caught only on the rare pixel within `box_half` of it. Making the
+   box *tile* the plane (`box_half ≈ s/2`) closes the gaps but then evaluates
+   essentially every cell — i.e. full-resolution cost. Use `:point` for smooth
+   quantities or for a fully-resolved zoom (`grid=true` + a small window).
+
+2. **`:block` — block integration (gap-free coarse-graining).**
+   Partition the system into `num_x × num_y` equal blocks (`num_x = 2^a`,
+   `num_y = 2^b`, powers of two) and report, per pixel, the **sum** over its
+   whole block. This is computed by *tracing out the low-order position bits*
+   (contracting the within-block bits of the profile MPS with `[1,1]` and keeping
+   the `a + b` high-order block bits) — a partial contraction, **not** a per-cell
+   sweep, so the cost is independent of block size and scales to `Lx, Ly ≈ 14+`.
+
+   Because every cell belongs to exactly one block, a thin feature **cannot fall
+   between pixels** — whichever blocks it threads light up, on an otherwise dark
+   (gapped) background. This is the tool for imaging edge / domain-wall networks
+   on a heavily downsampled map. Block centres are reported in `centers`; the
+   per-axis block widths are `stride_x = 2^(Lx-a)`, `stride_y = 2^(Ly-b)`.
+
+The fields `reduce`, `a`, `b` echo the chosen mode back to the caller; for
+`:point` they are `(:point, 0, 0)`.
+
+# Sublattice resolve vs average
+
+For a multi-atom unit cell (`n_sub > 1`) the plan also decides whether to
+**resolve** the sublattice (one output column per atom) or **average** it (one
+value per unit cell, atoms traced out), via `sublattice`:
+
+- `:auto` (default) — **resolve** only at the atomic scale: consecutive samples
+  are adjacent unit cells (`:point` with `stride == 1` and `box_half == 0`).
+  Otherwise (coarse grid, `box_half > 0`, or any `:block` map) **average**, since
+  the intra-cell sublattice is below the sampling resolution.
+- `:resolve` / `:average` force the choice. `n_sub == 1` is always `false`.
+
+# Layout (`:point` mode)
+
+`groups`/`centers` are 1-indexed unit-cell indices with `n = ix + iy·2^Lx`.
+
+- `grid=false` (default) — centers on a **1D linear** sweep of the row-major index
+  (`x_start`/`x_end`, `num_x` points, `num_avg` sub-probes per block). Stride
+  `dx = window ÷ num_x`. `Lx` is used only for the optional `box_half` neighbourhood.
+- `grid=true` (needs `Lx`) — centers on a **2D xy grid** of `num_x × num_y`
+  points over the unit-cell window `xwin=(ix0,ix1)`, `ywin=(iy0,iy1)` (0-indexed;
+  default full system). Per-axis strides `Nx_win÷num_x`, `Ny_win÷num_y`.
+
+`x_groups` overrides the `:point` layout entirely; the stride is then unknown, so
+`:auto` resolves (treats it as atomic) unless `box_half > 0`.
+"""
+function spatial_sampling_plan(L::Int;
+                               Lx::Union{Nothing,Int}      = nothing,
+                               grid::Bool                  = false,
+                               reduce::Symbol              = :point,
+                               n_sub::Int                  = 1,
+                               num_x::Int                  = 0,
+                               num_y::Union{Nothing,Int}   = nothing,
+                               num_avg::Int                = 1,
+                               x_start::Int                = 1,
+                               x_end::Int                  = 2^L,
+                               xwin                        = nothing,
+                               ywin                        = nothing,
+                               x_groups                    = nothing,
+                               box_half::Int               = 0,
+                               sublattice::Symbol          = :auto)
+    sublattice in (:auto, :resolve, :average) ||
+        error("spatial_sampling_plan: sublattice must be :auto, :resolve, or :average.")
+    reduce in (:point, :block) ||
+        error("spatial_sampling_plan: reduce must be :point or :block.")
+    grid && Lx === nothing &&
+        error("spatial_sampling_plan: grid=true requires Lx (the x-qubit count).")
+
+    # ── :block — coarse-grain by tracing out the within-block position bits ────
+    if reduce === :block
+        Lx === nothing &&
+            error("spatial_sampling_plan: reduce=:block requires Lx.")
+        Ly = L - Lx
+        num_x > 0 ||
+            error("spatial_sampling_plan: reduce=:block requires num_x > 0 (a power of two).")
+        nyv = num_y === nothing ? num_x : num_y
+        nyv > 0 ||
+            error("spatial_sampling_plan: reduce=:block requires num_y > 0 (a power of two).")
+        a = round(Int, log2(num_x))
+        b = round(Int, log2(nyv))
+        2^a == num_x ||
+            error("spatial_sampling_plan: reduce=:block needs num_x a power of two (got $num_x).")
+        2^b == nyv ||
+            error("spatial_sampling_plan: reduce=:block needs num_y a power of two (got $nyv).")
+        (0 <= a <= Lx) ||
+            error("spatial_sampling_plan: reduce=:block needs 1 <= num_x <= 2^Lx=$(2^Lx).")
+        (0 <= b <= Ly) ||
+            error("spatial_sampling_plan: reduce=:block needs 1 <= num_y <= 2^Ly=$(2^Ly).")
+        Nx = 2^Lx
+        Wx = 2^(Lx - a)          # block width in x (unit cells)
+        Wy = 2^(Ly - b)          # block width in y
+        # Block centre cell, row-major over coarse pixels (ixp fastest):
+        #   col = ixp + iyp*num_x + 1
+        centers = Int[(ixp * Wx + Wx ÷ 2) + (iyp * Wy + Wy ÷ 2) * Nx + 1
+                      for iyp in 0:(2^b - 1) for ixp in 0:(2^a - 1)]
+        groups = [[c] for c in centers]   # nominal; block eval does not use these
+        resolve = n_sub > 1 && sublattice === :resolve   # block is large-scale → average
+        return (; centers, groups, resolve_sublattice=resolve, n_sub=max(n_sub, 1),
+                stride_x=Wx, stride_y=Wy, grid=true, reduce=:block, a, b)
+    end
+
+    stride_x = 1
+    stride_y = 1
+    stride_known = true
+
+    local centers::Vector{Int}
+    local groups::Vector{Vector{Int}}
+
+    if x_groups !== nothing
+        groups = x_groups isa AbstractVector{<:AbstractVector} ?
+                 [collect(Int, g) for g in x_groups] : [[Int(x)] for x in x_groups]
+        centers = Int[first(g) for g in groups]
+        stride_known = false   # caller-supplied positions: stride is not defined
+    elseif grid
+        Nx = 2^Lx
+        Ny = 2^(L - Lx)
+        ix0, ix1 = xwin === nothing ? (0, Nx - 1) : (Int(xwin[1]), Int(xwin[2]))
+        iy0, iy1 = ywin === nothing ? (0, Ny - 1) : (Int(ywin[1]), Int(ywin[2]))
+        Nx_win = ix1 - ix0 + 1
+        Ny_win = iy1 - iy0 + 1
+        nx = num_x <= 0 ? Nx_win : min(num_x, Nx_win)
+        ny = num_y === nothing ? (num_x <= 0 ? Ny_win : min(nx, Ny_win)) :
+             (num_y <= 0 ? Ny_win : min(num_y, Ny_win))
+        stride_x = Nx_win ÷ nx
+        stride_y = Ny_win ÷ ny
+        xcenters = nx <= 1 ? [ix0] : round.(Int, range(ix0, ix1; length=nx))
+        ycenters = ny <= 1 ? [iy0] : round.(Int, range(iy0, iy1; length=ny))
+        centers = Int[ix + iy * Nx + 1 for iy in ycenters for ix in xcenters]
+        groups  = [[c] for c in centers]
+    else
+        window = x_end - x_start + 1
+        nx     = num_x <= 0 ? window : num_x
+        dx     = max(window ÷ nx, 1)
+        stride_x = dx
+        dx_sub = max(1, dx ÷ num_avg)
+        centers = Int[x_start + (i - 1) * dx for i in 1:nx]
+        groups  = [[ x_start + (i - 1) * dx + k * dx_sub
+                     for k in 0:num_avg-1
+                     if x_start + (i - 1) * dx + k * dx_sub <= x_end ]
+                   for i in 1:nx]
+    end
+
+    # ── 2D box averaging (periodic wrap) ───────────────────────────────────────
+    if box_half > 0 && Lx !== nothing
+        Nx = 2^Lx
+        Ny = 2^(L - Lx)
+        groups = [
+            let uc0 = first(grp) - 1
+                ix0 = uc0 % Nx
+                iy0 = uc0 ÷ Nx
+                unique([mod(ix0 + Δx, Nx) + mod(iy0 + Δy, Ny) * Nx + 1
+                        for Δy in -box_half:box_half for Δx in -box_half:box_half])
+            end
+            for grp in groups
+        ]
+    end
+
+    # ── Sublattice resolve / average decision ──────────────────────────────────
+    resolve = if n_sub <= 1
+        false
+    elseif sublattice === :resolve
+        true
+    elseif sublattice === :average
+        false
+    else  # :auto
+        box_half == 0 &&
+            (stride_known ? (stride_x <= 1 && (grid ? stride_y <= 1 : true)) : true)
+    end
+
+    return (; centers, groups, resolve_sublattice=resolve, n_sub=max(n_sub, 1),
+            stride_x, stride_y, grid, reduce=:point, a=0, b=0)
+end
+
+"""
+    eval_mps_spatial(A::MPS; num_x, num_avg, x_start, x_end, x_groups,
+                     box_half, Lx) -> (values, centers, groups)
+
+Higher-level spatial sampler for a profile MPS such as an SCF occupation/density
+profile (`res.rho_up`). It mirrors `get_ldos_spatial`'s `num_x` / `num_avg` /
+`x_groups` / `box_half` sampling-and-averaging API, but evaluates the MPS
+directly with [`eval_mps`](@ref) instead of running a KPM recursion — so it is
+cheap enough to sweep a very large system by sampling a grid of positions and
+averaging, rather than evaluating all `2^L` sites.
+
+For each sampled group of (1-indexed) site coordinates the returned value is the
+mean of `eval_mps(A, x-1)` over that group. With `box_half > 0` each sampled
+position is expanded into a `(2·box_half+1)²` neighborhood on the 2D grid
+(periodic wrap), exactly like `get_ldos_spatial`; this needs the 2D layout, taken
+from `Lx` (defaults to `L÷2`, with `Ly = L - Lx`).
+
+# Keyword arguments
+- `num_x`    : number of sampled grid positions (default: all `2^L` sites).
+- `num_avg`  : sub-positions averaged per grid point along the 1D index (stride).
+- `x_start`, `x_end` : 1-indexed sampling window (default `1 … 2^L`).
+- `x_groups` : explicit groups — a vector of site indices (one per group) or a
+  vector of vectors (each averaged). Overrides `num_x`/`num_avg`/`x_start`/`x_end`.
+- `box_half` : 2D neighborhood half-width for averaging (0 = no box averaging).
+- `Lx`       : number of x qubits for the 2D layout (default `L÷2`).
+
+# Returns
+- `values`  : `Vector{Float64}`, the averaged MPS value per group.
+- `centers` : `Vector{Int}`, the 1-indexed center site of each sampled group.
+- `groups`  : `Vector{Vector{Int}}`, the site indices averaged over per group.
+
+For a 2D map, the center `(ix, iy)` of group `g` is
+`ix = (centers[g]-1) % 2^Lx`, `iy = (centers[g]-1) ÷ 2^Lx`.
+"""
+function eval_mps_spatial(A::MPS;
+                          num_x::Int    = prod(dim(s) for s in siteinds(A)),
+                          num_avg::Int  = 1,
+                          x_start::Int  = 1,
+                          x_end::Int    = prod(dim(s) for s in siteinds(A)),
+                          x_groups      = nothing,
+                          box_half::Int = 0,
+                          Lx::Union{Nothing,Int} = nothing)
+    sites = siteinds(A)
+    L     = length(sites)
+
+    # ── Build groups + grid centers via the shared geometry-aware planner ──────
+    plan = spatial_sampling_plan(L;
+        Lx       = (box_half > 0 && Lx === nothing) ? L ÷ 2 : Lx,
+        num_x    = num_x, num_avg = num_avg,
+        x_start  = x_start, x_end = x_end,
+        x_groups = x_groups, box_half = box_half)
+    centers = plan.centers
+    groups  = plan.groups
+
+    # ── Evaluate + average ─────────────────────────────────────────────────────
+    values = Float64[ sum(eval_mps(A, x - 1) for x in grp) / length(grp)
+                      for grp in groups ]
+    return (values=values, centers=centers, groups=groups)
+end
+
 """
     rms_error(a, b) -> Float64
 
