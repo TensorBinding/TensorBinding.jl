@@ -16,12 +16,14 @@
 <text x="18" y="460.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#b06000" font-style="italic">Computation</text>
 <text x="18" y="590.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#5030a0" font-style="italic">Observables</text>
 <text x="18" y="720.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#b02050" font-style="italic">Extensions</text>
+<text x="18" y="855.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#0090a0" font-style="italic">GPU Acceleration</text>
 <line x1="145" y1="110.0" x2="1520" y2="110.0" stroke="#ddd" stroke-width="1"/>
 <line x1="145" y1="225.0" x2="1520" y2="225.0" stroke="#ddd" stroke-width="1"/>
 <line x1="145" y1="350.0" x2="1520" y2="350.0" stroke="#ddd" stroke-width="1"/>
 <line x1="145" y1="480.0" x2="1520" y2="480.0" stroke="#ddd" stroke-width="1"/>
 <line x1="145" y1="610.0" x2="1520" y2="610.0" stroke="#ddd" stroke-width="1"/>
 <line x1="145" y1="740.0" x2="1520" y2="740.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="820.0" x2="1330" y2="820.0" stroke="#ddd" stroke-width="1"/>
 <rect x="160.0" y="67.0" width="240" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
 <text x="280" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">ITensors · ITensorMPS · NDTensors</text>
 <rect x="565.0" y="67.0" width="330" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
@@ -36,6 +38,12 @@
 <text x="220" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">2D_lattice.jl</text>
 <rect x="690.0" y="306.0" width="140" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
 <text x="760" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">TBSystem.jl</text>
+<rect x="885.0" y="306.0" width="170" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="970" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="12" font-weight="bold"  fill="#111">NNNeighbor_tk.jl</text>
+<rect x="1115.0" y="306.0" width="150" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="1190" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Flake_tk.jl</text>
+<rect x="1340.0" y="306.0" width="140" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="1410" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="12" font-weight="bold"  fill="#111">TJunction_tk.jl</text>
 <rect x="300.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
 <text x="360" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">KPM_tk.jl</text>
 <rect x="580.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
@@ -44,20 +52,31 @@
 <text x="910" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Timeev_tk.jl</text>
 <rect x="1110.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
 <text x="1170" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">DMRG_tk.jl</text>
+<rect x="1315.0" y="436.0" width="150" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="1390" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Krylov_tk.jl</text>
 <rect x="52.5" y="566.0" width="155" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
 <text x="130" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Topology_tk.jl</text>
 <rect x="305.0" y="566.0" width="170" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
 <text x="390" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Purification_tk.jl</text>
 <rect x="610.0" y="566.0" width="140" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
-<text x="680" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Meanfi_tk.jl</text>
+<text x="680" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">SCF_tk.jl</text>
 <rect x="885.0" y="566.0" width="110" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
 <text x="940" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">RPA_tk.jl</text>
+<rect x="1122.5" y="566.0" width="185" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="1215" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">TwoParticle_tk.jl</text>
+<rect x="1355.0" y="566.0" width="130" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="1420" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">QPI_tk.jl</text>
 <rect x="100.0" y="696.0" width="160" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
 <text x="180" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Supercond_tk.jl</text>
 <rect x="510.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
 <text x="580" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">twisted_tk.jl</text>
 <rect x="970.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
 <text x="1040" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">bilayer_tk.jl</text>
+<rect x="1140.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
+<text x="1210" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">NH_tk.jl</text>
+<rect x="250.0" y="831.0" width="900" height="38" rx="7" fill="#c0f5f5" stroke="#0090a0" stroke-width="2"/>
+<text x="700" y="855.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="14" font-weight="bold"  fill="#111">GPU_tk.jl  (src/gpu/)</text>
+<text x="700" y="882.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#0090a0" font-style="italic">GPU-accelerated mirrors of KPM / QFT / Topology / SCF / TwoParticle, plus core/Utils sampling</text>
 <path d="M 730.0 103.0 Q 825.0 142.0 840.0 181.0" fill="none" stroke="#aaa" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
 <path d="M 730.0 103.0 C 730.0 163.0 640.0 376.0 640.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
 <path d="M 280.0 103.0 C 280.0 183.0 910.0 356.0 910.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
@@ -82,8 +101,17 @@
 <path d="M 360.0 474.0 Q 365.0 520.0 390.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
 <path d="M 360.0 474.0 C 440.0 514.0 600.0 526.0 680.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
 <path d="M 420.0 455.0 C 580.0 465.0 950.0 486.0 940.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<line x1="420.0" y1="455.0" x2="580.0" y2="455.0" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 1010 360 1020 560 1122.5 585.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 830.0 325.0 C 1085 345 1090 555 1122.5 585.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
 <line x1="650.0" y1="715.0" x2="970.0" y2="715.0" stroke="#b02050" stroke-width="1.6" marker-end="url(#arr)" />
 <path d="M 917.5 200.0 C 1037.5 280.0 1100.0 576.0 1040.0 696.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 Q 925.0 262.5 970.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<line x1="830.0" y1="325.0" x2="885.0" y2="325.0" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 840.0 259.0 1410.0 260.0 1410.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 1190.0 344.0 C 1190.0 420.0 1300.0 520.0 1420.0 566.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 940.0 566.0 C 1000.0 500.0 1300.0 478.0 1390.0 474.0" fill="none" stroke="#5030a0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 C 880.0 490.0 1210.0 660.0 1210.0 696.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
 <text x="775" y="35" text-anchor="middle" font-family="Arial,sans-serif" font-size="21" font-weight="bold" fill="#222">TensorBinding.jl — Module Dependency Map</text>
 <rect x="1350" y="830" width="170" height="110" rx="6" fill="white" stroke="#ccc" stroke-width="1"/>
 <text x="1435" y="848" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#333">Legend</text>
