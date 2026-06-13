@@ -4,19 +4,26 @@
 # Overview
 # ─────────────────────────────────────────────────────────────────────────────
 # The quantics representation encodes a 1D or 2D real-space position index as
-# a binary string across L qubit sites.  Conjugating any real-space MPO W by
-# the Quantum Fourier Transform gives its momentum-space counterpart:
+# a binary string across L qubit sites. Conjugating any real-space MPO W by the
+# Quantum Fourier Transform gives its momentum-space counterpart:
 #
-#   Ã(k,ω) = U · δ(ω − H) · U†
+#   A(k,omega) = <k| U delta(omega - H) U^dag |k>
 #
-# The diagonal ⟨k|Ã(ω)|k⟩ is the k-resolved spectral function A(k,ω).
+# For exciton Hamiltonians, `conjugate_by_qft_exciton` applies independent QFTs
+# to the interleaved electron and hole registers. The resulting two-particle
+# momentum basis can be sampled by total momentum `Q`: `get_exciton_bands`
+# probes the coherent pair state sum_k |k,Q-k>, while `get_exciton_continuum`
+# estimates the incoherent electron-hole continuum trace over |k,Q-k> with
+# random-phase MPS probes. These exciton routines use online MPS-KPM on an
+# already-QFT-conjugated MPO; they do not use the single-particle MPO-KPM
+# `get_bands` pipeline.
 #
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Online Chebyshev accumulation
 # ─────────────────────────────────────────────────────────────────────────────
-# `get_bands` runs a single Chebyshev recurrence over the full MPO space.
-# At each step n the current T_n passes through five composable projection
-# stages before the QFT is applied:
+# Single-particle `get_bands` runs a Chebyshev recurrence over the full MPO
+# space. At each step n the current T_n passes through five composable
+# projection stages before the QFT is applied:
 #
 #   Step 0  nambu_proj   — project Nambu (BdG particle/hole) auxiliary index
 #   Step 1  spin_proj    — project spin auxiliary index
@@ -64,25 +71,34 @@
 # extract_diagonal_to_mps              → utils.jl
 # _row_checker_mpo, _col_select_mpo    → 2D_lattice.jl
 # TBHamiltonian, _ensure_scale!        → TBSystem.jl
+# _run_kpm_mps!, _dos_weight_matrix    → KPM_tk.jl
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # File structure
 # ─────────────────────────────────────────────────────────────────────────────
-# 1.  QFT conjugation            conjugate_by_qft
+# 1.  QFT conjugation
+#     1a. Single-particle QFT    conjugate_by_qft
+#     1b. Exciton QFT            conjugate_by_qft_exciton
 # 2.  Legacy sublattice projectors projop_2DSL, projop_1DSL
 # 3.  Internal utilities         ilinspace, _eval_diag_mps, sample_diag,
-#                                _kpm_weight_matrix
+#                                mpsexcitonQ/KQ/QTrace, _kpm_weight_matrix
 # 3b. High-symmetry k-path       kpath_2d, hsk_honeycomb/square/triangular,
 #                                kpath_setup, _hs_label, _hsk
-# 4.  Online band structure      get_bands (low-level MPO version)
-# 4b. Aux index projection       project_aux, project_spin, aux_site
-# 5.  High-level overload        get_bands (TBHamiltonian version)
+# 4.  Online band structure      get_bands, get_exciton_bands,
+#                                get_exciton_continuum
+# 5.  High-level overloads       get_bands (TBHamiltonian, single-particle)
+# 5b. Aux index projection       project_aux, project_spin, aux_site
 # 6.  Legacy reference code      old get_bands (inner-product approach)
+
 
 
 # ============================================================
 # 1. QFT conjugation
 # ============================================================
+
+# ------------------------------------------------------------
+# 1a. Single-particle QFT conjugation
+# ------------------------------------------------------------
 
 """
     conjugate_by_qft(W; tol=1e-9, maxdim=100) -> MPO
@@ -183,6 +199,84 @@ function _embed_displacement_in_full_sites(H::TBHamiltonian, mpo_pos::MPO)
         result = mpo_kron(result, MPO([ones_t]))
     end
     return result
+end
+
+
+# ------------------------------------------------------------
+# 1b. Exciton QFT conjugation
+# ------------------------------------------------------------
+
+"""
+    conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim=100) -> MPO
+
+Two-particle (electron–hole) analogue of [`conjugate_by_qft`](@ref) for the
+interleaved `2L`-site exciton encoding produced by `Exciton_Hamiltonian` /
+`exciton_hamiltonian`, where one carrier occupies the odd sites (1, 3, …) and
+the other the even sites (2, 4, …).
+
+Returns `U · W · U†` where `U = U_e ⊗ U_h` is the product of two **independent**
+Quantum Fourier Transforms, one acting on each carrier's `R = H.L` position
+qubits.  Conjugating the exciton spectral MPO `T_n` by `U` rotates *both*
+carriers into momentum space; extracting the diagonal then resolves the joint
+`(kₑ, k_h)` weight (apply a relative-/centre-of-mass-momentum shift first to read
+a fixed total momentum `q`).
+
+The site list comes from `_pos_sites(H)` — the same canonical accessor the
+single-particle `conjugate_by_qft(H, W)` overload uses — rather than being
+reverse-engineered from `siteinds(W)`.
+
+The construction mirrors the single-particle `conjugate_by_qft` but builds the
+full two-particle transform first:
+
+1. Two single-particle QFT cores from `QuanticsTCI.quanticsfouriermpo`
+   (`TCI.reverse`, `normalize=true`) — `sign=-1` and `sign=+1`, identical to
+   `conjugate_by_qft` so the per-carrier convention matches.
+2. The same core is interleaved onto both carrier registers — the even sites
+   (`interleave_mpo(…, 0)`) and the odd sites (`interleave_mpo(…, 1)`) — and the
+   two halves are multiplied into the full transforms `U` and `U†` (`= U_e ⊗ U_h`).
+   The product contracts away the interleaved identity tensors, leaving dense cores.
+3. `fix_sites` re-canonicalises the combined MPOs onto the physical `sites`, then
+   `swapprime` undoes the bra↔ket swap `interleave_mpo` introduces (needed because
+   the reversed QFT is not symmetric, so the swap is a genuine transpose).
+4. The conjugation `U · W · U†` is applied exactly as in the single-particle
+   routine (`swapprime` left-multiply); the result stays on `sites`.
+
+Verified to machine precision against the dense `U·W·U†` (with `U` taken from the
+single-particle `conjugate_by_qft`) for `R = 2, 3, 4`.  As with the 2L-site MPOs
+involved, raise `maxdim` (and/or tighten `tol`) for larger `R`; the default
+`maxdim=100` starts truncating around `R ≳ 4`.
+
+See also [`conjugate_by_qft`](@ref), `Exciton_Hamiltonian`, `interleave_mpo`,
+`fix_sites`.
+"""
+function conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim::Int=100)
+    sites = _pos_sites(H)
+    L2    = length(sites)
+    iseven(L2) || error("conjugate_by_qft_exciton expects an even site count " *
+                        "(2L interleaved electron/hole qubits); got $L2.")
+    R = L2 ÷ 2
+
+    # Single-particle QFT cores, identical to conjugate_by_qft.
+    FT1  = MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true)))  # U†-side
+    FT1i = MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true)))  # U-side
+
+    # Interleave the same core onto both registers (even sites via n=0, odd via
+    # n=1), multiply the two halves into the full two-particle transform / inverse,
+    # fix_sites onto the physical sites, then `swapprime` to undo the bra↔ket
+    # swap that `interleave_mpo` introduces (it lays legs down unprimed-first).
+    # Without it the non-symmetric reversed QFT comes out transposed and the
+    # conjugation is wrong; with it these match the single-particle convention.
+    FTirev = swapprime(fix_sites(apply(interleave_mpo(FT1,  sites, 0),
+                                       interleave_mpo(FT1,  sites, 1);
+                                       cutoff=tol, maxdim=maxdim), sites), 0 => 1)  # U†  (sign -1)
+    FTrev  = swapprime(fix_sites(apply(interleave_mpo(FT1i, sites, 0),
+                                       interleave_mpo(FT1i, sites, 1);
+                                       cutoff=tol, maxdim=maxdim), sites), 0 => 1)  # U   (sign +1)
+
+    # U · W · U†  — identical structure to single-particle conjugate_by_qft.
+    Op1 = apply(W, FTirev; cutoff=tol, maxdim=maxdim)
+    Op2 = apply(swapprime(FTrev, 0 => 1), Op1; cutoff=tol, maxdim=maxdim)
+    return TCI.truncate(Op2; cutoff=tol, maxdim=maxdim)
 end
 
 
@@ -307,6 +401,244 @@ function sample_diag(Tn_k::MPO, ikstart::Int, ikend::Int)
         vals[iloc] = _eval_diag_mps(A_mps, idx)
     end
     return vals
+end
+
+
+# ------------------------------------------------------------
+# Exciton momentum-basis MPS probes
+# ------------------------------------------------------------
+
+"""
+    mpsexcitonQ(Q, sites) -> MPS
+
+Normalized fixed-total-momentum exciton state on the interleaved electron-hole
+chain:
+
+    |Q> = (1 / sqrt(N)) * sum_k |k, -k + Q>
+
+`Q` is 1-indexed (`Q in 1:2^LPhys`), matching `mpsexciton` and the rest of the
+public exciton sampling API. Internally the modular momentum arithmetic is
+0-indexed and uses the QFT momentum convention: site pair 1 carries bit 0
+(LSB-first).
+
+The construction encodes the constraint `k + h = Q (mod N)` as a small
+finite-state MPS rather than explicitly summing over all `N = 2^LPhys` momenta.
+For each electron-hole bit pair `(a_i, b_i)` it keeps a binary carry on the MPS
+bond and allows only local configurations satisfying
+
+    a_i + b_i + carry_in = Q_i + 2 * carry_out
+
+where `Q_i` is the `i`th bit of `Q - 1`. The first bit has `carry_in = 0`, and
+the final carry is not fixed, giving addition modulo `2^LPhys`.
+
+Scaling: the probe has `2LPhys` physical sites, bond dimension at most 2 between
+bit pairs (the carry), and a local intermediate link of dimension 4 inside each
+electron-hole pair. Building the probe is therefore `O(LPhys)` in storage and
+time, not `O(2^LPhys)`. For very large systems the expensive part is the
+subsequent MPS-KPM recursion with `H_QFT`; this compact probe construction should
+not be the bottleneck.
+"""
+function mpsexcitonQ(Q, sites)
+    L = length(sites)
+    iseven(L) || error("mpsexcitonQ expects an even electron-hole site count; got $L.")
+    all(s -> dim(s) == 2, sites) ||
+        error("mpsexcitonQ expects qubit sites with dimension 2.")
+
+    LPhys = div(L, 2)
+    N     = 1 << LPhys
+    Q_int = Int(Q)
+    1 <= Q_int <= N ||
+        error("mpsexcitonQ expects 1 <= Q <= $N; got $Q.")
+
+    Q0     = Q_int - 1
+    q_bits = [(Q0 >> (i - 1)) & 1 for i in 1:LPhys]
+    norm   = 1 / sqrt(float(N))
+
+    carry_links = [Index(2, "Link,excitonQ_carry=$i") for i in 1:LPhys-1]
+    tensors     = Vector{ITensor}(undef, L)
+
+    midval(c_left, a_bit) = 2 * c_left + a_bit + 1
+
+    for i in 1:LPhys
+        s_e = sites[2i - 1]
+        s_h = sites[2i]
+        mid = Index(4, "Link,excitonQ_mid=$i")
+
+        if i == 1
+            A = ITensor(s_e, mid)
+            for a_bit in 0:1
+                A[s_e => a_bit + 1, mid => midval(0, a_bit)] = norm
+            end
+        else
+            left = carry_links[i - 1]
+            A = ITensor(left, s_e, mid)
+            for c_left in 0:1, a_bit in 0:1
+                A[left => c_left + 1, s_e => a_bit + 1,
+                  mid => midval(c_left, a_bit)] = 1.0
+            end
+        end
+        tensors[2i - 1] = A
+
+        q_bit = q_bits[i]
+        if i == LPhys
+            B = ITensor(mid, s_h)
+            for c_left in 0:1, a_bit in 0:1, b_bit in 0:1, c_right in 0:1
+                if a_bit + b_bit + c_left == q_bit + 2 * c_right
+                    B[mid => midval(c_left, a_bit), s_h => b_bit + 1] = 1.0
+                end
+            end
+        else
+            right = carry_links[i]
+            B = ITensor(mid, s_h, right)
+            for c_left in 0:1, a_bit in 0:1, b_bit in 0:1, c_right in 0:1
+                if a_bit + b_bit + c_left == q_bit + 2 * c_right
+                    B[mid => midval(c_left, a_bit), s_h => b_bit + 1,
+                      right => c_right + 1] = 1.0
+                end
+            end
+        end
+        tensors[2i] = B
+    end
+
+    return MPS(tensors)
+end
+
+"""
+    mpsexcitonQTrace(Q, sites; rng=Random.default_rng()) -> MPS
+
+Random-phase fixed-total-momentum trace probe for the electron-hole continuum:
+
+    |r_Q> = (1 / sqrt(N)) * sum_k eta_k |k, Q-k>
+
+where the phases are Rademacher signs `eta_k = +/-1`. The signs are generated
+as a product over the bits of `k`, so the state still has the same compact
+finite-state structure as [`mpsexcitonQ`](@ref): it enforces
+`k + h = Q (mod N)` with a carry bond of dimension at most 2, while adding
+random signs to the electron-bit tensors.
+
+This is the MPS probe used for stochastic continuum traces. For an operator
+restricted to the fixed-`Q` sector,
+
+    E[<r_Q|A|r_Q>] = (1 / N) * sum_k <k,Q-k|A|k,Q-k>
+
+because the random signs satisfy `E[eta_k eta_l] = delta_kl`. Building one probe
+is `O(LPhys)` and avoids launching one KPM recursion per explicit relative
+momentum `k`.
+"""
+function mpsexcitonQTrace(Q, sites; rng=Random.default_rng())
+    L = length(sites)
+    iseven(L) || error("mpsexcitonQTrace expects an even electron-hole site count; got $L.")
+    all(s -> dim(s) == 2, sites) ||
+        error("mpsexcitonQTrace expects qubit sites with dimension 2.")
+
+    LPhys = div(L, 2)
+    N     = 1 << LPhys
+    Q_int = Int(Q)
+    1 <= Q_int <= N ||
+        error("mpsexcitonQTrace expects 1 <= Q <= $N; got $Q.")
+
+    Q0     = Q_int - 1
+    q_bits = [(Q0 >> (i - 1)) & 1 for i in 1:LPhys]
+    signs  = [rand(rng, Bool) ? 1.0 : -1.0 for _ in 1:LPhys]
+    norm   = 1 / sqrt(float(N))
+
+    carry_links = [Index(2, "Link,excitonQTrace_carry=$i") for i in 1:LPhys-1]
+    tensors     = Vector{ITensor}(undef, L)
+
+    midval(c_left, a_bit) = 2 * c_left + a_bit + 1
+    phase(i, a_bit) = a_bit == 0 ? 1.0 : signs[i]
+
+    for i in 1:LPhys
+        s_e = sites[2i - 1]
+        s_h = sites[2i]
+        mid = Index(4, "Link,excitonQTrace_mid=$i")
+
+        if i == 1
+            A = ITensor(s_e, mid)
+            for a_bit in 0:1
+                A[s_e => a_bit + 1, mid => midval(0, a_bit)] =
+                    norm * phase(i, a_bit)
+            end
+        else
+            left = carry_links[i - 1]
+            A = ITensor(left, s_e, mid)
+            for c_left in 0:1, a_bit in 0:1
+                A[left => c_left + 1, s_e => a_bit + 1,
+                  mid => midval(c_left, a_bit)] = phase(i, a_bit)
+            end
+        end
+        tensors[2i - 1] = A
+
+        q_bit = q_bits[i]
+        if i == LPhys
+            B = ITensor(mid, s_h)
+            for c_left in 0:1, a_bit in 0:1, b_bit in 0:1, c_right in 0:1
+                if a_bit + b_bit + c_left == q_bit + 2 * c_right
+                    B[mid => midval(c_left, a_bit), s_h => b_bit + 1] = 1.0
+                end
+            end
+        else
+            right = carry_links[i]
+            B = ITensor(mid, s_h, right)
+            for c_left in 0:1, a_bit in 0:1, b_bit in 0:1, c_right in 0:1
+                if a_bit + b_bit + c_left == q_bit + 2 * c_right
+                    B[mid => midval(c_left, a_bit), s_h => b_bit + 1,
+                      right => c_right + 1] = 1.0
+                end
+            end
+        end
+        tensors[2i] = B
+    end
+
+    return MPS(tensors)
+end
+
+"""
+    mpsexcitonKQ(k, Q, sites) -> MPS
+
+Product momentum-basis electron-hole continuum state at fixed total momentum:
+
+    |k, Q - k>
+
+Both `k` and `Q` are 1-indexed (`1:2^LPhys`) in the public API. Internally they
+are shifted to 0-indexed modular arithmetic, and the hole momentum is computed
+as `h = Q - k (mod N)`.
+
+This is the incoherent continuum probe complement to [`mpsexcitonQ`](@ref).
+`mpsexcitonQ(Q, sites)` builds the coherent pair state
+`(1 / sqrt(N)) * sum_k |k, Q-k>`, while `mpsexcitonKQ(k, Q, sites)` builds one
+rank-1 product basis vector in that fixed-`Q` sector. Stochastic continuum
+traces sample many such `k` values and average the resulting MPS-KPM spectra.
+
+The site convention matches the QFT momentum convention: site pair 1 carries bit
+0 (LSB-first), with electron bits on odd sites and hole bits on even sites.
+"""
+function mpsexcitonKQ(k, Q, sites)
+    L = length(sites)
+    iseven(L) || error("mpsexcitonKQ expects an even electron-hole site count; got $L.")
+    all(s -> dim(s) == 2, sites) ||
+        error("mpsexcitonKQ expects qubit sites with dimension 2.")
+
+    LPhys = div(L, 2)
+    N     = 1 << LPhys
+    k_int = Int(k)
+    Q_int = Int(Q)
+    1 <= k_int <= N ||
+        error("mpsexcitonKQ expects 1 <= k <= $N; got $k.")
+    1 <= Q_int <= N ||
+        error("mpsexcitonKQ expects 1 <= Q <= $N; got $Q.")
+
+    k0 = k_int - 1
+    Q0 = Q_int - 1
+    h0 = mod(Q0 - k0, N)
+
+    state = Vector{String}(undef, L)
+    for i in 1:LPhys
+        state[2i - 1] = string((k0 >> (i - 1)) & 1)
+        state[2i]     = string((h0 >> (i - 1)) & 1)
+    end
+
+    return MPS(sites, state)
 end
 
 
@@ -893,6 +1225,286 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
 end
 
 
+# ------------------------------------------------------------
+# Exciton momentum-space spectra (MPS-KPM)
+# ------------------------------------------------------------
+
+"""
+    get_exciton_bands(H_QFT, H, Ncheb, omega_phys_vals; Q_list, Q_groups,
+                      num_q, num_avg, q_start, q_end, kernel,
+                      lambda, eta, m_order, maxdim, cutoff,
+                      verbose, printinfo) -> Matrix{Float64}
+
+CPU momentum-space exciton bands from an already-QFT-conjugated exciton MPO.
+This is the MPS-KPM analogue of `get_exciton_ldos_spatial`: for each total
+momentum label `Q` it runs an online MPS Chebyshev recursion from
+`mpsexcitonQ(Q, H.sites) = (1 / sqrt(N)) * sum_k |k, -k + Q>` and accumulates
+all requested energies in one pass. The exciton must not use the MPO-KPM
+`get_bands` pipeline.
+
+`H_QFT` supplies the MPO used in the recurrence. The original real-space
+`H::TBHamiltonian` supplies metadata (`sites`, `N`, `L`, `scale`, `center`) and
+sets the basis convention for `mpsexcitonQ`.
+
+Rows are energies, columns are total momenta/groups. `Q_list` selects momenta
+directly. `Q_groups` (or alias `q_groups`) averages several momentum probes into
+one output column. `K_list`, `K_groups`, `k_groups`, `num_k`, `k_start`, and
+`k_end` are accepted as backward-compatible aliases.
+"""
+function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
+                           Q_list           = nothing,
+                           Q_groups         = nothing,
+                           q_groups         = nothing,
+                           K_list           = nothing,
+                           K_groups         = nothing,
+                           k_groups         = nothing,
+                           num_q            = nothing,
+                           num_k::Int       = H.N,
+                           num_avg::Int     = 1,
+                           q_start          = nothing,
+                           q_end            = nothing,
+                           k_start::Int     = 1,
+                           k_end::Int       = H.N,
+                           kernel::Symbol   = :jackson,
+                           lambda::Real     = 4.0,
+                           eta::Real        = 0.0,
+                           m_order::Int     = 4,
+                           maxdim::Int      = 100,
+                           cutoff::Real     = 1e-8,
+                           verbose::Bool    = false,
+                           printinfo::Bool  = false)
+    _ensure_scale!(H)
+    length(H.sites) == 2 * H.L ||
+        error("get_exciton_bands: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    length(H_QFT) == length(H.sites) ||
+        error("get_exciton_bands: H_QFT must live on the same number of sites as H.sites.")
+
+    list_count = count(!isnothing, (Q_list, K_list))
+    group_count = count(!isnothing, (Q_groups, q_groups, K_groups, k_groups))
+    list_count <= 1 ||
+        error("get_exciton_bands: pass only one of Q_list or K_list.")
+    group_count <= 1 ||
+        error("get_exciton_bands: pass only one of Q_groups, q_groups, K_groups, or k_groups.")
+    list_count == 1 && group_count == 1 &&
+        error("get_exciton_bands: pass either a momentum list or grouped momenta, not both.")
+
+    list_arg = Q_list !== nothing ? Q_list : K_list
+    group_arg = Q_groups !== nothing ? Q_groups :
+                q_groups !== nothing ? q_groups :
+                K_groups !== nothing ? K_groups : k_groups
+    num_q_eff = num_q === nothing ? num_k : Int(num_q)
+    q_start_eff = q_start === nothing ? k_start : Int(q_start)
+    q_end_eff = q_end === nothing ? k_end : Int(q_end)
+
+    groups = if group_arg !== nothing
+        group_arg isa AbstractVector{<:AbstractVector} ?
+            [collect(Int, grp) for grp in group_arg] :
+            [[Int(q)] for q in group_arg]
+    elseif list_arg !== nothing
+        [[Int(q)] for q in list_arg]
+    else
+        num_q_eff > 0 || error("get_exciton_bands: num_q must be positive.")
+        num_avg > 0 || error("get_exciton_bands: num_avg must be positive.")
+        1 <= q_start_eff <= q_end_eff <= H.N ||
+            error("get_exciton_bands: expected 1 <= q_start <= q_end <= H.N.")
+        window = q_end_eff - q_start_eff + 1
+        num_q_eff <= window ||
+            error("get_exciton_bands: num_q=$num_q_eff exceeds sampling window length $window.")
+        dq     = div(window, num_q_eff)
+        dq_sub = max(1, div(dq, num_avg))
+        [[q_start_eff + (i - 1) * dq + k * dq_sub
+          for k in 0:num_avg-1
+          if q_start_eff + (i - 1) * dq + k * dq_sub <= q_end_eff]
+         for i in 1:num_q_eff]
+    end
+
+    isempty(groups) && error("get_exciton_bands: no momentum groups were selected.")
+    for grp in groups
+        isempty(grp) && error("get_exciton_bands: empty momentum group.")
+        all(q -> 1 <= q <= H.N, grp) ||
+            error("get_exciton_bands: all momenta must lie in 1:H.N.")
+    end
+
+    I_mpo = MPO(H.sites, "Id")
+    Ham_n = (1 / H.scale) * +(H_QFT, (-H.center) * I_mpo; cutoff=cutoff)
+
+    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    Nomega     = length(omega_vals)
+    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
+                                    kernel=kernel, lambda=lambda,
+                                    eta=eta, m_order=m_order)
+    valid      = [abs(omega) < 1.0 for omega in omega_vals]
+
+    nQ     = length(groups)
+    Qs     = first.(groups)
+    result = zeros(Float64, Nomega, nQ)
+
+    for (j, group) in enumerate(groups)
+        last_linkdim = 0
+        accum_group  = zeros(Float64, Nomega)
+
+        for Q in group
+            psi0 = mpsexcitonQ(Q, H.sites)
+            last_linkdim = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_group;
+                                         weight=1.0 / length(group),
+                                         cutoff=cutoff, maxdim=maxdim)
+        end
+
+        for iomega in 1:Nomega
+            valid[iomega] || continue
+            result[iomega, j] = accum_group[iomega] / denom[iomega]
+        end
+
+        (verbose || printinfo) && (j % 5 == 0 || j == nQ) &&
+            println("  exciton bands $j/$nQ (Q=$(Qs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
+    end
+
+    return result
+end
+
+"""
+    get_exciton_continuum(H_QFT, H, Ncheb, omega_phys_vals;
+                          Q_list, num_q, q_start, q_end,
+                          N_sample, k_list, seed, normalize,
+                          kernel, lambda, eta, m_order, maxdim, cutoff,
+                          verbose, printinfo) -> Matrix{Float64}
+
+Stochastic MPS-KPM trace over the electron-hole continuum at fixed total
+momentum. For each selected total momentum `Q`, this estimates
+
+    A_cont(Q, omega) = (1 / N) * sum_k <k, Q-k| delta(omega - H_QFT) |k, Q-k>
+
+with random-phase trace probes built by `mpsexcitonQTrace(Q, H.sites)`. This is
+an incoherent trace over relative momentum, unlike `get_exciton_bands`, which
+probes the coherent pair state `mpsexcitonQ(Q, H.sites)`.
+
+`H_QFT` supplies the already-QFT-conjugated MPO used in the MPS recursion. The
+original `H::TBHamiltonian` supplies metadata (`sites`, `N`, `L`, `scale`,
+`center`) and the exciton site convention. The exciton continuum remains an
+MPS-KPM calculation: no exciton MPO-KPM / `QFT_tk.get_bands` path is used.
+
+Rows are energies, columns are total momenta. If `k_list` is provided, those
+1-indexed relative momenta are used deterministically for every `Q`; otherwise
+`N_sample` compact random-phase trace probes are drawn for each `Q`. Each trace
+probe is a randomized superposition over all `|k,Q-k>` states, so this avoids a
+full KPM recursion for every explicit relative momentum.
+
+With `normalize=true` (default), the result estimates the per-relative-momentum
+average `(1/N) * Tr_Q`. With `normalize=false`, it is multiplied by `H.N` and
+estimates the total fixed-`Q` trace `Tr_Q`.
+"""
+function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
+                               Q_list::Union{Nothing,AbstractVector} = nothing,
+                               num_q::Int       = H.N,
+                               q_start::Int     = 1,
+                               q_end::Int       = H.N,
+                               N_sample::Int    = 4,
+                               k_list           = nothing,
+                               seed::Union{Int,Nothing} = 42,
+                               normalize::Bool  = true,
+                               kernel::Symbol   = :jackson,
+                               lambda::Real     = 4.0,
+                               eta::Real        = 0.0,
+                               m_order::Int     = 4,
+                               maxdim::Int      = 100,
+                               cutoff::Real     = 1e-8,
+                               verbose::Bool    = false,
+                               printinfo::Bool  = false)
+    _ensure_scale!(H)
+    length(H.sites) == 2 * H.L ||
+        error("get_exciton_continuum: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    length(H_QFT) == length(H.sites) ||
+        error("get_exciton_continuum: H_QFT must live on the same number of sites as H.sites.")
+
+    Qs = if Q_list !== nothing
+        collect(Int, Q_list)
+    else
+        num_q > 0 || error("get_exciton_continuum: num_q must be positive.")
+        1 <= q_start <= q_end <= H.N ||
+            error("get_exciton_continuum: expected 1 <= q_start <= q_end <= H.N.")
+        window = q_end - q_start + 1
+        num_q <= window ||
+            error("get_exciton_continuum: num_q=$num_q exceeds sampling window length $window.")
+        unique(round.(Int, range(q_start, q_end; length=num_q)))
+    end
+    isempty(Qs) && error("get_exciton_continuum: no total momenta were selected.")
+    all(Q -> 1 <= Q <= H.N, Qs) ||
+        error("get_exciton_continuum: all total momenta must lie in 1:H.N.")
+
+    k_samples_fixed = if k_list === nothing
+        nothing
+    else
+        ks = collect(Int, k_list)
+        isempty(ks) && error("get_exciton_continuum: k_list must not be empty.")
+        all(k -> 1 <= k <= H.N, ks) ||
+            error("get_exciton_continuum: all relative momenta in k_list must lie in 1:H.N.")
+        ks
+    end
+    if k_list === nothing && N_sample <= 0
+        error("get_exciton_continuum: N_sample must be positive when k_list is not provided.")
+    end
+
+    I_mpo = MPO(H.sites, "Id")
+    Ham_n = (1 / H.scale) * +(H_QFT, (-H.center) * I_mpo; cutoff=cutoff)
+
+    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    Nomega     = length(omega_vals)
+    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
+                                    kernel=kernel, lambda=lambda,
+                                    eta=eta, m_order=m_order)
+    valid      = [abs(omega) < 1.0 for omega in omega_vals]
+
+    rng    = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
+    result = zeros(Float64, Nomega, length(Qs))
+
+    for (j, Q) in enumerate(Qs)
+        accum_Q      = zeros(Float64, Nomega)
+        last_linkdim = 0
+        n_used       = 0
+
+        if k_samples_fixed === nothing
+            weight = 1.0 / N_sample
+            n_used = N_sample
+            for isample in 1:N_sample
+                psi0 = mpsexcitonQTrace(Q, H.sites; rng=rng)
+                last_linkdim = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_Q;
+                                             weight=weight, cutoff=cutoff, maxdim=maxdim)
+                verbose && (isample % 5 == 0 || isample == N_sample) &&
+                    println("  exciton continuum Q=$Q trace probe $isample/$N_sample  maxlinkdim=$last_linkdim")
+            end
+        else
+            ks     = k_samples_fixed
+            weight = 1.0 / length(ks)
+            n_used = length(ks)
+            for (isample, k) in enumerate(ks)
+                psi0 = mpsexcitonKQ(k, Q, H.sites)
+                last_linkdim = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_Q;
+                                             weight=weight, cutoff=cutoff, maxdim=maxdim)
+                verbose && (isample % 15 == 0 || isample == length(ks)) &&
+                    println("  exciton continuum Q=$Q basis sample $isample/$(length(ks)) (k=$k)  maxlinkdim=$last_linkdim")
+            end
+        end
+
+        for iomega in 1:Nomega
+            valid[iomega] || continue
+            result[iomega, j] = accum_Q[iomega] / denom[iomega]
+        end
+        if !normalize
+            result[:, j] .*= H.N
+        end
+
+        (verbose || printinfo) && (j % 5 == 0 || j == length(Qs)) &&
+            println("  exciton continuum $j/$(length(Qs)) (Q=$Q, n_probe=$n_used)  maxlinkdim=$last_linkdim")
+    end
+
+    return result
+end
+
+
+# ============================================================
+# 5. High-level overloads  —  get_bands
+# ============================================================
+
 """
     get_bands(H, Ncheb, D, ω_phys_vals; kwargs...)
         -> Matrix{Float64}  or  NamedTuple(Ak, ticks, labels)
@@ -1039,7 +1651,7 @@ end
 
 
 # ============================================================
-# 4b. Auxiliary index projection utilities
+# 5b. Auxiliary index projection utilities
 #
 # Any auxiliary DOF (spin, Nambu, layer, sublattice) added with prepend_op /
 # postpend_op lives at the first or last site of the MPO as a dim-1-bonded
@@ -1177,7 +1789,7 @@ end
 
 
 # ============================================================
-# 5. Legacy — kept for reference, not part of the public API
+# 6. Legacy — kept for reference, not part of the public API
 # ============================================================
 
 # ── get_spect_k / get_spect_k_doubled (inner-product approach, superseded) ──
