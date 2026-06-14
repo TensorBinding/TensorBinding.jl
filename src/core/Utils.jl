@@ -692,25 +692,6 @@ end
 
 
 
-# Exciton basis state |x, x> on the interleaved electron-hole chain.
-# x is 1-indexed (x in {1, ..., 2^LPhys}), consistent with get_diagonal_mpo
-# and add_onsite! conventions in TensorBinding.
-function mpsexciton(x, sites)
-    L     = length(sites)
-    LPhys = div(L, 2)
-    bits  = to_binary_vector(Int(x) - 1, LPhys)   # shift to 0-indexed for binary encoding
-
-    elechole = Vector{String}(undef, L)
-    for i in 1:LPhys
-        elechole[2i - 1] = bits[i]
-        elechole[2i]     = bits[i]
-    end
-
-    return MPS(sites, elechole)
-end
-
-
-
 # ---------------------------------------------------------------------
 # MPS -> diagonal MPO conversion
 # ---------------------------------------------------------------------
