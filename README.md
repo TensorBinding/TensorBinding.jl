@@ -88,4 +88,4 @@ Self-consistent Hartree/Fock loop for Hubbard-type density and pairing channels.
 **GPU acceleration**  
 CUDA-accelerated (`_gpu`) counterparts for KPM, bands, topology, SCF, and exciton LDOS.
 
-The package is under active development. A full function reference is available in `docs\src\TensorBinding_Manual.pdf` with a dependency map, and example notebooks are in `examples/`.
+The package is under active development. A full function reference is available in `docs/src/TensorBinding_Manual.pdf` with a dependency map, and example notebooks are in `examples/`.
