@@ -1762,6 +1762,120 @@ end
 
 
 """
+    get_exciton_ldos_separation(H, Ncheb, omega_phys_vals; d_list, R_list=1:H.N,
+                                boundary=:open, kernel=:jackson, lambda=4.0, eta=0.0,
+                                m_order=4, maxdim=100, cutoff=1e-8, verbose=false,
+                                printinfo=false) -> Array{Float64,3}
+
+Relative-separation-resolved exciton LDOS
+
+    rho(d, R, E) = <R+d, R| delta(E - H) |R+d, R>
+
+generalising `get_exciton_ldos_spatial` (the `d = 0` slice) to electron-hole probes
+with electron at `R+d` and hole at `R` (both 1-indexed in `1:H.N`).
+
+For each `(d, R)` pair the probe `|R+d, R>` is a single product state
+(`mpsexciton(R+d, R, H.sites)`) — no superposition / carry construction is needed,
+unlike the momentum-space probes `mpsexcitonQ`/`mpsexcitonQTrace`. An online MPS
+Chebyshev recursion accumulates all energies in one pass, exactly as in
+`get_exciton_ldos_spatial`.
+
+`boundary=:open` (default): pairs with `R+d` outside `1:H.N` are left as `NaN`.
+`boundary=:periodic`: `R+d` is wrapped modulo `H.N`.
+
+Returns an `(Nomega, length(d_list), length(R_list))` array. Cost is
+`length(d_list) * length(R_list)` Chebyshev recursions, so keep these (and `Ncheb`)
+small for a first pass.
+"""
+function get_exciton_ldos_separation(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
+                                     d_list,
+                                     R_list           = 1:H.N,
+                                     boundary::Symbol = :open,
+                                     kernel::Symbol   = :jackson,
+                                     lambda::Real     = 4.0,
+                                     eta::Real        = 0.0,
+                                     m_order::Int     = 4,
+                                     maxdim::Int      = 100,
+                                     cutoff::Real     = 1e-8,
+                                     verbose::Bool    = false,
+                                     printinfo::Bool  = false)
+    _ensure_scale!(H)
+    length(H.sites) == 2 * H.L ||
+        error("get_exciton_ldos_separation: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    boundary in (:open, :periodic) ||
+        error("get_exciton_ldos_separation: boundary must be :open or :periodic, got $boundary.")
+
+    I_mpo = MPO(H.sites, "Id")
+    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+
+    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    Nomega     = length(omega_vals)
+    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
+                                    kernel=kernel, lambda=lambda,
+                                    eta=eta, m_order=m_order)
+    valid      = [abs(omega) < 1.0 for omega in omega_vals]
+
+    ds = collect(Int, d_list)
+    Rs = collect(Int, R_list)
+    result = fill(NaN, Nomega, length(ds), length(Rs))
+
+    for (jR, R) in enumerate(Rs), (jd, d) in enumerate(ds)
+        xe = R + d
+        if boundary == :periodic
+            xe = mod(xe - 1, H.N) + 1
+        elseif !(1 <= xe <= H.N)
+            continue   # leave as NaN: electron position falls outside the chain
+        end
+
+        psi0  = mpsexciton(xe, R, H.sites)
+        accum = zeros(Float64, Nomega)
+        last_linkdim = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum;
+                                     cutoff=cutoff, maxdim=maxdim)
+
+        for iomega in 1:Nomega
+            valid[iomega] || continue
+            result[iomega, jd, jR] = accum[iomega] / denom[iomega]
+        end
+
+        (verbose || printinfo) &&
+            println("  exciton separation d=$d, R=$R (x_e=$xe)  maxlinkdim=$last_linkdim")
+    end
+
+    return result
+end
+
+
+"""
+    exciton_radius2(rho, d_list) -> Matrix{Float64}
+
+Energy-resolved exciton radius
+
+    xi^2(R, E) = sum_d d^2 * P(d | R, E),   P(d | R, E) = rho(d,R,E) / sum_d' rho(d',R,E)
+
+from a `rho` array as returned by `get_exciton_ldos_separation`
+(`size(rho) == (Nomega, length(d_list), n_R)`). Returns an `(Nomega, n_R)` matrix.
+Entries where any `rho[:, :, R]` along `d` is `NaN` (e.g. `R+d` outside the chain
+under `boundary=:open`), or where the normalisation `sum_d rho(d,R,E)` is zero, are
+returned as `NaN`.
+"""
+function exciton_radius2(rho::AbstractArray{<:Real,3}, d_list)
+    Nomega, nd, nR = size(rho)
+    nd == length(d_list) || error("exciton_radius2: size(rho,2) must match length(d_list).")
+    d2 = Float64.(collect(d_list)) .^ 2
+
+    xi2 = fill(NaN, Nomega, nR)
+    for iR in 1:nR, iomega in 1:Nomega
+        slice = @view rho[iomega, :, iR]
+        any(isnan, slice) && continue
+        norm = sum(slice)
+        norm == 0 && continue
+        xi2[iomega, iR] = sum(d2 .* slice) / norm
+    end
+    return xi2
+end
+
+
+"""
     ldos_exc_KPM_Tn(H, N, X; cutoff, maxdim) -> Vector
 
 Low-level: Chebyshev moment list ⟨X|T_n(H)|X⟩ for the exciton state |X,X⟩.
