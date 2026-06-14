@@ -45,7 +45,8 @@ rho = get_density_from_Tn(Tn, 200; fermi=0.0, maxdim=100)
 
 **Hamiltonian construction**
 - 1D: nearest-neighbour chain, SSH, Aubry–André–Harper quasicrystal
-- 2D: square, triangular, and honeycomb lattices
+- 2D: square, triangular, honeycomb, kagomé, Lieb, and dice lattices
+- Generic n-th-neighbour hopping (`add_hopping_2D!`) and T-/Y-junction geometries
 - Bilayer and multilayer systems with AA or Bernal (AB) stacking
 - Twisted multilayer with exponentially decaying interlayer coupling (TCI-compressed)
 - Arbitrary hopping matrices `f(i,j)` compressed automatically via QTCI
@@ -56,7 +57,7 @@ Supported: Ising SOC, Rashba SOC, uniform or site-dependent Zeeman, singlet *s*-
 **Kernel Polynomial Method (KPM)**
 - Chebyshev expansion of spectral functions, Green's functions, and density matrices
 - Kernels: Jackson (default), Lorentz, Fejér, Dirichlet, HODC
-- Spectral function *A(k,ω)* via QFT conjugation (`get_bands`)
+- Spectral function *A(k,ω)* via QFT conjugation (`get_bands`); QPI maps from LDOS differences
 
 **Density matrix purification**
 - `mcweeny_purify` — cubic map, quadratic convergence
@@ -69,13 +70,22 @@ Supported: Ising SOC, Rashba SOC, uniform or site-dependent Zeeman, singlet *s*-
 **Many-body methods**
 - DMRG ground state and LDoS via DMRG (`dmrg_gs`, `dmrg_spectral`)
 - Random Phase Approximation (RPA) for susceptibility via Dyson equation
+- Krylov/Haydock Green's functions via vectorized linear solves
+
+**Exciton / two-particle systems**  
+Real-space (1D contact, 2D electron–hole) and momentum-space (QFT+KPM) exciton spectra.
 
 **Topological invariants**
 - Chern number and local Chern marker for Haldane and general 2D models
 - Winding number for SSH and general 1D models
 
-**Non-hermitian system**
+**Non-Hermitian systems**  
+Hermitization via similarity transform and KPM spectral functions for non-Hermitian Hamiltonians.
 
-**Mean-field calculation**
+**Mean-field (SCF)**  
+Self-consistent Hartree/Fock loop for Hubbard-type density and pairing channels.
+
+**GPU acceleration**  
+CUDA-accelerated (`_gpu`) counterparts for KPM, bands, topology, SCF, and exciton LDOS.
 
 The package is under active development. A full function reference is available in `TensorBinding_overview.txt` and example notebooks are in `examples/`.
