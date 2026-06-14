@@ -28,8 +28,8 @@
 <text x="280" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">ITensors · ITensorMPS · NDTensors</text>
 <rect x="565.0" y="67.0" width="330" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
 <text x="730" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">QuanticsTCI · TCI · Quantics · QuanticsGrids</text>
-<rect x="1100.0" y="67.0" width="220" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
-<text x="1210" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">LinearAlgebra · Plots · PyCall</text>
+<rect x="1140.0" y="67.0" width="140" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
+<text x="1210" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">LinearAlgebra</text>
 <rect x="245.0" y="181.0" width="130" height="38" rx="7" fill="#cce4ff" stroke="#2060b0" stroke-width="2"/>
 <text x="310" y="205.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">utils.jl</text>
 <rect x="762.5" y="181.0" width="155" height="38" rx="7" fill="#cce4ff" stroke="#2060b0" stroke-width="2"/>
@@ -81,6 +81,10 @@
 <path d="M 730.0 103.0 C 730.0 163.0 640.0 376.0 640.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
 <path d="M 280.0 103.0 C 280.0 183.0 910.0 356.0 910.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
 <path d="M 280.0 103.0 C 480.0 253.0 970.0 286.0 1170.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1130.0 170.0 850.0 250.0 760.0 306.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1080.0 220.0 740.0 360.0 640.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 820.0 260.0 320.0 430.0 130.0 566.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1260.0 400.0 950.0 700.0 700.0 831.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
 <line x1="375.0" y1="200.0" x2="762.5" y2="200.0" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
 <path d="M 310.0 219.0 Q 270.0 262.5 220.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
 <path d="M 310.0 219.0 Q 535.0 262.5 760.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
