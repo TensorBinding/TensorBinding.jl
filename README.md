@@ -14,7 +14,7 @@
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/TiagoAntao2/TensorBinding")
+Pkg.add(url="https://github.com/TensorBinding/TensorBinding")
 ```
 
 Requires [ITensors.jl](https://github.com/ITensor/ITensors.jl), [ITensorMPS.jl](https://github.com/ITensor/ITensorMPS.jl), and [QuanticsTCI.jl](https://github.com/tensor4all/QuanticsTCI.jl).
