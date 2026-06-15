@@ -1749,6 +1749,31 @@ use \kw{maxdim} and \kw{cutoff} to control cost.
 \bottomrule
 \end{longtable}
 
+\subsection{Non-Hermitian Density Matrix Dynamics}
+
+For a non-Hermitian Hamiltonian $H$ the equation of motion is
+$d\rho/dt = -i(H\rho - \rho H^\dagger)$, \emph{not} the commutator $-i[H,\rho]$.
+These functions integrate that equation with RK4.
+
+\begin{longtable}{L{7.5cm} L{7.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{rk4\_step\_dm\_nh(Hoft, \(\rho\), t, dt; maxdim=200, cutoff=1e-10,
+  truncate\_intermediates=true)} $\to$ \sig{MPO}
+  & Single RK4 step for $d\rho/dt = -i(H(t)\rho - \rho H(t)^\dagger)$.
+    Evaluates $H$ at $t$, $t+\Delta t/2$, and $t+\Delta t$ (three
+    distinct calls, consistent with the classical RK4 schedule).
+    \kw{Hoft} is a callable \kw{t -> MPO}; pass \kw{(\_ -> H.mpo)} for a
+    static non-Hermitian Hamiltonian. \\[4pt]
+\sig{evolve\_rk4\_dm\_nh(Hoft, \(\rho_0\), nsteps, dt; maxdim=200, cutoff=1e-10,
+  truncate\_intermediates=true, verbose=false)} $\to$ \sig{Vector\{MPO\}}
+  & Full RK4-NH trajectory; returns length-(\kw{nsteps+1}) list including
+    $\rho_0$.  Same interface as \fn{evolve\_rk4\_dm\_timedep} but uses the
+    non-Hermitian right-hand side $-i(H\rho - \rho H^\dagger)$. \\
+\bottomrule
+\end{longtable}
+
 \subsection{Observables Along Trajectories}
 
 \begin{longtable}{L{7.5cm} L{7.5cm}}
@@ -3237,15 +3262,19 @@ exact rank-1 (bond-dim-1) projector $|n\rangle\langle n|$ for 0-indexed site
 single-particle MPO by adding one dim-2 auxiliary block index:
 \[
 H_\text{NH}(z) = \begin{pmatrix} 0 & zI-H \\ (zI-H)^\dagger & 0 \end{pmatrix}
-= |1\rangle\langle2|\otimes(zI-H) + |2\rangle\langle1|\otimes(zI-H)^\dagger,
+= |1\rangle\langle2|\otimes(zI-H) + |2\rangle\langle1|\otimes(zI-H)^\dagger.
 \]
-using the same \fn{prepend\_op} machinery used for layers and BdG/Nambu
-blocks.  The resulting Hermitian \kw{TBHamiltonian} can be fed to existing
-MPO/KPM routines.  A second family of helpers builds non-Hermitian terms
-directly on the original Hamiltonian (complex onsite potentials, loss/gain,
-non-reciprocal ``skin-effect'' hopping) without hermitization, and a final
-family implements the KPM-based non-Hermitian spectral-function reconstruction
-on a complex energy grid.
+The auxiliary block site can be placed at the \emph{front} (\kw{block\_placement=:pre},
+uses \fn{prepend\_op}, site order \kw{[block\_s; pos\_sites...]}) or at the
+\emph{end} (\kw{block\_placement=:post}, uses \fn{postpend\_op}, site order
+\kw{[pos\_sites...; block\_s]}, \textbf{default}).  The \kw{:post} layout lets
+position qubits occupy indices $1\ldots L$ directly, matching the standard
+big-endian QTT encoding without an offset.
+The resulting Hermitian \kw{TBHamiltonian} can be fed to existing MPO/KPM
+routines.  A second family of helpers builds non-Hermitian terms directly on
+the original Hamiltonian (complex onsite potentials, loss/gain, non-reciprocal
+``skin-effect'' hopping) without hermitization, and a final family implements
+four KPM-based spectral algorithms on a complex energy grid.
 
 \subsection{Hermitization}
 
@@ -3259,26 +3288,33 @@ on a complex energy grid.
     generic \sig{MPO(sites, "Id")} construction compatible with existing KPM
     code paths. \\[4pt]
 \sig{hermitized\_hamiltonian(H::TBHamiltonian; z=0, block\_s=nh\_block\_index(),
-  cutoff=1e-8, maxdim=200, scale=0.0, convention=:z\_minus\_H)}
+  cutoff=1e-8, maxdim=200, scale=0.0, convention=:z\_minus\_H,
+  block\_placement=:post)}
   $\to$ \sig{TBHamiltonian}
   & Build the Hermitian block Hamiltonian
     $\begin{psmallmatrix}0 & zI-H\\(zI-H)^\dagger & 0\end{psmallmatrix}$ as a
-    \kw{TBHamiltonian} on \kw{[block\_s; H.sites...]}.
+    \kw{TBHamiltonian}.
+    \kw{block\_placement=:post} (default) places \kw{block\_s} last
+    (\kw{[H.sites...; block\_s]}); \kw{:pre} places it first
+    (\kw{[block\_s; H.sites...]}).
     \kw{convention=:z\_minus\_H} (default) uses $zI-H$;
     \kw{convention=:H\_minus\_z} uses $H-zI$.  \kw{scale=0.0} keeps the usual
     lazy KPM spectral-bound estimation. \\[4pt]
 \sig{hermitize(H::TBHamiltonian; z=0, cutoff=1e-8, maxdim=200, scale=0.0,
-  convention=:z\_minus\_H)} $\to$ \sig{NonHermitianHamiltonian}
+  convention=:z\_minus\_H, block\_placement=:post)}
+  $\to$ \sig{NonHermitianHamiltonian}
 \newline\sig{hermitize(NH::NonHermitianHamiltonian; z=NH.z, cutoff=1e-8,
-  maxdim=200, scale=0.0, convention=:z\_minus\_H)} $\to$ \sig{NonHermitianHamiltonian}
+  maxdim=200, scale=0.0, convention=:z\_minus\_H,
+  block\_placement=NH.block\_placement)} $\to$ \sig{NonHermitianHamiltonian}
   & Build a \kw{NonHermitianHamiltonian} wrapper without modifying \kw{H}
-    (first form), or rebuild the hermitized block Hamiltonian from
-    \kw{NH.parent}, optionally at a new reference point \kw{z} (second form).
-    \kw{NonHermitianHamiltonian} has fields \kw{parent} (original
-    \kw{TBHamiltonian}, not modified in place), \kw{z} (complex reference
-    point in $zI-H$), \kw{block\_s} (the dim-2 \kw{"NHBlock"} index), and
-    \kw{hermitized} (the Hermitian \kw{TBHamiltonian}).  Avoid calling
-    tight-binding mutation helpers (e.g.\ \fn{add\_onsite!}) on
+    (first form), or rebuild from \kw{NH.parent} at a new reference point
+    \kw{z} (second form, inherits \kw{block\_placement} from \kw{NH} by
+    default).
+    \kw{NonHermitianHamiltonian} fields: \kw{parent} (original
+    \kw{TBHamiltonian}), \kw{z} (complex reference point), \kw{block\_s}
+    (dim-2 \kw{"NHBlock"} index), \kw{hermitized} (Hermitian
+    \kw{TBHamiltonian}), \kw{block\_placement} (\kw{:pre} or \kw{:post}).
+    Avoid calling tight-binding mutation helpers (e.g.\ \fn{add\_onsite!}) on
     \kw{hermitized}; mutate \kw{parent} and call \fn{hermitize} again. \\
 \bottomrule
 \end{longtable}
@@ -3374,8 +3410,9 @@ run in parallel with the ordinary Chebyshev $T_k(A)$.
     described above.  Requires a nonzero \kw{scale} (defaults to
     \kw{Hh.scale}/\kw{NH.hermitized.scale}). \\[4pt]
 \sig{contract\_nh\_block(W::MPO, block\_s::Index; row=2, col=1)} $\to$ \sig{MPO}
-  & Extract the \kw{(row,col)} block of an MPO whose first site is
-    \kw{block\_s}, returning an MPO on the remaining sites. \\[4pt]
+  & Extract the \kw{(row,col)} block of an MPO, returning an MPO on the
+    remaining sites.  The block site placement is auto-detected: \kw{block\_s}
+    may be the first site (\kw{:pre}) or the last site (\kw{:post}). \\[4pt]
 \sig{nh\_reconstruct\_spectral\_mps(partials, n::Int, block\_s::Index; maxdim=100,
   row=2, col=1)} $\to$ \sig{(A\_mps, dos)}
   & Jackson reconstruction of the even partial terms,
@@ -3407,20 +3444,82 @@ run in parallel with the ordinary Chebyshev $T_k(A)$.
   & Non-default alternative NH KPM path:
     \fn{nh\_kpm\_partials} followed by \fn{nh\_reconstruct\_spectral\_mpo}. \\[4pt]
 \sig{nh\_spectrum\_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
-  scale::Real, convention=:z\_minus\_H, maxdim=100, cutoff=1e-8)}
-  $\to$ \sig{(xgrid, ygrid, Z)}
-  & Evaluate the non-Hermitian KPM scalar spectral weight \kw{dos(z)} on a
-    rectangular complex-energy grid $z=x+iy$, $x\in$\kw{xlims} ($n_x$ points),
-    $y\in$\kw{ylims} ($n_y$ points).  For each grid point, builds
-    \sig{hermitize(H; z, scale, maxdim, cutoff, convention)} and calls
-    \fn{nh\_spectral\_function}; \kw{Z[iy,ix] = dos}. \\
+  scale::Real, convention=:z\_minus\_H, block\_placement=:post, mode=:scalar,
+  probe\_site=0, n\_random=10, maxdim=100, cutoff=1e-8, verbose=false)}
+  & Evaluate the NH KPM spectral weight on a rectangular complex-energy grid
+    $z = x + iy$ with $n_x$ ($n_y$) points in \kw{xlims} (\kw{ylims}).
+    Hermitizes at each grid point via \fn{hermitize}.
+    Four \kw{mode} options (see below).
+    \kw{block\_placement} (\kw{:pre}/\kw{:post}) is forwarded to
+    \fn{hermitize}. \kw{verbose=true} prints per-column progress. \\
+\bottomrule
+\end{longtable}
+
+\textbf{Modes for \fn{nh\_spectrum\_grid}:}
+
+\begin{center}
+\begin{tabular}{L{2.5cm} L{4.5cm} L{4.5cm} L{3cm}}
+\toprule
+\kw{mode} & Algorithm & Returns & Cost \\
+\midrule
+\kw{:scalar} & MPO$\times$MPO partial recursion (default) & \kw{(xgrid, ygrid, Z)} total DOS
+  & $O(N_\text{cheb}\cdot\chi_P^2)$ \\
+\kw{:mps} & dual-chain MPS at one site (\kw{probe\_site}, 0-indexed)
+  & \kw{(xgrid, ygrid, Z)} LDOS at \kw{probe\_site}
+  & $O(N_\text{cheb}\cdot\chi_H\cdot\chi_\psi)$ \\
+\kw{:diag} & MPO$\times$MPO + diagonal extraction; site-resolved LDOS
+  & \kw{(xgrid, ygrid, Z, Z\_spatial)}, \kw{Z\_spatial} shape $(N, n_y, n_x)$
+  & $O(N_\text{cheb}\cdot\chi_P^2)$ \\
+\kw{:stochastic} & Monte Carlo trace: \kw{n\_random} random product-state probes
+  & \kw{(xgrid, ygrid, Z)} total DOS estimate
+  & $O(R\cdot N_\text{cheb}\cdot\chi_H\cdot\chi_\psi)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Online (memory-efficient) internal functions:}
+
+\begin{longtable}{L{7.5cm} L{7.5cm}}
+\toprule
+\textbf{Signature} & \textbf{Description} \\
+\midrule
+\sig{\_nh\_scalar\_online(NH, n; scale, maxdim, cutoff, \ldots)} $\to$ \sig{Real}
+  & Online MPO$\times$MPO DOS: runs the partial Chebyshev recursion keeping
+    only two partial MPOs in memory, accumulating
+    $\mathrm{Tr}[\text{block}_{2,1}(P_k)]$ at even steps via
+    \fn{contract\_nh\_block} + \fn{extract\_diagonal\_to\_mps} + all-ones
+    inner product.  Avoids the $O(N\chi_P^2)$ cost of storing all partials. \\[4pt]
+\sig{\_nh\_diag\_online(NH, n; scale, maxdim, cutoff, \ldots)}
+  $\to$ \sig{(A\_mps, dos)}
+  & Same recursion as \fn{\_nh\_scalar\_online} but also accumulates the
+    site-resolved diagonal MPS $A(r,z)$ in a single pass.  Returns
+    \kw{A\_mps} (evaluated via \fn{eval\_mps}) and its sum \kw{dos}. \\[4pt]
+\sig{\_nh\_kpm\_mps\_ldos(NH, n, probe\_site::Int; scale, maxdim, cutoff)}
+  $\to$ \sig{Real}
+  & MPS dual-chain recursion for LDOS at a single physical site
+    \kw{probe\_site} (0-indexed).  Propagates $|t_k\rangle = T_k(A)|\text{ket}\rangle$
+    and $|p_k\rangle = P_k|\text{ket}\rangle$ as MPS using localized probes
+    $|\text{ket}\rangle = |1\rangle_\text{block}\otimes|r_0\rangle$,
+    $\langle\text{bra}| = \langle 2|_\text{block}\otimes\langle r_0|$.
+    No MPO$\times$MPO products. \\[4pt]
+\sig{\_nh\_stochastic\_online(NH, n; scale, n\_random=10, maxdim, cutoff)}
+  $\to$ \sig{Real}
+  & Stochastic trace estimator: average \fn{\_nh\_kpm\_mps\_ldos}-style dual-chain
+    recursion over \kw{n\_random} random product-state probes.  Each realization
+    draws $|\varphi\rangle = \bigotimes_i|\text{random}\rangle_i$ on position
+    sites; bra and ket share the same $|\varphi\rangle$ so
+    $\mathbb{E}[\langle 2,\varphi|P_k|1,\varphi\rangle] = \mathrm{Tr}[P_k]/D$
+    (unbiased; $D = 2^L$).  No MPO$\times$MPO products. \\
 \bottomrule
 \end{longtable}
 
 \textbf{Internal helpers:} \fn{nh\_ones\_mps(sites)} builds the bond-dim-1 MPS
 with every amplitude $=1$ (used to sum \kw{A\_mps} into \kw{dos});
 \fn{nh\_jackson\_weights(N)} returns the Jackson kernel weights for $N$
-moments; \fn{\_nh\_position\_sites\_only}, \fn{\_nh\_diagonal\_mpo},
+moments; \fn{\_nh\_random\_probes(sites, block\_s, ket\_block, bra\_block)}
+generates a (ket, bra) pair of product-state MPS sharing the same random
+position state (used by \fn{\_nh\_stochastic\_online});
+\fn{\_nh\_position\_sites\_only}, \fn{\_nh\_diagonal\_mpo},
 \fn{\_nh\_profile\_diagonal\_mpo}, \fn{\_nh\_fullspace\_diagonal\_mpo}, and
 \fn{\_nh\_directional\_hop} are shared dispatch/validation helpers for the
 model-building functions above.
