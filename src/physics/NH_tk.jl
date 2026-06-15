@@ -7,8 +7,11 @@
 #                  (zI - H)'     0  ]
 #
 # In TensorBinding terms this is
-#       |1><2| x (zI - H) + |2><1| x (zI - H)'
-# using the same prepend_op machinery used for layers and BdG/Nambu blocks.
+#       (zI - H) x |1><2| + (zI - H)' x |2><1|
+# using postpend_op so the block site lives at the END of the site list:
+#   hermitized.sites = [pos_sites..., block_s]
+# Position sites therefore occupy indices 1:L with the standard big-endian
+# quantics encoding, matching binary_to_MPS / eval_mps directly.
 
 """
     NonHermitianHamiltonian
@@ -21,17 +24,19 @@ Fields
 - `parent`     : original `TBHamiltonian`, not modified in-place
 - `z`          : complex reference point used in `zI - H`
 - `block_s`    : dim-2 auxiliary Index tagged `"NHBlock"`
-- `hermitized` : Hermitian `TBHamiltonian` on `[block_s; parent.sites...]`
+- `hermitized` : Hermitian `TBHamiltonian` on `[parent.sites...; block_s]`
 
 The hermitized Hamiltonian can be passed to existing MPO/KPM routines. Avoid
 calling tight-binding mutation helpers like `add_onsite!` on `hermitized`;
 mutate `parent` first and call `hermitize` again.
 """
 mutable struct NonHermitianHamiltonian
-    parent     :: TBHamiltonian
-    z          :: ComplexF64
-    block_s    :: Index
-    hermitized :: TBHamiltonian
+    parent          :: TBHamiltonian
+    z               :: ComplexF64
+    block_s         :: Index
+    hermitized      :: TBHamiltonian
+    block_placement :: Symbol   # :pre  → [block_s; pos_sites...]
+                                # :post → [pos_sites...; block_s]
 end
 
 """
@@ -46,7 +51,7 @@ nh_block_index() = Index(2, "Qubit,NHBlock")
 
 """
     hermitized_hamiltonian(H; z=0, block_s=nh_block_index(), cutoff=1e-8,
-                           maxdim=200, scale=0.0) -> TBHamiltonian
+                           maxdim=200, scale=0.0, block_placement=:post) -> TBHamiltonian
 
 Return the Hermitian block Hamiltonian
 
@@ -55,7 +60,10 @@ Return the Hermitian block Hamiltonian
   (zI-H)'  0      ]
 ```
 
-as a `TBHamiltonian` whose site order is `[block_s; H.sites...]`.
+as a `TBHamiltonian`. `block_placement` controls where the auxiliary block site lives:
+- `:post` (default) — site order `[H.sites...; block_s]`; position qubits occupy 1:L directly
+- `:pre`            — site order `[block_s; H.sites...]`; original layout before postpend change
+
 `scale=0.0` keeps the usual lazy KPM spectral-bound estimation.
 """
 function hermitized_hamiltonian(H::TBHamiltonian;
@@ -64,7 +72,8 @@ function hermitized_hamiltonian(H::TBHamiltonian;
                                 cutoff::Real = 1e-8,
                                 maxdim::Int = 200,
                                 scale::Real = 0.0,
-                                convention::Symbol = :z_minus_H)
+                                convention::Symbol = :z_minus_H,
+                                block_placement::Symbol = :post)
     convention in (:H_minus_z, :z_minus_H) ||
         error("convention must be :H_minus_z or :z_minus_H; got :$convention")
     I_H     = MPO(H.sites, "Id")
@@ -73,11 +82,20 @@ function hermitized_hamiltonian(H::TBHamiltonian;
         +(ComplexF64(z) * I_H, -H.mpo; cutoff=cutoff)
     H_adj   = swapprime(dag(H_shift), 0, 1)
 
-    H_block = +(prepend_op(H_shift, block_s, 1, 2),
-                prepend_op(H_adj,   block_s, 2, 1); cutoff=cutoff)
+    block_placement in (:pre, :post) ||
+        error("block_placement must be :pre or :post; got :$block_placement")
+    if block_placement === :post
+        H_block = +(postpend_op(H_shift, block_s, 1, 2),
+                    postpend_op(H_adj,   block_s, 2, 1); cutoff=cutoff)
+        sites = [H.sites...; block_s]
+    else
+        H_block = +(prepend_op(H_shift, block_s, 1, 2),
+                    prepend_op(H_adj,   block_s, 2, 1); cutoff=cutoff)
+        sites = [block_s; H.sites...]
+    end
     ITensorMPS.truncate!(H_block; cutoff=cutoff, maxdim=maxdim)
 
-    return TBHamiltonian(H.L, H.N, [block_s; H.sites], H_block,
+    return TBHamiltonian(H.L, H.N, sites, H_block,
                          H.geometry, H.geometry_uc,
                          Float64(scale), 0.0,
                          H.spin_s, H.nambu_s, H.layer_s, H.sublattice_s, :pre,
@@ -95,7 +113,8 @@ function hermitize(H::TBHamiltonian;
                    cutoff::Real = 1e-8,
                    maxdim::Int = 200,
                    scale::Real = 0.0,
-                   convention::Symbol = :z_minus_H)
+                   convention::Symbol = :z_minus_H,
+                   block_placement::Symbol = :post)
     block_s = nh_block_index()
     Hh = hermitized_hamiltonian(H;
                                 z=z,
@@ -103,8 +122,9 @@ function hermitize(H::TBHamiltonian;
                                 cutoff=cutoff,
                                 maxdim=maxdim,
                                 scale=scale,
-                                convention=convention)
-    return NonHermitianHamiltonian(H, ComplexF64(z), block_s, Hh)
+                                convention=convention,
+                                block_placement=block_placement)
+    return NonHermitianHamiltonian(H, ComplexF64(z), block_s, Hh, block_placement)
 end
 
 """
@@ -118,9 +138,10 @@ function hermitize(NH::NonHermitianHamiltonian;
                    cutoff::Real = 1e-8,
                    maxdim::Int = 200,
                    scale::Real = 0.0,
-                   convention::Symbol = :z_minus_H)
+                   convention::Symbol = :z_minus_H,
+                   block_placement::Symbol = NH.block_placement)
     return hermitize(NH.parent; z=z, cutoff=cutoff, maxdim=maxdim, scale=scale,
-                     convention=convention)
+                     convention=convention, block_placement=block_placement)
 end
 
 function Base.show(io::IO, NH::NonHermitianHamiltonian)
@@ -398,7 +419,10 @@ col=1` matches the old `I_ldn` source used in the non-Hermitian KPM recursion.
 """
 function nh_block_source(Hh::TBHamiltonian, block_s::Index; row::Int = 2, col::Int = 1)
     pos_sites = filter(!=(block_s), Hh.sites)
-    return prepend_op(MPO(pos_sites, "Id"), block_s, row, col)
+    I_pos = MPO(pos_sites, "Id")
+    return last(Hh.sites) == block_s ?
+        postpend_op(I_pos, block_s, row, col) :
+        prepend_op(I_pos, block_s, row, col)
 end
 
 nh_block_source(NH::NonHermitianHamiltonian; row::Int = 2, col::Int = 1) =
@@ -469,21 +493,29 @@ end
 """
     contract_nh_block(W, block_s; row=2, col=1) -> MPO
 
-Extract the `(row, col)` block of an MPO whose first site is `block_s`, returning
-an MPO on the remaining sites.
+Extract the `(row, col)` block of an MPO whose first or last site is `block_s`,
+returning an MPO on the remaining sites. The block position is auto-detected.
 """
 function contract_nh_block(W::MPO, block_s::Index; row::Int = 2, col::Int = 1)
-    length(W) >= 2 || error("contract_nh_block requires an MPO with a block site and at least one physical site.")
-    siteind(W, 1) == block_s ||
-        error("NH block index must be the first MPO site for contract_nh_block.")
-
-    first_tensor = W[1]
-    block_tensor = first_tensor * onehot(block_s => col) * onehot(block_s' => row)
-    tensors = ITensor[W[2] * block_tensor]
-    for i in 3:length(W)
-        push!(tensors, W[i])
+    M = length(W)
+    M >= 2 || error("contract_nh_block requires an MPO with a block site and at least one physical site.")
+    if siteind(W, M) == block_s
+        # Postpend: block is last
+        bt = W[M] * onehot(block_s => col) * onehot(block_s' => row)
+        tensors = ITensor[W[i] for i in 1:M-2]
+        push!(tensors, W[M-1] * bt)
+        return MPO(tensors)
+    elseif siteind(W, 1) == block_s
+        # Prepend: block is first
+        bt = W[1] * onehot(block_s => col) * onehot(block_s' => row)
+        tensors = ITensor[W[2] * bt]
+        for i in 3:M
+            push!(tensors, W[i])
+        end
+        return MPO(tensors)
+    else
+        error("NH block index must be the first or last MPO site for contract_nh_block.")
     end
-    return MPO(tensors)
 end
 
 """
@@ -666,28 +698,418 @@ function nh_spectral_function_allsite_mpo(NH::NonHermitianHamiltonian, n::Int;
 end
 
 """
-    nh_spectrum_grid(H, xlims, nx, ylims, ny, n; scale, convention=:z_minus_H)
-        -> (xgrid, ygrid, Z)
+    _nh_kpm_probe_mps(sites, block_s, block_state, site_r) -> MPS
 
-Evaluate the non-Hermitian KPM scalar spectral weight on a rectangular complex
-energy grid. System construction is deliberately external: pass an already
-built `TBHamiltonian` `H`.
+Product-state MPS on the hermitized block space. The block site carries
+`block_state` (1-indexed); position sites are set to the big-endian binary
+encoding of the 0-indexed physical site `site_r`. Bond dimension 1.
+
+Works for both `:pre` (`sites = [block_s; pos_sites...]`) and `:post`
+(`sites = [pos_sites...; block_s]`) layouts — placement is auto-detected.
+"""
+function _nh_kpm_probe_mps(sites::Vector{<:Index}, block_s::Index,
+                             block_state::Int, site_r::Int)
+    N = length(sites)
+    L = N - 1  # number of position qubits
+    postpend = (sites[end] == block_s)
+    links   = [Index(1, "Link,l=$i") for i in 1:N-1]
+    tensors = Vector{ITensor}(undef, N)
+    for i in 1:N
+        s      = sites[i]
+        inds_i = Index[]
+        i > 1 && push!(inds_i, links[i-1])
+        push!(inds_i, s)
+        i < N && push!(inds_i, links[i])
+        T = ITensor(ComplexF64, inds_i...)
+        v = if s == block_s
+            block_state
+        elseif postpend
+            # Position at i=1:L; MSB at i=1 (bit L-1), LSB at i=L (bit 0)
+            ((site_r >> (L - i)) & 1) + 1
+        else
+            # Position at i=2:N; MSB at i=2 (bit L-1), LSB at i=N (bit 0)
+            ((site_r >> (L - i + 1)) & 1) + 1
+        end
+        pairs = Pair{Index,Int}[]
+        i > 1 && push!(pairs, links[i-1] => 1)
+        push!(pairs, s => v)
+        i < N && push!(pairs, links[i]   => 1)
+        T[pairs...] = 1.0
+        tensors[i] = T
+    end
+    return MPS(tensors)
+end
+
+
+"""
+    _nh_kpm_mps_ldos(NH, n, probe_site; scale, maxdim, cutoff) -> Real
+
+Online MPS NH KPM: compute the site-resolved spectral weight A(probe_site, z)
+using the dual-chain MPS partial recursion, keeping only 4 MPS in memory at a time.
+
+`probe_site` is a 0-indexed physical site. The probes are localized basis states:
+  ket_probe = |block=1⟩ ⊗ |probe_site⟩
+  bra_probe = |block=2⟩ ⊗ |probe_site⟩
+
+so inner(bra_probe, p_k) = ⟨2, probe_site | P_k | 1, probe_site⟩, which is the
+diagonal element of block_{2,1}(P_k) at site probe_site — the correct LDOS
+contribution at that site.
+
+Two chains are propagated on the hermitized block space:
+  |t_k⟩ = T_k(A)|ket_probe⟩    (Chebyshev,  A = H_herm / scale)
+  |p_k⟩ = P_k|ket_probe⟩        (NH partial sum)
+
+with partial recurrence:
+  |p_0⟩ = 0,  |p_1⟩ = S|ket_probe⟩
+  |p_k⟩ = 2S|t_{k-1}⟩ + 2A|p_{k-1}⟩ − |p_{k-2}⟩
+
+Cost per z-point: O(Ncheb × χ_H × χ_ψ) instead of O(Ncheb × χ_P²) for MPO mode.
+"""
+function _nh_kpm_mps_ldos(NH::NonHermitianHamiltonian, n::Int, probe_site::Int;
+                           scale::Real,
+                           maxdim::Int = 100,
+                           cutoff::Real = 1e-8)
+    N  = 2 * n
+    Hh = NH.hermitized
+    A  = Hh.mpo / scale
+    S  = nh_block_source(NH)
+
+    ket_probe = _nh_kpm_probe_mps(Hh.sites, NH.block_s, 1, probe_site)
+    bra_probe = _nh_kpm_probe_mps(Hh.sites, NH.block_s, 2, probe_site)
+
+    tkm2 = ket_probe
+    tkm1 = apply(A, ket_probe; maxdim=maxdim, cutoff=cutoff)
+    pkm2 = 0.0 * ket_probe
+    pkm1 = apply(S, ket_probe; maxdim=maxdim, cutoff=cutoff)
+
+    partial_vals = zeros(ComplexF64, N)
+    partial_vals[2] = inner(bra_probe, pkm1)
+
+    for k in 3:N
+        tk     = +(2.0 * apply(A, tkm1; maxdim=maxdim, cutoff=cutoff),
+                   -tkm2; maxdim=maxdim, cutoff=cutoff)
+        s_tkm1 = 2.0 * apply(S, tkm1; maxdim=maxdim, cutoff=cutoff)
+        a_pkm1 = 2.0 * apply(A, pkm1; maxdim=maxdim, cutoff=cutoff)
+        pk     = +(+(s_tkm1, a_pkm1; maxdim=maxdim, cutoff=cutoff),
+                   -pkm2;              maxdim=maxdim, cutoff=cutoff)
+        partial_vals[k] = inner(bra_probe, pk)
+        tkm2 = tkm1;  tkm1 = tk
+        pkm2 = pkm1;  pkm1 = pk
+    end
+
+    weights = nh_jackson_weights(N)
+    dos = ComplexF64(0)
+    for l in 2:2:N
+        dos += (-1)^(l ÷ 2 - 1) * weights[l - 1] * partial_vals[l]
+    end
+    return real(dos * 2.0 / (π^2 * (N + 1)))
+end
+
+
+"""
+    _nh_scalar_online(NH, n; scale, maxdim, cutoff) -> ComplexF64
+
+Online NH KPM scalar DOS: run the partial Chebyshev recursion and accumulate
+Tr[block_{2,1}(P_k)] contributions in a single pass, keeping only two partial
+MPOs in memory at a time.
+
+Avoids the O(N·χ_P²) memory cost of `nh_kpm_partials` and skips building the
+intermediate A_mps entirely — each contributing step adds only one scalar to
+the accumulator.
+"""
+function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
+                            scale::Union{Nothing,Real} = nothing,
+                            maxdim::Int  = 100,
+                            cutoff::Real = 1e-8,
+                            source_row::Int = 2,
+                            source_col::Int = 1,
+                            block_row::Int  = 2,
+                            block_col::Int  = 1)
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_scalar_online requires a nonzero scale.")
+
+    A_op    = Hh.mpo / sc
+    source  = nh_block_source(NH; row=source_row, col=source_col)
+    weights = nh_jackson_weights(N)
+    ones_p  = nh_ones_mps(filter(!=(NH.block_s), Hh.sites))
+
+    Tkm2 = MPO(Hh.sites, "Id")
+    Tkm1 = A_op
+    Pkm2 = 0.0 * source
+    Pkm1 = source   # P_1
+
+    _tr(P) = inner(ones_p',
+                   extract_diagonal_to_mps(
+                       contract_nh_block(P, NH.block_s; row=block_row, col=block_col)))
+
+    dos = weights[1] * _tr(Pkm1)   # l=2 term: order=+1, weight=weights[1]
+
+    for k in 3:N
+        Tk = +(2.0 * apply(A_op,   Tkm1; maxdim=maxdim, cutoff=cutoff),
+               -Tkm2; maxdim=maxdim, cutoff=cutoff)
+        Pk = +(+(2.0 * apply(source, Tkm1; maxdim=maxdim, cutoff=cutoff),
+                 2.0 * apply(A_op,   Pkm1; maxdim=maxdim, cutoff=cutoff);
+                 maxdim=maxdim, cutoff=cutoff),
+               -Pkm2; maxdim=maxdim, cutoff=cutoff)
+
+        if iseven(k)
+            dos += (-1)^(k ÷ 2 - 1) * weights[k - 1] * _tr(Pk)
+        end
+
+        Tkm2, Tkm1 = Tkm1, Tk
+        Pkm2, Pkm1 = Pkm1, Pk
+    end
+
+    return dos * 2.0 / (π^2 * (N + 1))
+end
+
+
+"""
+    _nh_diag_online(NH, n; scale, maxdim, cutoff) -> (A_mps, dos)
+
+Online NH KPM diagonal spectral function: run the partial Chebyshev recursion
+and accumulate the site-resolved diagonal MPS A(r, z) in a single pass, keeping
+only two partial MPOs in memory at a time.
+
+Compared with `nh_kpm_partials` + `nh_reconstruct_spectral_mps`:
+  - Memory: O(2 χ_P²) instead of O(N χ_P²).
+  - Diagonal extractions: N/2 (only even Julia-index partials contribute).
+"""
+function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
+                          scale::Union{Nothing,Real} = nothing,
+                          maxdim::Int  = 100,
+                          cutoff::Real = 1e-8,
+                          source_row::Int = 2,
+                          source_col::Int = 1,
+                          block_row::Int  = 2,
+                          block_col::Int  = 1)
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_diag_online requires a nonzero scale.")
+
+    A_op    = Hh.mpo / sc
+    source  = nh_block_source(NH; row=source_row, col=source_col)
+    weights = nh_jackson_weights(N)
+
+    Tkm2 = MPO(Hh.sites, "Id")
+    Tkm1 = A_op
+    Pkm2 = 0.0 * source
+    Pkm1 = source   # P_1
+
+    _diag(P) = extract_diagonal_to_mps(
+        contract_nh_block(P, NH.block_s; row=block_row, col=block_col))
+
+    A_mps = weights[1] * _diag(Pkm1)   # l=2 term: order=+1, weight=weights[1]
+
+    for k in 3:N
+        Tk = +(2.0 * apply(A_op,   Tkm1; maxdim=maxdim, cutoff=cutoff),
+               -Tkm2; maxdim=maxdim, cutoff=cutoff)
+        Pk = +(+(2.0 * apply(source, Tkm1; maxdim=maxdim, cutoff=cutoff),
+                 2.0 * apply(A_op,   Pkm1; maxdim=maxdim, cutoff=cutoff);
+                 maxdim=maxdim, cutoff=cutoff),
+               -Pkm2; maxdim=maxdim, cutoff=cutoff)
+
+        if iseven(k)
+            A_mps = +(A_mps, ((-1)^(k ÷ 2 - 1) * weights[k - 1]) * _diag(Pk);
+                      maxdim=maxdim)
+        end
+
+        Tkm2, Tkm1 = Tkm1, Tk
+        Pkm2, Pkm1 = Pkm1, Pk
+    end
+
+    A_mps = A_mps * (2.0 / (π^2 * (N + 1)))
+    dos   = inner(nh_ones_mps(siteinds(A_mps))', A_mps)
+    return A_mps, dos
+end
+
+
+# Build a pair of product-state MPS (ket, bra) sharing the same random position
+# state. Used by the stochastic trace estimator.
+function _nh_random_probes(sites::Vector{<:Index}, block_s::Index,
+                            ket_block::Int, bra_block::Int)
+    N = length(sites)
+    pos_rand = Dict(s => normalize(randn(ComplexF64, dim(s)))
+                    for s in sites if s != block_s)
+
+    function _make(block_state)
+        links = [Index(1, "Link,l=$i") for i in 1:N-1]
+        tensors = Vector{ITensor}(undef, N)
+        for i in 1:N
+            s = sites[i]
+            inds_i = Index[]
+            i > 1 && push!(inds_i, links[i-1])
+            push!(inds_i, s)
+            i < N && push!(inds_i, links[i])
+            T = ITensor(ComplexF64, inds_i...)
+            if s == block_s
+                p = Pair{Index,Int}[]
+                i > 1 && push!(p, links[i-1] => 1)
+                push!(p, s => block_state)
+                i < N && push!(p, links[i] => 1)
+                T[p...] = 1.0
+            else
+                for (v, c) in enumerate(pos_rand[s])
+                    p = Pair{Index,Int}[]
+                    i > 1 && push!(p, links[i-1] => 1)
+                    push!(p, s => v)
+                    i < N && push!(p, links[i] => 1)
+                    T[p...] = c
+                end
+            end
+            tensors[i] = T
+        end
+        return MPS(tensors)
+    end
+
+    return _make(ket_block), _make(bra_block)
+end
+
+
+"""
+    _nh_stochastic_online(NH, n; scale, n_random=10, maxdim, cutoff) -> Real
+
+Stochastic trace NH KPM DOS: estimate Tr[block_{2,1}(P_k)] via Monte Carlo
+averaging over `n_random` random product-state probes on the position sites.
+
+Each realization draws |φ⟩ = ⊗_i (random local state) and runs the dual-chain
+MPS recursion with ket = |1⟩_block ⊗ |φ⟩, bra = |2⟩_block ⊗ |φ⟩. The same
+position state is shared between bra and ket so the estimator is unbiased:
+  E[⟨2,φ|P_k|1,φ⟩] = Tr[P_k] / D,   D = 2^L
+
+Cost: O(n_random × Ncheb × χ_H × χ_ψ) — no MPO×MPO products.
+"""
+function _nh_stochastic_online(NH::NonHermitianHamiltonian, n::Int;
+                                scale::Union{Nothing,Real} = nothing,
+                                n_random::Int  = 10,
+                                maxdim::Int    = 100,
+                                cutoff::Real   = 1e-8,
+                                source_row::Int = 2,
+                                source_col::Int = 1,
+                                block_row::Int  = 2,
+                                block_col::Int  = 1)
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_stochastic_online requires a nonzero scale.")
+
+    A_op    = Hh.mpo / sc
+    S       = nh_block_source(NH; row=source_row, col=source_col)
+    weights = nh_jackson_weights(N)
+    D       = NH.parent.N   # 2^L = number of physical sites
+
+    dos_acc = ComplexF64(0)
+
+    for _ in 1:n_random
+        ket_probe, bra_probe = _nh_random_probes(Hh.sites, NH.block_s,
+                                                  source_col, block_row)
+        tkm2 = ket_probe
+        tkm1 = apply(A_op, ket_probe; maxdim=maxdim, cutoff=cutoff)
+        pkm2 = 0.0 * ket_probe
+        pkm1 = apply(S,    ket_probe; maxdim=maxdim, cutoff=cutoff)
+
+        partial_vals = zeros(ComplexF64, N)
+        partial_vals[2] = inner(bra_probe, pkm1)
+
+        for k in 3:N
+            tk = +(2.0 * apply(A_op, tkm1; maxdim=maxdim, cutoff=cutoff),
+                   -tkm2; maxdim=maxdim, cutoff=cutoff)
+            pk = +(+(2.0 * apply(S,    tkm1; maxdim=maxdim, cutoff=cutoff),
+                     2.0 * apply(A_op, pkm1; maxdim=maxdim, cutoff=cutoff);
+                     maxdim=maxdim, cutoff=cutoff),
+                   -pkm2; maxdim=maxdim, cutoff=cutoff)
+            partial_vals[k] = inner(bra_probe, pk)
+            tkm2 = tkm1; tkm1 = tk
+            pkm2 = pkm1; pkm1 = pk
+        end
+
+        val = ComplexF64(0)
+        for l in 2:2:N
+            val += (-1)^(l ÷ 2 - 1) * weights[l - 1] * partial_vals[l]
+        end
+        dos_acc += val
+    end
+
+    return real(dos_acc * D * 2.0 / (π^2 * (N + 1) * n_random))
+end
+
+
+"""
+    nh_spectrum_grid(H, xlims, nx, ylims, ny, n; scale, convention=:z_minus_H,
+                     mode=:scalar, probe_site=0, n_random=10,
+                     maxdim=100, cutoff=1e-8, verbose=false)
+
+Evaluate the NH KPM spectral weight on a rectangular complex energy grid.
+
+**Modes**
+
+| `mode`          | Algorithm                           | Returns                        |
+|-----------------|-------------------------------------|--------------------------------|
+| `:scalar`       | MPO×MPO (default)                   | `(xgrid, ygrid, Z)`            |
+| `:mps`          | online dual-chain MPS, one site     | `(xgrid, ygrid, Z)`            |
+| `:diag`         | MPO×MPO + diagonal extraction       | `(xgrid, ygrid, Z, Z_spatial)` |
+| `:stochastic`   | stochastic trace, `n_random` probes | `(xgrid, ygrid, Z)`            |
+
+- `:scalar` — full NH partial MPO recursion; total DOS. O(Ncheb × χ_P²).
+- `:mps` — dual-chain MPS at a single site (`probe_site`, 0-indexed). LDOS at
+  that site. O(χ_H × χ_ψ) per step.
+- `:diag` — same as `:scalar` but also extracts site-resolved diagonal MPS A(r,z).
+  Extra return `Z_spatial` has shape `(H.N, ny, nx)`.
+- `:stochastic` — Monte Carlo trace: average over `n_random` random product-state
+  probes. Total DOS estimate. O(n_random × Ncheb × χ_H × χ_ψ). No MPO×MPO products.
+
+Set `verbose=true` to print one progress line per Re(z) column.
 """
 function nh_spectrum_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
                           scale::Real,
-                          convention::Symbol = :z_minus_H,
-                          maxdim::Int = 100,
-                          cutoff::Real = 1e-8)
+                          convention::Symbol      = :z_minus_H,
+                          block_placement::Symbol = :post,
+                          mode::Symbol            = :scalar,
+                          probe_site::Int         = 0,
+                          n_random::Int           = 10,
+                          maxdim::Int             = 100,
+                          cutoff::Real            = 1e-8,
+                          verbose::Bool           = false)
+    mode in (:scalar, :mps, :diag, :stochastic) ||
+        error("Unknown mode :$mode for nh_spectrum_grid. Choose :scalar, :mps, :diag, or :stochastic.")
+
     xgrid = range(xlims[1], xlims[2]; length=nx)
     ygrid = range(ylims[1], ylims[2]; length=ny)
-    Z = Matrix{ComplexF64}(undef, ny, nx)
+    Z         = Matrix{ComplexF64}(undef, ny, nx)
+    Z_spatial = (mode === :diag) ? zeros(Float64, H.N, ny, nx) : nothing
 
-    for (ix, x) in enumerate(xgrid), (iy, y) in enumerate(ygrid)
-        NH = hermitize(H; z=x + 1im * y, scale=scale, maxdim=maxdim,
-                       cutoff=cutoff, convention=convention)
-        _, dos, _ = nh_spectral_function(NH, n; scale=scale, maxdim=maxdim,
-                                          cutoff=cutoff)
-        Z[iy, ix] = dos
+    verbose && println("nh_spectrum_grid [mode=:$mode]: $(nx)×$(ny)=$(nx*ny) points, Ncheb=$(2n)")
+
+    for (ix, x) in enumerate(xgrid)
+        verbose && print("  col $(lpad(ix, ndigits(nx)))/$(nx)  Re(z)=$(round(x, digits=4)) ...")
+        for (iy, y) in enumerate(ygrid)
+            NH = hermitize(H; z=x + 1im*y, scale=scale, maxdim=maxdim,
+                           cutoff=cutoff, convention=convention,
+                           block_placement=block_placement)
+            if mode === :mps
+                Z[iy, ix] = _nh_kpm_mps_ldos(NH, n, probe_site;
+                                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+            elseif mode === :diag
+                A_mps, dos = _nh_diag_online(NH, n;
+                                              scale=scale, maxdim=maxdim, cutoff=cutoff)
+                Z[iy, ix] = dos
+                for i in 0:H.N-1
+                    Z_spatial[i+1, iy, ix] = real(eval_mps(A_mps, i))
+                end
+            elseif mode === :stochastic
+                Z[iy, ix] = _nh_stochastic_online(NH, n;
+                                                   scale=scale, n_random=n_random,
+                                                   maxdim=maxdim, cutoff=cutoff)
+            else  # :scalar
+                Z[iy, ix] = _nh_scalar_online(NH, n;
+                                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+            end
+        end
+        verbose && println("  done")
     end
-    return xgrid, ygrid, Z
+
+    return mode === :diag ? (xgrid, ygrid, Z, Z_spatial) : (xgrid, ygrid, Z)
 end

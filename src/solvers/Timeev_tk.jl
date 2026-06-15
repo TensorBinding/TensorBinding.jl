@@ -466,6 +466,93 @@ end
 
 
 # ============================================================
+# _nh_von_neumann_rhs
+# Correct RHS for a non-Hermitian Hamiltonian H:
+#   dρ/dt = -i(Hρ - ρH†)
+# For H = H₀ - iΓ this gives -i[H₀,ρ] - Γρ - ρΓ, so Tr(ρ) decays
+# whenever Γ > 0.  The Hermitian version _von_neumann_rhs uses H on
+# both sides, which makes the anti-Hermitian part cancel in the
+# commutator and gives no loss.
+# H† is formed by swapping prime levels (swapping ket ↔ bra indices)
+# and conjugating: conj(swapprime(H, 0, 1)).
+# ============================================================
+function _nh_von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
+    Hdag  = conj(swapprime(H, 0, 1))
+    Hρ    = apply(H,    ρ; maxdim=maxdim, cutoff=cutoff)
+    ρHdag = apply(ρ, Hdag; maxdim=maxdim, cutoff=cutoff)
+    diff  = +(Hρ, -1.0 * ρHdag; cutoff=cutoff)
+    ITensorMPS.truncate!(diff; maxdim=maxdim, cutoff=cutoff)
+    return -1.0im * diff
+end
+
+
+# ============================================================
+# rk4_step_dm_nh / evolve_rk4_dm_nh
+# RK4 for a (possibly time-dependent) non-Hermitian Hamiltonian using
+# the correct NH von Neumann equation dρ/dt = -i(H(t)ρ - ρH(t)†).
+# Hoft is a callable t::Float64 -> MPO; pass (_ -> H.mpo) for static H.
+# ============================================================
+function rk4_step_dm_nh(Hoft, ρ::MPO, t::Float64, dt::Float64;
+    maxdim::Int     = 200,
+    cutoff::Float64 = 1e-10,
+    truncate_intermediates::Bool = true,
+)
+    H0   = Hoft(t)
+    Hmid = Hoft(t + dt / 2)
+    H1   = Hoft(t + dt)
+
+    k1 = _nh_von_neumann_rhs(H0,   ρ;  maxdim=maxdim, cutoff=cutoff)
+
+    ρ2 = +(ρ, (dt / 2) * k1; cutoff=cutoff)
+    truncate_intermediates && ITensorMPS.truncate!(ρ2; maxdim=maxdim, cutoff=cutoff)
+    k2 = _nh_von_neumann_rhs(Hmid, ρ2; maxdim=maxdim, cutoff=cutoff)
+
+    ρ3 = +(ρ, (dt / 2) * k2; cutoff=cutoff)
+    truncate_intermediates && ITensorMPS.truncate!(ρ3; maxdim=maxdim, cutoff=cutoff)
+    k3 = _nh_von_neumann_rhs(Hmid, ρ3; maxdim=maxdim, cutoff=cutoff)
+
+    ρ4 = +(ρ, dt * k3; cutoff=cutoff)
+    truncate_intermediates && ITensorMPS.truncate!(ρ4; maxdim=maxdim, cutoff=cutoff)
+    k4 = _nh_von_neumann_rhs(H1,   ρ4; maxdim=maxdim, cutoff=cutoff)
+
+    k_sum = +(k1, 2.0 * k2; cutoff=cutoff)
+    k_sum = +(k_sum, 2.0 * k3; cutoff=cutoff)
+    k_sum = +(k_sum, k4; cutoff=cutoff)
+    ITensorMPS.truncate!(k_sum; maxdim=maxdim, cutoff=cutoff)
+
+    ρ_new = +(ρ, (dt / 6) * k_sum; cutoff=cutoff)
+    ITensorMPS.truncate!(ρ_new; maxdim=maxdim, cutoff=cutoff)
+
+    return ρ_new
+end
+
+
+function evolve_rk4_dm_nh(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
+    maxdim::Int     = 200,
+    cutoff::Float64 = 1e-10,
+    truncate_intermediates::Bool = true,
+    verbose::Bool   = false,
+)
+    states = Vector{MPO}(undef, nsteps + 1)
+    states[1] = deepcopy(ρ0)
+
+    ρ = deepcopy(ρ0)
+    for step in 1:nsteps
+        t = (step - 1) * dt
+        verbose && println("RK4-NH step $step / $nsteps,  t = $t,  maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+        ρ = rk4_step_dm_nh(Hoft, ρ, t, dt;
+            maxdim=maxdim,
+            cutoff=cutoff,
+            truncate_intermediates=truncate_intermediates,
+        )
+        states[step + 1] = deepcopy(ρ)
+    end
+
+    return states
+end
+
+
+# ============================================================
 # dm_expect
 # Compute the expectation value Tr(O ρ) of a Hermitian operator
 # MPO O in the density matrix ρ.
