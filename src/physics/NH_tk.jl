@@ -901,6 +901,7 @@ function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
 
     _diag(P) = extract_diagonal_to_mps(
         contract_nh_block(P, NH.block_s; row=block_row, col=block_col))
+    
 
     A_mps = weights[1] * _diag(Pkm1)   # l=2 term: order=+1, weight=weights[1]
 
