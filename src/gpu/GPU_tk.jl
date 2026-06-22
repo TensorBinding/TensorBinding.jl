@@ -21,6 +21,13 @@
 #                                                            (:point or :block sampling,
 #                                                             sublattice :average/:resolve)
 #     get_dos_stochastic_gpu(H, Ncheb, ω; ...)            — stochastic-trace DOS
+#     get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; ...) — NH stochastic DOS
+#     get_nh_dos_points_gpu(H, z_points, n; ...)           — NH stochastic DOS at selected z
+#     get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; ...)
+#                                                           — NH deterministic diagonal-trace DOS
+#     get_nh_dos_points_diag_trace_gpu(H, z_points, n; ...) — NH deterministic DOS at selected z
+#     get_nh_density_trajectory_gpu(H, rho0; ...)          — NH density diag vs t
+#     get_state_amplitude_trajectory_gpu(H, psi0; ...)     — TDVP state amplitudes vs t
 #     get_exciton_ldos_spatial_gpu(H, Ncheb, ω; ...)      — A(X,ω) exciton LDOS
 #   Topology
 #     get_C_gpu(H, xfunc, yfunc; ...)                     — real-space Chern marker
@@ -115,6 +122,19 @@ function _to_gpu_mpo(mpo::MPO)
     return _tb_cuda_module().cu(_mpo_to_f32(mpo))
 end
 
+# CPU MPO → GPU with explicit complex dtype. Used by NH deterministic online
+# experiments, where ComplexF64 can avoid ComplexF32 CUDA eigensolver NaNs.
+function _to_gpu_mpo(mpo::MPO, T::Type{<:Complex})
+    _check_gpu("_to_gpu_mpo")
+    cuda = _tb_cuda_module()
+    return MPO([
+        let idx = inds(mpo[i])
+            ITensors.itensor(cuda.CuArray(T.(Array(mpo[i], idx...))), idx...)
+        end
+        for i in 1:length(mpo)
+    ])
+end
+
 # CPU MPS  →  GPU F32 MPS
 function _to_gpu_mps(mps::MPS)
     _check_gpu("_to_gpu_mps")
@@ -124,6 +144,18 @@ function _to_gpu_mps(mps::MPS)
         idx    = inds(mps[j])
         arr    = Array(mps[j], idx...)        # CPU: typeassert safe
         result[j] = ITensors.itensor(m.cu(ComplexF32.(arr)), idx...)
+    end
+    return result
+end
+
+function _to_gpu_mps(mps::MPS, T::Type{<:Complex})
+    _check_gpu("_to_gpu_mps")
+    cuda = _tb_cuda_module()
+    result = similar(mps)
+    for j in 1:length(mps)
+        idx = inds(mps[j])
+        arr = Array(mps[j], idx...)
+        result[j] = ITensors.itensor(cuda.CuArray(T.(arr)), idx...)
     end
     return result
 end
@@ -181,17 +213,29 @@ end
 
 # delta() produces a DiagTensor{Float64} (CPU).  When contracted with a
 # Dense{ComplexF32} GPU tensor, NDTensors promotes the output to ComplexF64
-# and the _contract! dispatch fails (all three tensors must share El).
-# Fix: materialise the delta as a dense F32 GPU tensor.
+# and the _contract! dispatch fails (all tensors in these contractions should
+# share the GPU ComplexF32 element type).
+# Fix: materialise the delta as a dense ComplexF32 GPU tensor.
 function _make_delta_gpu(i::Index, j::Index, k::Index)
     d_dense = dense(delta(i, j, k))          # DiagStorage → DenseStorage
     idx     = inds(d_dense)
     arr     = Array(d_dense, idx...)
-    return _tb_cuda_module().cu(ITensor(Float32.(arr), idx))
+    return _tb_cuda_module().cu(ITensor(ComplexF32.(arr), idx))
 end
 
+function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Complex}=ComplexF32)
+    i = p.first
+    v = Int(p.second)
+    1 <= v <= dim(i) || error("_onehot_gpu: state $v is outside index dimension $(dim(i)).")
+    arr = zeros(T, dim(i))
+    arr[v] = one(T)
+    return ITensors.itensor(_tb_cuda_module().CuArray(arr), i)
+end
+
+_onehot_gpu_f32(p::Pair{<:Index,<:Integer}) = _onehot_gpu(p, ComplexF32)
+
 # GPU-safe Hadamard product: identical logic to _hadamard_mpo but uses
-# _make_delta_gpu so all contractions stay within {ComplexF32, GPU}.
+# _make_delta_gpu so all contractions stay within ComplexF32 on GPU.
 function _hadamard_mpo_gpu(A::MPO, B::MPO, out_sites::Vector{<:Index};
                            maxdim::Int = typemax(Int), cutoff::Real = 0.0)
     L      = length(A)
@@ -290,6 +334,22 @@ function _eval_mps_bigendian_gpu(A::MPS, idx::Int)
     return real(scalar(acc))
 end
 
+function _eval_mps_bigendian_complex_gpu(A::MPS, idx::Int)
+    cuda = _tb_cuda_module()
+    s    = siteinds(A)
+    ElT  = eltype(A[1])
+    n    = length(s)
+    acc  = cuda.cu(ITensor(one(ElT)))
+    for i in 1:n
+        b     = (idx >> (n - i)) & 1
+        v_arr = zeros(ElT, dim(s[i]))
+        v_arr[b + 1] = one(real(ElT))
+        v   = cuda.cu(ITensor(v_arr, s[i]))
+        acc *= A[i] * v
+    end
+    return ComplexF64(scalar(acc))
+end
+
 # Block-integrated MPS element on GPU (reduce=:block): sum the profile over one
 # coarse block by tracing out the within-block position bits and pinning the
 # block to the coarse pixel (ixp, iyp).  The big-endian position site order is
@@ -320,34 +380,73 @@ function _eval_block_mps_gpu(A::MPS, ixp::Int, iyp::Int,
     return real(scalar(acc))
 end
 
+# 1D block-integrated MPS element on GPU. Pins the top `a` big-endian bits to
+# the coarse block index `ixp` and traces the remaining lower bits with [1, 1].
+function _eval_block_mps_1d_gpu(A::MPS, ixp::Int, a::Int, L::Int)
+    cuda = _tb_cuda_module()
+    s    = siteinds(A)
+    ElT  = eltype(A[1])
+    length(s) == L || error("_eval_block_mps_1d_gpu: MPS has $(length(s)) sites but L=$L.")
+    acc  = cuda.cu(ITensor(one(ElT)))
+    for i in 1:L
+        v_arr = zeros(ElT, dim(s[i]))
+        if i <= a
+            v_arr[((ixp >> (a - i)) & 1) + 1] = one(real(ElT))
+        else
+            v_arr .= one(real(ElT))
+        end
+        v = cuda.cu(ITensor(v_arr, s[i]))
+        acc *= A[i] * v
+    end
+    return real(scalar(acc))
+end
+
+function _eval_block_mps_1d_complex_gpu(A::MPS, ixp::Int, a::Int, L::Int)
+    cuda = _tb_cuda_module()
+    s    = siteinds(A)
+    ElT  = eltype(A[1])
+    length(s) == L || error("_eval_block_mps_1d_complex_gpu: MPS has $(length(s)) sites but L=$L.")
+    acc  = cuda.cu(ITensor(one(ElT)))
+    for i in 1:L
+        v_arr = zeros(ElT, dim(s[i]))
+        if i <= a
+            v_arr[((ixp >> (a - i)) & 1) + 1] = one(real(ElT))
+        else
+            v_arr .= one(real(ElT))
+        end
+        v = cuda.cu(ITensor(v_arr, s[i]))
+        acc *= A[i] * v
+    end
+    return ComplexF64(scalar(acc))
+end
+
 """
     extract_diagonal_to_mps_gpu(M::MPO) -> MPS
 
 GPU-resident analogue of `extract_diagonal_to_mps`. `M` is expected to already
-be a GPU ComplexF32 MPO (e.g. a Chebyshev moment from `KPM_Tn_gpu`, after
-`_apply_qft_conj_gpu` and/or `_project_aux_gpu`); the returned MPS is also on
-GPU (ComplexF32).
+be a GPU MPO. The returned MPS stays on GPU, with one-hot tensors matched to
+the input tensor element type.
 """
 # extract_diagonal_to_mps (in RPA_tk.jl) uses plain onehot() which returns a
-# CPU DiagBlockSparse tensor.  Contracting a GPU ComplexF32 MPO tensor with a
-# CPU onehot fails (GPU×CPU mismatch).  Here we wrap each onehot call with
-# cu() so NDTensors resolves the contraction entirely on the GPU.
-# The zero ITensor `res` has no committed storage, so the first `+=` with a
-# GPU ComplexF32 result promotes it to the correct GPU type.
+# CPU DiagBlockSparse tensor.  Contracting a GPU MPO tensor with a CPU onehot
+# fails (GPU×CPU mismatch). Here the one-hot basis vectors are explicitly dense
+# GPU tensors with the same element type as the input MPO tensor.
 function extract_diagonal_to_mps_gpu(M::MPO)::MPS
-    cuda = _tb_cuda_module()
     N    = length(M)
     new_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         t      = M[i]
         s2, s1 = siteinds(M, i)   # s2 = bra (primed), s1 = ket
         d_s    = dim(s1)
+        ElT    = eltype(t)
         v_inds = uniqueinds(t, s1, s2)
 
         res = ITensor(v_inds..., s1)   # zero tensor; type determined by first +=
         for v in 1:d_s
-            slice = t * cuda.cu(onehot(s1 => v)) * cuda.cu(onehot(s2 => v))
-            res  += slice * cuda.cu(onehot(s1 => v))
+            ket_v = _onehot_gpu(s1 => v, ElT)
+            bra_v = _onehot_gpu(s2 => v, ElT)
+            slice = t * ket_v * bra_v
+            res  += slice * ket_v
         end
         new_tensors[i] = res
     end
@@ -369,6 +468,13 @@ function _ensure_gpu_mpo(W::MPO; caller::String = "_ensure_gpu_mpo")
     all(flags) && return W
     any(flags) && error("$caller: mixed CPU/GPU MPO tensors are not supported.")
     return _to_gpu_mpo(W)
+end
+
+function _ensure_gpu_mps(ψ::MPS; caller::String = "_ensure_gpu_mps")
+    flags = [_is_gpu_tensor(ψ[i]) for i in 1:length(ψ)]
+    all(flags) && return ψ
+    any(flags) && error("$caller: mixed CPU/GPU MPS tensors are not supported.")
+    return _to_gpu_mps(ψ)
 end
 
 """
@@ -393,6 +499,319 @@ function density_profile_from_dm_gpu(density_mpo::MPO, sites=nothing;
     end
     error("Unsupported density extraction mode :$mode. Use :direct or :complement.")
 end
+
+function _nh_von_neumann_rhs_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO;
+                                 maxdim::Int, cutoff::Real)
+    ak = (cutoff=Float64(cutoff), maxdim=maxdim)
+    Hrho    = apply(H_gpu, rho_gpu; ak...)
+    rhoHdag = apply(rho_gpu, Hdag_gpu; ak...)
+    diff = +(Hrho, ComplexF32(-1) * rhoHdag; ak...)
+    ITensorMPS.truncate!(diff; cutoff=Float64(cutoff), maxdim=maxdim)
+    return ComplexF32(0, -1) * diff
+end
+
+function rk4_step_dm_nh_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO, dt::Real;
+                            maxdim::Int = 200,
+                            cutoff::Real = 1e-8,
+                            truncate_intermediates::Bool = true)
+    ak = (cutoff=Float64(cutoff), maxdim=maxdim)
+    halfdt = ComplexF32(Float32(dt / 2))
+    dt_gpu = ComplexF32(Float32(dt))
+    dt6    = ComplexF32(Float32(dt / 6))
+    two    = ComplexF32(2)
+
+    k1 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho_gpu; maxdim=maxdim, cutoff=cutoff)
+
+    rho2 = +(rho_gpu, halfdt * k1; ak...)
+    truncate_intermediates && ITensorMPS.truncate!(rho2; cutoff=Float64(cutoff), maxdim=maxdim)
+    k2 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho2; maxdim=maxdim, cutoff=cutoff)
+
+    rho3 = +(rho_gpu, halfdt * k2; ak...)
+    truncate_intermediates && ITensorMPS.truncate!(rho3; cutoff=Float64(cutoff), maxdim=maxdim)
+    k3 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho3; maxdim=maxdim, cutoff=cutoff)
+
+    rho4 = +(rho_gpu, dt_gpu * k3; ak...)
+    truncate_intermediates && ITensorMPS.truncate!(rho4; cutoff=Float64(cutoff), maxdim=maxdim)
+    k4 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho4; maxdim=maxdim, cutoff=cutoff)
+
+    ksum = +(k1, two * k2; ak...)
+    ksum = +(ksum, two * k3; ak...)
+    ksum = +(ksum, k4; ak...)
+    ITensorMPS.truncate!(ksum; cutoff=Float64(cutoff), maxdim=maxdim)
+
+    rho_new = +(rho_gpu, dt6 * ksum; ak...)
+    ITensorMPS.truncate!(rho_new; cutoff=Float64(cutoff), maxdim=maxdim)
+    _gpu_gc!()
+    return rho_new
+end
+
+function _sample_density_diag_gpu(rho_gpu::MPO, plan;
+                                  maxdim::Int,
+                                  cutoff::Real)
+    diag_gpu = density_profile_from_dm_gpu(rho_gpu;
+                                           maxdim=maxdim, cutoff=cutoff)
+    vals = if plan.reduce === :block
+        Lbits = length(diag_gpu)
+        nb    = 2^plan.a
+        norm  = Float64(plan.stride_x)
+        Float64[_eval_block_mps_1d_gpu(diag_gpu, ixp, plan.a, Lbits) / norm
+                for ixp in 0:(nb - 1)]
+    else
+        Float64[
+            sum(_eval_mps_bigendian_gpu(diag_gpu, x - 1) for x in grp) / length(grp)
+            for grp in plan.groups
+        ]
+    end
+    _gpu_gc!()
+    return vals
+end
+
+function _mpo_ket_siteinds(W::MPO)
+    return Index[
+        let (_, ket) = siteinds(W, i)
+            ket
+        end
+        for i in 1:length(W)
+    ]
+end
+
+"""
+    get_nh_density_trajectory_gpu(H, rho0; nsteps, dt, sample_every, ...)
+        -> (density, times, centers, groups, maxlinkdims)
+
+GPU RK4 evolution of a density matrix under a static non-Hermitian Hamiltonian
+using `d rho/dt = -i(H rho - rho Hdagger)`. `H` may be a `TBHamiltonian` or an
+MPO; `rho0` may be a CPU or GPU MPO. The Hamiltonian and density matrix are
+uploaded once and the RK4 loop stays on GPU. At every sampled time, the diagonal
+of `rho(t)` is extracted on GPU and only scalar values at the requested groups
+are copied back to CPU.
+
+Sampling follows the 1D `spatial_sampling_plan` convention: use `num_x=0` to
+sample all sites, or set `num_x` to a smaller number for coarse production
+output. `num_avg > 1` averages a few sub-points per sampled spatial bin in
+`:point` mode. With `reduce=:block`, `num_x` must be a power of two and each
+output value is the GPU block average over a contiguous interval of size
+`2^L / num_x`.
+"""
+function get_nh_density_trajectory_gpu(H, rho0::MPO;
+                                       nsteps::Int,
+                                       dt::Real,
+                                       sample_every::Int = 1,
+                                       num_x::Int = 0,
+                                       num_avg::Int = 1,
+                                       reduce::Symbol = :point,
+                                       x_start::Int = 1,
+                                       x_end::Union{Nothing,Int} = nothing,
+                                       x_groups = nothing,
+                                       maxdim::Int = 200,
+                                       cutoff::Real = 1e-8,
+                                       truncate_intermediates::Bool = true,
+                                       printinfo::Bool = false,
+                                       verbose::Bool = false)
+    _check_gpu("get_nh_density_trajectory_gpu")
+    cutoff < 1e-6 && @warn "get_nh_density_trajectory_gpu: cutoff=$cutoff is below 1e-6; ComplexF32 GPU contractions may be unstable on large systems."
+    nsteps >= 0 || error("get_nh_density_trajectory_gpu: nsteps must be non-negative.")
+    sample_every > 0 || error("get_nh_density_trajectory_gpu: sample_every must be positive.")
+    reduce in (:point, :block) || error("get_nh_density_trajectory_gpu: reduce must be :point or :block.")
+
+    H_mpo = H isa TBHamiltonian ? H.mpo : H
+    sites = H isa TBHamiltonian ? H.sites : _mpo_ket_siteinds(H_mpo)
+    Lbits = length(sites)
+    Nsite = prod(dim(s) for s in sites)
+    x_end_eff = x_end === nothing ? Nsite : Int(x_end)
+    plan = spatial_sampling_plan(Lbits;
+        grid=false, reduce=reduce, num_x=num_x, num_avg=num_avg,
+        x_start=x_start, x_end=x_end_eff, x_groups=x_groups)
+    centers, groups = plan.centers, plan.groups
+
+    sample_steps = collect(0:sample_every:nsteps)
+    if last(sample_steps) != nsteps
+        push!(sample_steps, nsteps)
+    end
+    times = Float64[step * Float64(dt) for step in sample_steps]
+    density = Matrix{Float64}(undef, length(centers), length(sample_steps))
+    maxlinks = Vector{Int}(undef, length(sample_steps))
+
+    H_gpu = _ensure_gpu_mpo(H_mpo; caller="get_nh_density_trajectory_gpu")
+    Hdag_gpu = conj(swapprime(H_gpu, 0, 1))
+    rho_gpu = _ensure_gpu_mpo(rho0; caller="get_nh_density_trajectory_gpu")
+
+    sample_idx = 1
+    density[:, sample_idx] = _sample_density_diag_gpu(rho_gpu, plan;
+        maxdim=maxdim, cutoff=cutoff)
+    maxlinks[sample_idx] = maxlinkdim(rho_gpu)
+    printinfo && println("  [gpu] NH density sample step 0/$nsteps  t=0.0  maxlinkdim=$(maxlinks[sample_idx])")
+
+    for step in 1:nsteps
+        rho_gpu = rk4_step_dm_nh_gpu(H_gpu, Hdag_gpu, rho_gpu, dt;
+            maxdim=maxdim, cutoff=cutoff,
+            truncate_intermediates=truncate_intermediates)
+        if step % sample_every == 0 || step == nsteps
+            sample_idx += 1
+            density[:, sample_idx] = _sample_density_diag_gpu(rho_gpu, plan;
+                maxdim=maxdim, cutoff=cutoff)
+            maxlinks[sample_idx] = maxlinkdim(rho_gpu)
+            (verbose || printinfo) &&
+                println("  [gpu] NH density sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+        elseif verbose
+            println("  [gpu] NH density RK4 step $step/$nsteps  maxlinkdim=$(maxlinkdim(rho_gpu))")
+        end
+    end
+
+    return (density=density, times=times, centers=centers, groups=groups,
+            maxlinkdims=maxlinks)
+end
+
+function _state_amplitude_component(z::Complex, component::Symbol)
+    component === :real && return real(z)
+    component === :imag && return imag(z)
+    component === :abs  && return abs(z)
+    component in (:abs2, :probability) && return abs2(z)
+    error("_state_amplitude_component: unsupported component :$component. Use :real, :imag, :abs, :abs2, or :probability.")
+end
+
+function _sample_state_amplitudes_gpu(ψ_gpu::MPS, plan;
+                                      component::Symbol)
+    component in (:real, :imag, :abs, :abs2, :probability) ||
+        error("_sample_state_amplitudes_gpu: unsupported component :$component.")
+
+    amps = if plan.reduce === :block
+        Lbits = length(ψ_gpu)
+        nb    = 2^plan.a
+        norm  = Float64(plan.stride_x)
+        ComplexF64[_eval_block_mps_1d_complex_gpu(ψ_gpu, ixp, plan.a, Lbits) / norm
+                   for ixp in 0:(nb - 1)]
+    else
+        ComplexF64[
+            sum(_eval_mps_bigendian_complex_gpu(ψ_gpu, x - 1) for x in grp) / length(grp)
+            for grp in plan.groups
+        ]
+    end
+    return Float64[_state_amplitude_component(z, component) for z in amps]
+end
+
+function _state_norm_gpu(ψ_gpu::MPS)
+    n2 = real(inner(ψ_gpu, ψ_gpu))
+    return sqrt(max(Float64(n2), 0.0))
+end
+
+"""
+    get_state_amplitude_trajectory_gpu(H, psi0; nsteps, dt, sample_every, ...)
+        -> (amplitude, times, centers, groups, norms, maxlinkdims)
+
+GPU TDVP evolution of a single-particle MPS state under the physical
+Hamiltonian `H`. `ITensorMPS.tdvp(operator, t, init)` computes
+`exp(t * operator) * init` (generator form), so the operator passed to `tdvp`
+is `-im * H`, which implements the Schrödinger evolution `dψ/dt = -im * Hψ`;
+therefore a loss term `-im * Γ` (Γ >= 0) damps the norm, matching
+`evolve_with_tdvp(H::TBHamiltonian,...)` on CPU and the NH RK4 convention
+`dρ/dt = -i(Hρ - ρH†)`. `H` may be a `TBHamiltonian` or an MPO. The Hamiltonian
+and initial state are uploaded once, the TDVP loop stays on GPU, and only
+sampled scalar amplitudes are copied back to CPU.
+
+The returned `amplitude` matrix has rows = sampled positions and columns =
+sampled times. By default it stores `real(<x|psi(t)>)`, matching panel (d) of
+`APSOS_NH_testing`. Set `component=:imag`, `:abs`, or `:probability` if needed.
+
+Sampling follows `spatial_sampling_plan` in 1D. `reduce=:point` samples
+representative positions or explicit groups. `reduce=:block` returns the
+block-averaged complex amplitude over contiguous intervals.
+"""
+function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
+                                            nsteps::Int,
+                                            dt::Real,
+                                            sample_every::Int = 1,
+                                            num_x::Int = 0,
+                                            num_avg::Int = 1,
+                                            reduce::Symbol = :point,
+                                            x_start::Int = 1,
+                                            x_end::Union{Nothing,Int} = nothing,
+                                            x_groups = nothing,
+                                            component::Symbol = :real,
+                                            normalize_each_step::Bool = false,
+                                            maxdim::Int = 200,
+                                            cutoff::Real = 1e-8,
+                                            reverse_step::Bool = false,
+                                            outputlevel::Int = 0,
+                                            nsite::Int = 2,
+                                            printinfo::Bool = false,
+                                            verbose::Bool = false)
+    _check_gpu("get_state_amplitude_trajectory_gpu")
+    cutoff < 1e-6 && @warn "get_state_amplitude_trajectory_gpu: cutoff=$cutoff is below 1e-6; ComplexF32 TDVP contractions may be unstable on large systems."
+    nsteps >= 0 || error("get_state_amplitude_trajectory_gpu: nsteps must be non-negative.")
+    sample_every > 0 || error("get_state_amplitude_trajectory_gpu: sample_every must be positive.")
+    reduce in (:point, :block) || error("get_state_amplitude_trajectory_gpu: reduce must be :point or :block.")
+    component in (:real, :imag, :abs, :abs2, :probability) ||
+        error("get_state_amplitude_trajectory_gpu: unsupported component :$component.")
+
+    H_mpo = H isa TBHamiltonian ? H.mpo : H
+    Lbits = length(psi0)
+    Nsite = prod(dim(s) for s in siteinds(psi0))
+    x_end_eff = x_end === nothing ? Nsite : Int(x_end)
+    plan = spatial_sampling_plan(Lbits;
+        grid=false, reduce=reduce, num_x=num_x, num_avg=num_avg,
+        x_start=x_start, x_end=x_end_eff, x_groups=x_groups)
+    centers, groups = plan.centers, plan.groups
+
+    sample_steps = collect(0:sample_every:nsteps)
+    if last(sample_steps) != nsteps
+        push!(sample_steps, nsteps)
+    end
+    times = Float64[step * Float64(dt) for step in sample_steps]
+    amplitude = Matrix{Float64}(undef, length(centers), length(sample_steps))
+    norms = Vector{Float64}(undef, length(sample_steps))
+    maxlinks = Vector{Int}(undef, length(sample_steps))
+
+    H_gpu = _ensure_gpu_mpo(H_mpo; caller="get_state_amplitude_trajectory_gpu")
+    # ITensorMPS.tdvp(operator, t, init) computes exp(t*operator)*init (generator
+    # form, no implicit sign flip), so -im*H gives dψ/dt = -im*Hψ, matching
+    # evolve_with_tdvp(H::TBHamiltonian,...) (-im*H.mpo) and the NH RK4 convention
+    # dρ/dt = -i(Hρ - ρH†). For H = H0 - iΓ this makes Γ>=0 lossy.
+    generator_gpu = ComplexF32(0, -1) * H_gpu
+    ψ_gpu = _ensure_gpu_mps(psi0; caller="get_state_amplitude_trajectory_gpu")
+
+    sample_idx = 1
+    amplitude[:, sample_idx] = _sample_state_amplitudes_gpu(ψ_gpu, plan;
+        component=component)
+    norms[sample_idx] = _state_norm_gpu(ψ_gpu)
+    maxlinks[sample_idx] = maxlinkdim(ψ_gpu)
+    printinfo && println("  [gpu] state sample step 0/$nsteps  t=0.0  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+
+    for step in 1:nsteps
+        ψ_gpu = tdvp(
+            generator_gpu,
+            dt,
+            ψ_gpu;
+            time_step=dt,
+            nsite=nsite,
+            maxdim=maxdim,
+            cutoff=Float64(cutoff),
+            normalize=normalize_each_step,
+            reverse_step=reverse_step,
+            outputlevel=outputlevel,
+        )
+        normalize_each_step && normalize!(ψ_gpu)
+
+        if step % sample_every == 0 || step == nsteps
+            sample_idx += 1
+            amplitude[:, sample_idx] = _sample_state_amplitudes_gpu(ψ_gpu, plan;
+                component=component)
+            norms[sample_idx] = _state_norm_gpu(ψ_gpu)
+            maxlinks[sample_idx] = maxlinkdim(ψ_gpu)
+            (verbose || printinfo) &&
+                println("  [gpu] state sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+            _gpu_gc!()
+        elseif verbose
+            println("  [gpu] state TDVP step $step/$nsteps  maxlinkdim=$(maxlinkdim(ψ_gpu))")
+        end
+    end
+
+    return (amplitude=amplitude, times=times, centers=centers, groups=groups,
+            norms=norms, maxlinkdims=maxlinks)
+end
+
+get_nh_state_trajectory_gpu(H, psi0::MPS; kwargs...) =
+    get_state_amplitude_trajectory_gpu(H, psi0; kwargs...)
 
 function _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO
     N = length(mps)
@@ -1316,6 +1735,561 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     return result
 end
 
+function _eval_fullsum_mps_1d_gpu(A::MPS)
+    cuda = _tb_cuda_module()
+    s    = siteinds(A)
+    ElT  = eltype(A[1])
+    acc  = cuda.cu(ITensor(one(ElT)))
+    for i in 1:length(s)
+        v_arr = fill(one(ElT), dim(s[i]))
+        v = ITensors.itensor(cuda.CuArray(v_arr), s[i])
+        acc *= A[i] * v
+    end
+    return real(scalar(acc))
+end
+
+function _contract_nh_block_gpu(W::MPO, block_s::Index;
+                                row::Int = 2,
+                                col::Int = 1,
+                                dtype::Type{<:Complex} = ComplexF64)
+    M = length(W)
+    M >= 2 || error("_contract_nh_block_gpu requires an MPO with a block site and at least one physical site.")
+
+    if siteind(W, M) == block_s
+        bt = W[M] *
+             _onehot_gpu(block_s => col, dtype) *
+             _onehot_gpu(block_s' => row, dtype)
+        tensors = ITensor[W[i] for i in 1:M-2]
+        push!(tensors, W[M-1] * bt)
+        return MPO(tensors)
+    elseif siteind(W, 1) == block_s
+        bt = W[1] *
+             _onehot_gpu(block_s => col, dtype) *
+             _onehot_gpu(block_s' => row, dtype)
+        tensors = ITensor[W[2] * bt]
+        for i in 3:M
+            push!(tensors, W[i])
+        end
+        return MPO(tensors)
+    end
+
+    error("NH block index must be the first or last MPO site for _contract_nh_block_gpu.")
+end
+
+function _trace_nh_block_diagonal_gpu(P_gpu::MPO, block_s::Index;
+                                      row::Int = 2,
+                                      col::Int = 1,
+                                      maxdim::Int = 100,
+                                      cutoff::Real = 1e-8,
+                                      dtype::Type{<:Complex} = ComplexF64)
+    P_phys_gpu = _contract_nh_block_gpu(P_gpu, block_s;
+        row=row, col=col, dtype=dtype)
+    A_mps_gpu = ITensorMPS.truncate!(
+        extract_diagonal_to_mps_gpu(P_phys_gpu);
+        cutoff=Float64(cutoff), maxdim=maxdim)
+    return _eval_fullsum_mps_1d_gpu(A_mps_gpu)
+end
+
+function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
+                                          scale::Union{Nothing,Real} = nothing,
+                                          maxdim::Int  = 100,
+                                          cutoff::Real = 1e-8,
+                                          source_row::Int = 2,
+                                          source_col::Int = 1,
+                                          block_row::Int  = 2,
+                                          block_col::Int  = 1,
+                                          dtype::Type{<:Complex} = ComplexF64,
+                                          verbose::Bool = false)
+    _check_gpu("_nh_diag_trace_scalar_online_gpu")
+
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_diag_trace_scalar_online_gpu requires a nonzero scale.")
+    n > 0 || error("_nh_diag_trace_scalar_online_gpu requires n > 0.")
+
+    ak       = (cutoff=Float64(cutoff), maxdim=maxdim)
+    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
+    weights  = nh_jackson_weights(N)
+    two      = dtype(2)
+    negone   = dtype(-1)
+    zero     = dtype(0)
+
+    verbose && println("    [gpu dtype=$dtype] A=$(eltype(A_op_gpu[1])) S=$(eltype(S_gpu[1])) I=$(eltype(I_gpu[1]))")
+
+    Tkm2 = I_gpu
+    Tkm1 = A_op_gpu
+    Pkm2 = zero * S_gpu
+    Pkm1 = S_gpu
+
+    trace_acc = ComplexF64(weights[1]) *
+        _trace_nh_block_diagonal_gpu(Pkm1, NH.block_s;
+            row=block_row, col=block_col, maxdim=maxdim,
+            cutoff=cutoff, dtype=dtype)
+
+    for k in 3:N
+        Tk = +(two * apply(A_op_gpu, Tkm1; ak...),
+               negone * Tkm2; ak...)
+        ITensorMPS.truncate!(Tk; ak...)
+
+        Pk = +(+(two * apply(S_gpu, Tkm1; ak...),
+                 two * apply(A_op_gpu, Pkm1; ak...);
+                 ak...),
+               negone * Pkm2; ak...)
+        ITensorMPS.truncate!(Pk; ak...)
+
+        if iseven(k)
+            coeff = (-1)^(div(k, 2) - 1) * weights[k - 1]
+            trace_acc += ComplexF64(coeff) *
+                _trace_nh_block_diagonal_gpu(Pk, NH.block_s;
+                    row=block_row, col=block_col, maxdim=maxdim,
+                    cutoff=cutoff, dtype=dtype)
+        end
+
+        Tkm2 = Tkm1
+        Tkm1 = Tk
+        Pkm2 = Pkm1
+        Pkm1 = Pk
+
+        verbose && println("    [gpu] NH scalar-diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(T)=$(eltype(Tkm1[1])) dtype(P)=$(eltype(Pkm1[1]))")
+    end
+
+    _gpu_gc!()
+    return real(trace_acc * 2.0 / (pi^2 * (N + 1)))
+end
+
+function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
+                                   scale::Union{Nothing,Real} = nothing,
+                                   maxdim::Int  = 100,
+                                   cutoff::Real = 1e-8,
+                                   source_row::Int = 2,
+                                   source_col::Int = 1,
+                                   block_row::Int  = 2,
+                                   block_col::Int  = 1,
+                                   dtype::Type{<:Complex} = ComplexF64,
+                                   verbose::Bool = false)
+    _check_gpu("_nh_diag_trace_online_gpu")
+
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_diag_trace_online_gpu requires a nonzero scale.")
+    n > 0 || error("_nh_diag_trace_online_gpu requires n > 0.")
+
+    ak       = (cutoff=Float64(cutoff), maxdim=maxdim)
+    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
+    weights  = nh_jackson_weights(N)
+    two      = dtype(2)
+    negone   = dtype(-1)
+    zero     = dtype(0)
+
+    _diag(P_gpu) = ITensorMPS.truncate!(
+        extract_diagonal_to_mps_gpu(
+            _contract_nh_block_gpu(P_gpu, NH.block_s;
+                row=block_row, col=block_col, dtype=dtype));
+        ak...)
+
+    Tkm2 = I_gpu
+    Tkm1 = A_op_gpu
+    Pkm2 = zero * S_gpu
+    Pkm1 = S_gpu
+    A_mps = dtype(weights[1]) * _diag(Pkm1)
+
+    for k in 3:N
+        Tk = +(two * apply(A_op_gpu, Tkm1; ak...),
+               negone * Tkm2; ak...)
+        ITensorMPS.truncate!(Tk; ak...)
+
+        Pk = +(+(two * apply(S_gpu, Tkm1; ak...),
+                 two * apply(A_op_gpu, Pkm1; ak...);
+                 ak...),
+               negone * Pkm2; ak...)
+        ITensorMPS.truncate!(Pk; ak...)
+
+        if iseven(k)
+            coeff = dtype((-1)^(div(k, 2) - 1) * weights[k - 1])
+            A_mps = +(A_mps, coeff * _diag(Pk); ak...)
+            ITensorMPS.truncate!(A_mps; ak...)
+        end
+
+        Tkm2 = Tkm1
+        Tkm1 = Tk
+        Pkm2 = Pkm1
+        Pkm1 = Pk
+
+        verbose && println("    [gpu] NH diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(P)=$(eltype(Pkm1[1]))")
+    end
+
+    A_mps = dtype(2.0 / (pi^2 * (N + 1))) * A_mps
+    dos = _eval_fullsum_mps_1d_gpu(A_mps)
+    _gpu_gc!()
+    return A_mps, dos
+end
+
+function _nh_random_probes_gpu_seed(sites::Vector{<:Index}, block_s::Index,
+                                    ket_block::Int, bra_block::Int, rng,
+                                    dtype::Type{<:Complex}=ComplexF64)
+    N = length(sites)
+    pos_rand = Dict(s => normalize(dtype.(randn(rng, Float64, dim(s)) .+
+                                           1im .* randn(rng, Float64, dim(s))))
+                    for s in sites if s != block_s)
+
+    function _make(block_state)
+        links = [Index(1, "Link,l=$i") for i in 1:N-1]
+        tensors = Vector{ITensor}(undef, N)
+        for i in 1:N
+            s = sites[i]
+            inds_i = Index[]
+            i > 1 && push!(inds_i, links[i-1])
+            push!(inds_i, s)
+            i < N && push!(inds_i, links[i])
+            T = ITensor(dtype, inds_i...)
+            if s == block_s
+                p = Pair{Index,Int}[]
+                i > 1 && push!(p, links[i-1] => 1)
+                push!(p, s => block_state)
+                i < N && push!(p, links[i] => 1)
+                T[p...] = one(dtype)
+            else
+                for (v, c) in enumerate(pos_rand[s])
+                    p = Pair{Index,Int}[]
+                    i > 1 && push!(p, links[i-1] => 1)
+                    push!(p, s => v)
+                    i < N && push!(p, links[i] => 1)
+                    T[p...] = c
+                end
+            end
+            tensors[i] = T
+        end
+        return MPS(tensors)
+    end
+
+    return _to_gpu_mps(_make(ket_block), dtype), _to_gpu_mps(_make(bra_block), dtype)
+end
+
+function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
+                                   scale::Union{Nothing,Real} = nothing,
+                                   n_random::Int  = 10,
+                                   maxdim::Int    = 100,
+                                   cutoff::Real   = 1e-8,
+                                   source_row::Int = 2,
+                                   source_col::Int = 1,
+                                   block_row::Int  = 2,
+                                   block_col::Int  = 1,
+                                   dtype::Type{<:Complex} = ComplexF64,
+                                   rng = Random.default_rng(),
+                                   verbose::Bool = false)
+    _check_gpu("_nh_stochastic_online_gpu")
+    dtype == ComplexF32 && cutoff < 1e-4 &&
+        @warn "_nh_stochastic_online_gpu: cutoff=$cutoff with ComplexF32 may produce NaN; use dtype=ComplexF64 for large NH runs."
+
+    N  = 2 * n
+    Hh = NH.hermitized
+    sc = isnothing(scale) ? Hh.scale : Float64(scale)
+    sc == 0.0 && error("_nh_stochastic_online_gpu requires a nonzero scale.")
+    n_random > 0 || error("_nh_stochastic_online_gpu requires n_random > 0.")
+
+    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    weights  = nh_jackson_weights(N)
+    D        = NH.parent.N
+
+    dos_acc = ComplexF64(0)
+    z_gpu   = dtype(0)
+    two_gpu = dtype(2)
+    negone_gpu = dtype(-1)
+    apply_kwargs = (cutoff=Float64(cutoff), maxdim=maxdim)
+
+    for ir in 1:n_random
+        ket_probe, bra_probe = _nh_random_probes_gpu_seed(Hh.sites, NH.block_s,
+                                                          source_col, block_row, rng,
+                                                          dtype)
+        tkm2 = ket_probe
+        tkm1 = apply(A_op_gpu, ket_probe; apply_kwargs...)
+        pkm2 = z_gpu * ket_probe
+        pkm1 = apply(S_gpu, ket_probe; apply_kwargs...)
+
+        partial_vals = zeros(ComplexF64, N)
+        partial_vals[2] = inner(bra_probe, pkm1)
+
+        for k in 3:N
+            tk = +(two_gpu * apply(A_op_gpu, tkm1; apply_kwargs...),
+                   negone_gpu * tkm2; apply_kwargs...)
+            a_pkm1 = two_gpu * apply(A_op_gpu, pkm1; apply_kwargs...)
+            pk_base = if iseven(k)
+                s_tkm1 = two_gpu * apply(S_gpu, tkm1; apply_kwargs...)
+                +(s_tkm1, a_pkm1; apply_kwargs...)
+            else
+                a_pkm1
+            end
+            pk = k == 3 ? pk_base : +(pk_base, negone_gpu * pkm2; apply_kwargs...)
+            iseven(k) && (partial_vals[k] = inner(bra_probe, pk))
+            tkm2 = tkm1
+            tkm1 = tk
+            pkm2 = pkm1
+            pkm1 = pk
+        end
+
+        val = ComplexF64(0)
+        for l in 2:2:N
+            val += (-1)^(l ÷ 2 - 1) * weights[l - 1] * partial_vals[l]
+        end
+        dos_acc += val
+
+        verbose && println("    [gpu] NH probe $ir/$n_random  maxlinkdim=$(maxlinkdim(tkm1))")
+        _gpu_gc!()
+    end
+
+    return real(dos_acc * D * 2.0 / (π^2 * (N + 1) * n_random))
+end
+
+"""
+    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; scale, n_random, ...)
+        -> (xgrid, ygrid, Z)
+
+GPU stochastic non-Hermitian KPM spectral-weight grid. This mirrors
+`nh_spectrum_grid(...; mode=:stochastic)`: for each complex point
+`z = x + im*y`, the non-Hermitian Hamiltonian is hermitized on CPU, then the
+dual-chain stochastic MPS recurrence runs on GPU. Only scalar moments are
+copied back to CPU.
+
+The integer `n` follows the existing NH convention: the partial recurrence runs
+to order `2n`.
+"""
+function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
+                             scale::Real,
+                             convention::Symbol      = :z_minus_H,
+                             block_placement::Symbol = :post,
+                             n_random::Int           = 10,
+                             seed::Union{Int,Nothing}= 42,
+                             maxdim::Int             = 100,
+                             cutoff::Real            = 1e-8,
+                             dtype::Type{<:Complex}  = ComplexF64,
+                             verbose::Bool           = false,
+                             printinfo::Bool         = false)
+    _check_gpu("get_nh_dos_grid_gpu")
+    dtype == ComplexF32 && cutoff < 1e-4 &&
+        @warn "get_nh_dos_grid_gpu: cutoff=$cutoff with ComplexF32 may be unstable; use dtype=ComplexF64 for large NH runs."
+    n > 0 || error("get_nh_dos_grid_gpu: n must be positive.")
+    n_random > 0 || error("get_nh_dos_grid_gpu: n_random must be positive.")
+
+    xgrid = collect(range(xlims[1], xlims[2]; length=nx))
+    ygrid = collect(range(ylims[1], ylims[2]; length=ny))
+    Z = Matrix{Float64}(undef, ny, nx)
+    rng = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
+
+    (verbose || printinfo) &&
+        println("get_nh_dos_grid_gpu: $(nx)x$(ny)=$(nx*ny) points, NH order=2*$n, n_random=$n_random")
+
+    for (ix, x) in enumerate(xgrid)
+        (verbose || printinfo) &&
+            println("  [gpu] NH grid col $(lpad(ix, ndigits(nx)))/$nx  Re(z)=$(round(x, digits=4))")
+        for (iy, y) in enumerate(ygrid)
+            NH = hermitize(H; z=x + 1im*y, scale=scale, maxdim=maxdim,
+                           cutoff=cutoff, convention=convention,
+                           block_placement=block_placement)
+            Z[iy, ix] = _nh_stochastic_online_gpu(NH, n;
+                scale=scale,
+                n_random=n_random,
+                maxdim=maxdim,
+                cutoff=cutoff,
+                dtype=dtype,
+                rng=rng,
+                verbose=verbose)
+        end
+    end
+
+    return xgrid, ygrid, Z
+end
+
+nh_spectrum_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int; kwargs...) =
+    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; kwargs...)
+
+"""
+    get_nh_dos_points_gpu(H, z_points, n; scale, n_random, point_ids, ...)
+        -> Vector{Float64}
+
+GPU stochastic NH KPM at an explicit list of complex energies. This is the
+array-job companion to `get_nh_dos_grid_gpu`: each `z_points[j]` is independent,
+so production scripts can split a large grid over many GPUs and concatenate the
+long-form CSV outputs afterward.
+
+When `seed` is an integer, each point uses a deterministic seed
+`seed + seed_stride * point_id`, where `point_id` defaults to the local point
+index. Supplying global flattened grid indices as `point_ids` makes stochastic
+samples reproducible independent of how the grid is tiled.
+"""
+function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
+                               scale::Real,
+                               convention::Symbol       = :z_minus_H,
+                               block_placement::Symbol  = :post,
+                               n_random::Int            = 10,
+                               seed::Union{Int,Nothing} = 42,
+                               seed_stride::Int         = 1_000_003,
+                               point_ids                = nothing,
+                               maxdim::Int              = 100,
+                               cutoff::Real             = 1e-8,
+                               dtype::Type{<:Complex}   = ComplexF64,
+                               verbose::Bool            = false,
+                               printinfo::Bool          = false)
+    _check_gpu("get_nh_dos_points_gpu")
+    dtype == ComplexF32 && cutoff < 1e-4 &&
+        @warn "get_nh_dos_points_gpu: cutoff=$cutoff with ComplexF32 may be unstable; use dtype=ComplexF64 for large NH runs."
+    n > 0 || error("get_nh_dos_points_gpu: n must be positive.")
+    n_random > 0 || error("get_nh_dos_points_gpu: n_random must be positive.")
+
+    z_list = collect(z_points)
+    Nz = length(z_list)
+    ids = isnothing(point_ids) ? collect(1:Nz) : collect(point_ids)
+    length(ids) == Nz || error("get_nh_dos_points_gpu: point_ids length must match z_points length.")
+
+    values = Vector{Float64}(undef, Nz)
+    (verbose || printinfo) &&
+        println("get_nh_dos_points_gpu: $Nz points, NH order=2*$n, n_random=$n_random")
+
+    for j in 1:Nz
+        z = ComplexF64(z_list[j])
+        point_id = Int(ids[j])
+        (verbose || printinfo) &&
+            println("  [gpu] NH point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
+
+        rng = if seed === nothing
+            Random.default_rng()
+        else
+            Random.MersenneTwister(seed + seed_stride * point_id)
+        end
+
+        NH = hermitize(H; z=z, scale=scale, maxdim=maxdim,
+                       cutoff=cutoff, convention=convention,
+                       block_placement=block_placement)
+        values[j] = _nh_stochastic_online_gpu(NH, n;
+            scale=scale,
+            n_random=n_random,
+            maxdim=maxdim,
+            cutoff=cutoff,
+            dtype=dtype,
+            rng=rng,
+            verbose=verbose)
+    end
+
+    return values
+end
+
+"""
+    get_nh_dos_points_diag_trace_gpu(H, z_points, n; scale, point_ids, ...)
+        -> Vector{Float64}
+
+Deterministic GPU NH KPM at an explicit list of complex energies. For each
+`z`, the hermitized NH problem is built on CPU, then the online MPO-MPO
+recurrence runs on GPU and evaluates the total trace through diagonal
+extraction plus a GPU-resident all-sites sum. This avoids stochastic probes.
+
+The integer `n` follows the NH convention used elsewhere in this file: the
+partial recurrence runs to order `2n`.
+"""
+function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
+                                          scale::Real,
+                                          convention::Symbol       = :z_minus_H,
+                                          block_placement::Symbol  = :post,
+                                          point_ids                = nothing,
+                                          maxdim::Int              = 100,
+                                          cutoff::Real             = 1e-8,
+                                          dtype::Type{<:Complex}   = ComplexF64,
+                                          source_row::Int          = 2,
+                                          source_col::Int          = 1,
+                                          block_row::Int           = 2,
+                                          block_col::Int           = 1,
+                                          verbose::Bool            = false,
+                                          printinfo::Bool          = false)
+    _check_gpu("get_nh_dos_points_diag_trace_gpu")
+    n > 0 || error("get_nh_dos_points_diag_trace_gpu: n must be positive.")
+
+    z_list = collect(z_points)
+    Nz = length(z_list)
+    ids = isnothing(point_ids) ? collect(1:Nz) : collect(point_ids)
+    length(ids) == Nz ||
+        error("get_nh_dos_points_diag_trace_gpu: point_ids length must match z_points length.")
+
+    values = Vector{Float64}(undef, Nz)
+    (verbose || printinfo) &&
+        println("get_nh_dos_points_diag_trace_gpu: $Nz points, NH order=2*$n, dtype=$dtype")
+
+    for j in 1:Nz
+        z = ComplexF64(z_list[j])
+        point_id = Int(ids[j])
+        (verbose || printinfo) &&
+            println("  [gpu] NH diag-trace point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
+
+        NH = hermitize(H; z=z, scale=scale, maxdim=maxdim,
+                       cutoff=cutoff, convention=convention,
+                       block_placement=block_placement)
+        values[j] = _nh_diag_trace_scalar_online_gpu(NH, n;
+            scale=scale,
+            maxdim=maxdim,
+            cutoff=cutoff,
+            source_row=source_row,
+            source_col=source_col,
+            block_row=block_row,
+            block_col=block_col,
+            dtype=dtype,
+            verbose=verbose)
+    end
+
+    return values
+end
+
+"""
+    get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; scale, ...)
+        -> (xgrid, ygrid, Z)
+
+Grid companion to `get_nh_dos_points_diag_trace_gpu`.
+"""
+function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
+                                        scale::Real,
+                                        convention::Symbol      = :z_minus_H,
+                                        block_placement::Symbol = :post,
+                                        maxdim::Int             = 100,
+                                        cutoff::Real            = 1e-8,
+                                        dtype::Type{<:Complex}  = ComplexF64,
+                                        verbose::Bool           = false,
+                                        printinfo::Bool         = false)
+    _check_gpu("get_nh_dos_grid_diag_trace_gpu")
+    n > 0 || error("get_nh_dos_grid_diag_trace_gpu: n must be positive.")
+
+    xgrid = collect(range(xlims[1], xlims[2]; length=nx))
+    ygrid = collect(range(ylims[1], ylims[2]; length=ny))
+    z_points = ComplexF64[]
+    point_ids = Int[]
+    for (ix, x) in enumerate(xgrid), (iy, y) in enumerate(ygrid)
+        push!(z_points, ComplexF64(x, y))
+        push!(point_ids, (ix - 1) * ny + iy)
+    end
+
+    values = get_nh_dos_points_diag_trace_gpu(H, z_points, n;
+        scale=scale,
+        convention=convention,
+        block_placement=block_placement,
+        point_ids=point_ids,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        dtype=dtype,
+        verbose=verbose,
+        printinfo=printinfo)
+
+    Z = Matrix{Float64}(undef, ny, nx)
+    for (v, pid) in zip(values, point_ids)
+        ix = div(pid - 1, ny) + 1
+        iy = mod(pid - 1, ny) + 1
+        Z[iy, ix] = v
+    end
+
+    return xgrid, ygrid, Z
+end
+
 
 """
     get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals; X_list, X_groups,
@@ -1714,12 +2688,14 @@ end
 # Builds the initial guess on CPU, moves it to GPU, iterates the McWeeny map
 # on GPU (F32), and returns the purified density matrix back on CPU
 # (ComplexF64). Mirrors the purification loop in `get_C_gpu`.
-function _mcweeny_purify_gpu(H::TBHamiltonian; ϵF::Real,
+function _mcweeny_purify_gpu(H::TBHamiltonian; ϵF::Real = 0.0,
+                              fermi::Union{Nothing,Real} = nothing,
                               maxdim::Int, cutoff::Real,
                               maxiters::Int, tol::Real,
                               return_gpu::Bool = false)
     ak     = (cutoff = Float64(cutoff), maxdim = maxdim)
-    P0_cpu = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=Float64(cutoff))
+    epsF   = fermi === nothing ? ϵF : Float64(fermi)
+    P0_cpu = purification_initial_guess(H; ϵF=epsF, maxdim=maxdim, cutoff=Float64(cutoff))
     P      = _to_gpu_mpo(P0_cpu)
     for iter in 1:maxiters
         P2  = apply(P, P; ak...)
