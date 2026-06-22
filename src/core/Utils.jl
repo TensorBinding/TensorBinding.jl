@@ -394,6 +394,8 @@ background* (e.g. in-gap edge/domain-wall LDOS, width ξ ≪ system size).
    (gapped) background. This is the tool for imaging edge / domain-wall networks
    on a heavily downsampled map. Block centres are reported in `centers`; the
    per-axis block widths are `stride_x = 2^(Lx-a)`, `stride_y = 2^(Ly-b)`.
+   If `Lx` is omitted, the same mode becomes a 1D partition into `num_x = 2^a`
+   contiguous intervals with `stride_x = 2^(L-a)`.
 
 The fields `reduce`, `a`, `b` echo the chosen mode back to the caller; for
 `:point` they are `(:point, 0, 0)`.
@@ -448,8 +450,20 @@ function spatial_sampling_plan(L::Int;
 
     # ── :block — coarse-grain by tracing out the within-block position bits ────
     if reduce === :block
-        Lx === nothing &&
-            error("spatial_sampling_plan: reduce=:block requires Lx.")
+        if Lx === nothing
+            num_x > 0 ||
+                error("spatial_sampling_plan: 1D reduce=:block requires num_x > 0 (a power of two).")
+            a = round(Int, log2(num_x))
+            2^a == num_x ||
+                error("spatial_sampling_plan: 1D reduce=:block needs num_x a power of two (got $num_x).")
+            (0 <= a <= L) ||
+                error("spatial_sampling_plan: 1D reduce=:block needs 1 <= num_x <= 2^L=$(2^L).")
+            W = 2^(L - a)
+            centers = Int[ixp * W + W ÷ 2 + 1 for ixp in 0:(num_x - 1)]
+            groups = [[c] for c in centers]   # nominal; block eval does not use these
+            return (; centers, groups, resolve_sublattice=false, n_sub=max(n_sub, 1),
+                    stride_x=W, stride_y=1, grid=false, reduce=:block, a, b=0)
+        end
         Ly = L - Lx
         num_x > 0 ||
             error("spatial_sampling_plan: reduce=:block requires num_x > 0 (a power of two).")
