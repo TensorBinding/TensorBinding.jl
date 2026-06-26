@@ -150,6 +150,106 @@ function Base.show(io::IO, NH::NonHermitianHamiltonian)
               "hermitized maxlinkdim=$(ITensorMPS.maxlinkdim(NH.hermitized.mpo))")
 end
 
+"""
+    nh_kpm_scale(H, z_points; scale=nothing, padding=1.05, maxdim=200,
+                 cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10,20,40],
+                 dmrg_linkdim=4, printinfo=false)
+
+Return one universal, zero-centered Chebyshev scale for NH KPM over all
+complex points in `z_points`.
+
+For `scale=nothing` or `scale=0`, the parent operator norm is estimated from
+the Hermitian zero-shift block Hamiltonian
+
+```text
+[ 0  -H ; -H'  0 ]
+```
+
+whose spectral radius is `||H||_2`. The scale then uses the triangle bound
+
+```text
+||zI - H||_2 <= |z| + ||H||_2
+```
+
+and returns `padding * (maximum(abs(z_points)) + ||H||_2)`. This is deliberately
+conservative and uses the same scale for every point, keeping values comparable
+across a grid. Passing a positive numeric `scale` bypasses the estimator.
+"""
+function nh_kpm_scale(H::TBHamiltonian, z_points;
+                      scale::Union{Nothing,Real} = nothing,
+                      padding::Real = 1.05,
+                      maxdim::Int = 200,
+                      cutoff::Real = 1e-8,
+                      convention::Symbol = :z_minus_H,
+                      block_placement::Symbol = :post,
+                      dmrg_nsweeps::Int = 5,
+                      dmrg_maxdim = [10, 20, 40],
+                      dmrg_linkdim::Int = 4,
+                      printinfo::Bool = false)
+    if scale !== nothing
+        sc = Float64(scale)
+        sc < 0.0 && error("nh_kpm_scale: scale must be nonnegative, got $sc.")
+        sc > 0.0 && return sc
+    end
+    padding >= 1.0 || error("nh_kpm_scale: padding must be >= 1, got $padding.")
+
+    z_radius = 0.0
+    for z in z_points
+        z_radius = max(z_radius, abs(ComplexF64(z)))
+    end
+
+    NH0 = hermitize(H;
+        z=0.0,
+        scale=0.0,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=block_placement)
+    _ensure_scale!(NH0.hermitized;
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim)
+
+    parent_norm_bound = abs(NH0.hermitized.center) + NH0.hermitized.scale
+    parent_norm_bound > 0.0 ||
+        error("nh_kpm_scale: estimated parent norm is zero; cannot build NH KPM scale.")
+
+    nh_scale = Float64(padding) * (z_radius + parent_norm_bound)
+    printinfo && println("nh_kpm_scale: parent_norm_bound=$parent_norm_bound, z_radius=$z_radius, padding=$padding, scale=$nh_scale")
+    return nh_scale
+end
+
+function _nh_resolve_scale(NH::NonHermitianHamiltonian;
+                           scale::Union{Nothing,Real} = nothing,
+                           nh_scale_padding::Real = 1.05,
+                           maxdim::Int = 200,
+                           cutoff::Real = 1e-8,
+                           convention::Symbol = :z_minus_H,
+                           dmrg_nsweeps::Int = 5,
+                           dmrg_maxdim = [10, 20, 40],
+                           dmrg_linkdim::Int = 4,
+                           printinfo::Bool = false)
+    if scale === nothing
+        NH.hermitized.scale > 0.0 && return NH.hermitized.scale
+    else
+        sc = Float64(scale)
+        sc < 0.0 && error("_nh_resolve_scale: scale must be nonnegative, got $sc.")
+        sc > 0.0 && return sc
+    end
+
+    return nh_kpm_scale(NH.parent, (NH.z,);
+        scale=nothing,
+        padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=NH.block_placement,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
+        printinfo=printinfo)
+end
+
 # ============================================================
 # Non-Hermitian model-building helpers
 # ============================================================
@@ -483,10 +583,22 @@ function nh_kpm_partials(NH::NonHermitianHamiltonian, n::Int;
                          source_row::Int = 2,
                          source_col::Int = 1,
                          scale::Union{Nothing,Real} = nothing,
+                         nh_scale_padding::Real = 1.05,
                          maxdim::Int = 100,
-                         cutoff::Real = 1e-8)
+                         cutoff::Real = 1e-8,
+                         dmrg_nsweeps::Int = 5,
+                         dmrg_maxdim = [10, 20, 40],
+                         dmrg_linkdim::Int = 4)
     S = isnothing(source) ? nh_block_source(NH; row=source_row, col=source_col) : source
-    return nh_kpm_partials(NH.hermitized, n; source=S, scale=scale,
+    sc = _nh_resolve_scale(NH;
+        scale=scale,
+        nh_scale_padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim)
+    return nh_kpm_partials(NH.hermitized, n; source=S, scale=sc,
                            maxdim=maxdim, cutoff=cutoff)
 end
 
@@ -654,14 +766,22 @@ the reference point stored in `NH.z`.
 """
 function nh_spectral_function(NH::NonHermitianHamiltonian, n::Int;
                               scale::Union{Nothing,Real} = nothing,
+                              nh_scale_padding::Real = 1.05,
                               maxdim::Int = 100,
                               cutoff::Real = 1e-8,
+                              dmrg_nsweeps::Int = 5,
+                              dmrg_maxdim = [10, 20, 40],
+                              dmrg_linkdim::Int = 4,
                               source_row::Int = 2,
                               source_col::Int = 1,
                               block_row::Int = 2,
                               block_col::Int = 1)
     partials = nh_kpm_partials(NH, n; source_row=source_row, source_col=source_col,
-                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+                               scale=scale, nh_scale_padding=nh_scale_padding,
+                               maxdim=maxdim, cutoff=cutoff,
+                               dmrg_nsweeps=dmrg_nsweeps,
+                               dmrg_maxdim=dmrg_maxdim,
+                               dmrg_linkdim=dmrg_linkdim)
     A, dos = nh_reconstruct_spectral_mps(partials, n, NH.block_s;
                                          maxdim=maxdim, row=block_row, col=block_col)
     return A, dos, partials
@@ -677,15 +797,23 @@ larger bond dimensions for accuracy.
 """
 function nh_spectral_function_allsite_mpo(NH::NonHermitianHamiltonian, n::Int;
                                           scale::Union{Nothing,Real} = nothing,
+                                          nh_scale_padding::Real = 1.05,
                                           maxdim::Int = 400,
                                           cutoff::Real = 1e-8,
+                                          dmrg_nsweeps::Int = 5,
+                                          dmrg_maxdim = [10, 20, 40],
+                                          dmrg_linkdim::Int = 4,
                                           source_row::Int = 2,
                                           source_col::Int = 1,
                                           rotate_row::Int = 1,
                                           rotate_col::Int = 2,
                                           diag_block::Int = 1)
     partials = nh_kpm_partials(NH, n; source_row=source_row, source_col=source_col,
-                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+                               scale=scale, nh_scale_padding=nh_scale_padding,
+                               maxdim=maxdim, cutoff=cutoff,
+                               dmrg_nsweeps=dmrg_nsweeps,
+                               dmrg_maxdim=dmrg_maxdim,
+                               dmrg_linkdim=dmrg_linkdim)
     ldos_mps, dos, rotated = nh_reconstruct_spectral_mpo(
         partials, n, NH;
         maxdim=maxdim,
@@ -819,16 +947,26 @@ the accumulator.
 """
 function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
                             scale::Union{Nothing,Real} = nothing,
+                            nh_scale_padding::Real = 1.05,
                             maxdim::Int  = 100,
                             cutoff::Real = 1e-8,
+                            dmrg_nsweeps::Int = 5,
+                            dmrg_maxdim = [10, 20, 40],
+                            dmrg_linkdim::Int = 4,
                             source_row::Int = 2,
                             source_col::Int = 1,
                             block_row::Int  = 2,
                             block_col::Int  = 1)
     N  = 2 * n
     Hh = NH.hermitized
-    sc = isnothing(scale) ? Hh.scale : Float64(scale)
-    sc == 0.0 && error("_nh_scalar_online requires a nonzero scale.")
+    sc = _nh_resolve_scale(NH;
+        scale=scale,
+        nh_scale_padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim)
 
     A_op    = Hh.mpo / sc
     source  = nh_block_source(NH; row=source_row, col=source_col)
@@ -879,16 +1017,26 @@ Compared with `nh_kpm_partials` + `nh_reconstruct_spectral_mps`:
 """
 function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
                           scale::Union{Nothing,Real} = nothing,
+                          nh_scale_padding::Real = 1.05,
                           maxdim::Int  = 100,
                           cutoff::Real = 1e-8,
+                          dmrg_nsweeps::Int = 5,
+                          dmrg_maxdim = [10, 20, 40],
+                          dmrg_linkdim::Int = 4,
                           source_row::Int = 2,
                           source_col::Int = 1,
                           block_row::Int  = 2,
                           block_col::Int  = 1)
     N  = 2 * n
     Hh = NH.hermitized
-    sc = isnothing(scale) ? Hh.scale : Float64(scale)
-    sc == 0.0 && error("_nh_diag_online requires a nonzero scale.")
+    sc = _nh_resolve_scale(NH;
+        scale=scale,
+        nh_scale_padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim)
 
     A_op    = Hh.mpo / sc
     source  = nh_block_source(NH; row=source_row, col=source_col)
@@ -985,17 +1133,27 @@ Cost: O(n_random × Ncheb × χ_H × χ_ψ) — no MPO×MPO products.
 """
 function _nh_stochastic_online(NH::NonHermitianHamiltonian, n::Int;
                                 scale::Union{Nothing,Real} = nothing,
+                                nh_scale_padding::Real = 1.05,
                                 n_random::Int  = 10,
                                 maxdim::Int    = 100,
                                 cutoff::Real   = 1e-8,
+                                dmrg_nsweeps::Int = 5,
+                                dmrg_maxdim = [10, 20, 40],
+                                dmrg_linkdim::Int = 4,
                                 source_row::Int = 2,
                                 source_col::Int = 1,
                                 block_row::Int  = 2,
                                 block_col::Int  = 1)
     N  = 2 * n
     Hh = NH.hermitized
-    sc = isnothing(scale) ? Hh.scale : Float64(scale)
-    sc == 0.0 && error("_nh_stochastic_online requires a nonzero scale.")
+    sc = _nh_resolve_scale(NH;
+        scale=scale,
+        nh_scale_padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim)
 
     A_op    = Hh.mpo / sc
     S       = nh_block_source(NH; row=source_row, col=source_col)
@@ -1039,7 +1197,8 @@ end
 
 
 """
-    nh_spectrum_grid(H, xlims, nx, ylims, ny, n; scale, convention=:z_minus_H,
+    nh_spectrum_grid(H, xlims, nx, ylims, ny, n; scale=nothing,
+                     nh_scale_padding=1.05, convention=:z_minus_H,
                      mode=:scalar, probe_site=0, n_random=10,
                      maxdim=100, cutoff=1e-8, verbose=false)
 
@@ -1063,9 +1222,12 @@ Evaluate the NH KPM spectral weight on a rectangular complex energy grid.
   probes. Total DOS estimate. O(n_random × Ncheb × χ_H × χ_ψ). No MPO×MPO products.
 
 Set `verbose=true` to print one progress line per Re(z) column.
+If `scale` is omitted or zero, a single conservative scale is estimated from
+`nh_kpm_scale` and reused over the whole grid.
 """
 function nh_spectrum_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
-                          scale::Real,
+                          scale::Union{Nothing,Real} = nothing,
+                          nh_scale_padding::Real = 1.05,
                           convention::Symbol      = :z_minus_H,
                           block_placement::Symbol = :post,
                           mode::Symbol            = :scalar,
@@ -1073,40 +1235,54 @@ function nh_spectrum_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::I
                           n_random::Int           = 10,
                           maxdim::Int             = 100,
                           cutoff::Real            = 1e-8,
+                          dmrg_nsweeps::Int       = 5,
+                          dmrg_maxdim             = [10, 20, 40],
+                          dmrg_linkdim::Int       = 4,
                           verbose::Bool           = false)
     mode in (:scalar, :mps, :diag, :stochastic) ||
         error("Unknown mode :$mode for nh_spectrum_grid. Choose :scalar, :mps, :diag, or :stochastic.")
 
     xgrid = range(xlims[1], xlims[2]; length=nx)
     ygrid = range(ylims[1], ylims[2]; length=ny)
+    nh_scale = nh_kpm_scale(H, (ComplexF64(x, y) for x in xgrid for y in ygrid);
+        scale=scale,
+        padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=block_placement,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
+        printinfo=verbose)
     Z         = Matrix{ComplexF64}(undef, ny, nx)
     Z_spatial = (mode === :diag) ? zeros(Float64, H.N, ny, nx) : nothing
 
-    verbose && println("nh_spectrum_grid [mode=:$mode]: $(nx)×$(ny)=$(nx*ny) points, Ncheb=$(2n)")
+    verbose && println("nh_spectrum_grid [mode=:$mode]: $(nx)×$(ny)=$(nx*ny) points, Ncheb=$(2n), scale=$nh_scale")
 
     for (ix, x) in enumerate(xgrid)
         verbose && print("  col $(lpad(ix, ndigits(nx)))/$(nx)  Re(z)=$(round(x, digits=4)) ...")
         for (iy, y) in enumerate(ygrid)
-            NH = hermitize(H; z=x + 1im*y, scale=scale, maxdim=maxdim,
+            NH = hermitize(H; z=x + 1im*y, scale=nh_scale, maxdim=maxdim,
                            cutoff=cutoff, convention=convention,
                            block_placement=block_placement)
             if mode === :mps
                 Z[iy, ix] = _nh_kpm_mps_ldos(NH, n, probe_site;
-                                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+                                               scale=nh_scale, maxdim=maxdim, cutoff=cutoff)
             elseif mode === :diag
                 A_mps, dos = _nh_diag_online(NH, n;
-                                              scale=scale, maxdim=maxdim, cutoff=cutoff)
+                                              scale=nh_scale, maxdim=maxdim, cutoff=cutoff)
                 Z[iy, ix] = dos
                 for i in 0:H.N-1
                     Z_spatial[i+1, iy, ix] = real(eval_mps(A_mps, i))
                 end
             elseif mode === :stochastic
                 Z[iy, ix] = _nh_stochastic_online(NH, n;
-                                                   scale=scale, n_random=n_random,
+                                                   scale=nh_scale, n_random=n_random,
                                                    maxdim=maxdim, cutoff=cutoff)
             else  # :scalar
                 Z[iy, ix] = _nh_scalar_online(NH, n;
-                                               scale=scale, maxdim=maxdim, cutoff=cutoff)
+                                               scale=nh_scale, maxdim=maxdim, cutoff=cutoff)
             end
         end
         verbose && println("  done")
