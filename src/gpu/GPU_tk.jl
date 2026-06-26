@@ -1019,11 +1019,10 @@ GPU handles: the full Chebyshev MPO recurrence (the dominant cost) and the
              QFT sandwich applied to each Chebyshev moment.
 CPU handles: k-group setup, KPM weight matrix, final scalar accumulation.
 
-All GPU operators (Hamiltonian, identity, QFT pair, per-step aux projectors)
-use ComplexF32 via `_to_gpu_mpo`/`_make_delta_gpu`, matching the rest of this
-toolkit (see the PRECISION note at the top of GPU_tk.jl). ComplexF32
-eigendecomposition can produce NaN at very tight `cutoff` on large systems —
-if `Ak` comes back all-NaN, raise `cutoff` rather than lowering it.
+Use `type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype.
+`dtype=...` is accepted as an alias for consistency with the non-Hermitian GPU
+entry points. ComplexF32 is faster, while ComplexF64 is safer at tight cutoffs
+on large systems.
 
 All keyword arguments are identical to the TBHamiltonian overload of
 `get_bands`.  The return value is also identical: a plain `Matrix{Float64}`
@@ -1035,7 +1034,7 @@ Usage:
 using CUDA
 res = TensorBinding.get_bands_gpu(H, 500, omega;
         kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb,
-        num_x=50, maxdim=200, printinfo=true)
+        num_x=50, maxdim=200, type=ComplexF64, printinfo=true)
 heatmap(1:size(res.Ak,2), omega, res.Ak; xticks=(res.ticks, res.labels))
 ```
 """
@@ -1065,9 +1064,16 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        tol::Real         = 1e-9,
                        maxdim::Int       = 100,
                        cutoff::Real      = 1e-10,
-                       printinfo::Bool   = false)
+                       printinfo::Bool   = false,
+                       type::Type{<:Complex} = ComplexF32,
+                       dtype::Union{Nothing,Type{<:Complex}} = nothing)
 
     _check_gpu("get_bands_gpu")
+    gpu_type = dtype === nothing ? type : dtype
+    dtype !== nothing && dtype != type && type != ComplexF32 &&
+        error("get_bands_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
+    gpu_type == ComplexF32 && cutoff < 1e-6 &&
+        @warn "get_bands_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
 
     _ensure_scale!(H)
     nambu_proj, spin_proj, layer_proj, sublat_proj =
@@ -1156,31 +1162,33 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # and sublattice=false, so this block is skipped entirely.
     if sublattice
         if D == 1
-            mask_A_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:odd))
-            mask_B_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:even))
+            mask_A_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:odd), gpu_type)
+            mask_B_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:even), gpu_type)
         else
             Ly_pos = L_pos - Lx_pos
-            mask_A_gpu = _to_gpu_mpo(_row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu))
+            mask_A_gpu = _to_gpu_mpo(_row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu), gpu_type)
             mask_B_gpu = _to_gpu_mpo(MPO(pos_sites_cpu, "Id") -
-                                     _row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu))
+                                     _row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu), gpu_type)
         end
     end
 
     # ── GPU Ham and QFT operators ────────────────────────────────────────────
     I_mpo_cpu = MPO(H.sites, "Id")
     Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
-    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu)
+    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
     # QFT operators sized for pos_sites_cpu (the post-projection site list).
     # Calling fix_sites maps the abstract QFT indices onto the actual pos_sites.
     R_pos      = length(pos_sites_cpu)
     FTirev_gpu = _to_gpu_mpo(fix_sites(
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R_pos; sign=-1.0, normalize=true))),
-        pos_sites_cpu))
+        pos_sites_cpu), gpu_type)
     FTrev_gpu  = _to_gpu_mpo(fix_sites(
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R_pos; sign=+1.0, normalize=true))),
-        pos_sites_cpu))
+        pos_sites_cpu), gpu_type)
+
+    printinfo && println("  [gpu] bands dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
     local _nambu_side = nambu_side_det
     local _layer_side = layer_side_det
@@ -1193,9 +1201,9 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # numbers out of the GPU — no explicit MPO/MPS moves back to CPU.
     #
     # Per step:
-    #   projection  → _project_aux_gpu  (dense ComplexF32 projector, GPU throughout)
+    #   projection  → _project_aux_gpu  (dense typed projector, GPU throughout)
     #   QFT         → _apply_qft_conj_gpu  (pre-built GPU QFT operators)
-    #   diagonal    → extract_diagonal_to_mps_gpu (CPU array slice, back to GPU F32)
+    #   diagonal    → extract_diagonal_to_mps_gpu (same GPU dtype as input)
     #   sampling    → _eval_diag_mps_gpu  (scalars pulled out of GPU directly)
     function accumulate_Tn_gpu!(ak_accum, Tn_gpu, n)
         # Step 0: Nambu (BdG) projection
@@ -1261,13 +1269,15 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── Chebyshev recurrence (GPU) ───────────────────────────────────────────
     Tkm2 = I_mpo_gpu
     Tkm1 = Ham_n_gpu
+    two = gpu_type(2)
+    negone = gpu_type(-1)
 
     accumulate_Tn_gpu!(Ak_w, Tkm2, 1)
     accumulate_Tn_gpu!(Ak_w, Tkm1, 2)
 
     for k in 3:Ncheb
-        Tk = +(2 * apply(Ham_n_gpu, Tkm1; cutoff=cutoff, maxdim=maxdim),
-               -Tkm2; cutoff=cutoff, maxdim=maxdim)
+        Tk = +(two * apply(Ham_n_gpu, Tkm1; cutoff=cutoff, maxdim=maxdim),
+               negone * Tkm2; cutoff=cutoff, maxdim=maxdim)
         ITensorMPS.truncate!(Tk; cutoff=cutoff)
         accumulate_Tn_gpu!(Ak_w, Tk, k)
         Tkm2 = Tkm1
@@ -1317,7 +1327,9 @@ GPU: entire Chebyshev MPO recurrence, aux projections, diagonal extraction,
 CPU: KPM weight matrix, output accumulation (scalars only).
 
 Keyword arguments are identical to `get_ldos_spatial` (`:mps` mode is not
-available on GPU; only the single-pass MPO mode is implemented here).
+available on GPU; only the single-pass MPO mode is implemented here). Pass
+`type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype
+consistently throughout the MPO recurrence, projections, and diagonal extraction.
 
 Usage
 -----
@@ -1357,9 +1369,14 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                layer_proj::Bool  = false,
                                proj_layer        = nothing,
                                sublat_proj::Bool = false,
-                               proj_sl           = nothing)
+                               proj_sl           = nothing,
+                               type::Type{<:Complex} = ComplexF32,
+                               dtype::Union{Nothing,Type{<:Complex}} = nothing)
 
     _check_gpu("get_ldos_spatial_gpu")
+    gpu_type = dtype === nothing ? type : dtype
+    dtype !== nothing && dtype != type && type != ComplexF32 &&
+        error("get_ldos_spatial_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
 
     # ── Geometry-aware sampling plan (same convention as get_ldos_spatial) ────
     if box_half > 0 || grid || xwin !== nothing || ywin !== nothing || reduce === :block
@@ -1420,8 +1437,8 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── GPU operators ────────────────────────────────────────────────────────
     I_mpo_cpu = MPO(H.sites, "Id")
     Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
-    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu)
+    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
     local _nambu_side  = nambu_side_det
     local _layer_side  = layer_side_det
@@ -1497,17 +1514,23 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Chebyshev recurrence (GPU) ───────────────────────────────────────────
-    cutoff < 1e-6 && @warn "get_ldos_spatial_gpu: cutoff=$cutoff is below 1e-6; ComplexF32 eigendecomposition may produce NaN on large systems — consider cutoff ≥ 1e-4."
+    gpu_type == ComplexF32 && cutoff < 1e-6 &&
+        @warn "get_ldos_spatial_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
     gpu_cutoff = Float64(cutoff)
+    two = gpu_type(2)
+    negone = gpu_type(-1)
     Tkm2 = I_mpo_gpu
     Tkm1 = Ham_n_gpu
+
+    (verbose || printinfo) &&
+        println("  [gpu] ldos dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
     accumulate_Tn_ldos_gpu!(accum, Tkm2, 1)
     accumulate_Tn_ldos_gpu!(accum, Tkm1, 2)
 
     for k in 3:Ncheb
-        Tk = +(2 * apply(Ham_n_gpu, Tkm1; cutoff=gpu_cutoff, maxdim=maxdim),
-               -Tkm2; cutoff=gpu_cutoff, maxdim=maxdim)
+        Tk = +(two * apply(Ham_n_gpu, Tkm1; cutoff=gpu_cutoff, maxdim=maxdim),
+               negone * Tkm2; cutoff=gpu_cutoff, maxdim=maxdim)
         ITensorMPS.truncate!(Tk; cutoff=gpu_cutoff)
         accumulate_Tn_ldos_gpu!(accum, Tk, k)
         Tkm2 = Tkm1
@@ -2048,7 +2071,8 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
 end
 
 """
-    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; scale, n_random, ...)
+    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; scale=nothing,
+                        nh_scale_padding=1.05, n_random, ...)
         -> (xgrid, ygrid, Z)
 
 GPU stochastic non-Hermitian KPM spectral-weight grid. This mirrors
@@ -2061,13 +2085,17 @@ The integer `n` follows the existing NH convention: the partial recurrence runs
 to order `2n`.
 """
 function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
-                             scale::Real,
+                             scale::Union{Nothing,Real} = nothing,
+                             nh_scale_padding::Real = 1.05,
                              convention::Symbol      = :z_minus_H,
                              block_placement::Symbol = :post,
                              n_random::Int           = 10,
                              seed::Union{Int,Nothing}= 42,
                              maxdim::Int             = 100,
                              cutoff::Real            = 1e-8,
+                             dmrg_nsweeps::Int       = 5,
+                             dmrg_maxdim             = [10, 20, 40],
+                             dmrg_linkdim::Int       = 4,
                              dtype::Type{<:Complex}  = ComplexF64,
                              verbose::Bool           = false,
                              printinfo::Bool         = false)
@@ -2079,21 +2107,32 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
 
     xgrid = collect(range(xlims[1], xlims[2]; length=nx))
     ygrid = collect(range(ylims[1], ylims[2]; length=ny))
+    nh_scale = nh_kpm_scale(H, (ComplexF64(x, y) for x in xgrid for y in ygrid);
+        scale=scale,
+        padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=block_placement,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
+        printinfo=(verbose || printinfo))
     Z = Matrix{Float64}(undef, ny, nx)
     rng = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
 
     (verbose || printinfo) &&
-        println("get_nh_dos_grid_gpu: $(nx)x$(ny)=$(nx*ny) points, NH order=2*$n, n_random=$n_random")
+        println("get_nh_dos_grid_gpu: $(nx)x$(ny)=$(nx*ny) points, NH order=2*$n, n_random=$n_random, scale=$nh_scale")
 
     for (ix, x) in enumerate(xgrid)
         (verbose || printinfo) &&
             println("  [gpu] NH grid col $(lpad(ix, ndigits(nx)))/$nx  Re(z)=$(round(x, digits=4))")
         for (iy, y) in enumerate(ygrid)
-            NH = hermitize(H; z=x + 1im*y, scale=scale, maxdim=maxdim,
+            NH = hermitize(H; z=x + 1im*y, scale=nh_scale, maxdim=maxdim,
                            cutoff=cutoff, convention=convention,
                            block_placement=block_placement)
             Z[iy, ix] = _nh_stochastic_online_gpu(NH, n;
-                scale=scale,
+                scale=nh_scale,
                 n_random=n_random,
                 maxdim=maxdim,
                 cutoff=cutoff,
@@ -2110,7 +2149,8 @@ nh_spectrum_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int; k
     get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; kwargs...)
 
 """
-    get_nh_dos_points_gpu(H, z_points, n; scale, n_random, point_ids, ...)
+    get_nh_dos_points_gpu(H, z_points, n; scale=nothing,
+                          nh_scale_padding=1.05, n_random, point_ids, ...)
         -> Vector{Float64}
 
 GPU stochastic NH KPM at an explicit list of complex energies. This is the
@@ -2124,7 +2164,8 @@ index. Supplying global flattened grid indices as `point_ids` makes stochastic
 samples reproducible independent of how the grid is tiled.
 """
 function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
-                               scale::Real,
+                               scale::Union{Nothing,Real} = nothing,
+                               nh_scale_padding::Real = 1.05,
                                convention::Symbol       = :z_minus_H,
                                block_placement::Symbol  = :post,
                                n_random::Int            = 10,
@@ -2133,6 +2174,9 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
                                point_ids                = nothing,
                                maxdim::Int              = 100,
                                cutoff::Real             = 1e-8,
+                               dmrg_nsweeps::Int        = 5,
+                               dmrg_maxdim              = [10, 20, 40],
+                               dmrg_linkdim::Int        = 4,
                                dtype::Type{<:Complex}   = ComplexF64,
                                verbose::Bool            = false,
                                printinfo::Bool          = false)
@@ -2146,10 +2190,21 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
     Nz = length(z_list)
     ids = isnothing(point_ids) ? collect(1:Nz) : collect(point_ids)
     length(ids) == Nz || error("get_nh_dos_points_gpu: point_ids length must match z_points length.")
+    nh_scale = nh_kpm_scale(H, z_list;
+        scale=scale,
+        padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=block_placement,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
+        printinfo=(verbose || printinfo))
 
     values = Vector{Float64}(undef, Nz)
     (verbose || printinfo) &&
-        println("get_nh_dos_points_gpu: $Nz points, NH order=2*$n, n_random=$n_random")
+        println("get_nh_dos_points_gpu: $Nz points, NH order=2*$n, n_random=$n_random, scale=$nh_scale")
 
     for j in 1:Nz
         z = ComplexF64(z_list[j])
@@ -2163,11 +2218,11 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
             Random.MersenneTwister(seed + seed_stride * point_id)
         end
 
-        NH = hermitize(H; z=z, scale=scale, maxdim=maxdim,
+        NH = hermitize(H; z=z, scale=nh_scale, maxdim=maxdim,
                        cutoff=cutoff, convention=convention,
                        block_placement=block_placement)
         values[j] = _nh_stochastic_online_gpu(NH, n;
-            scale=scale,
+            scale=nh_scale,
             n_random=n_random,
             maxdim=maxdim,
             cutoff=cutoff,
@@ -2180,7 +2235,8 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
 end
 
 """
-    get_nh_dos_points_diag_trace_gpu(H, z_points, n; scale, point_ids, ...)
+    get_nh_dos_points_diag_trace_gpu(H, z_points, n; scale=nothing,
+                                     nh_scale_padding=1.05, point_ids, ...)
         -> Vector{Float64}
 
 Deterministic GPU NH KPM at an explicit list of complex energies. For each
@@ -2192,12 +2248,16 @@ The integer `n` follows the NH convention used elsewhere in this file: the
 partial recurrence runs to order `2n`.
 """
 function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
-                                          scale::Real,
+                                          scale::Union{Nothing,Real} = nothing,
+                                          nh_scale_padding::Real = 1.05,
                                           convention::Symbol       = :z_minus_H,
                                           block_placement::Symbol  = :post,
                                           point_ids                = nothing,
                                           maxdim::Int              = 100,
                                           cutoff::Real             = 1e-8,
+                                          dmrg_nsweeps::Int        = 5,
+                                          dmrg_maxdim              = [10, 20, 40],
+                                          dmrg_linkdim::Int        = 4,
                                           dtype::Type{<:Complex}   = ComplexF64,
                                           source_row::Int          = 2,
                                           source_col::Int          = 1,
@@ -2213,10 +2273,21 @@ function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
     ids = isnothing(point_ids) ? collect(1:Nz) : collect(point_ids)
     length(ids) == Nz ||
         error("get_nh_dos_points_diag_trace_gpu: point_ids length must match z_points length.")
+    nh_scale = nh_kpm_scale(H, z_list;
+        scale=scale,
+        padding=nh_scale_padding,
+        maxdim=maxdim,
+        cutoff=cutoff,
+        convention=convention,
+        block_placement=block_placement,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
+        printinfo=(verbose || printinfo))
 
     values = Vector{Float64}(undef, Nz)
     (verbose || printinfo) &&
-        println("get_nh_dos_points_diag_trace_gpu: $Nz points, NH order=2*$n, dtype=$dtype")
+        println("get_nh_dos_points_diag_trace_gpu: $Nz points, NH order=2*$n, dtype=$dtype, scale=$nh_scale")
 
     for j in 1:Nz
         z = ComplexF64(z_list[j])
@@ -2224,11 +2295,11 @@ function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
         (verbose || printinfo) &&
             println("  [gpu] NH diag-trace point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
 
-        NH = hermitize(H; z=z, scale=scale, maxdim=maxdim,
+        NH = hermitize(H; z=z, scale=nh_scale, maxdim=maxdim,
                        cutoff=cutoff, convention=convention,
                        block_placement=block_placement)
         values[j] = _nh_diag_trace_scalar_online_gpu(NH, n;
-            scale=scale,
+            scale=nh_scale,
             maxdim=maxdim,
             cutoff=cutoff,
             source_row=source_row,
@@ -2243,17 +2314,22 @@ function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
 end
 
 """
-    get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; scale, ...)
+    get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; scale=nothing,
+                                   nh_scale_padding=1.05, ...)
         -> (xgrid, ygrid, Z)
 
 Grid companion to `get_nh_dos_points_diag_trace_gpu`.
 """
 function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
-                                        scale::Real,
+                                        scale::Union{Nothing,Real} = nothing,
+                                        nh_scale_padding::Real = 1.05,
                                         convention::Symbol      = :z_minus_H,
                                         block_placement::Symbol = :post,
                                         maxdim::Int             = 100,
                                         cutoff::Real            = 1e-8,
+                                        dmrg_nsweeps::Int       = 5,
+                                        dmrg_maxdim             = [10, 20, 40],
+                                        dmrg_linkdim::Int       = 4,
                                         dtype::Type{<:Complex}  = ComplexF64,
                                         verbose::Bool           = false,
                                         printinfo::Bool         = false)
@@ -2276,6 +2352,10 @@ function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims,
         point_ids=point_ids,
         maxdim=maxdim,
         cutoff=cutoff,
+        nh_scale_padding=nh_scale_padding,
+        dmrg_nsweeps=dmrg_nsweeps,
+        dmrg_maxdim=dmrg_maxdim,
+        dmrg_linkdim=dmrg_linkdim,
         dtype=dtype,
         verbose=verbose,
         printinfo=printinfo)
@@ -2291,38 +2371,59 @@ function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims,
 end
 
 
+# Enumerate all block members for exciton block-reduce (positional averaging).
+# For :block, spatial_sampling_plan gives singleton groups; this expands each to the
+# full set of probe positions inside the coarse block, enumerated from plan.stride_x/y.
+function _exciton_block_groups(plan, Lx::Union{Nothing,Int}, L::Int)
+    nblocks = length(plan.centers)
+    Wx = plan.stride_x
+    if Lx === nothing
+        return [[ixp * Wx + d + 1 for d in 0:Wx-1] for ixp in 0:nblocks-1]
+    end
+    a  = plan.a
+    Wy = plan.stride_y
+    Nx = 2^Lx
+    return [let ixp = (iblock-1) % 2^a, iyp = (iblock-1) ÷ 2^a
+                [ixp*Wx + dx + (iyp*Wy + dy)*Nx + 1 for dy in 0:Wy-1 for dx in 0:Wx-1]
+            end
+            for iblock in 1:nblocks]
+end
+
 """
-    get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals; X_list, X_groups,
-                                 num_x, num_avg, x_start, x_end, kernel,
-                                 lambda, eta, m_order, maxdim, cutoff, verbose, printinfo)
-        -> Matrix{Float64}   (Nω × n_X)
+    get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals;
+                                 Lx, num_y, reduce,
+                                 X_list, X_groups, num_x, num_avg, x_start, x_end,
+                                 kernel, lambda, eta, m_order, maxdim, cutoff,
+                                 verbose, printinfo)
+        -> Matrix{Float64}   (Nω × n_cols)
 
-GPU-accelerated spatial exciton LDOS: for each bound exciton position `X` (electron
-= hole = X, 1-indexed in `1:H.N`) the local spectral weight
-`A(X, ω) = ⟨X,X|δ(ω−H)|X,X⟩` is reconstructed from the Chebyshev moments
-`μ_n = ⟨X,X|T_n(H̃)|X,X⟩`.  One GPU MPS Chebyshev recursion is run per X starting
-from `|X,X⟩ = mpsexciton(X, H.sites)`; moments are scalars pulled to CPU.
+GPU-accelerated spatial exciton LDOS A(X,ω) = ⟨X,X|δ(ω−H)|X,X⟩ via MPS Chebyshev KPM.
+One GPU Chebyshev recursion runs per probe position X (electron = hole = X, 1-indexed
+in 1:H.N) from |X,X⟩ = mpsexciton(X, H.sites); moments are scalars pulled to CPU.
 
-This is the spatial / batched GPU analog of the CPU `get_exciton_ldos` (same
-reconstruction via the KPM weight matrix), columns ordered as `X_list` or as
-the coarse centers of the generated spatial groups.
+**1D sampling** (default, `Lx=nothing`): `num_x` coarse positions over `[x_start, x_end]`
+with `num_avg` sub-positions per coarse cell (`:point` reduce), or full block enumeration
+(`:block` reduce, requires `num_x` a power of two; averages all block members).
 
-`X_list` selects the positions directly. `X_groups` selects explicit position
-groups and averages all probes inside each group into one output column. If
-neither is provided, `num_x` coarse groups are built over `x_start:x_end`; each
-group contains `num_avg` subpositions with the same stride convention as
-`get_ldos_spatial`. All positions are 1-indexed in `1:H.N`.
+**2D grid** (`Lx` provided): positions are 1-indexed on the (Lx+Ly)-qubit quantics grid,
+encoded as X = ix + iy·2^Lx + 1 (row-major, 0-indexed). `num_x × num_y` coarse cells
+are built via `spatial_sampling_plan`; `:point` sub-samples with `num_avg`, `:block`
+enumerates every member of each coarse block (requires both `num_x`, `num_y` powers of
+two). Output columns are row-major over coarse cells (iy outer, ix inner).
 
-`kernel=:hodc` selects the Higher-Order Delta Chebyshev reconstruction (`eta`,
-`m_order`); its weights carry the full normalisation (no `√(1−ω²)` denominator).
-`eta=0` falls back to `1/(Ncheb+1)`.  Otherwise `kernel` is a convolution kernel
-(`:jackson` default, `:lorentz` with `lambda`, `:fejer`, `:dirichlet`).
+`X_list` / `X_groups` / `x_groups` bypass the automatic plan and pass positions directly.
+
+`kernel=:hodc` selects HODC reconstruction (`eta`, `m_order`; `eta=0` → `1/(Ncheb+1)`).
+Other kernels: `:jackson` (default), `:lorentz` (`lambda`), `:fejer`, `:dirichlet`.
 """
 function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
+                                       Lx::Union{Nothing,Int}    = nothing,
+                                       num_y::Union{Nothing,Int} = nothing,
+                                       reduce::Symbol            = :point,
                                        X_list           = nothing,
                                        X_groups         = nothing,
                                        x_groups         = nothing,
-                                       num_x::Int       = H.N,
+                                       num_x::Int       = 0,
                                        num_avg::Int     = 1,
                                        x_start::Int     = 1,
                                        x_end::Int       = H.N,
@@ -2337,6 +2438,8 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
 
     _check_gpu("get_exciton_ldos_spatial_gpu")
     cutoff < 1e-6 && @warn "get_exciton_ldos_spatial_gpu: cutoff=$cutoff is below 1e-6; ComplexF32 eigendecomposition may produce NaN on large systems — consider cutoff ≥ 1e-4."
+    reduce in (:point, :block) ||
+        error("get_exciton_ldos_spatial_gpu: reduce must be :point or :block, got $reduce.")
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_ldos_spatial_gpu: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -2354,19 +2457,18 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     elseif X_list !== nothing
         [[Int(x)] for x in X_list]
     else
-        num_x > 0 || error("get_exciton_ldos_spatial_gpu: num_x must be positive.")
-        num_avg > 0 || error("get_exciton_ldos_spatial_gpu: num_avg must be positive.")
-        1 <= x_start <= x_end <= H.N ||
-            error("get_exciton_ldos_spatial_gpu: expected 1 <= x_start <= x_end <= H.N.")
-        window = x_end - x_start + 1
-        num_x <= window ||
-            error("get_exciton_ldos_spatial_gpu: num_x=$num_x exceeds sampling window length $window.")
-        dx     = div(window, num_x)
-        dx_sub = max(1, div(dx, num_avg))
-        [[x_start + (i - 1) * dx + k * dx_sub
-          for k in 0:num_avg-1
-          if x_start + (i - 1) * dx + k * dx_sub <= x_end]
-         for i in 1:num_x]
+        _grid = Lx !== nothing
+        _nx   = num_x <= 0 ? (_grid ? 8 : H.N) : num_x
+        plan  = spatial_sampling_plan(H.L;
+                    Lx      = Lx,
+                    grid    = _grid,
+                    reduce  = reduce,
+                    num_x   = _nx,
+                    num_y   = num_y,
+                    num_avg = reduce === :point ? num_avg : 1,
+                    x_start = x_start,
+                    x_end   = x_end)
+        reduce === :block ? _exciton_block_groups(plan, Lx, H.L) : plan.groups
     end
     isempty(groups) && error("get_exciton_ldos_spatial_gpu: no spatial groups were selected.")
     for grp in groups
@@ -2434,6 +2536,129 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     end
 
     return result
+end
+
+
+"""
+    get_exciton_cheb_convergence_gpu(H, X, Ncheb_max;
+                                      maxdim_test, maxdim_ref, cutoff, printinfo)
+        -> NamedTuple
+
+Run two parallel GPU Chebyshev KPM recursions starting from |X,X⟩ = mpsexciton(X, H.sites):
+a *reference* recursion at `maxdim_ref` and a *test* recursion at `maxdim_test`.
+At each step n the two Chebyshev vectors φ_ref^n and φ_test^n are compared to yield:
+
+  err_fidelity_n = 1 − |⟨φ_ref^n | φ_test^n⟩|² / (‖φ_ref^n‖² ‖φ_test^n‖²)
+
+which grows from 0 (perfect agreement) towards 1 as truncation errors accumulate.
+
+Returns a NamedTuple with Float64 / Int vectors of length Ncheb_max:
+  n            — Chebyshev index (1-based)
+  mu_ref       — KPM moment ⟨X,X|T_n(H̃)|X,X⟩ from reference recursion
+  mu_test      — KPM moment from test recursion
+  delta_mu     — |mu_ref − mu_test| (moment discrepancy)
+  err_fidelity — infidelity 1 − fidelity as above
+  mdim_ref     — maxlinkdim of φ_ref^n
+  mdim_test    — maxlinkdim of φ_test^n
+  norm_ref     — ‖φ_ref^n‖ (should stay ≤ 1; growth indicates instability)
+  norm_test    — ‖φ_test^n‖
+
+The Hamiltonian is rescaled internally: H̃ = (H − center·I) / scale, same as in
+get_exciton_ldos_spatial_gpu. All MPS live on GPU in ComplexF32 throughout.
+
+Use this to find the critical Ncheb beyond which `maxdim_test` is too small for a
+given system size — the threshold is where err_fidelity departs significantly from 0
+(e.g. > 0.01 for a tight criterion, > 0.1 for a loose one).
+"""
+function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::Int;
+                                           maxdim_test::Int  = 100,
+                                           maxdim_ref::Int   = 500,
+                                           cutoff::Real      = 1e-4,
+                                           printinfo::Bool   = false)
+    _check_gpu("get_exciton_cheb_convergence_gpu")
+    cutoff < 1e-6 && @warn "get_exciton_cheb_convergence_gpu: cutoff=$cutoff is below 1e-6; ComplexF32 may produce NaN — consider cutoff ≥ 1e-4."
+    length(H.sites) == 2 * H.L ||
+        error("get_exciton_cheb_convergence_gpu: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    1 <= X <= H.N ||
+        error("get_exciton_cheb_convergence_gpu: X=$X out of range 1:$(H.N).")
+    maxdim_ref >= maxdim_test ||
+        @warn "get_exciton_cheb_convergence_gpu: maxdim_ref=$maxdim_ref < maxdim_test=$maxdim_test; reference is no more accurate than test."
+
+    _ensure_scale!(H)
+
+    I_mpo_cpu  = MPO(H.sites, "Id")
+    Ham_n_cpu  = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=Float64(cutoff))
+    Ham_n_gpu  = _to_gpu_mpo(Ham_n_cpu)
+
+    psi0_gpu   = _to_gpu_mps(mpsexciton(X, H.sites))
+
+    ak_ref  = (cutoff=Float64(cutoff), maxdim=maxdim_ref)
+    ak_test = (cutoff=Float64(cutoff), maxdim=maxdim_test)
+
+    # Chebyshev recursion: T_0 = psi0, T_1 = H̃·psi0,  T_n = 2H̃·T_{n-1} − T_{n-2}
+    phi_ref_km2  = nothing;  phi_ref_km1  = psi0_gpu
+    phi_test_km2 = nothing;  phi_test_km1 = psi0_gpu
+
+    n_vec        = Int[]
+    mu_ref_vec   = Float64[]
+    mu_test_vec  = Float64[]
+    delta_mu_vec = Float64[]
+    err_vec      = Float64[]
+    mdim_ref_vec = Int[]
+    mdim_test_vec = Int[]
+    norm_ref_vec = Float64[]
+    norm_test_vec = Float64[]
+
+    for n in 1:Ncheb_max
+        if n == 1
+            phi_ref_new  = apply(Ham_n_gpu, phi_ref_km1;  ak_ref...)
+            phi_test_new = apply(Ham_n_gpu, phi_test_km1; ak_test...)
+        else
+            phi_ref_new  = +(2 * apply(Ham_n_gpu, phi_ref_km1;  ak_ref...),
+                             -phi_ref_km2;  ak_ref...)
+            phi_test_new = +(2 * apply(Ham_n_gpu, phi_test_km1; ak_test...),
+                             -phi_test_km2; ak_test...)
+        end
+
+        mu_ref   = Float64(real(inner(psi0_gpu, phi_ref_new)))
+        mu_test  = Float64(real(inner(psi0_gpu, phi_test_new)))
+        n2_ref   = Float64(real(inner(phi_ref_new,  phi_ref_new)))
+        n2_test  = Float64(real(inner(phi_test_new, phi_test_new)))
+        ovlp     = inner(phi_ref_new, phi_test_new)
+        fid      = Float64(abs2(ovlp)) / (n2_ref * n2_test)
+        err      = max(0.0, 1.0 - fid)
+
+        push!(n_vec,         n)
+        push!(mu_ref_vec,    mu_ref)
+        push!(mu_test_vec,   mu_test)
+        push!(delta_mu_vec,  abs(mu_ref - mu_test))
+        push!(err_vec,       err)
+        push!(mdim_ref_vec,  maxlinkdim(phi_ref_new))
+        push!(mdim_test_vec, maxlinkdim(phi_test_new))
+        push!(norm_ref_vec,  sqrt(max(0.0, n2_ref)))
+        push!(norm_test_vec, sqrt(max(0.0, n2_test)))
+
+        printinfo && (n % 10 == 0 || n == Ncheb_max) &&
+            println("  [cheb_conv] n=$(lpad(n,3))  err=$(round(err; sigdigits=3))  mdim_ref=$(mdim_ref_vec[end])  mdim_test=$(mdim_test_vec[end])")
+
+        phi_ref_km2  = phi_ref_km1;   phi_ref_km1  = phi_ref_new
+        phi_test_km2 = phi_test_km1;  phi_test_km1 = phi_test_new
+        _gpu_gc!()
+    end
+
+    return (; n=n_vec, mu_ref=mu_ref_vec, mu_test=mu_test_vec, delta_mu=delta_mu_vec,
+              err_fidelity=err_vec, mdim_ref=mdim_ref_vec, mdim_test=mdim_test_vec,
+              norm_ref=norm_ref_vec, norm_test=norm_test_vec)
+end
+
+# Multi-probe overload: run convergence for each X in X_probes and return a
+# Vector of per-probe NamedTuples (same structure as the single-X version).
+# The Hamiltonian rescaling and GPU MPO conversion happen once per call.
+function get_exciton_cheb_convergence_gpu(H::TBHamiltonian,
+                                           X_probes::AbstractVector{<:Integer},
+                                           Ncheb_max::Int; kwargs...)
+    return [get_exciton_cheb_convergence_gpu(H, Int(X), Ncheb_max; kwargs...)
+            for X in X_probes]
 end
 
 
@@ -2910,24 +3135,31 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
 end
 
 # Thin 2D-grid wrapper around the shared geometry-aware planner (Utils.jl).
-# Used by get_scf_magnetization_gpu; returns (centers, groups) of unit-cell
-# indices laid out on a num_x × num_y grid (or x_groups override).
-function _tb_spatial_groups_gpu(sites;
-                                num_x::Int = 0,
-                                num_y::Union{Nothing,Int} = nothing,
-                                num_avg::Int = 1,
-                                x_start::Int = 1,
-                                x_end::Int = prod(dim(s) for s in sites),
-                                x_groups = nothing,
-                                box_half::Int = 0,
-                                Lx::Union{Nothing,Int} = nothing)
+# Used by get_scf_magnetization_gpu. In :point mode, `groups` lists the
+# sampled cells explicitly. In :block mode, the groups are nominal centers and
+# the caller should use plan.a/plan.b with _eval_block_mps_gpu.
+function _tb_spatial_plan_gpu(sites;
+                              num_x::Int = 0,
+                              num_y::Union{Nothing,Int} = nothing,
+                              num_avg::Int = 1,
+                              x_start::Int = 1,
+                              x_end::Int = prod(dim(s) for s in sites),
+                              x_groups = nothing,
+                              box_half::Int = 0,
+                              reduce::Symbol = :point,
+                              Lx::Union{Nothing,Int} = nothing)
     L = length(sites)
-    plan = spatial_sampling_plan(L;
+    return spatial_sampling_plan(L;
         Lx       = something(Lx, div(L, 2)),
         grid     = x_groups === nothing,
+        reduce   = reduce,
         num_x    = num_x, num_y = num_y, num_avg = num_avg,
         x_start  = x_start, x_end = x_end,
         x_groups = x_groups, box_half = box_half)
+end
+
+function _tb_spatial_groups_gpu(sites; kwargs...)
+    plan = _tb_spatial_plan_gpu(sites; kwargs...)
     return plan.centers, plan.groups
 end
 
@@ -2939,6 +3171,10 @@ final scalar values. If `res` carries GPU density MPOs from
 `scf_magnetic_hubbard_gpu`, they are reused directly; otherwise the CPU density
 MPOs are uploaded once. Each sampled point is evaluated in the same big-endian
 real-space convention as `binary_to_MPS`.
+
+Set `reduce=:block` to average over every unit cell in each coarse block by
+tracing the within-block position bits on GPU. In block mode, `num_x` and
+`num_y` must be powers of two.
 """
 function get_scf_magnetization_gpu(res;
                                    num_x::Int = 0,
@@ -2948,7 +3184,15 @@ function get_scf_magnetization_gpu(res;
                                    x_end::Int = prod(dim(s) for s in res.H_up.sites),
                                    x_groups = nothing,
                                    box_half::Int = 0,
+                                   reduce::Symbol = :point,
                                    Lx::Union{Nothing,Int} = nothing)
+    reduce in (:point, :block) ||
+        error("get_scf_magnetization_gpu: reduce must be :point or :block, got $reduce.")
+    reduce === :block && x_groups !== nothing &&
+        error("get_scf_magnetization_gpu: x_groups is not supported with reduce=:block.")
+    reduce === :block && box_half > 0 &&
+        @warn "get_scf_magnetization_gpu: box_half=$box_half is ignored with reduce=:block; each block is fully averaged."
+
     up_mpo = hasproperty(res, :density_up_mpo_gpu) && res.density_up_mpo_gpu !== nothing ?
         res.density_up_mpo_gpu : res.density_up_mpo
     dn_mpo = hasproperty(res, :density_dn_mpo_gpu) && res.density_dn_mpo_gpu !== nothing ?
@@ -2960,24 +3204,44 @@ function get_scf_magnetization_gpu(res;
         error("get_scf_magnetization_gpu: res.density_dn_mpo is missing.")
 
     sites = res.H_up.sites
-    centers, groups = _tb_spatial_groups_gpu(sites;
+    plan = _tb_spatial_plan_gpu(sites;
         num_x=num_x, num_y=num_y, num_avg=num_avg, x_start=x_start, x_end=x_end,
-        x_groups=x_groups, box_half=box_half, Lx=Lx)
+        x_groups=x_groups, box_half=box_half, reduce=reduce, Lx=Lx)
+    centers, groups = plan.centers, plan.groups
 
     up_diag_gpu = density_profile_from_dm_gpu(up_mpo, sites)
     dn_diag_gpu = density_profile_from_dm_gpu(dn_mpo, sites)
 
-    n_up = Float64[
-        sum(_eval_mps_bigendian_gpu(up_diag_gpu, x - 1) for x in grp) / length(grp)
-        for grp in groups
-    ]
-    n_dn = Float64[
-        sum(_eval_mps_bigendian_gpu(dn_diag_gpu, x - 1) for x in grp) / length(grp)
-        for grp in groups
-    ]
+    n_up, n_dn = if reduce === :block
+        Lx_eff = something(Lx, div(length(sites), 2))
+        Ly_eff = length(sites) - Lx_eff
+        nbx = 2^plan.a
+        nby = 2^plan.b
+        norm = Float64(plan.stride_x * plan.stride_y)
+        up_vals = Float64[
+            _eval_block_mps_gpu(up_diag_gpu, ixp, iyp, plan.a, plan.b, Lx_eff, Ly_eff) / norm
+            for iyp in 0:(nby - 1) for ixp in 0:(nbx - 1)
+        ]
+        dn_vals = Float64[
+            _eval_block_mps_gpu(dn_diag_gpu, ixp, iyp, plan.a, plan.b, Lx_eff, Ly_eff) / norm
+            for iyp in 0:(nby - 1) for ixp in 0:(nbx - 1)
+        ]
+        up_vals, dn_vals
+    else
+        up_vals = Float64[
+            sum(_eval_mps_bigendian_gpu(up_diag_gpu, x - 1) for x in grp) / length(grp)
+            for grp in groups
+        ]
+        dn_vals = Float64[
+            sum(_eval_mps_bigendian_gpu(dn_diag_gpu, x - 1) for x in grp) / length(grp)
+            for grp in groups
+        ]
+        up_vals, dn_vals
+    end
     values = (n_up .- n_dn) ./ 2
     _gpu_gc!()
-    return (values=values, centers=centers, groups=groups, n_up=n_up, n_dn=n_dn)
+    return (values=values, centers=centers, groups=groups, n_up=n_up, n_dn=n_dn,
+            reduce=reduce, stride_x=plan.stride_x, stride_y=plan.stride_y)
 end
 
 """
