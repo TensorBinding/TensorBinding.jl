@@ -28,6 +28,10 @@ add_hopping!(sys, -1.0)             # nearest-neighbour hopping t = -1
 dos = KPM_DOS(sys; N=200, η=0.02)
 ```
 
+```@docs
+TensorBinding
+```
+
 ## Package organisation
 
 | Section | Contents |
