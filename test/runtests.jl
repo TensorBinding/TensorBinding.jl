@@ -1,6 +1,6 @@
-using MyPackageName
+using TensorBinding
 using Test
 
-@testset "MyPackageName.jl" begin
+@testset "TensorBinding.jl" begin
     # Write your tests here.
 end
