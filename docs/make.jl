@@ -8,7 +8,7 @@ makedocs(;
     authors="TensorBinding",
     sitename="TensorBinding.jl",
     format=Documenter.HTML(;
-        canonical="https://TensorBinding.github.io/TensorBinding/",
+        canonical="https://TensorBinding.github.io/TensorBinding.jl/",
         edit_link="main",
         assets=String[],
         size_threshold=nothing,
@@ -27,6 +27,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/TensorBinding/TensorBinding.git",
+    repo="github.com/TensorBinding/TensorBinding.jl.git",
     devbranch="main",
 )
