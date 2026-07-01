@@ -26,6 +26,6 @@ TensorBinding
 |---------|----------|
 | [Core](api/core.md) | `TBSystem`, Hamiltonian builders, low-level utilities |
 | [Lattice](api/lattice.md) | 2D shift operators, multilayer, twisted, flake, junction geometries |
-| [Solvers](api/solvers.md) | KPM, Krylov Green's function, DMRG, time evolution |
-| [Physics](api/physics.md) | SCF, RPA, topology, purification, two-particle, non-Hermitian, QPI, QFT, superconductivity |
+| [Solvers](api/solvers.md) | KPM, time evolution, DMRG, Krylov Green's function|
+| [Physics](api/physics.md) | SCF, QFT, superconductivity, purification, non-Hermitian, topology, two-particle, RPA, QPI  |
 | [GPU](api/gpu.md) | CUDA-accelerated mirrors of the CPU entry points |
