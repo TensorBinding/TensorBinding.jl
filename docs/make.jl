@@ -13,7 +13,6 @@ makedocs(;
         assets=String[],
         size_threshold=nothing,
         size_threshold_warn=nothing,
-        logo="assets/logo.svg",
     ),
     pages=[
         "Home" => "index.md",
