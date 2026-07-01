@@ -5,8 +5,8 @@
 
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://TensorBinding.github.io/TensorBinding/stable/)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://TensorBinding.github.io/TensorBinding/dev/)
-[![Build Status](https://github.com/TensorBinding/TensorBinding/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/TensorBinding/TensorBinding/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/TensorBinding/TensorBinding/branch/main/graph/badge.svg)](https://codecov.io/gh/TensorBinding/TensorBinding)
+[![Build Status](https://github.com/TensorBinding/TensorBinding.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/TensorBinding/TensorBinding.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Coverage](https://codecov.io/gh/TensorBinding/TensorBinding.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/TensorBinding/TensorBinding.jl)
 
 **TensorBinding.jl** is a Julia package for constructing and studying tight-binding Hamiltonians as **Matrix Product Operators (MPOs)** in the *quantics binary* (QTT) representation. A system of *N = 2<sup>L</sup>* sites is encoded in *L* qubit sites, keeping bond dimensions small (typically ≤ 10) for physically relevant models. Arbitrary hopping matrices are compressed automatically via **Quantics Tensor Cross Interpolation (QTCI)**.
 
