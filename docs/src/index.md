@@ -15,17 +15,9 @@ using Pkg
 Pkg.add(url="https://github.com/TensorBinding/TensorBinding")
 ```
 
-## Quick start
 
-```julia
-using TensorBinding
-
-# Build a 1D tight-binding chain with 2^10 sites
-sys = TBSystem(10)                   # 2^10 = 1024 sites, MPS representation
-add_hopping!(sys, -1.0)             # nearest-neighbour hopping t = -1
-
-# Compute the density of states via KPM (N = 200 Chebyshev moments)
-dos = KPM_DOS(sys; N=200, η=0.02)
+```@docs
+TensorBinding
 ```
 
 ```@docs

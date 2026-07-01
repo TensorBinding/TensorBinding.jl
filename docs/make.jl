@@ -11,6 +11,8 @@ makedocs(;
         canonical="https://TensorBinding.github.io/TensorBinding/",
         edit_link="main",
         assets=String[],
+        size_threshold=nothing,
+        size_threshold_warn=nothing,
     ),
     pages=[
         "Home" => "index.md",
