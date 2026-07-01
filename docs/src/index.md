@@ -20,10 +20,6 @@ Pkg.add(url="https://github.com/TensorBinding/TensorBinding")
 TensorBinding
 ```
 
-```@docs
-TensorBinding
-```
-
 ## Package organisation
 
 | Section | Contents |
