@@ -1,3 +1,5 @@
+![TensorBinding.jl](logo_TensorBinding.svg)
+
 **TensorBinding.jl**  
 *Compressing Condensed Matter Problems with Tensor Networks*
 
