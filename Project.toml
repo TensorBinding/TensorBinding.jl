@@ -1,6 +1,6 @@
 name = "TensorBinding"
 uuid = "3b6805fc-d418-45a2-b1ea-024139a4a543"
-version = "1.0.0-DEV"
+version = "0.1.0"
 authors = ["Tiago Antao, Anouar Moustaj, Yitao Sun"]
 
 [deps]
