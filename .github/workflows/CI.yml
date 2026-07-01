@@ -2,7 +2,7 @@ name: CI
 on:
   push:
     branches:
-      - master
+      - main
     tags: ['*']
   pull_request:
   workflow_dispatch:
@@ -73,6 +73,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using MyPackageName
-          DocMeta.setdocmeta!(MyPackageName, :DocTestSetup, :(using MyPackageName); recursive=true)
-          doctest(MyPackageName)
+          using TensorBinding
+          DocMeta.setdocmeta!(TensorBinding, :DocTestSetup, :(using TensorBinding); recursive=true)
+          doctest(TensorBinding)

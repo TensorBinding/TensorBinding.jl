@@ -1,14 +1,14 @@
 ```@meta
-CurrentModule = MyPackageName
+CurrentModule = TensorBinding
 ```
 
-# MyPackageName
+# TensorBinding.jl
 
-Documentation for [MyPackageName](https://github.com/YITAOSUN42/MyPackageName.jl).
+Documentation for [TensorBinding.jl](https://github.com/TensorBinding/TensorBinding).
 
 ```@index
 ```
 
 ```@autodocs
-Modules = [MyPackageName]
+Modules = [TensorBinding]
 ```

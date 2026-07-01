@@ -1,23 +1,28 @@
-using MyPackageName
+using TensorBinding
 using Documenter
 
-DocMeta.setdocmeta!(MyPackageName, :DocTestSetup, :(using MyPackageName); recursive=true)
+DocMeta.setdocmeta!(TensorBinding, :DocTestSetup, :(using TensorBinding); recursive=true)
 
 makedocs(;
-    modules=[MyPackageName],
-    authors="YTS2223 <yitao.sun@aalto.fi> and contributors",
-    sitename="MyPackageName.jl",
+    modules=[TensorBinding],
+    authors="TensorBinding",
+    sitename="TensorBinding.jl",
     format=Documenter.HTML(;
-        canonical="https://YITAOSUN42.github.io/MyPackageName.jl",
-        edit_link="master",
+        canonical="https://TensorBinding.github.io/TensorBinding/",
+        edit_link="main",
         assets=String[],
+        size_threshold=nothing,        # index.md holds @autodocs for the whole
+        size_threshold_warn=nothing,   # package on one page; disable the
+                                        # single-page size guard rail.
     ),
     pages=[
         "Home" => "index.md",
     ],
+    build=joinpath(tempdir(), "TensorBinding_docs_build"),  # outside OneDrive sync,
+                                                             # avoids rm() lock errors
 )
 
 deploydocs(;
-    repo="github.com/YITAOSUN42/MyPackageName.jl",
-    devbranch="master",
+    repo="github.com/TensorBinding/TensorBinding.git",
+    devbranch="main",
 )

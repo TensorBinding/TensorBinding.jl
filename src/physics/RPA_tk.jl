@@ -1363,7 +1363,7 @@ The bubble on L-site MPOs is assembled as
 where D_{mn} = (T_m(H̃₁)·P₁) ⊙ T_n(H̃₂) − T_m(H̃₁) ⊙ (T_n(H̃₂)·P₂)
 and ⊙ is the site-wise Hadamard product (`hadamard_mpo`).
 
-**Online multi-ω sweep**: All coefficient matrices C[m,n](ω) are precomputed
+**Online multi-ω sweep**: All coefficient matrices `C[m,n](ω)` are precomputed
 at once (cheap DCT scalars). The (m,n) double loop runs once; each D_{mn} is
 computed once and accumulated into every Π(ω) simultaneously using the scalar
 c_{mn}(ω). This matches the KPM "online" paradigm: the expensive MPO work
@@ -1378,7 +1378,7 @@ c_{mn}(ω). This matches the KPM "online" paradigm: the expensive MPO work
 - `purify_method` : `:mcweeny` (default) or `:sp2`.
 - `purify_maxdim`, `purify_maxiters`, `purify_tol` : purification controls.
 - `η`             : Lorentzian broadening. Default `1e-3`.
-- `coeff_tol`     : Skip (m,n) pairs where |C[m,n]| < coeff_tol, and entire m rows
+- `coeff_tol`     : Skip (m,n) pairs where `|C[m,n]| < coeff_tol`, and entire m rows
                     where the row maximum is below coeff_tol. For smooth integrands
                     (large η) this prunes most of the N² terms at negligible accuracy cost.
                     Default `1e-12`.
@@ -1516,7 +1516,7 @@ Dyson geometric series.
 The Tucker-2 decomposition of the stacked coefficient tensor finds global bases
 U_m (N×r_m) and V_n (N×r_n) satisfying
 
-    C[m,n](ω) ≈ Σ_{s₁,s₂} G[s₁,s₂,ω] · (U_m)_{ms₁} · conj((V_n)_{ns₂})
+    `C[m,n](ω) ≈ Σ_{s₁,s₂} G[s₁,s₂,ω] · (U_m)_{ms₁} · conj((V_n)_{ns₂})`
 
 with C ≈ U_m G(ω) V_n†.  The r_m + r_n frequency-independent weighted MPO sums
 and the r_m × r_n Hadamard products are computed once; per-ω cost is only
@@ -1853,17 +1853,17 @@ end
 
 Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`.
 
-For each frequency ω the coefficient matrix C[m,n](ω) is rank-truncated via its own SVD:
+For each frequency ω the coefficient matrix `C[m,n](ω)` is rank-truncated via its own SVD:
 
-    C[m,n](ω) = Σ_s  S_s(ω) · U[m,s](ω) · conj(V[n,s](ω))   (exact up to truncation)
+    `C[m,n](ω) = Σ_s  S_s(ω) · U[m,s](ω) · conj(V[n,s](ω))`   (exact up to truncation)
 
 The per-ω rank r(ω) (typically 2–5 for smooth Lorentzian kernels) is usually much
 smaller than the Tucker/joint-SVD rank, which must span all frequencies simultaneously.
 For each (ω, s) one Hadamard product and one QFT are performed, giving
 
-    diag_Π[ω] = Σ_s S_s(ω) · diag(QFT( A_s ⊙ B_s − C_s ⊙ E_s ))
+    `diag_Π[ω] = Σ_s S_s(ω) · diag(QFT( A_s ⊙ B_s − C_s ⊙ E_s ))`
 
-where A_s = Σ_m U[m,s]·TP1[m], B_s = Σ_n conj(V[n,s])·Tn2[n], etc.
+where `A_s = Σ_m U[m,s]·TP1[m]`, `B_s = Σ_n conj(V[n,s])·Tn2[n]`, etc.
 
 Total Hadamard+QFT operations: Σ_ω r(ω) — compared to N² for the plain variant or
 r_m·r_n for Tucker. When r(ω) ≪ r_Tucker the per-ω SVD is both faster and more
