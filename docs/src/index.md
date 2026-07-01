@@ -12,7 +12,7 @@ TensorBinding is not yet registered. Install directly from the GitHub repository
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/TensorBinding/TensorBinding")
+Pkg.add(url="https://github.com/TensorBinding/TensorBinding.jl")
 ```
 
 
