@@ -1,0 +1,2 @@
+noloss,64,32768,0,1048575,hermitian
+loss,64,32768,0,1048575,nh_loss
