@@ -1,6 +1,8 @@
 """
 TensorBinding provides tight-binding physics on MPS/MPO tensor-network representations.
 It combines DMRG, KPM, TDVP, and TCI with GPU acceleration for large 1D/2D lattice models.
+
+Authors: Tiago V.C. Antão, Anouar Moustaj, Yitao Sun
 """
 module TensorBinding
 
