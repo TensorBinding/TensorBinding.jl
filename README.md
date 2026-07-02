@@ -1,4 +1,4 @@
-<img src="logo_TensorBinding.svg" width="50%">
+<img src="TensorBinding_logo.svg" width="50%">
 
 **TensorBinding.jl**  
 *Compressing Condensed Matter Problems with Tensor Networks*
