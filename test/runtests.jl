@@ -1,6 +1,13 @@
 using TensorBinding
 using ITensors
+using ITensorMPS
+using LinearAlgebra
 using Test
+
+# The package keeps a minimal export list; pull in the API functions we test.
+using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
+                     mcweeny_purify, get_ldos, get_bands, get_W,
+                     add_spin!, add_interaction!, get_scf
 
 @testset "TensorBinding.jl" begin
 
@@ -20,7 +27,7 @@ using Test
     end
 
     @testset "Hermiticity" begin
-        for geom in ("chain_1d", "ssh")
+        for geom in ("chain_1d", "square_2d")
             Hg = get_Hamiltonian(geom, 1.0; L=4)
             Hadj = swapprime(dag(Hg.mpo), 0, 1)
             @test norm(Hg.mpo - Hadj) / norm(Hg.mpo) < 1e-10
@@ -71,9 +78,22 @@ using Test
     end
 
     @testset "SCF magnetic Hubbard" begin
-        H_scf = get_Hamiltonian("chain_1d", 1.0; L=3)
+        # Explicit padded scale + McWeeny purification keep the density-matrix
+        # solve numerically stable; maxiters=2 just checks the loop runs.
+        H_scf = get_Hamiltonian("chain_1d", 1.0; L=4, scale=3.5)
         add_spin!(H_scf)
-        res = get_scf(H_scf, 2.0, :magnetic; Ncheb=30, maxdim=30, maxiters=2, verbose=false)
+        add_interaction!(H_scf, 2.0)
+        res = get_scf(H_scf, :magnetic;
+                      density_method=:mcweeny,
+                      scale=4.5,
+                      maxiters=2,
+                      purif_maxiter=20,
+                      purif_tol=1e-4,
+                      tol=1e-3,
+                      mixing=0.25,
+                      maxdim=40,
+                      cutoff=1e-8,
+                      verbose=false)
         @test res.H_up.mpo isa MPO
         @test res.H_dn.mpo isa MPO
     end
