@@ -1633,6 +1633,11 @@ are generated over `x_start:x_end`, with `num_avg` subpositions per group.
 `kernel=:hodc` uses the HODC reconstruction (`eta`, `m_order`); otherwise the
 standard KPM kernels are available (`:jackson`, `:lorentz`, `:fejer`,
 `:dirichlet`).
+
+`return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`,
+where `linkdims::Vector{Int}` is the reached MPS bond dimension per output column
+(the χ the Chebyshev recursion hit under the given `maxdim`/`cutoff`). Mirrors the
+GPU entry point; useful for cutoff/tolerance studies where χ is the observable.
 """
 function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   X_list           = nothing,
@@ -1649,7 +1654,8 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   maxdim::Int      = 100,
                                   cutoff::Real     = 1e-8,
                                   verbose::Bool    = false,
-                                  printinfo::Bool  = false)
+                                  printinfo::Bool  = false,
+                                  return_maxlinkdim::Bool = false)
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_ldos_spatial: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1702,6 +1708,7 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
     nX     = length(groups)
     Xs     = first.(groups)
     result = zeros(Float64, Nomega, nX)
+    linkdims = zeros(Int, nX)   # reached MPS bond dim per output column (see return_maxlinkdim)
 
     for (j, group) in enumerate(groups)
         last_linkdim = 0
@@ -1718,12 +1725,13 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
             valid[iomega] || continue
             result[iomega, j] = accum_group[iomega] / denom[iomega]
         end
+        linkdims[j] = last_linkdim
 
         (verbose || printinfo) && (j % 5 == 0 || j == nX) &&
             println("  exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
-    return result
+    return return_maxlinkdim ? (result, linkdims) : result
 end
 
 function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real;

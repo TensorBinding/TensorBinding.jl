@@ -2497,6 +2497,11 @@ Use `type=ComplexF32` (default, faster) or `type=ComplexF64` (safer at tight cut
 or on large systems where F32 eigendecomposition can produce NaN). `dtype` is accepted
 as an alias for `type` for consistency with other GPU entry points.
 
+`return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`, where
+`linkdims::Vector{Int}` is the reached MPS bond dimension per output column (the χ the
+Chebyshev recursion hit under the given `maxdim`/`cutoff`). Useful for cutoff/tolerance
+studies where χ is the observable.
+
 !!! note "Block averaging not supported"
     `reduce=:block` is **not available** for the exciton LDOS. In the MPO-based LDOS
     functions (`get_ldos_spatial_gpu`), block averaging is a cheap O(1) partial trace
@@ -2526,7 +2531,8 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
                                        type::Type{<:Number}                  = ComplexF32,
                                        dtype::Union{Nothing,Type{<:Number}}  = nothing,
                                        verbose::Bool    = false,
-                                       printinfo::Bool  = false)
+                                       printinfo::Bool  = false,
+                                       return_maxlinkdim::Bool = false)
 
     _check_gpu("get_exciton_ldos_spatial_gpu")
     gpu_type = dtype === nothing ? type : dtype
@@ -2595,6 +2601,8 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
 
     printinfo && println("  [gpu] exciton ldos dtype=$gpu_type")
 
+    linkdims = zeros(Int, nX)   # reached MPS bond dim per output column (see return_maxlinkdim)
+
     for (j, group) in enumerate(groups)
         last_linkdim = 0
 
@@ -2634,11 +2642,12 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
         for iω in 1:Nω
             result[iω, j] /= length(group)
         end
+        linkdims[j] = last_linkdim
         (verbose || printinfo) && (j % 5 == 0 || j == nX) &&
             println("  [gpu] exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
-    return result
+    return return_maxlinkdim ? (result, linkdims) : result
 end
 
 
