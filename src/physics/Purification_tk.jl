@@ -182,6 +182,7 @@ end
 
 function purification_initial_guess(H::TBHamiltonian; ϵF::Real=0.0,
                                     maxdim::Int=40, cutoff::Float64=1e-8)
+    _require_binary_position_space(H, "purification_initial_guess")
     _ensure_scale!(H)
     Id       = MPO(H.sites, "Id")
     coeff_I  = 0.5 + (ϵF + H.center) / (2 * H.scale)
@@ -208,6 +209,7 @@ function mcweeny_purify(H::TBHamiltonian;
                         cutoff::Float64 = 1e-8,
                         tol::Float64    = 1e-5,
                         verbose::Bool   = false)
+    _require_binary_position_space(H, "mcweeny_purify")
     ρ0 = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff)
     ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                             tol=tol, verbose=verbose)
@@ -230,6 +232,7 @@ function sp2_purify(H::TBHamiltonian;
                     cutoff::Float64 = 1e-8,
                     tol::Float64    = 1e-5,
                     verbose::Bool   = false)
+    _require_binary_position_space(H, "sp2_purify")
     ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
     ρ  = sp2_purify(ρ0, Nel; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                               tol=tol, verbose=verbose)
@@ -283,6 +286,8 @@ function get_density(H::TBHamiltonian;
                      maxiters::Int    = 30,
                      tol::Float64     = 1e-5,
                      verbose::Bool    = false)
+
+    method === :kpm || _require_binary_position_space(H, "get_density(method=:$method)")
 
     if H._density_cache !== nothing
         verbose && println("get_density: returning cached density matrix")
@@ -408,6 +413,7 @@ function get_ldos_drho(H::TBHamiltonian, ω::Real;
                        maxiters::Int   = 30,
                        tol::Float64    = 1e-5,
                        verbose::Bool   = false)
+    _require_binary_position_space(H, "get_ldos_drho")
     mode in (:mpo, :mps) ||
         error("get_ldos_drho: mode must be :mpo or :mps, got :$mode")
     _ensure_scale!(H)
@@ -455,6 +461,7 @@ function get_dos_drho(H::TBHamiltonian, ω::Real;
                       maxiters::Int   = 30,
                       tol::Float64    = 1e-5,
                       verbose::Bool   = false)
+    _require_binary_position_space(H, "get_dos_drho")
     _ensure_scale!(H)
 
     ρ0_p = purification_initial_guess(H; ϵF = ω + dmu, maxdim=maxdim, cutoff=cutoff)

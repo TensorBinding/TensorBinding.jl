@@ -79,6 +79,8 @@ function exciton_hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                               tol                  = 1e-8,
                               cutoff               = 1e-8,
                               maxdim               = 200)
+    _require_binary_position_space(H_c, "exciton_hamiltonian")
+    _require_binary_position_space(H_v, "exciton_hamiltonian")
     H_exc_mpo = Exciton_Hamiltonian(H_c, H_v, Ufunc;
                                      on_site             = on_site,
                                      tol_quantics        = tol_quantics,

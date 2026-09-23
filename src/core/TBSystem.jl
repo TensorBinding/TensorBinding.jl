@@ -18,10 +18,11 @@ Fields
 ------
 **Core**
 - `L`        : number of position qubit sites (log₂ of the physical system size)
-- `N`        : number of physical sites / unit cells (2^L)
+- `N`        : number of physical sites / unit cells (`2^L` for the binary basis)
 - `sites`    : ITensor site indices (position qubits + any auxiliary DOF indices)
 - `mpo`      : accumulated Hamiltonian as an ITensor MPO
 - `geometry` : function `i -> position_vector` (1-indexed); `nothing` for implicit 1D
+- `position_space`: policy describing the physical basis inside the tensor register
 
 **KPM spectral bounds**
 - `scale`    : energy half-bandwidth; `H/scale` has spectrum in `[-1, 1]`.
@@ -73,7 +74,18 @@ mutable struct TBHamiltonian
     interaction_mpo :: Union{Nothing, MPO}
     fock_mpo        :: Union{Nothing, MPO}
     Lx             :: Union{Nothing, Int}           # x-qubit count for 2D (Ly = L - Lx); nothing for 1D
+    position_space :: AbstractPositionSpace
 end
+
+# Backward-compatible full constructor (pre-position_space callers).
+TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+              interaction_mpo, fock_mpo, Lx) =
+    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+                  interaction_mpo, fock_mpo, Lx, BinaryPositionSpace())
 
 # Backward-compatible 17-arg constructor (pre-interaction_mpo/pre-fock_mpo/pre-Lx callers);
 # appends nothing, nothing, nothing.
@@ -84,6 +96,78 @@ TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
                   spin_s, nambu_s, layer_s, sublattice_s, aux_side,
                   _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
                   nothing, nothing, nothing)
+
+# ============================================================
+# Position-space interface
+# ============================================================
+
+"""
+    ambient_dimension(H) -> Integer
+
+Dimension of the position tensor register before any physical-subspace projection.
+This is `2^H.L` for the quantics encodings supported by TensorBinding. Projected
+position spaces may return a `BigInt` when the ambient register exceeds `Int`.
+"""
+ambient_dimension(H::TBHamiltonian) = ambient_dimension(H.position_space, H)
+ambient_dimension(::BinaryPositionSpace, H::TBHamiltonian) = 2^H.L
+
+"""
+    physical_projector(H) -> MPO
+
+Identity operator on the physical position space. For ordinary binary systems this
+is the full identity; projected encodings specialize this method and return their
+valid-state projector.
+"""
+physical_projector(H::TBHamiltonian) = physical_projector(H.position_space, H)
+physical_projector(::BinaryPositionSpace, H::TBHamiltonian) = MPO(H.sites, "Id")
+
+"""
+    physical_site_state(H, x) -> MPS
+
+Product-state probe for 1-indexed physical position `x`. Auxiliary and two-particle
+spaces use their dedicated probe constructors.
+"""
+physical_site_state(H::TBHamiltonian, x::Integer) =
+    physical_site_state(H.position_space, H, x)
+
+function physical_site_state(::BinaryPositionSpace, H::TBHamiltonian, x::Integer)
+    1 <= x <= H.N || throw(BoundsError(1:H.N, x))
+    length(H.sites) == H.L ||
+        error("physical_site_state currently requires a position-only TBHamiltonian.")
+    return binary_to_MPS(x - 1, H.L, H.sites)
+end
+
+"""Return the plotting axis for physical positions or an encoding-defined ordering."""
+function site_axis(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
+    return site_axis(H.position_space, H; ordering, kwargs...)
+end
+
+function site_axis(::BinaryPositionSpace, H::TBHamiltonian;
+                   ordering::Symbol=:physical, kwargs...)
+    ordering === :physical ||
+        throw(ArgumentError("ordering=:$ordering is not available for BinaryPositionSpace"))
+    return collect(0:(H.N - 1))
+end
+
+"""Return the 1-based physical-site permutation associated with a plotting ordering."""
+function site_permutation(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
+    return site_permutation(H.position_space, H; ordering, kwargs...)
+end
+
+function site_permutation(::BinaryPositionSpace, H::TBHamiltonian;
+                          ordering::Symbol=:physical, kwargs...)
+    ordering === :physical ||
+        throw(ArgumentError("ordering=:$ordering is not available for BinaryPositionSpace"))
+    return collect(1:H.N)
+end
+
+_is_binary_position_space(H::TBHamiltonian) = H.position_space isa BinaryPositionSpace
+
+function _require_binary_position_space(H::TBHamiltonian, api::AbstractString)
+    _is_binary_position_space(H) && return nothing
+    throw(ArgumentError("$api is not yet supported for $(typeof(H.position_space)); " *
+                        "the first projected-space release supports CPU KPM DOS/LDOS only."))
+end
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -146,9 +230,13 @@ Useful after a series of `add_hopping!` / `add_onsite!` calls that may
 have inflated the bond dimension.
 """
 function truncate!(H::TBHamiltonian; cutoff::Real = 1e-10, maxdim = nothing)
+    old_scale, old_center = H.scale, H.center
     kwargs = maxdim === nothing ? (cutoff=cutoff,) : (cutoff=cutoff, maxdim=maxdim)
     ITensorMPS.truncate!(H.mpo; kwargs...)
     _invalidate_cache!(H)
+    if !_is_binary_position_space(H)
+        H.scale, H.center = old_scale, old_center
+    end
     return H
 end
 
@@ -170,6 +258,7 @@ Supported geometry strings
 | `"square_2d"` | hopping amplitude `t::Number`  | `Lx`, `Ly` (default `L÷2` each) |
 | `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 Float64 position matrix, required) |
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
+| `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
 | `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 | `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 
@@ -195,6 +284,7 @@ rs = honeycomb_positions(10)
 H  = get_Hamiltonian("haldane", (t2=0.2, phi=π/2, M=0.0); L=10, rs=rs)
 
 H  = get_Hamiltonian("custom", (i,j) -> ...; L=10, scale=5.0, geometry=rs)
+Hf = get_Hamiltonian("fibonacci", (A=1.0, B=2.0); L=8, model=:hopping)
 ```
 
 After construction, add further interaction terms with
@@ -207,6 +297,12 @@ function get_Hamiltonian(geometry::String, params;
                          maxdim=15,
                          ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                          kwargs...)
+    if geometry == "fibonacci"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for FibonacciPositionSpace"))
+        return _build_fibonacci(params, L; scale, tol, maxdim, kwargs...)
+    end
+
     sites = siteinds("Qubit", L)
     N     = 2^L
 
@@ -241,7 +337,7 @@ function get_Hamiltonian(geometry::String, params;
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
-        known = ("chain_1d", "haldane", "custom",
+        known = ("chain_1d", "haldane", "custom", "fibonacci",
                  "uniform", "ssh", "ssh_sublattice", "aah",
                  "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
@@ -609,6 +705,7 @@ function add_hopping!(H::TBHamiltonian, f;
                       sublat           = nothing,
                       sublat_from      = nothing,
                       sublat_to        = nothing)
+    _require_binary_position_space(H, "add_hopping!")
     if !isnothing(H.Lx)
         (!isnothing(sublat) || !isnothing(sublat_from) || !isnothing(sublat_to)) &&
             error("add_hopping! sublat keywords are not supported for 2D Hamiltonians; use add_hopping_2D! directly.")
@@ -734,6 +831,7 @@ Invalidates all caches.
 """
 function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                      Lx=nothing, tol=1e-8, maxdim=nothing)
+    _require_binary_position_space(H, "add_onsite!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_onsite! currently supports layer/position/sublattice Hamiltonians only.")
@@ -873,6 +971,7 @@ function add_interaction!(H::TBHamiltonian, V;
                           type::Type = Float64,
                           tol::Real = 1e-8,
                           kwargs...)
+    _require_binary_position_space(H, "add_interaction!")
     pos_s = _pos_sites(H)
     mpo = if V isa MPO
         V
@@ -911,6 +1010,7 @@ Invalidates all caches.
 """
 function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200,
                    position::Symbol=:pre)
+    _require_binary_position_space(H, "add_spin!")
     H.spin_s === nothing || return H
     spin_s = spin_index()
     if position === :pre
@@ -960,6 +1060,7 @@ function add_zeeman!(H::TBHamiltonian, h;
                      tol::Real  = 1e-8,
                      maxdim::Int = 200,
                      position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_zeeman!")
     direction in (:x, :y, :z) ||
         error("direction must be :x, :y, or :z; got :$direction")
     pos = something(position, H.aux_side)
@@ -1036,6 +1137,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
                                 tol::Real    = 1e-8,
                                 maxdim::Int  = 200,
                                 position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_superconductivity!")
     H.nambu_s === nothing ||
         error("BdG already applied (H.nambu_s is set). Cannot apply twice.")
 
@@ -1151,6 +1253,7 @@ function add_soc!(H::TBHamiltonian, λ;
                   tol::Real         = 1e-8,
                   maxdim::Int       = 200,
                   position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_soc!")
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)

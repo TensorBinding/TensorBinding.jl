@@ -195,34 +195,6 @@ function interleave_mpo(target_mpo, phys_sites, n)
 end
 
 # ============================================================
-# Diagonal extraction
-# ============================================================
-
-"""
-    extract_diagonal_to_mps(M) -> MPS
-
-Extract the diagonal of an MPO `M` as an MPS by projecting each site
-tensor onto the subspace where bra and ket indices are equal.
-"""
-function extract_diagonal_to_mps(M::MPO)::MPS
-    N            = length(M)
-    new_tensors  = Vector{ITensor}(undef, N)
-    for i in 1:N
-        t      = M[i]
-        s2, s1 = siteinds(M, i)   # s2 = bra, s1 = ket
-        dim_s  = dim(s1)
-        v_inds = uniqueinds(t, s1, s2)
-        res    = ITensor(v_inds..., s1)
-        for v in 1:dim_s
-            slice = t * onehot(s1 => v) * onehot(s2 => v)
-            res  += slice * onehot(s1 => v)
-        end
-        new_tensors[i] = res
-    end
-    return MPS(new_tensors)
-end
-
-# ============================================================
 # MPO/MPS merging utilities
 # ============================================================
 

@@ -20,6 +20,9 @@
 #     get_ldos_spatial_gpu(H, Ncheb, ω; reduce=..., ...)  — A(r,ω) real-space LDOS
 #                                                            (:point or :block sampling,
 #                                                             sublattice :average/:resolve)
+#     get_ldos_spatial_mps_gpu(H, Ncheb, ω; ...)          — A(r,ω), independent
+#                                                            GPU MPS recursions (including
+#                                                            projected position spaces)
 #     get_dos_stochastic_gpu(H, Ncheb, ω; ...)            — stochastic-trace DOS
 #     get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; ...) — NH stochastic DOS
 #     get_nh_dos_points_gpu(H, z_points, n; ...)           — NH stochastic DOS at selected z
@@ -1142,6 +1145,7 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        type::Type{<:Number} = ComplexF32,
                        dtype::Union{Nothing,Type{<:Number}} = nothing)
 
+    _require_binary_position_space(H, "get_bands_gpu")
     _check_gpu("get_bands_gpu")
     gpu_type = dtype === nothing ? type : dtype
     dtype !== nothing && dtype != type && type != ComplexF32 &&
@@ -1447,6 +1451,8 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                type::Type{<:Number} = ComplexF32,
                                dtype::Union{Nothing,Type{<:Number}} = nothing)
 
+    _require_binary_position_space(H, "get_ldos_spatial_gpu")
+
     _check_gpu("get_ldos_spatial_gpu")
     gpu_type = dtype === nothing ? type : dtype
     dtype !== nothing && dtype != type && type != ComplexF32 &&
@@ -1626,6 +1632,304 @@ end
 
 
 """
+    _reconstruct_ldos_moment_columns(moments, W, denom, valid)
+        -> Matrix{Float64}
+
+Reconstruct one LDOS column per column of raw Chebyshev `moments`. The weight
+matrix follows `_dos_weight_matrix`: `W[n, iω]` multiplies moment order `n-1`,
+and `denom[iω]` supplies the kernel-specific normalization. Invalid energies
+are returned as zero columns in energy space.
+"""
+function _reconstruct_ldos_moment_columns(
+    moments::AbstractMatrix{<:Real},
+    W::AbstractMatrix{<:Real},
+    denom::AbstractVector{<:Real},
+    valid::AbstractVector{Bool},
+)
+    Ncheb, ncols = size(moments)
+    size(W, 1) == Ncheb || throw(DimensionMismatch(
+        "moment rows ($(size(moments, 1))) must match weight rows ($(size(W, 1))).",
+    ))
+    Nω = size(W, 2)
+    length(denom) == Nω || throw(DimensionMismatch(
+        "denominator length ($(length(denom))) must match energy count ($Nω).",
+    ))
+    length(valid) == Nω || throw(DimensionMismatch(
+        "valid-mask length ($(length(valid))) must match energy count ($Nω).",
+    ))
+
+    result = zeros(Float64, Nω, ncols)
+    mul!(result, transpose(W), moments)
+    for iω in 1:Nω
+        if valid[iω]
+            view(result, iω, :) ./= denom[iω]
+        else
+            fill!(view(result, iω, :), 0.0)
+        end
+    end
+    return result
+end
+
+
+"""
+    get_ldos_spatial_mps_gpu(H, Ncheb, ω_phys_vals;
+                             x_groups=nothing,
+                             num_x=min(H.N, 100), num_avg=1,
+                             x_start=1, x_end=H.N,
+                             kernel=:jackson, lambda=4.0, eta=0.0, m_order=4,
+                             maxdim=100, cutoff=1e-8,
+                             type=ComplexF32, dtype=nothing,
+                             verbose=false, printinfo=false,
+                             return_maxlinkdim=false,
+                             return_moments=false)
+        -> Matrix{Float64}
+
+GPU spatial LDOS from one independent MPS Chebyshev recursion per physical-site
+probe. Unlike [`get_ldos_spatial_gpu`](@ref), this path does not construct an MPO
+Chebyshev series and supports projected position spaces such as
+`FibonacciPositionSpace`.
+
+The rescaled operator is `H̃ = (H - H.center * P) / H.scale`, where
+`P = physical_projector(H)`. Probe `x` is constructed with
+`physical_site_state(H, x)`, so `x` is always a 1-based *physical* site rather
+than an ambient tensor-register index.
+
+`x_groups` can be a vector of positions (one output column per position) or a
+vector of position vectors. In the latter case, all probe LDOS values in a group
+are averaged into one output column. Without explicit groups, `num_x` intervals
+over `x_start:x_end` are sampled with `num_avg` approximately equidistant probes
+per interval. Automatic planning allocates only `O(num_x * num_avg)` probe
+indices, so callers can sample a huge projected space without enumerating it by
+choosing a modest `num_x` (or by supplying `x_groups`).
+The default is at most 100 output columns.
+
+`kernel=:hodc` uses HODC reconstruction (`eta`, `m_order`; `eta=0` uses
+`1/(Ncheb+1)`). Other supported kernels are `:jackson`, `:lorentz` (`lambda`),
+`:fejer`, and `:dirichlet`.
+
+Use `type=ComplexF32` (default) or a supported real/complex GPU tensor type;
+`dtype` is an alias. With `return_moments=true`, the group-averaged raw
+Chebyshev moments are also returned as a `Matrix{Float64}` of size
+`(Ncheb, length(x_groups))` (or `(Ncheb, num_x)` for automatic groups):
+
+`moments[n, j] = mean(x -> real(<x|T_(n-1)(Htilde)|x>), group[j])`,
+
+where `Htilde = (H - H.center * P) / H.scale`. These moments contain no kernel
+weights or energy-dependent normalization, and can therefore be reconstructed
+later on a different energy grid or with a different KPM kernel.
+
+With `return_maxlinkdim=true`, `linkdims[j]` is the largest MPS bond dimension
+reached by any probe in group `j`. Return values are unambiguous for all keyword
+combinations:
+
+- neither keyword: `ldos`
+- `return_maxlinkdim=true`: `(ldos, linkdims)` (the existing API)
+- `return_moments=true`: `(ldos, moments)`
+- both keywords: `(ldos, moments, linkdims)`
+
+This entry point intentionally supports position-only, one-dimensional point or
+explicit-group sampling. Grid/window/box/block sampling, non-physical ordering,
+and auxiliary degrees of freedom are rejected with targeted errors. For those
+features use the MPO GPU path or the CPU `get_ldos_spatial` implementation.
+"""
+function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
+                                   x_groups         = nothing,
+                                   num_x::Int        = min(H.N, 100),
+                                   num_avg::Int      = 1,
+                                   x_start::Int      = 1,
+                                   x_end::Int        = H.N,
+                                   kernel::Symbol    = :jackson,
+                                   lambda::Real      = 4.0,
+                                   eta::Real         = 0.0,
+                                   m_order::Int      = 4,
+                                   maxdim::Int       = 100,
+                                   cutoff::Real      = 1e-8,
+                                   type::Type{<:Number} = ComplexF32,
+                                   dtype::Union{Nothing,Type{<:Number}} = nothing,
+                                   verbose::Bool     = false,
+                                   printinfo::Bool   = false,
+                                   return_maxlinkdim::Bool = false,
+                                   return_moments::Bool = false,
+                                   # Accepted only to provide clear compatibility errors.
+                                   num_y             = nothing,
+                                   grid::Bool        = false,
+                                   xwin              = nothing,
+                                   ywin              = nothing,
+                                   box_half::Int     = 0,
+                                   reduce::Symbol    = :point,
+                                   ordering::Symbol  = :physical,
+                                   sublattice::Symbol = :auto,
+                                   nambu_proj::Bool  = false,
+                                   proj_nambu        = nothing,
+                                   spin_proj::Bool   = false,
+                                   proj_s            = nothing,
+                                   layer_proj::Bool  = false,
+                                   proj_layer        = nothing,
+                                   sublat_proj::Bool = false,
+                                   proj_sl           = nothing)
+
+    Ncheb >= 2 || throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: Ncheb must be at least 2."
+    ))
+    reduce === :point || throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: only reduce=:point is supported; " *
+        "block reduction belongs to the MPO GPU path."
+    ))
+    if grid || num_y !== nothing || xwin !== nothing || ywin !== nothing || box_half != 0
+        throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: grid, num_y, windows, and box averaging " *
+            "are unsupported. Supply 1-based physical positions through x_groups."
+        ))
+    end
+    ordering === :physical || throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: only ordering=:physical is supported. " *
+        "Map alternate coordinates to physical sites before passing x_groups."
+    ))
+    sublattice === :auto || throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: sublattice resolution/averaging is unsupported."
+    ))
+
+    aux_requested = nambu_proj || spin_proj || layer_proj || sublat_proj ||
+                    proj_nambu !== nothing || proj_s !== nothing ||
+                    proj_layer !== nothing || proj_sl !== nothing
+    has_aux = !isnothing(H.nambu_s) || !isnothing(H.spin_s) ||
+              !isnothing(H.layer_s) || !isnothing(H.sublattice_s) ||
+              length(H.sites) != H.L
+    (aux_requested || has_aux) && throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: only position-only Hamiltonians are supported; " *
+        "auxiliary degrees of freedom and auxiliary projections are not available " *
+        "on this MPS GPU path."
+    ))
+
+    groups = if x_groups !== nothing
+        x_groups isa AbstractVector{<:AbstractVector} ?
+            [collect(Int, group) for group in x_groups] :
+            [[Int(x)] for x in x_groups]
+    else
+        num_x > 0 || throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: num_x must be positive."
+        ))
+        num_avg > 0 || throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: num_avg must be positive."
+        ))
+        1 <= x_start <= x_end <= H.N || throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: expected 1 <= x_start <= x_end <= H.N."
+        ))
+        window = x_end - x_start + 1
+        num_x <= window || throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: num_x=$num_x exceeds the sampling " *
+            "window length $window."
+        ))
+        [let
+             lo = x_start + fld((i - 1) * window, num_x)
+             hi = x_start + fld(i * window, num_x) - 1
+             nsample = min(num_avg, hi - lo + 1)
+             nsample == 1 ? Int[lo] :
+                 unique(round.(Int, range(lo, hi; length=nsample)))
+         end for i in 1:num_x]
+    end
+
+    isempty(groups) && throw(ArgumentError(
+        "get_ldos_spatial_mps_gpu: no spatial groups were selected."
+    ))
+    for group in groups
+        isempty(group) && throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: spatial groups must not be empty."
+        ))
+        all(x -> 1 <= x <= H.N, group) || throw(ArgumentError(
+            "get_ldos_spatial_mps_gpu: every position must lie in 1:H.N."
+        ))
+    end
+
+    _check_gpu("get_ldos_spatial_mps_gpu")
+    gpu_type = _resolve_gpu_type(
+        "get_ldos_spatial_mps_gpu", type, dtype, cutoff,
+    )
+    _ensure_scale!(H)
+
+    # P, rather than the ambient identity, is essential for projected position
+    # spaces: invalid register states must remain zero under the spectral shift.
+    P_cpu = physical_projector(H)
+    Ham_n_cpu = (1 / H.scale) * +(
+        H.mpo, (-H.center) * P_cpu; cutoff=Float64(cutoff),
+    )
+    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+
+    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    Nω = length(ω_vals)
+    W, denom = _dos_weight_matrix(
+        Ncheb, ω_vals; kernel=kernel, lambda=lambda, eta=eta, m_order=m_order,
+    )
+    valid = [abs(ω) < 1.0 for ω in ω_vals]
+    # Store kernel-independent, group-averaged moments. Besides making them
+    # available for offline reconstruction, this avoids applying all Nω
+    # energy weights separately for every probe in an averaged group.
+    moments = zeros(Float64, Ncheb, length(groups))
+    linkdims = zeros(Int, length(groups))
+
+    apply_kwargs = (cutoff=Float64(cutoff), maxdim=maxdim)
+    two = gpu_type(2)
+    negone = gpu_type(-1)
+    printinfo && println(
+        "  [gpu] spatial MPS LDOS dtype=$gpu_type, groups=$(length(groups)), " *
+        "projected=$( !(H.position_space isa BinaryPositionSpace) )",
+    )
+
+    for (j, group) in enumerate(groups)
+        group_moments = view(moments, :, j)
+        group_weight = inv(Float64(length(group)))
+        group_maxlinkdim = 0
+
+        for x in group
+            psi0_gpu = _to_gpu_mps(physical_site_state(H, x), gpu_type)
+
+            function kpm_step!(phi, n)
+                mu = Float64(real(inner(psi0_gpu, phi)))
+                group_moments[n] += group_weight * mu
+            end
+
+            phi_km2 = psi0_gpu
+            kpm_step!(phi_km2, 1)
+            group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_km2))
+
+            phi_km1 = apply(Ham_n_gpu, phi_km2; apply_kwargs...)
+            kpm_step!(phi_km1, 2)
+            group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_km1))
+
+            for k in 3:Ncheb
+                phi_k = +(
+                    two * apply(Ham_n_gpu, phi_km1; apply_kwargs...),
+                    negone * phi_km2;
+                    apply_kwargs...,
+                )
+                kpm_step!(phi_k, k)
+                group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_k))
+                phi_km2 = phi_km1
+                phi_km1 = phi_k
+            end
+
+            _gpu_gc!()
+        end
+
+        linkdims[j] = group_maxlinkdim
+        (verbose || printinfo) && (j % 5 == 0 || j == length(groups)) &&
+            println(
+                "  [gpu] spatial MPS LDOS $j/$(length(groups)) " *
+                "(x=$(first(group)), n_avg=$(length(group))) " *
+                "maxlinkdim=$group_maxlinkdim",
+            )
+    end
+
+    result = _reconstruct_ldos_moment_columns(moments, W, denom, valid)
+
+    if return_moments
+        return return_maxlinkdim ? (result, moments, linkdims) : (result, moments)
+    end
+    return return_maxlinkdim ? (result, linkdims) : result
+end
+
+
+"""
     get_dos_stochastic_gpu(H, Ncheb, ω_phys_vals; kwargs...)
         -> Vector{Float64}   length Nω
 
@@ -1675,6 +1979,7 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                   type::Type{<:Number}     = ComplexF32,
                                   dtype::Union{Nothing,Type{<:Number}} = nothing)
 
+    _require_binary_position_space(H, "get_dos_stochastic_gpu")
     _check_gpu("get_dos_stochastic_gpu")
     gpu_type = _resolve_gpu_type("get_dos_stochastic_gpu", type, dtype, cutoff)
     _ensure_scale!(H)
@@ -2814,6 +3119,7 @@ function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                    dtype::Type{<:Complex} = ComplexF32,
                    printinfo::Bool  = false)
 
+    _require_binary_position_space(H, "get_C_gpu")
     _check_gpu("get_C_gpu")
     gpu_type = _resolve_gpu_type("get_C_gpu", dtype, nothing, cutoff)
     Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)

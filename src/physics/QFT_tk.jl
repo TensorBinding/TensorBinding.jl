@@ -1036,6 +1036,7 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
                            cutoff::Real     = 1e-8,
                            verbose::Bool    = false,
                            printinfo::Bool  = false)
+    _require_binary_position_space(H, "get_exciton_bands")
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_bands: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1173,6 +1174,7 @@ function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_p
                                cutoff::Real     = 1e-8,
                                verbose::Bool    = false,
                                printinfo::Bool  = false)
+    _require_binary_position_space(H, "get_exciton_continuum")
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_continuum: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1336,6 +1338,7 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           cutoff::Real    = 1e-10,
                           printinfo::Bool = false)
 
+    _require_binary_position_space(H, "get_bands")
     _ensure_scale!(H)
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
@@ -1624,6 +1627,7 @@ end
 
 function get_bands(H::TBHamiltonian, ω_phys_vals;
                    aux_proj = nothing, tol=1e-9, maxdim::Int=100)
+    _require_binary_position_space(H, "get_bands")
     H._tn_cache === nothing &&
         error("No Chebyshev cache found.  Call KPM_Tn(H, Ncheb; ...) first.")
     pos_sites = _pos_sites(H)

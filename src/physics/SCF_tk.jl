@@ -1205,6 +1205,7 @@ require an explicit coupling constant.
 function get_scf(H0::TBHamiltonian, channel::Symbol;
                  interaction::Symbol = :dense,
                  kwargs...)
+    _require_binary_position_space(H0, "get_scf")
     ch = _canonical_channel(channel)
     ch === :swave &&
         error("get_scf(H0, :swave) requires an explicit coupling: use get_scf(H0, g, :swave).")
@@ -1256,6 +1257,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                  stop_on_increase::Bool = false,
                  verbose::Bool = true,
                  builder_kwargs...)
+    _require_binary_position_space(H0, "get_scf")
     ch = _canonical_channel(channel)
     dmethod = _canonical_density_method(method === nothing ? density_method : method)
 

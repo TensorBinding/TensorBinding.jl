@@ -164,6 +164,7 @@ function get_W(H::TBHamiltonian, xfunc=nothing;
                quenched::Bool   = true,
                l                = nothing,
                Λ::Real          = 10)
+    _require_binary_position_space(H, "get_W")
     H.sublattice_s === nothing || dim(H.sublattice_s) == 2 ||
         error("get_W requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
     H.sublattice_s !== nothing ||
@@ -635,6 +636,7 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                Nel              = nothing,
                quenched::Bool   = true,
                sequential::Bool = false)
+    _require_binary_position_space(H, "get_C")
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -673,6 +675,7 @@ index.  The returned MPO shares the same site indices as `H.mpo`.
 function get_valley_operator(H::TBHamiltonian;
                              maxdim::Int     = 500,
                              cutoff::Float64 = 1e-8)
+    _require_binary_position_space(H, "get_valley_operator")
     H.Lx !== nothing ||
         error("get_valley_operator requires a 2D Hamiltonian (H.Lx must be set).")
     H.sublattice_s !== nothing ||
@@ -769,6 +772,7 @@ function get_valley_C(H::TBHamiltonian,
                       Nel             = nothing,
                       quenched::Bool  = true,
                       sequential::Bool = false)
+    _require_binary_position_space(H, "get_valley_C")
     valley in (:K, :K_prime) ||
         error("valley must be :K or :K_prime, got :$valley")
 

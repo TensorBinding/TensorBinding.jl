@@ -521,6 +521,24 @@ function spatial_sampling_plan(L::Int;
         ycenters = ny <= 1 ? [iy0] : round.(Int, range(iy0, iy1; length=ny))
         centers = Int[ix + iy * Nx + 1 for iy in ycenters for ix in xcenters]
         groups  = [[c] for c in centers]
+        if num_avg > 1
+            # Spread `num_avg × num_avg` sub-samples ACROSS each coarse block
+            # (spacing stride÷num_avg), then average. On a coarse grid this is the
+            # correct block-average: it washes out fast on-site modulation (period ≪
+            # stride) while preserving the slow structure. Contrast `box_half`, a
+            # *contiguous* neighbourhood that spans only ±box_half cells — far less
+            # than one coarse stride — so it cannot average out sub-stride modulation
+            # and leaves per-pixel aliasing/speckle on a coarse grid.
+            sx = max(1, stride_x ÷ num_avg)
+            sy = max(1, stride_y ÷ num_avg)
+            groups = [
+                let uc0 = c - 1, ix_c = uc0 % Nx, iy_c = uc0 ÷ Nx
+                    unique([mod(ix_c + a * sx, Nx) + mod(iy_c + b * sy, Ny) * Nx + 1
+                            for b in 0:num_avg-1 for a in 0:num_avg-1])
+                end
+                for c in centers
+            ]
+        end
     else
         window = x_end - x_start + 1
         nx     = num_x <= 0 ? window : num_x
@@ -535,7 +553,9 @@ function spatial_sampling_plan(L::Int;
     end
 
     # ── 2D box averaging (periodic wrap) ───────────────────────────────────────
-    if box_half > 0 && Lx !== nothing
+    # Skipped when num_avg>1 on a grid already spread each pixel into a sub-grid
+    # (the two averaging modes are mutually exclusive; num_avg takes precedence).
+    if box_half > 0 && num_avg <= 1 && Lx !== nothing
         Nx = 2^Lx
         Ny = 2^(L - Lx)
         groups = [
@@ -702,6 +722,31 @@ pot = get_diagonal_mpo(L, sites, x -> 0.01 * x)
 """
 function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
     return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol)
+end
+
+
+"""
+    extract_diagonal_to_mps(M) -> MPS
+
+Extract the diagonal of an MPO `M` as an MPS by projecting each local bra/ket
+pair onto equal physical values. This is shared by KPM trace/LDOS, SCF, RPA,
+QFT, and purification routines.
+"""
+function extract_diagonal_to_mps(M::MPO)::MPS
+    N = length(M)
+    new_tensors = Vector{ITensor}(undef, N)
+    for i in 1:N
+        tensor = M[i]
+        bra, ket = siteinds(M, i)
+        diagonal_inds = uniqueinds(tensor, ket, bra)
+        result = ITensor(diagonal_inds..., ket)
+        for value in 1:dim(ket)
+            slice = tensor * onehot(ket => value) * onehot(bra => value)
+            result += slice * onehot(ket => value)
+        end
+        new_tensors[i] = result
+    end
+    return MPS(new_tensors)
 end
 
 

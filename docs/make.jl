@@ -18,6 +18,7 @@ makedocs(;
         "Home" => "index.md",
         "API Reference" => [
             "Core"    => "api/core.md",
+            "Position Spaces" => "api/position_spaces.md",
             "Lattice" => "api/lattice.md",
             "Solvers" => "api/solvers.md",
             "Physics" => "api/physics.md",

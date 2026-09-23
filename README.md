@@ -8,7 +8,7 @@
 [![Build Status](https://github.com/TensorBinding/TensorBinding.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/TensorBinding/TensorBinding.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![Coverage](https://codecov.io/gh/TensorBinding/TensorBinding.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/TensorBinding/TensorBinding.jl)
 
-**TensorBinding.jl** is a Julia package for constructing and studying tight-binding Hamiltonians as **Matrix Product Operators (MPOs)** in the *quantics binary* (QTT) representation. A system of *N = 2<sup>L</sup>* sites is encoded in *L* qubit sites, keeping bond dimensions small (typically ≤ 10) for physically relevant models. Arbitrary hopping matrices are compressed automatically via **Quantics Tensor Cross Interpolation (QTCI)**.
+**TensorBinding.jl** is a Julia package for constructing and studying tight-binding Hamiltonians as **Matrix Product Operators (MPOs)** in the *quantics binary* (QTT) representation. Ordinarily, *N = 2<sup>L</sup>* sites are encoded in *L* qubit sites; projected position spaces can embed a different physical site count in the same register. This keeps bond dimensions small (typically ≤ 10) for physically relevant models. Arbitrary hopping matrices are compressed automatically via **Quantics Tensor Cross Interpolation (QTCI)**.
 
 ---
 
@@ -33,6 +33,7 @@ See the [`examples/`](examples/) folder for notebooks covering the main workflow
 
 **Hamiltonian construction**
 - 1D: nearest-neighbour chain, SSH (uniform and sublattice-explicit), Aubry–André–Harper quasicrystal, uniform with on-site potential
+- Fibonacci onsite and hopping quasicrystals in a projected Zeckendorf basis, with open or physical-periodic boundaries and conumber ordering
 - 2D: square, triangular, honeycomb, kagomé, Lieb, and dice lattices — including sublattice-explicit models with an explicit unit-cell index
 - Generic *n*th-nearest-neighbour hopping on any 2D geometry (`add_hopping_2D!`): uniform, direction-dependent, site-dependent, or fully position+direction-dependent amplitude functions
 - Arbitrary hopping matrix `f(i,j)` compressed via QTCI (`hopping2MPO`)
@@ -47,6 +48,7 @@ See the [`examples/`](examples/) folder for notebooks covering the main workflow
 - Chebyshev expansion of spectral functions, LDOS, Green's functions, and density matrices
 - Kernels: Jackson (default), Lorentz, Fejér, Dirichlet, HODC
 - Three complementary modes: MPO (full operator), diagonal/online (memory-efficient LDOS), MPS (reference-state propagation)
+- Exact trace DOS from an online three-MPO recursion, including projected position spaces
 - Band structure *A(k,ω)* via QFT conjugation (`get_bands`); supports spin, BdG, layer, and sublattice projections via `aux_proj`
 - Density matrix purification: McWeeny (cubic convergence) and SP2 (electron-number controlled)
 
