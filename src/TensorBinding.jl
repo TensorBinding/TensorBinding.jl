@@ -32,8 +32,6 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                             Hamiltonian, PositionSpaces)
 #   position_spaces/Fibonacci.jl — projected Fibonacci space, automata,
 #                                   constructors, and conumbering (uses TBSystem)
-#   position_spaces/FibonacciIO.jl — HDF5 persistence for projected Fibonacci
-#                                     Hamiltonians (uses Fibonacci, HDF5)
 #   position_spaces/FibonacciSampling.jl — scalable inherited-conumber LDOS
 #                                           sampling plans (uses Fibonacci)
 #   lattice/2Dlattice_tk.jl    — 2D shift operators, lattice hoppings, geometry
@@ -77,7 +75,6 @@ include("core/Hamiltonian.jl")
 include("core/PositionSpaces.jl")
 include("core/TBSystem.jl")
 include("position_spaces/Fibonacci.jl")
-include("position_spaces/FibonacciIO.jl")
 include("position_spaces/FibonacciSampling.jl")
 include("lattice/2Dlattice_tk.jl")
 include("lattice/NNNeighbor_tk.jl")
