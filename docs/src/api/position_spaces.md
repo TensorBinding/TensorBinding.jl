@@ -132,3 +132,40 @@ dimension-2 `Qudit` sites.
 Modules = [TensorBinding]
 Pages   = ["position_spaces/MetallicMean.jl"]
 ```
+
+## k-bonacci quasicrystals
+
+The k-bonacci chain on the alphabet `a_1, …, a_k` (written `A, B, C, …`) is the
+fixed point of `a_i -> a_1 a_(i+1)` for `i < k` and `a_k -> a_1` (`k = 2`
+Fibonacci, `k = 3` Tribonacci `A -> AB, B -> AC, C -> A`, `k = 4` Tetranacci).
+Sites are labelled by binary strings with no `k` consecutive ones, read with the
+weights `w_l = 2^l` for `l < k` and `w_l = w_(l-1) + … + w_(l-k)` otherwise
+(Zeckendorf for `k = 2`, the Tribonacci numbers `T_(l+3)` for `k = 3`). `L`
+digits enumerate `H.N = w_L` physical sites inside the ambient `2^L` `Qubit`
+register, exactly like the Fibonacci chain. The letter at site `n` is `a_(r+1)`
+where `r` is the number of trailing ones of `n`, so the word and the validity
+indicator are `k`-state automaton MPS (bond dimension `k`) and the Hamiltonian
+MPO `P (V + T K + h.c.) P` is exact at any `L`. The decrement `K` clears the
+least significant one and rewrites the tail with the pattern `1^(k-1) 0`.
+
+```julia
+# Tribonacci hopping chain with t_A/t_B = t_B/t_C = 0.8 and t_C = 1
+H = TensorBinding.kbonacci_hamiltonian(
+    3, 10; values=(0.64, 0.8, 1.0), model=:hopping, boundary=:periodic,
+)
+
+# Equivalent generic constructor (k is required); letter keys or values=(…)
+H = TensorBinding.get_Hamiltonian(
+    "kbonacci", (A=0.64, B=0.8, C=1.0); L=10, k=3,
+)
+```
+
+The projector-aware CPU KPM entry points and `get_ldos_spatial_mps_gpu` work as
+for Fibonacci with `ordering=:physical`; conumbering is Fibonacci-only, so
+`ordering=:conumber` throws. `k = 2` reproduces `fibonacci_hamiltonian` exactly,
+on the same `Qubit` sites.
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["position_spaces/KBonacci.jl"]
+```

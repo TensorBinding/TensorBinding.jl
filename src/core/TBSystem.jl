@@ -278,6 +278,7 @@ Supported geometry strings
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
 | `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
 | `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple | `m` (required; `m=2` silver mean), `model`, `boundary` |
+| `"kbonacci"` | `(A, B, C, ...[, t, onsite])` or `(values=(a_1, ..., a_k)[, t, onsite])` NamedTuple | `k` (required; `k=3` Tribonacci), `model`, `boundary` |
 | `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 | `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 
@@ -305,6 +306,7 @@ H  = get_Hamiltonian("haldane", (t2=0.2, phi=π/2, M=0.0); L=10, rs=rs)
 H  = get_Hamiltonian("custom", (i,j) -> ...; L=10, scale=5.0, geometry=rs)
 Hf = get_Hamiltonian("fibonacci", (A=1.0, B=2.0); L=8, model=:hopping)
 Hs = get_Hamiltonian("metallic_mean", (A=1.0, B=2.0); L=8, m=2)   # silver mean
+Ht = get_Hamiltonian("kbonacci", (A=0.64, B=0.8, C=1.0); L=8, k=3)   # Tribonacci
 ```
 
 After construction, add further interaction terms with
@@ -326,6 +328,11 @@ function get_Hamiltonian(geometry::String, params;
         ref_sites === nothing ||
             throw(ArgumentError("ref_sites is not supported for MetallicMeanPositionSpace"))
         return _build_metallic_mean(params, L; scale, tol, maxdim, kwargs...)
+    end
+    if geometry == "kbonacci"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for KBonacciPositionSpace"))
+        return _build_kbonacci(params, L; scale, tol, maxdim, kwargs...)
     end
 
     sites = siteinds("Qubit", L)
@@ -362,7 +369,7 @@ function get_Hamiltonian(geometry::String, params;
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
-        known = ("chain_1d", "haldane", "custom", "fibonacci", "metallic_mean",
+        known = ("chain_1d", "haldane", "custom", "fibonacci", "metallic_mean", "kbonacci",
                  "uniform", "ssh", "ssh_sublattice", "aah",
                  "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
