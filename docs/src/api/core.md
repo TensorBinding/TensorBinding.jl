@@ -18,13 +18,6 @@ Modules = [TensorBinding]
 Pages   = ["core/Hamiltonian.jl"]
 ```
 
-## Position-Space Interface
-
-```@autodocs
-Modules = [TensorBinding]
-Pages   = ["core/PositionSpaces.jl"]
-```
-
 ## TBSystem
 
 ```@autodocs

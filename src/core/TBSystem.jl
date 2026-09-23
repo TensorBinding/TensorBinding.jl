@@ -6,6 +6,24 @@
 # get_Chern, get_bands …) dispatch on this struct.
 
 # ============================================================
+# Position-space policy types
+# ============================================================
+
+"""
+    AbstractPositionSpace
+
+Policy object describing how physical positions are embedded in the tensor-product
+register. `BinaryPositionSpace` is the ordinary `N = 2^L` quantics basis. Other
+position spaces (see `position_spaces/`) specialize `physical_projector`,
+`physical_site_state`, `site_axis`, and `site_permutation` after `TBHamiltonian`
+is defined below.
+"""
+abstract type AbstractPositionSpace end
+
+"""Ordinary binary position register containing all `2^L` basis states."""
+struct BinaryPositionSpace <: AbstractPositionSpace end
+
+# ============================================================
 # TBHamiltonian struct
 # ============================================================
 

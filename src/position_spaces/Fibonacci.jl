@@ -367,6 +367,17 @@ function site_permutation(::FibonacciPositionSpace, H::TBHamiltonian;
     ).permutation
 end
 
+# Convenience overload of the sampling utility defined in core/Utils.jl; it
+# lives here because its signature needs TBHamiltonian and FibonacciPositionSpace.
+function fibonacci_ldos_sampling_plan(H::TBHamiltonian; kwargs...)
+    H.position_space isa FibonacciPositionSpace ||
+        throw(ArgumentError("fibonacci LDOS sampling requires FibonacciPositionSpace"))
+    expected_N = fibonacci_site_count(H.L)
+    H.N == expected_N ||
+        throw(ArgumentError("Hamiltonian has N=$(H.N), expected F_(L+2)=$expected_N for L=$(H.L)"))
+    return fibonacci_ldos_sampling_plan(H.L; kwargs...)
+end
+
 """
     fibonacci_hamiltonian(L; A, B, model=:hopping, t=1.0, onsite=0.0,
                           boundary=:periodic, scale=nothing, padding=1.05,

@@ -1188,40 +1188,12 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath; npts_per_segment=num_x)
     end
 
-    # ── k-groups (same logic as low-level CPU get_bands) ────────────────────
-    Lx_pos = D == 2 ? div(L_pos, 2) : 0
-    N_pos  = 2^L_pos
-    if !isnothing(k_groups_override)
-        k_groups = k_groups_override
-        num_x    = length(k_groups)
-    elseif D == 1
-        _xmax     = xmax === nothing ? N_pos - 1 : Int(xmax)
-        xcenters  = ilinspace(xmin, _xmax, num_x)
-        half_step = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
-        offsets   = num_avg > 1 ? round.(Int, range(-half_step, half_step; length=num_avg)) : Int[0]
-        k_groups  = [clamp.(xcenters[i] .+ offsets, 0, N_pos - 1) for i in 1:num_x]
-    elseif D == 2
-        Nx_loc = 2^Lx_pos; Ny_loc = 2^(L_pos - Lx_pos)
-        num_x  = min(num_x, Nx_loc)
-        _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
-        _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
-        xcenters = ilinspace(xmin, _xmax, Nx_loc)
-        ycenters = ilinspace(ymin, _ymax, Ny_loc)
-        hsx = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
-        hsy = num_y > 1 ? (_ymax - ymin) / (2 * num_y) : 0
-        x_offs = num_avg > 1 ? round.(Int, range(-hsx, hsx; length=num_avg)) : Int[0]
-        y_offs = num_avg > 1 ? round.(Int, range(-hsy, hsy; length=num_avg)) : Int[0]
-        k_groups = [
-            begin
-                xs = clamp.(xcenters[i] .+ x_offs, 0, Nx_loc - 1)
-                ys = clamp.(ycenters[i] .+ y_offs, 0, Ny_loc - 1)
-                [(y << Lx_pos) | x for (x, y) in zip(xs, ys)]
-            end
-            for i in 1:num_x
-        ]
-    else
-        error("D must be 1 or 2")
-    end
+    # ── k-groups (shared planner in core/Utils.jl, same as CPU get_bands) ────
+    Lx_pos   = D == 2 ? div(L_pos, 2) : 0
+    kplan    = kspace_sampling_plan(L_pos, D; num_x, num_y, num_avg,
+                                    xmin, xmax, ymin, ymax, k_groups_override)
+    k_groups = kplan.k_groups
+    num_x    = kplan.num_x
 
     Ak_w = zeros(Float64, Nω, num_x)
 
@@ -2755,23 +2727,8 @@ function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims,
 end
 
 
-# Enumerate all block members for exciton block-reduce (positional averaging).
-# For :block, spatial_sampling_plan gives singleton groups; this expands each to the
-# full set of probe positions inside the coarse block, enumerated from plan.stride_x/y.
-function _exciton_block_groups(plan, Lx::Union{Nothing,Int}, L::Int)
-    nblocks = length(plan.centers)
-    Wx = plan.stride_x
-    if Lx === nothing
-        return [[ixp * Wx + d + 1 for d in 0:Wx-1] for ixp in 0:nblocks-1]
-    end
-    a  = plan.a
-    Wy = plan.stride_y
-    Nx = 2^Lx
-    return [let ixp = (iblock-1) % 2^a, iyp = (iblock-1) ÷ 2^a
-                [ixp*Wx + dx + (iyp*Wy + dy)*Nx + 1 for dy in 0:Wy-1 for dx in 0:Wx-1]
-            end
-            for iblock in 1:nblocks]
-end
+# Block-member enumeration for exciton block-reduce (`_exciton_block_groups`)
+# lives in core/Utils.jl next to spatial_sampling_plan.
 
 """
     get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals;

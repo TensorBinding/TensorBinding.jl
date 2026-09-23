@@ -23,17 +23,16 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 
 # Load order matters:
 #   core/Utils.jl          — binary/index helpers, diagonal MPO construction,
-#                             shift/Hadamard operators (no deps)
+#                             shift/Hadamard operators, and every sampling plan
+#                             (spatial, k-space, Fibonacci) shared by the CPU and
+#                             GPU solvers (no deps)
 #   core/Hamiltonian.jl    — 1D/2D kinetic operator and QTCI MPO builders,
 #                             preset model Hamiltonians (uses Utils)
-#   core/PositionSpaces.jl — physical-position policy types (no deps)
-#   core/TBSystem.jl       — TBHamiltonian struct, get_Hamiltonian, add_*!
-#                             mutators and position-space interface (uses Utils,
-#                             Hamiltonian, PositionSpaces)
+#   core/TBSystem.jl       — position-space policy types, TBHamiltonian struct,
+#                             get_Hamiltonian, add_*! mutators and the
+#                             position-space interface (uses Utils, Hamiltonian)
 #   position_spaces/Fibonacci.jl — projected Fibonacci space, automata,
 #                                   constructors, and conumbering (uses TBSystem)
-#   position_spaces/FibonacciSampling.jl — scalable inherited-conumber LDOS
-#                                           sampling plans (uses Fibonacci)
 #   lattice/2Dlattice_tk.jl    — 2D shift operators, lattice hoppings, geometry
 #                                 positions (uses Utils, Hamiltonian, TBSystem)
 #   lattice/NNNeighbor_tk.jl   — generic nth-neighbor hopping accumulator
@@ -72,10 +71,8 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 
 include("core/Utils.jl")
 include("core/Hamiltonian.jl")
-include("core/PositionSpaces.jl")
 include("core/TBSystem.jl")
 include("position_spaces/Fibonacci.jl")
-include("position_spaces/FibonacciSampling.jl")
 include("lattice/2Dlattice_tk.jl")
 include("lattice/NNNeighbor_tk.jl")
 include("lattice/Flake_tk.jl")

@@ -1773,9 +1773,7 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
 
     group_arg = X_groups !== nothing ? X_groups : x_groups
     groups = if group_arg !== nothing
-        group_arg isa AbstractVector{<:AbstractVector} ?
-            [collect(Int, grp) for grp in group_arg] :
-            [[Int(x)] for x in group_arg]
+        spatial_sampling_plan(H.L; x_groups=group_arg).groups
     elseif X_list !== nothing
         [[Int(x)] for x in X_list]
     else
@@ -1786,12 +1784,9 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
         window = x_end - x_start + 1
         num_x <= window ||
             error("get_exciton_ldos_spatial: num_x=$num_x exceeds sampling window length $window.")
-        dx     = div(window, num_x)
-        dx_sub = max(1, div(dx, num_avg))
-        [[x_start + (i - 1) * dx + k * dx_sub
-          for k in 0:num_avg-1
-          if x_start + (i - 1) * dx + k * dx_sub <= x_end]
-         for i in 1:num_x]
+        # 1D point layout of the shared planner (core/Utils.jl): stride
+        # window ÷ num_x with num_avg sub-probes per coarse cell.
+        spatial_sampling_plan(H.L; num_x, num_avg, x_start, x_end).groups
     end
 
     isempty(groups) && error("get_exciton_ldos_spatial: no spatial groups were selected.")
