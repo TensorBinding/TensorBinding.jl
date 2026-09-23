@@ -102,4 +102,5 @@ end
 
 include("fibonacci.jl")
 include("fibonacci_sampling.jl")
+include("metallic_mean.jl")
 include("gpu_mps_ldos.jl")

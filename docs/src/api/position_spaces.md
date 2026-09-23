@@ -96,3 +96,39 @@ required to have exact `E -> -E` chiral symmetry.
 Modules = [TensorBinding]
 Pages   = ["position_spaces/Fibonacci.jl"]
 ```
+
+## Metallic-mean quasicrystals
+
+The metallic-mean chain with parameter `m` is the fixed point of `A -> A^m B`,
+`B -> A` (`m = 1` Fibonacci, `m = 2` silver mean, `m = 3` bronze mean). Sites
+are labelled in the numeration system with basis `q_0 = 1`, `q_1 = m + 1`,
+`q_(l+1) = m q_l + q_(l-1)`, digits in `0:m`, and the rule that a digit `m` must
+be followed by `0`. `L` digits enumerate `H.N = q_L` physical sites inside an
+ambient `(m+1)^L` register of `Qudit` sites of dimension `m + 1`. The letter at
+site `n` is `B` exactly when the least significant digit of `n` is `m`, so the
+word and the validity indicator are both bond-dimension-2 automaton MPS and the
+Hamiltonian MPO `P (V + T K + h.c.) P` is exact at any `L`.
+
+```julia
+H = TensorBinding.metallic_mean_hamiltonian(
+    2, 8; A=1.0, B=2.0, model=:hopping, boundary=:periodic,
+)
+
+# Equivalent generic constructor (m is required)
+H = TensorBinding.get_Hamiltonian(
+    "metallic_mean", (A=1.0, B=2.0); L=8, m=2,
+)
+```
+
+The projector-aware CPU KPM entry points work exactly as for Fibonacci
+(`KPM_Tn`, `get_ldos_online`, `get_ldos_spatial` with `ordering=:physical`,
+`get_dos_stochastic`, `get_dos_trace`), as does `get_ldos_spatial_mps_gpu`.
+Conumbering and the inherited-conumber sampling plans are currently
+Fibonacci-only, so `ordering=:conumber` throws for metallic means.
+`m = 1` reproduces the Fibonacci chain of `fibonacci_hamiltonian` on
+dimension-2 `Qudit` sites.
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["position_spaces/MetallicMean.jl"]
+```

@@ -33,6 +33,9 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                             position-space interface (uses Utils, Hamiltonian)
 #   position_spaces/Fibonacci.jl — projected Fibonacci space, automata,
 #                                   constructors, and conumbering (uses TBSystem)
+#   position_spaces/MetallicMean.jl — projected metallic-mean spaces (A -> A^m B,
+#                                      B -> A) on (m+1)-dimensional Qudit
+#                                      registers (uses TBSystem, Utils)
 #   lattice/2Dlattice_tk.jl    — 2D shift operators, lattice hoppings, geometry
 #                                 positions (uses Utils, Hamiltonian, TBSystem)
 #   lattice/NNNeighbor_tk.jl   — generic nth-neighbor hopping accumulator
@@ -73,6 +76,7 @@ include("core/Utils.jl")
 include("core/Hamiltonian.jl")
 include("core/TBSystem.jl")
 include("position_spaces/Fibonacci.jl")
+include("position_spaces/MetallicMean.jl")
 include("lattice/2Dlattice_tk.jl")
 include("lattice/NNNeighbor_tk.jl")
 include("lattice/Flake_tk.jl")

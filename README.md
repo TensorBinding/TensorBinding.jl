@@ -34,6 +34,7 @@ See the [`examples/`](examples/) folder for notebooks covering the main workflow
 **Hamiltonian construction**
 - 1D: nearest-neighbour chain, SSH (uniform and sublattice-explicit), Aubry–André–Harper quasicrystal, uniform with on-site potential
 - Fibonacci onsite and hopping quasicrystals in a projected Zeckendorf basis, with open or physical-periodic boundaries and conumber ordering
+- Metallic-mean quasicrystals (`A → AᵐB`, `B → A`: silver mean, bronze mean, …) in a projected `(m+1)`-ary numeration basis on Qudit registers; `m = 1` reproduces the Fibonacci chain
 - 2D: square, triangular, honeycomb, kagomé, Lieb, and dice lattices — including sublattice-explicit models with an explicit unit-cell index
 - Generic *n*th-nearest-neighbour hopping on any 2D geometry (`add_hopping_2D!`): uniform, direction-dependent, site-dependent, or fully position+direction-dependent amplitude functions
 - Arbitrary hopping matrix `f(i,j)` compressed via QTCI (`hopping2MPO`)

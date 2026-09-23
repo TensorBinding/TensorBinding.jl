@@ -277,6 +277,7 @@ Supported geometry strings
 | `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 Float64 position matrix, required) |
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
 | `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
+| `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple | `m` (required; `m=2` silver mean), `model`, `boundary` |
 | `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 | `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 
@@ -303,6 +304,7 @@ H  = get_Hamiltonian("haldane", (t2=0.2, phi=π/2, M=0.0); L=10, rs=rs)
 
 H  = get_Hamiltonian("custom", (i,j) -> ...; L=10, scale=5.0, geometry=rs)
 Hf = get_Hamiltonian("fibonacci", (A=1.0, B=2.0); L=8, model=:hopping)
+Hs = get_Hamiltonian("metallic_mean", (A=1.0, B=2.0); L=8, m=2)   # silver mean
 ```
 
 After construction, add further interaction terms with
@@ -319,6 +321,11 @@ function get_Hamiltonian(geometry::String, params;
         ref_sites === nothing ||
             throw(ArgumentError("ref_sites is not supported for FibonacciPositionSpace"))
         return _build_fibonacci(params, L; scale, tol, maxdim, kwargs...)
+    end
+    if geometry == "metallic_mean"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for MetallicMeanPositionSpace"))
+        return _build_metallic_mean(params, L; scale, tol, maxdim, kwargs...)
     end
 
     sites = siteinds("Qubit", L)
@@ -355,7 +362,7 @@ function get_Hamiltonian(geometry::String, params;
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
-        known = ("chain_1d", "haldane", "custom", "fibonacci",
+        known = ("chain_1d", "haldane", "custom", "fibonacci", "metallic_mean",
                  "uniform", "ssh", "ssh_sublattice", "aah",
                  "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
