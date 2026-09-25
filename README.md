@@ -52,7 +52,7 @@ See the [`examples/`](examples/) folder for notebooks covering the main workflow
 - Three complementary modes: MPO (full operator), diagonal/online (memory-efficient LDOS), MPS (reference-state propagation)
 - Exact trace DOS from an online three-MPO recursion, including projected position spaces
 - Band structure *A(k,ω)* via QFT conjugation (`get_bands`); supports spin, BdG, layer, and sublattice projections via `aux_proj`
-- Density matrix purification: McWeeny (cubic convergence) and SP2 (electron-number controlled)
+- Density matrix purification: McWeeny (quadratic convergence) and SP2 (electron-number controlled)
 
 **Topological invariants**
 - Real-space Chern marker (2D) and winding-number density (1D) via KPM or purification

@@ -11,8 +11,13 @@
 # same keyword arguments and returns the same shape of result.
 #
 # REQUIREMENTS
-#   using CUDA            # must be loaded *before* calling any *_gpu function
-#   include("TensorBinding.jl"); using .TensorBinding
+#   using TensorBinding
+#   using CUDA            # optional (not a package dependency); load it before
+#                         # or after TensorBinding, but before the first *_gpu
+#                         # call — without it, *_gpu calls raise an error
+#                         # explaining how to load it
+#   The *_gpu functions are not exported; call them qualified, e.g.
+#   TensorBinding.get_bands_gpu(...).
 #
 # ENTRY POINTS (each documented in its own docstring below)
 #   Spectral / spatial maps
@@ -463,6 +468,11 @@ function _eval_block_mps_1d_complex_gpu(A::MPS, ixp::Int, a::Int, L::Int)
     return ComplexF64(scalar(acc))
 end
 
+# extract_diagonal_to_mps (in core/Utils.jl) uses plain onehot() which returns a
+# CPU DiagBlockSparse tensor.  Contracting a GPU MPO tensor with a CPU onehot
+# fails (GPU×CPU mismatch). Here the one-hot basis vectors are explicitly dense
+# GPU tensors with the same element type as the input MPO tensor.
+# (Kept above the docstring: a comment in between would detach it.)
 """
     extract_diagonal_to_mps_gpu(M::MPO) -> MPS
 
@@ -470,11 +480,8 @@ GPU-resident analogue of `extract_diagonal_to_mps`. `M` is expected to already
 be a GPU MPO. The returned MPS stays on GPU, with one-hot tensors matched to
 the input tensor element type.
 """
-# extract_diagonal_to_mps (in RPA_tk.jl) uses plain onehot() which returns a
-# CPU DiagBlockSparse tensor.  Contracting a GPU MPO tensor with a CPU onehot
-# fails (GPU×CPU mismatch). Here the one-hot basis vectors are explicitly dense
-# GPU tensors with the same element type as the input MPO tensor.
 function extract_diagonal_to_mps_gpu(M::MPO)::MPS
+    _check_gpu("extract_diagonal_to_mps_gpu")
     N    = length(M)
     new_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
@@ -3046,7 +3053,11 @@ end
 # ============================================================
 
 """
-    get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing; kwargs...) -> Function
+    get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
+              method=:mcweeny, fermi=0.0, l=nothing, Λ=10, Lambda=nothing,
+              Nchebychev=300, maxdim=500, cutoff=1e-8,
+              Nel=nothing, quenched=true, dtype=ComplexF32,
+              printinfo=false) -> Function
 
 GPU-accelerated real-space Chern marker.  Mirrors `get_C` exactly but runs all
 MPO×MPO products (projector assembly and C1–C4 construction) on GPU.
@@ -3061,7 +3072,8 @@ Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
   systems at tight cutoffs (a warning is emitted for `ComplexF32` + `cutoff < 1e-6`).
 - The projector is built on CPU first (via `_get_projector`), then moved to GPU.
   For method=:mcweeny this means the purification loop runs on GPU.
-- `sequential` mode is not supported (non-sequential quenched is always used).
+- `get_C`'s `sequential` keyword is not accepted; the quenched marker is always
+  assembled from the C1–C4 MPOs.
 
 All other keyword arguments are identical to `get_C`.
 """

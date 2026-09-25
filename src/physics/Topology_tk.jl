@@ -594,9 +594,9 @@ end
 
 """
     get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
-          method=:KPM, fermi=0.0, l=nothing, Λ=10,
+          method=:KPM, fermi=0.0, l=nothing, Λ=10, Lambda=nothing,
           Nchebychev=300, maxdim=500, cutoff=1e-8,
-          Nel=nothing, quenched=true) -> Function
+          Nel=nothing, quenched=true, sequential=false) -> Function
 
 High-level wrapper: compute the ground-state projector via `method` and
 return the Chern marker closure from `get_C_op_MPO_from_P`.
@@ -619,6 +619,10 @@ MPO multiplications in the Chern marker assembly.
 
 `Lambda` is an ASCII alias for `Λ`; when given, it takes precedence over `Λ`
 (as in `get_C_gpu`).
+
+`sequential=true` (quenched mode only) skips the C1–C4 MPO×MPO products and
+instead applies `P` and the position operators to each basis state inside the
+closure: cheaper setup, more MPO–MPS applies per evaluated unit cell.
 
 See `get_C_op_MPO_from_P` for full documentation of the remaining arguments.
 
