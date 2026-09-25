@@ -79,8 +79,7 @@
 # 1.  QFT conjugation
 #     1a. Single-particle QFT    conjugate_by_qft
 #     1b. Exciton QFT            conjugate_by_qft_exciton
-# 2.  Legacy sublattice projectors projop_2DSL, projop_1DSL
-# 3.  Internal utilities         _eval_diag_mps, sample_diag, _kpm_weight_matrix
+# 3.  Internal utilities         _eval_diag_mps, _kpm_weight_matrix
 #                                (ilinspace / kspace_sampling_plan: core/Utils.jl)
 #     (exciton MPS probes mpsexciton/Q/QTrace/KQ now live in TwoParticle_tk.jl)
 # 3b. High-symmetry k-path       kpath_2d, hsk_honeycomb/square/triangular,
@@ -88,7 +87,7 @@
 # 4.  Online band structure      get_bands, get_exciton_bands,
 #                                get_exciton_continuum
 # 5.  High-level overloads       get_bands (TBHamiltonian, single-particle)
-# 5b. Aux index projection       project_aux, project_spin, aux_site
+# 5b. Aux index projection       project_aux, aux_site
 # 6.  Legacy reference code      old get_bands (inner-product approach)
 
 
@@ -282,72 +281,10 @@ end
 
 
 # ============================================================
-# 2. Legacy sublattice projection  (mask sandwich)
-#
-# These wrappers apply the mask sandwich O_SL = mask · O · mask to project
-# an MPO onto one of two sublattices.  They are used by `get_bands` when
-# `sublattice=true` (Step 2 in the pipeline).
-#
-# WHEN TO USE:
-#   `sublattice=true` / `projop_*SL`  — for PRESET models built by
-#   `build_hamiltonian` / `monolayer_hamiltonian` (HUniform2Dhex, H2DChernhex,
-#   HUniform2Dtri, …).  These encode the sublattice structure implicitly in
-#   the hopping MPO; H.sublattice_s is nothing.
-#
-#   `sublat_proj=true`                — for models with an EXPLICIT sublattice
-#   auxiliary index (honeycomb_sublattice_hamiltonian, kagome_hamiltonian,
-#   lieb_hamiltonian, dice_hamiltonian).  H.sublattice_s is set.
-#
-# The mask MPOs are bond-dimension 1 (single-site operators from 2D_lattice.jl)
-# and negligibly cheap to apply.
-#
-# 2D — checkerboard sublattices:
-#   SL=1 → (ix+iy) even  (_row_checker_mpo)
-#   SL=2 → (ix+iy) odd   (Id − _row_checker_mpo)
-#
-# 1D — alternating-site sublattices:
-#   SL=1 → even sites (ix % 2 == 0)   (_col_select_mpo, keep=:odd)
-#   SL=2 → odd  sites (ix % 2 == 1)   (_col_select_mpo, keep=:even)
-#   (`:odd`/`:even` labels refer to the LSB qubit state, not the site index)
-# ============================================================
-
-"""
-    projop_2DSL(O, sites, Lx, Ly, SL) -> MPO
-
-Project MPO `O` (on a `2^Lx × 2^Ly` lattice) onto sublattice `SL`
-(1 = even checkerboard, 2 = odd checkerboard) by sandwiching with the
-corresponding diagonal mask: `mask · O · mask`.
-"""
-function projop_2DSL(O::MPO, sites, Lx, Ly, SL::Integer)
-    mask = SL == 1 ? _row_checker_mpo(Lx, Ly, sites) :
-                     MPO(sites, "Id") - _row_checker_mpo(Lx, Ly, sites)
-    Oproj = apply(mask, O; cutoff=1e-8, maxdim=100)
-    Oproj = apply(Oproj, mask; cutoff=1e-8, maxdim=100)
-    return Oproj
-end
-
-"""
-    projop_1DSL(O, sites, Lx, SL) -> MPO
-
-Project MPO `O` (on a `2^Lx` chain) onto sublattice `SL`
-(1 = even sites, 2 = odd sites) by sandwiching with the corresponding
-diagonal mask: `mask · O · mask`.
-"""
-function projop_1DSL(O::MPO, sites, Lx, SL::Integer)
-    mask = SL == 1 ? _col_select_mpo(Lx, 0, sites; keep=:odd) :
-                     _col_select_mpo(Lx, 0, sites; keep=:even)
-    Oproj = apply(mask, O; cutoff=1e-8, maxdim=100)
-    Oproj = apply(Oproj, mask; cutoff=1e-8, maxdim=100)
-    return Oproj
-end
-
-
-# ============================================================
 # 3. Internal utilities
 #
 # ilinspace       — evenly-spaced integer grid for k-center placement
 # _eval_diag_mps  — fast diagonal evaluation without constructing basis MPS
-# sample_diag     — batch evaluation over a contiguous range (convenience)
 # _kpm_weight_matrix — precomputed Chebyshev-KPM weights W[n, iω]
 # ============================================================
 
@@ -371,24 +308,6 @@ function _eval_diag_mps(A::MPS, x::Int)
         acc *= A[i] * setelt(sites[i] => b + 1)
     end
     return real(scalar(acc))
-end
-
-
-"""
-    sample_diag(Tn_k, ikstart, ikend) -> Vector{Float32}
-
-Extract the diagonal of MPO `Tn_k` as an MPS and evaluate it at every
-integer index in `ikstart:ikend`.  Convenience wrapper around
-`_eval_diag_mps`; used when all k-points in a contiguous range are needed.
-"""
-function sample_diag(Tn_k::MPO, ikstart::Int, ikend::Int)
-    A_mps = extract_diagonal_to_mps(Tn_k)
-    A_mps = ITensorMPS.truncate!(A_mps; cutoff=1e-10)
-    vals  = zeros(Float32, ikend - ikstart + 1)
-    for (iloc, idx) in enumerate(ikstart:ikend)
-        vals[iloc] = _eval_diag_mps(A_mps, idx)
-    end
-    return vals
 end
 
 
@@ -1385,8 +1304,6 @@ end
 #   `side=:pre` for prepended indices (spin, Nambu, layer);
 #   `side=:post` for postpended indices (sublattice).
 #
-#   project_spin — convenience alias for the :pre case (spin is always prepended).
-#
 # aux_site(H, which) -> (Index, Symbol)
 #   Extracts the auxiliary Index and its side (:pre or :post) from H.sites.
 #   `which` ∈ :spin, :nambu, :layer, :sublattice.
@@ -1425,17 +1342,6 @@ end
 # so branches in get_bands can be type-checked without a MethodError.
 project_aux(::MPO, ::Nothing, ::Integer; side::Symbol=:pre) =
     error("sublat_proj=true requires sublat_s to be set (detected from H.sublattice_s)")
-
-# Convenience alias — spin is always prepended (:pre)
-"""
-    project_spin(W, spin_s, σ) -> MPO
-
-Convenience wrapper for `project_aux` when the auxiliary site is prepended
-(spin at site 1).  Equivalent to `project_aux(W, spin_s, σ; side=:pre)`.
-"""
-project_spin(W::MPO, spin_s::Index,   σ::Integer) = project_aux(W, spin_s, σ; side=:pre)
-project_spin(W::MPO, ::Nothing, ::Integer) =
-    error("spin_proj=true requires spin_s — detected via sites[1] when spin_proj=true")
 
 
 """
