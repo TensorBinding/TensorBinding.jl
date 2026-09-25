@@ -280,8 +280,6 @@ function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Number}=ComplexF32)
     return ITensors.itensor(_tb_cuda_module().CuArray(arr), i)
 end
 
-_onehot_gpu_f32(p::Pair{<:Index,<:Integer}) = _onehot_gpu(p, ComplexF32)
-
 # GPU-safe Hadamard product: identical logic to _hadamard_mpo but uses
 # _make_delta_gpu so all contractions stay within ComplexF32 on GPU.
 function _hadamard_mpo_gpu(A::MPO, B::MPO, out_sites::Vector{<:Index};
@@ -892,9 +890,6 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
     return (amplitude=amplitude, times=times, centers=centers, groups=groups,
             norms=norms, maxlinkdims=maxlinks)
 end
-
-get_nh_state_trajectory_gpu(H, psi0::MPS; kwargs...) =
-    get_state_amplitude_trajectory_gpu(H, psi0; kwargs...)
 
 function _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO
     N = length(mps)
@@ -2515,9 +2510,6 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
     return xgrid, ygrid, Z
 end
 
-nh_spectrum_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int; kwargs...) =
-    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; kwargs...)
-
 """
     get_nh_dos_points_gpu(H, z_points, n; scale=nothing,
                           nh_scale_padding=1.05, n_random, point_ids, ...)
@@ -3558,11 +3550,6 @@ function _tb_spatial_plan_gpu(sites;
         num_x    = num_x, num_y = num_y, num_avg = num_avg,
         x_start  = x_start, x_end = x_end,
         x_groups = x_groups, box_half = box_half)
-end
-
-function _tb_spatial_groups_gpu(sites; kwargs...)
-    plan = _tb_spatial_plan_gpu(sites; kwargs...)
-    return plan.centers, plan.groups
 end
 
 """
