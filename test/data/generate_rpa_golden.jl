@@ -4,7 +4,9 @@
 # Reference: the golden data was generated from commit 1a5548b (branch Anouar,
 # "Run the third-round audit regression tests from runtests.jl"), before the
 # Tier 1 code reorganisation (docs/dev/REORGANISATION_TODO.md). It pins what
-# the RPA code does at that commit, remaining bugs included.
+# the RPA code does at that commit, remaining bugs included. It was regenerated
+# at 4cf90f8, whose src/ computes the same RPA outputs, to add the keyword
+# forwarding and default-keyword cases; every earlier case kept its values.
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain.
@@ -30,7 +32,23 @@
 # its cases (and its EXPECTED_CASE_COUNTS entry) if it is deleted.
 #
 # Sizes are tiny on purpose (L <= 3 position qubits, Ncheb <= 8, maxdim 20): the
-# test is a guard against changed outputs, not a physics check.
+# test is a guard against changed outputs, not a physics check. The exceptions
+# are the `*_defaults` cases, which call a driver with no keyword at all, so that
+# its defaults (Ncheb = 150 or 50, maxdim = 200, η = 1e-3, P_method =
+# :purification, …) are pinned too; they run on the smallest inputs (L = 2).
+#
+# The Dyson and Wynn drivers (get_rpa_susceptibility, get_rpa_susceptibility_wynn,
+# get_magnon_susceptibility, get_magnon_susceptibility_wynn) hand their bubble
+# keywords on to get_bubble_mpo. The `*_fwd_*` cases pin that forwarding: between
+# them they set every forwarded keyword to a non-default value that changes the
+# output (checked by dropping each keyword in turn when the cases were written),
+# so a keyword the driver stops forwarding changes a pinned value. `verbose`
+# changes no number; the runner pins it through `bubble_progress_printed`.
+#   * FWD_KPM  : P_method=:kpm, ϵF, Ncheb, maxdim, cutoff, η, verbose;
+#   * FWD_KRY  : GF_method=:krylov, krylov_nsweeps/maxdim/cutoff, and the McWeeny
+#                path with a purify_tol that stops it early;
+#   * FWD_SP2  : purify_method=:sp2 with a purify_maxdim and purify_maxiters that
+#                bind.
 #
 # Behaviour pinned as it is at 1a5548b and worth knowing before regenerating
 # (a fix of any of these changes the data on purpose):
@@ -265,6 +283,52 @@ add!("cheb2d_diag_tucker_pair", :get_bubble_diag_cheb2d_tucker, :chain3_pair, ([
 add!("cheb2d_diag_tucker_bad_kernel", :get_bubble_diag_cheb2d_tucker, :chain3, ([0.3],),
      merge(CKW, kw(kernel=:bogus)))
 add!("cheb2d_diag_tucker_spin_refused", :get_bubble_diag_cheb2d_tucker, :spin2_y, ([0.3],), CKW)
+
+# ══════════════════════════════════════════════════════════════════
+# Keyword forwarding of the Dyson and Wynn drivers to get_bubble_mpo
+# ══════════════════════════════════════════════════════════════════
+# See the header. Dropping a forwarded keyword fails every case that sets it,
+# with one exception: maxdim=20 does not bind in the two magnon Krylov cases
+# (it does in the magnon FWD_KPM and FWD_SP2 cases). Dropping purify_maxiters
+# from a charge FWD_SP2 case makes the call throw an ArgumentError, which fails
+# the case just as well. DKW's rpa_nsweeps and rpa_maxdim and WKW's maxdim_apply
+# do not bind at this size; they are the drivers' own keywords, not forwarded.
+const FWD_KPM = kw(P_method=:kpm, ϵF=0.3, Ncheb=8, maxdim=6, cutoff=1e-4, η=0.1, verbose=true)
+const FWD_KRY = kw(GF_method=:krylov, krylov_nsweeps=2, krylov_maxdim=3, krylov_cutoff=1e-2,
+                   purify_tol=1e-2, maxdim=20, η=0.1)
+const FWD_SP2 = kw(purify_method=:sp2, purify_maxdim=3, purify_maxiters=3, Ncheb=8, maxdim=20, η=0.1)
+for (fn, setup, label) in ((:get_rpa_susceptibility, :chain3_cplx, "rpa_charge_cplx"),
+                           (:get_magnon_susceptibility, :spin3_z, "magnon_chi_spin3_z"))
+    add!("$(label)_fwd_kpm_ef03_cutoff_verbose", fn, setup, (0.3,),
+         merge(FWD_KPM, DKW, kw(rpa_cutoff=1e-4)))
+    add!("$(label)_fwd_krylov_mcweeny_tol", fn, setup, (0.3,), merge(FWD_KRY, DKW))
+    add!("$(label)_fwd_sp2_maxdim_maxiters", fn, setup, (0.3,), merge(FWD_SP2, DKW))
+end
+for (fn, setup, label) in ((:get_rpa_susceptibility_wynn, :chain3_cplx, "wynn_charge_cplx"),
+                           (:get_magnon_susceptibility_wynn, :spin3_z, "magnon_wynn_spin3_z"))
+    add!("$(label)_fwd_kpm_ef03_cutoff_verbose", fn, setup, ([0.3],),
+         merge(FWD_KPM, WKW, kw(cutoff_apply=1e-4)))
+    add!("$(label)_fwd_krylov_mcweeny_tol", fn, setup, ([0.3],), merge(FWD_KRY, WKW))
+    add!("$(label)_fwd_sp2_maxdim_maxiters", fn, setup, ([0.3],), merge(FWD_SP2, WKW))
+end
+
+# ══════════════════════════════════════════════════════════════════
+# Default keywords: every driver called with no keyword at all
+# ══════════════════════════════════════════════════════════════════
+add!("bubble_chain2_defaults", :get_bubble_mpo, :chain2, (0.3,))
+add!("rpa_charge_chain2_defaults", :get_rpa_susceptibility, :chain2, (0.3,))
+add!("wynn_charge_chain2_defaults", :get_rpa_susceptibility_wynn, :chain2, ([0.3],))
+add!("magnon_bubble_spin2_z_defaults", :get_magnon_bubble, :spin2_z, (0.3,))
+add!("magnon_chi_spin2_z_defaults", :get_magnon_susceptibility, :spin2_z, (0.3,))
+add!("magnon_wynn_spin2_z_defaults", :get_magnon_susceptibility_wynn, :spin2_z, ([0.3],))
+add!("rpa_from_bubble_diag_qubits_defaults", :rpa_from_bubble_diag, :dyson_q)
+add!("wynn_from_bubbles_defaults", :rpa_wynn_from_bubbles, :wynn_bubbles)
+add!("haydock_bubble_chain2_defaults", :get_bubble_mpo_haydock, :chain2, ([0.3],))
+add!("cheb2d_mpo_chain2_defaults", :get_bubble_mpo_cheb2d, :chain2, ([0.3],))
+add!("cheb2d_mpo_tucker_chain2_defaults", :get_bubble_mpo_cheb2d_tucker, :chain2, ([0.3],))
+add!("cheb2d_diag_chain2_defaults", :get_bubble_diag_cheb2d, :chain2, ([0.3],))
+add!("cheb2d_svd_chain2_defaults", :get_bubble_diag_cheb2d_svd, :chain2, ([0.3],))
+add!("cheb2d_diag_tucker_chain2_defaults", :get_bubble_diag_cheb2d_tucker, :chain2, ([0.3],))
 
 # ══════════════════════════════════════════════════════════════════
 # Evaluation and output

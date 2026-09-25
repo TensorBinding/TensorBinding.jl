@@ -33,9 +33,12 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, TBHamiltonian, rep
 #
 # Comparison rules:
 #   * every field recorded in the golden data must still be returned;
-#   * floating-point arrays and scalars: same size and element type, and
-#     isapprox(rtol=RTOL, atol=ATOL) (norm-wise for arrays); NaN/Inf entries
-#     must sit at the same positions with the same value;
+#   * floating-point scalars and arrays: same size and element type, and every
+#     entry isapprox(rtol=RTOL, atol=ATOL) on its own -- entry by entry, not
+#     norm-wise, so that a small entry next to a large one (the 1e30 that
+#     wynn_epsilon returns once a sequence has converged exactly, say) is pinned
+#     to its own size; NaN/Inf entries must sit at the same positions with the
+#     same value;
 #   * everything else (Int, Bool, Symbol, String, types, `nothing`): `==` and the
 #     same type;
 #   * a case recorded as throwing must still throw that exception type with the
@@ -47,6 +50,12 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, TBHamiltonian, rep
 # with length, site dimensions, element type and, where the result is meant to
 # live on known indices, whether it does (`on_ref_sites`). Bond dimensions are
 # not pinned.
+#
+# The drivers that hand `verbose` on to get_bubble_mpo (VERBOSE_FORWARDING_FNS)
+# also record `bubble_progress_printed`, whether get_bubble_mpo's progress lines
+# ("Polarization bubble: ...") reached standard output: `verbose` changes no
+# number, so this is the value a dropped `verbose` changes. Their other
+# forwarded keywords are pinned by cases in which each one changes the output.
 #
 # The runner below is shared with the generator, which includes this file with
 # `RPA_GOLDEN_GENERATOR` defined so that only the module is loaded.
@@ -77,26 +86,26 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :chebyshev2d_gf_coeffs              => 2,
     :collapse_mpo_pairs                 => 2,
     :eval_haydock_cf                    => 3,
-    :get_bubble_diag_cheb2d             => 5,
-    :get_bubble_diag_cheb2d_svd         => 6,
-    :get_bubble_diag_cheb2d_tucker      => 6,
-    :get_bubble_mpo                     => 13,
-    :get_bubble_mpo_cheb2d              => 5,
-    :get_bubble_mpo_cheb2d_tucker       => 6,
-    :get_bubble_mpo_haydock             => 2,
-    :get_magnon_bubble                  => 3,
-    :get_magnon_susceptibility          => 2,
-    :get_magnon_susceptibility_wynn     => 2,
-    :get_rpa_susceptibility             => 5,
-    :get_rpa_susceptibility_wynn        => 5,
+    :get_bubble_diag_cheb2d             => 6,
+    :get_bubble_diag_cheb2d_svd         => 7,
+    :get_bubble_diag_cheb2d_tucker      => 7,
+    :get_bubble_mpo                     => 14,
+    :get_bubble_mpo_cheb2d              => 6,
+    :get_bubble_mpo_cheb2d_tucker       => 7,
+    :get_bubble_mpo_haydock             => 3,
+    :get_magnon_bubble                  => 4,
+    :get_magnon_susceptibility          => 6,
+    :get_magnon_susceptibility_wynn     => 6,
+    :get_rpa_susceptibility             => 9,
+    :get_rpa_susceptibility_wynn        => 9,
     :get_spect_k                        => 3,
     :haydock_cf                         => 4,
     :haydock_resolve_mpo                => 2,
     :interleave_mpo                     => 4,
     :interleave_mpo_tb                  => 3,
     :mpo_kron                           => 1,
-    :rpa_from_bubble_diag               => 2,
-    :rpa_wynn_from_bubbles              => 2,
+    :rpa_from_bubble_diag               => 3,
+    :rpa_wynn_from_bubbles              => 3,
     :swap_every_other_legs              => 1,
     :wynn_epsilon                       => 7,
 )
@@ -259,6 +268,13 @@ function build_setup(setup::Symbol)
         return (; H1=H, H2=H, cache=H._density_cache)
     elseif setup === :chain3_vs_chain2
         return (; H1=chain(3), H2=chain(2))
+    elseif setup === :chain2
+        # The smallest inputs, for the cases that run a driver with its default keywords.
+        H = chain(2)
+        return (; H1=H, H2=H, V=Vid(H.sites))
+    elseif setup === :spin2_z
+        H = spinful(2)
+        return (; H1=H, H2=H, V=Vid(position_sites(H)))
     elseif setup === :spin3_z
         H = spinful(3)
         return (; H1=H, H2=H, V=Vid(position_sites(H)))
@@ -374,19 +390,41 @@ wynn_record((cp, cw)) = (; chi_partial=cp, chi_wynn=cw)
 
 # ── One call per case ──────────────────────────────────────────────────────────
 
+# The drivers that forward `verbose` to get_bubble_mpo, and the prefix of the
+# progress lines get_bubble_mpo prints with verbose=true.
+const VERBOSE_FORWARDING_FNS = (:get_rpa_susceptibility, :get_rpa_susceptibility_wynn,
+                                :get_magnon_bubble, :get_magnon_susceptibility,
+                                :get_magnon_susceptibility_wynn)
+const BUBBLE_PROGRESS = "Polarization bubble:"
+
 """
     run_case(fn, setup, seed, args, kwargs) -> NamedTuple
 
 Seed both RNGs, build the inputs named by `setup`, make the call named by `fn`
 and return a record of its output. Standard output (progress prints of the
-KPM/DMRG helpers) is discarded.
+KPM/DMRG helpers) is discarded; for the drivers in VERBOSE_FORWARDING_FNS it is
+first searched for get_bubble_mpo's progress lines (`bubble_progress_printed`).
 """
 function run_case(fn::Symbol, setup::Symbol, seed::Int,
                   @nospecialize(args::Tuple), @nospecialize(kwargs::NamedTuple))
     Random.seed!(seed)
     Random.seed!(ITensors.index_id_rng(), seed)
-    return redirect_stdout(devnull) do
+    fn in VERBOSE_FORWARDING_FNS || return redirect_stdout(devnull) do
         _run_case(fn, build_setup(setup), args, kwargs)
+    end
+    path, io = mktemp()
+    try
+        rec = redirect_stdout(io) do
+            r = _run_case(fn, build_setup(setup), args, kwargs)
+            flush(stdout)
+            r
+        end
+        close(io)
+        printed = occursin(BUBBLE_PROGRESS, read(path, String))
+        return merge(rec, (; bubble_progress_printed=printed))
+    finally
+        isopen(io) && close(io)
+        rm(path; force=true)
     end
 end
 
@@ -491,9 +529,9 @@ end
     approx_equal(actual, expected) -> Bool
 
 Floating-point numbers and arrays: same type/size/element type and isapprox
-with RTOL/ATOL (norm-wise for arrays), non-finite entries equal and in place.
-Containers of other things: element by element. Anything else: `isequal` and
-the same type.
+with RTOL/ATOL, entry by entry for arrays, non-finite entries equal and in
+place. Containers of other things: element by element. Anything else: `isequal`
+and the same type.
 """
 approx_equal(@nospecialize(a), @nospecialize(b)) = typeof(a) == typeof(b) && isequal(a, b)
 approx_equal(a::Integer, b::Integer) = typeof(a) == typeof(b) && a == b
@@ -502,12 +540,13 @@ function approx_equal(a::Number, b::Number)
     isfinite(a) && isfinite(b) || return isequal(a, b)
     return isapprox(a, b; rtol=RTOL, atol=ATOL)
 end
+# Entry by entry: a norm-wise isapprox would let every entry much smaller than the
+# largest one (next to a 1e30 Wynn sentinel, all of them) drift unchecked.
+entry_matches(x::Number, y::Number) =
+    isfinite(x) && isfinite(y) ? isapprox(x, y; rtol=RTOL, atol=ATOL) : isequal(x, y)
 function approx_equal(a::AbstractArray{<:Number}, b::AbstractArray{<:Number})
     size(a) == size(b) && eltype(a) == eltype(b) || return false
-    fa = isfinite.(a)
-    fa == isfinite.(b) || return false
-    all(i -> fa[i] || isequal(a[i], b[i]), eachindex(a)) || return false
-    return isapprox(a[fa], b[fa]; rtol=RTOL, atol=ATOL)
+    return all(i -> entry_matches(a[i], b[i]), eachindex(a, b))
 end
 function approx_equal(a::AbstractArray, b::AbstractArray)
     size(a) == size(b) || return false
@@ -521,10 +560,16 @@ approx_equal(a::NamedTuple, b::NamedTuple) =
 function _detail(@nospecialize(a), @nospecialize(b))
     if a isa AbstractArray && b isa AbstractArray
         size(a) == size(b) || return "size $(size(a)) != expected $(size(b))"
-        a isa AbstractArray{<:Number} && b isa AbstractArray{<:Number} || return "entries differ"
+        if !(a isa AbstractArray{<:Number} && b isa AbstractArray{<:Number})
+            j = findfirst(k -> !approx_equal(a[k], b[k]), eachindex(a, b))
+            return j === nothing ? "entries match" : "entry $j: " * _detail(a[j], b[j])
+        end
         eltype(a) == eltype(b) || return "eltype $(eltype(a)) != expected $(eltype(b))"
-        d = norm(a[isfinite.(a)] - b[isfinite.(a)]) / max(norm(b[isfinite.(a)]), eps())
-        return "relative norm difference $d"
+        bad = findall(i -> !entry_matches(a[i], b[i]), eachindex(a, b))
+        isempty(bad) && return "entries match"
+        i = bad[argmax([abs(a[j] - b[j]) for j in bad])]
+        return "$(length(bad)) of $(length(a)) entries differ; worst at $(Tuple(CartesianIndices(a)[i])): " *
+               "got $(a[i]), expected $(b[i])"
     end
     return "got $(repr(a)), expected $(repr(b))"
 end
