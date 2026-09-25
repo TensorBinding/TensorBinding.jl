@@ -127,3 +127,14 @@ include("bugfix_haldane_textbook.jl")
 # Characterization tests: the sampling planners' current output, pinned before
 # the code-organisation refactor (data in test/data/sampling_golden.jl).
 include("sampling_golden.jl")
+
+# Tier 1 characterization tests: every area's current output, pinned before the
+# reorganisation (data in test/data/*_golden.jl, generators beside them).
+include("golden_kpm.jl")
+include("golden_rpa.jl")
+include("golden_qft.jl")
+include("golden_nh.jl")
+include("golden_lattice.jl")
+include("golden_scftopo.jl")
+include("golden_gpu.jl")
+include("golden_dynamics.jl")
