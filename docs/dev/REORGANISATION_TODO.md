@@ -10,29 +10,84 @@ Line numbers refer to the working tree on that date and will drift.
 
 ## Bugs (fix first, independently of the reorganisation)
 
-- [ ] `core/TBSystem.jl` `_build_haldane` calls `haldane_hoppingf`, which is not defined
+- [x] `core/TBSystem.jl` `_build_haldane` calls `haldane_hoppingf`, which is not defined
       anywhere; `get_Hamiltonian("haldane", …)` throws. Restore the function or drop the model.
-- [ ] `physics/RPA_tk.jl:935` `get_bubble_mpo_haydock` calls `_build_heff` with 3 arguments;
+      *Fixed in b579377.*
+- [x] `physics/RPA_tk.jl:935` `get_bubble_mpo_haydock` calls `_build_heff` with 3 arguments;
       the definition (l.454) takes 4.
-- [ ] `physics/RPA_tk.jl` ~1065 and ~1249: `get_rpa_susceptibility_wynn` and
+      *Fixed in cfe41cf.*
+- [x] `physics/RPA_tk.jl` ~1065 and ~1249: `get_rpa_susceptibility_wynn` and
       `get_magnon_susceptibility_wynn` assign `nq` inside `if chi_partial === nothing` inside
       the frequency loop, so the second frequency hits an undefined variable. Hoist `nq`.
-- [ ] `physics/Topology_tk.jl` `get_C` accepts `Lambda` (ASCII alias) and never uses it; the
+      *Fixed in cfe41cf.*
+- [x] `physics/Topology_tk.jl` `get_C` accepts `Lambda` (ASCII alias) and never uses it; the
       GPU twin honours it.
-- [ ] `core/TBSystem.jl` 17-argument `TBHamiltonian` compatibility constructor silently drops
+      *Fixed in b3bf907.*
+- [x] `core/TBSystem.jl` 17-argument `TBHamiltonian` compatibility constructor silently drops
       `Lx`, `interaction_mpo`, `fock_mpo` and `position_space`; SCF (l.364, 485, 1136),
       RPA (l.1141) and NH (l.99) copy Hamiltonians through it. Replace with a keyword copy
       constructor (see Tier 2) and delete the positional ones.
-- [ ] `solvers/KPM_tk.jl` `get_density_quantics` uses an undefined global `sites`. Delete.
-- [ ] `solvers/Timeev_tk.jl` `compare_propagator_and_tdvp_heatmaps` calls `heatmap`/`plot`/
+      *Fixed in c87275a, bc4c9b4, cfe41cf.*
+- [x] `solvers/KPM_tk.jl` `get_density_quantics` uses an undefined global `sites`. Delete.
+      *Fixed in f85750b.*
+- [x] `solvers/Timeev_tk.jl` `compare_propagator_and_tdvp_heatmaps` calls `heatmap`/`plot`/
       `display` although Plots is not a dependency. Move to `examples/`.
-- [ ] `gpu/GPU_tk.jl:871` second `_sample_state_amplitudes_gpu` call drops `pointavg`.
-- [ ] `gpu/GPU_tk.jl:267` `_onehot_gpu` only accepts `T<:Complex`; the advertised
+      *Fixed in f85750b.*
+- [x] `gpu/GPU_tk.jl:871` second `_sample_state_amplitudes_gpu` call drops `pointavg`.
+      *Fixed in 552ff3f.*
+- [x] `gpu/GPU_tk.jl:267` `_onehot_gpu` only accepts `T<:Complex`; the advertised
       `type=Float32/Float64` paths fail.
-- [ ] `physics/Purification_tk.jl:20` header example uses `method=:KPM`; code accepts `:kpm`.
-- [ ] `README.md:22` claims CUDA is an installed dependency; `Project.toml` has none.
-- [ ] `core/Utils.jl` `_exciton_block_groups` is reachable only through a branch that
+      *Fixed in 552ff3f.*
+- [x] `physics/Purification_tk.jl:20` header example uses `method=:KPM`; code accepts `:kpm`.
+      *Fixed in 4738800.*
+- [x] `README.md:22` claims CUDA is an installed dependency; `Project.toml` has none.
+      *Fixed in 4738800.*
+- [x] `core/Utils.jl` `_exciton_block_groups` is reachable only through a branch that
       `get_exciton_ldos_spatial_gpu` rejects earlier (`reduce=:block`). Delete both.
+      *Fixed in 552ff3f.*
+
+### Found while fixing the list above (2026-09-25/26)
+
+- [x] `core/Utils.jl` `spatial_sampling_plan` 1D `:point`: `num_x` larger than the window,
+      an empty window or `num_avg < 1` returned empty groups (NaN or crashing LDOS columns).
+      *Now an error (7c7fe96); every other plan pinned by `test/sampling_golden.jl` (15d66e3).*
+- [x] `core/Hamiltonian.jl` `hopping2MPO` passed QTCI initial pivots as a keyword and threw.
+      *Fixed in 8ba4742.*
+- [x] `solvers/Timeev_tk.jl` `evolve_with_propagator` called the `TBHamiltonian`-only
+      `truncate!`. *Fixed in a9aadc2.*
+- [x] `physics/RPA_tk.jl` `get_rpa_susceptibility(mode=:magnetic)` mixed spinful and
+      spin-projected sites. *Fixed in ce8d1d1.*
+- [x] RPA cheb2d bubbles on spinful/sublattice/layer/Nambu registers failed; the MPO variants
+      silently truncated qudit (metallic-mean) sites. *Fixed in e5a0d5f, f8daa7f.*
+- [x] `_build_haldane`: default scale below the spectral radius for large `t2` (1b4657d); QTCI
+      build non-deterministic and often wrong (structural pivots + check, e0285c3).
+- [x] Layered builders never set `Lx` (block/grid/box LDOS maps wrong). *Fixed in 4cbfa01;
+      clearer `add_hopping!` error on geometry-less layered systems in b453021.*
+- [x] GPU: helpers reaching CUDA without `_check_gpu`, stale header, `get_C`/`get_C_gpu`
+      signatures (7030de2); `get_bands_gpu` k-grid on aux models (581c7d7); docstrings
+      (1d36ff4, 4ce2c2e).
+- [x] `build_tdvp_propagator_mpo`: default path threw, then cost O(N) TDVP runs and was 0.1 off
+      `exp(-iH dt)`. *Fixed in ee1fb6d..ddb4c71 (no diagonal seeding, reverse_step=true,
+      basis expansion, one TDVP run per column).*
+- [x] Decision taken: every Haldane construction is the textbook C3-symmetric model.
+      `haldane` and `chernhex` had the wrong phase on the vertical NNN bonds (transition at
+      √3·t2 instead of 3√3·t2). *Fixed in c1470e3, 2d529b6, test 9277c03.* The manuscript's
+      `build_APSOS_hamiltonian` and `get_valley_operator` were already textbook; the manuscript
+      model and `haldane` share the φ convention, `chernhex` has the opposite Chern sign.
+- [ ] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
+      (`qc2dsquare` from L≈12). Decided: fix through the Tier 2 scale maker (below).
+- [ ] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
+      QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
+- [ ] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
+      field is identically zero (e.g. `uniformsemenoff=true, ms=0`).
+- [ ] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
+      `Lx = H.L ÷ 2` silently; `tjunction_lattice_hamiltonian` has no meaningful `Lx`.
+- [ ] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
+      after the first Hartree step.
+- [ ] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
+      asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
+- [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
+- [ ] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -149,6 +204,14 @@ Line numbers refer to the working tree on that date and will drift.
       scale) replacing `get_Hamiltonian`'s if-chain + `build_hamiltonian` + `_build_preset` +
       `_build_sublattice` + `_preset_geometry` + `_estimate_scale`; `_param(params, :t, default)`
       replacing the parsing ternaries; remove drifted `kw_defaults` from the registry.
+- [ ] Universal scale maker `estimate_scale` in the model registry (decided 2026-09-26):
+      preset default = max(today's formula, estimate); `:small` = exact dense spectrum of
+      the same preset at a small size, padded, for presets whose terms do not depend on
+      the system size; `:geometry` = row-sum bound from the builder's terms for the
+      size-scaled `chern8` and `qc2dsquare` (their defaults change; changelog); `:dmrg` =
+      today's `scale=0` path for modified Hamiltonians; `scale=:small|:geometry|:dmrg`
+      selects a method explicitly. Supersedes the held commit b6b9fba.
+
 - [ ] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
       2D kinetic builders; retire `generate_kin_u/d` in favour of `shift_mpo`.
 - [ ] `_sublattice_bond` + `_sublattice_setup` replacing ~12 repeated bond blocks in
@@ -164,8 +227,9 @@ Line numbers refer to the working tree on that date and will drift.
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
       `_resolve_gpu_type` with a single warning threshold; `_gpu_log`.
-- [ ] Decide the one remaining sampling divergence: `get_ldos_spatial_mps_gpu` automatic plan
-      (balanced `fld` bins, `unique(round.(range))` samples) vs `spatial_sampling_plan` 1D branch.
+- [ ] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
+      changing its output (decided 2026-09-25); a balanced tiler may come later as an opt-in
+      keyword with today's behaviour as the default.
 
 ## Tier 3 — API consistency (user-visible)
 
