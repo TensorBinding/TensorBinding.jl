@@ -541,6 +541,15 @@ function spatial_sampling_plan(L::Int;
         end
     else
         window = x_end - x_start + 1
+        # Reject requests the 1D layout cannot fill: they used to return empty
+        # groups (NaN or crashing LDOS columns) or divide by zero.
+        window >= 1 ||
+            error("spatial_sampling_plan: empty sampling window (x_start=$x_start > x_end=$x_end).")
+        num_x <= window ||
+            error("spatial_sampling_plan: num_x=$num_x exceeds the sampling window length $window " *
+                  "(x_start=$x_start, x_end=$x_end); pass num_x=0 to sample every site in the window.")
+        num_avg >= 1 ||
+            error("spatial_sampling_plan: num_avg must be at least 1 (got $num_avg).")
         nx     = num_x <= 0 ? window : num_x
         dx     = max(window ÷ nx, 1)
         stride_x = dx
