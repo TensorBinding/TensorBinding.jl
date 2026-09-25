@@ -108,6 +108,29 @@ keyword named in the entry.
 - `compare_propagator_and_tdvp_heatmaps`, which needed Plots; it now lives in
   `examples/dynamics/propagator_vs_tdvp_heatmaps.jl`.
 - The unreachable internal helper `_exciton_block_groups`.
+- Unused functions (no library code, example or regression test called them), besides
+  a few internal helpers (`nsitelegs`, `_nsublat`, `_geom_n_sub`, …):
+  `build_cyclic_shift_mpo`, `kinetic_1d_nn_custom`, `quasicrystal_modulation_30deg`,
+  `circular_mod`; the legacy lattice builders `interchain_hopping_square_2nd_plus`,
+  `interchain_hopping_square_2nd_minus`, `interchain_hopping_triangle`,
+  `interchain_hopping_honeycomb` and their masks `skeleton`, `odd_template`,
+  `even_template`, `odd_skeleton`, `even_skeleton`; `postpend_layer_projector`,
+  `postpend_layer_hopping`; the legacy sublattice projectors `projop_1DSL`,
+  `projop_2DSL`, `sample_diag` and `project_spin` (use `project_aux`); the cached
+  exciton path `KPM_Tn(H, Ncheb, X::Int)` and `ldos_exc_KPM_Tn` (use
+  `get_exciton_ldos_spatial`), `get_mus_raw`, `compute_dos_ldos_hodc`; the old RPA
+  pipeline `get_Tnlists`, `get_bublle_expanded_from_Tn`, `build_bubble_mpo` (use
+  `get_bubble_mpo`) with `mps_kron`, `merge_mps_to_mpo`, `convert_mpo`,
+  `apply_interleave_swaps`; `hopping_mpo_exciton`; `nh_imag_onsite_mpo`,
+  `add_nh_imag_onsite!` and `add_nh_loss!` (use `add_loss!`),
+  `nh_reconstruct_spectral_mpo`, `nh_spectral_function_allsite_mpo` (use
+  `nh_spectral_function`); the GPU aliases `get_nh_state_trajectory_gpu` (use
+  `get_state_amplitude_trajectory_gpu`) and `nh_spectrum_grid_gpu` (use
+  `get_nh_dos_grid_gpu`).
+- Unconditional progress prints ("MPS COMPUTED!", "KPM_Tn: estimating spectral bounds
+  via DMRG…", "C1 done", …): they are `@debug` messages now (`JULIA_DEBUG=TensorBinding`
+  shows them). The spinless s-wave → p-wave notice of `add_superconductivity!` is an
+  `@info` message.
 
 ## [0.1.0] — 2026-07-01
 

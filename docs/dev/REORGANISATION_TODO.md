@@ -201,10 +201,12 @@ the affected golden cases in the same commit.
       `test/gpu_mps_ldos.jl`.
 
 ### Delete dead and legacy code
-- [ ] Confirmed unreferenced everywhere (incl. notebooks and generated docs):
+- [x] Confirmed unreferenced everywhere (incl. notebooks and generated docs):
       `build_cyclic_shift_mpo`, `_geom_n_sub`, `_nsublat`, `nsitelegs`, `_tb_spatial_groups_gpu`,
       `get_nh_state_trajectory_gpu`, the `Delta_*` one-liners in SCF.
-- [ ] Unreferenced in src/test/tracked examples: `projop_2DSL`, `projop_1DSL`, `sample_diag`,
+      *Deleted in 9dbee85, fb8b2d8, 28f611f, d1b680c. The `Delta_*` "one-liners" are formulas
+      in the `scf_*` docstrings, not functions; nothing to delete.*
+- [x] Unreferenced in src/test/tracked examples: `projop_2DSL`, `projop_1DSL`, `sample_diag`,
       `project_spin`, `get_density_quantics`, `_get_exciton_ldos_cached` + exciton
       `KPM_Tn(H, N, X)`, `ldos_exc_KPM_Tn`, `get_mus_raw`, `compute_dos_ldos_hodc`,
       `kinetic_1d_nn_custom`, `qtci_matrix_to_MPO`, `quasicrystal_modulation_30deg`,
@@ -218,14 +220,33 @@ the affected golden cases in the same commit.
       `nh_spectral_function_allsite_mpo`, `spin_hamiltonian`, `bdg_hamiltonian` (re-inlined
       in TBSystem), `_onehot_gpu_f32`, `nh_spectrum_grid_gpu`. Check each once more before
       deleting; `examples/nontracked/APSOS/Modified_GPU_funcs.jl` carries forks of some.
-- [ ] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
+      *Deleted in 9dbee85 (core), fb8b2d8 (lattice), c91ff65 (KPM), 44a79c2 (QFT), 28f611f (RPA),
+      fbc5a94 (TwoParticle), 6d79888 (NH), d1b680c (GPU); `get_density_quantics` was already
+      gone (f85750b). Kept, because they are used: `sdf_interval` (QPI_tk.jl apodization
+      window), `qtci_matrix_to_MPO` (test/bugfix_pivots.jl), `get_bubble_mpo_haydock` (fixed
+      in cfe41cf; test/bugfix_rpa.jl, golden_rpa), `fock_exchange_builder`
+      (examples/manybody/scf_examples.ipynb, golden_scftopo), and `get_valley_projectors`,
+      `initial_guess_trivial_up/down_1D`, `spin_hamiltonian`, `bdg_hamiltonian`, which no
+      library code calls but golden_scftopo pins without a skip-on-delete rule (delete them
+      together with their scftopo cases if wanted). Modified_GPU_funcs.jl only defines its own
+      copies of `_onehot_gpu_f32`/`nh_spectrum_grid_gpu` and is included nowhere.*
+- [x] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
       `Purification_tk.jl:95–96`, unreachable code after early `return` in
       `2Dlattice_tk.jl` (`generate_kin_u/d` l.33–63, six kinetic builders l.388–543).
+      *Removed in 3291292.*
 - [ ] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
       190–214) once Tier 2 keyword constructor exists.
-- [ ] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
+- [x] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
       `KPM_tk.jl` 14/30/31, `QFT_tk.jl` 1453–1470, `Topology_tk.jl` 499–539,
       `TBSystem.jl` 1175, RPA legacy pipeline; switch to `@info … maxlog=1` or `verbose` gates.
+      *f6a29c4: progress chatter in Hamiltonian.jl, KPM_tk.jl and Topology_tk.jl (no flag
+      there) → `@debug`; the spinless s-wave → p-wave notice in TBSystem.jl → `@info`; the RPA
+      legacy prints went with the pipeline (28f611f). Every other `println` in src is behind
+      `verbose`/`printinfo`, is the point of its function (`get_shell_disps`,
+      `check_tdvp_vs_U_mpo`) or is a `show` method.*
+- [ ] `QFT_tk.jl` `_autoenable_proj` "Info: … auto-enabling …" lines still go to stdout:
+      test/golden_qft.jl pins them in the captured `stdout` of 20 cases. Switching to `@info`
+      means regenerating those fields in the same commit.
 
 ### Make the structure legible
 - [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
