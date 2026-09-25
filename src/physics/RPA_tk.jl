@@ -1337,6 +1337,17 @@ function chebyshev2d_gf_coeffs(ω::Real, scale1::Real, center1::Real,
 end
 
 
+# Output indices for the Hadamard products of the cheb2d MPO bubbles: one fresh index per
+# site of H1.sites, of the same dimension, so Π₀ lives on all of H1.sites (spin, Nambu,
+# layer and sublattice indices included), like the result of get_bubble_mpo.
+function _cheb2d_out_sites(H1::TBHamiltonian, H2::TBHamiltonian, fname::AbstractString)
+    dim.(H1.sites) == dim.(H2.sites) ||
+        throw(ArgumentError("$fname: H1 and H2 must have the same site structure " *
+                            "(site dimensions $(dim.(H1.sites)) vs $(dim.(H2.sites)))"))
+    return [sim(s) for s in H1.sites]
+end
+
+
 
 
 """
@@ -1345,6 +1356,10 @@ end
 
 Compute the non-interacting polarization bubble Π₀(ω) for each ω in `ωlist`
 using the **double Chebyshev decomposition**.
+
+Π₀ lives on `H1.sites`, including any spin, Nambu, layer or sublattice index, and
+is resolved in those indices, as the result of `get_bubble_mpo` is. `H1` and `H2`
+must have the same site structure.
 
 Instead of building the 2L-site effective Hamiltonian Heff = I⊗H₂ − H₁⊗I and
 running KPM on it (where bond dimension grows at each Chebyshev step due to
@@ -1400,6 +1415,8 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_mpo_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L = L1
+    # Fresh physical indices shared by all Hadamard product calls
+    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d")
 
     _ensure_scale!(H1)
     _ensure_scale!(H2)
@@ -1441,8 +1458,6 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                apply(Tn2[n], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
            for n in 1:N]
 
-    # Fresh physical indices shared by all Hadamard product calls
-    out_sites = siteinds("Qubit", L)
     nω        = length(ωlist)
 
     # --- Online multi-ω: precompute all coefficient matrices at once, ---
@@ -1523,6 +1538,9 @@ r_m × r_n cheap scalar-weighted MPO additions.
 
 Speedup over `get_bubble_mpo_cheb2d`: N²→r_m·r_n Hadamard products.
 
+As in `get_bubble_mpo_cheb2d`, Π₀ lives on `H1.sites`, including any spin, Nambu,
+layer or sublattice index.
+
 **Additional keyword arguments** (beyond `get_bubble_mpo_cheb2d`):
 - `tucker_tol`    : relative singular-value cutoff for both mode SVDs. Default `1e-3`.
 - `tucker_maxrank`: hard cap on r_m and r_n. Default `20`.
@@ -1551,6 +1569,7 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     @assert L1 == L2 "get_bubble_mpo_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L  = L1
     nω = length(ωlist)
+    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d_tucker")
 
     _ensure_scale!(H1); _ensure_scale!(H2)
     scale1 = H1.scale; center1 = H1.center
@@ -1576,8 +1595,6 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     P2 = H1 === H2 ? P1 : _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
                                                purify_method, purify_maxdim, purify_maxiters,
                                                purify_tol, verbose)
-
-    out_sites = siteinds("Qubit", L)
 
     verbose && println("cheb2d_mpo_tucker: computing coefficient matrices for $nω frequencies...")
     C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
