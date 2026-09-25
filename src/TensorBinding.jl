@@ -63,8 +63,11 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                                 (uses KPM_tk)
 #   physics/TwoParticle_tk.jl  — exciton/two-particle Hamiltonian and MPS
 #                                 basis-state probes (uses TBSystem, Hamiltonian, Utils)
-#   physics/NH_tk.jl       — non-Hermitian extensions: hermitization, NH KPM
-#                             spectral function (uses TBSystem, KPM_tk)
+#   physics/nh/model.jl    — non-Hermitian model: NonHermitianHamiltonian,
+#                             hermitization, add_loss!/add_nh_* builders
+#                             (uses TBSystem, Utils)
+#   physics/nh/kpm.jl      — non-Hermitian KPM: nh_kpm_*, spectral function,
+#                             nh_spectrum_grid (uses nh/model, KPM_tk, Utils)
 #   physics/QPI_tk.jl      — quasiparticle interference via KPM LDOS difference
 #                             + QFT (uses KPM_tk, QFT_tk)
 #   physics/QFT_tk.jl      — QFT conjugation and band structure get_bands
@@ -96,7 +99,8 @@ include("physics/RPA_tk.jl")
 include("physics/Topology_tk.jl")
 include("physics/Purification_tk.jl")
 include("physics/TwoParticle_tk.jl")
-include("physics/NH_tk.jl")
+include("physics/nh/model.jl")
+include("physics/nh/kpm.jl")
 include("physics/QPI_tk.jl")
 include("physics/QFT_tk.jl")
 include("physics/Supercond_tk.jl")

@@ -43,7 +43,7 @@ Pages   = ["physics/TwoParticle_tk.jl"]
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/NH_tk.jl"]
+Pages   = ["physics/nh/model.jl", "physics/nh/kpm.jl"]
 ```
 
 ## Quasiparticle Interference (QPI)
