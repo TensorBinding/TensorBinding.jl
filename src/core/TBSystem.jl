@@ -873,6 +873,13 @@ function add_hopping!(H::TBHamiltonian, f;
     if !isnothing(H.Lx)
         (!isnothing(sublat) || !isnothing(sublat_from) || !isnothing(sublat_to)) &&
             error("add_hopping! sublat keywords are not supported for 2D Hamiltonians; use add_hopping_2D! directly.")
+        # add_hopping_2D! would ask for lattice=/geometry= keywords that add_hopping! lacks
+        (H.layer_s !== nothing && H.geometry === nothing &&
+         H.spin_s === nothing && H.nambu_s === nothing) &&
+            error("add_hopping! cannot be used on a layered Hamiltonian without a geometry " *
+                  "(the plain and twisted layered builders leave H.geometry unset). Call " *
+                  "add_hopping_2D!(H, f; Lx=H.Lx, Ly=H.L - H.Lx, nn, layer, " *
+                  "lattice=:square/:triangular/:honeycomb or geometry=...) instead.")
         return add_hopping_2D!(H, f; Lx=H.Lx, Ly=H.L - H.Lx, nn=Int(nn), maxdim=maxdim, tol=tol)
     end
 

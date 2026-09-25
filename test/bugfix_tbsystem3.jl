@@ -1,6 +1,7 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test
 using TensorBinding: get_Hamiltonian, honeycomb_positions, haldane_hoppingf, hopping2MPO,
-                     _haldane_pivots, _check_haldane_mpo
+                     _haldane_pivots, _check_haldane_mpo, bilayer_hamiltonian,
+                     twisted_bilayer_hamiltonian, add_hopping!, add_hopping_2D!
 using Random
 
 # Dense matrix of a Qubit MPO (site 1 = most significant bit), as get_matrix but fast
@@ -13,7 +14,7 @@ function dense_tb3(mpo, sites)
     return reshape(Array(Tl * Tr, prime.(reverse(sites))..., reverse(sites)...), N, N)
 end
 
-@testset "Deterministic, exact Haldane MPO" begin
+@testset "Deterministic, exact Haldane MPO; layered add_hopping! error" begin
     # Haldane: the QTCI started from the all-ones pivot plus 5 random ones, so the build
     # depended on the global RNG, threw "maxsamplevalue is zero!" for M = 0 and often
     # missed a bond class (relative error 0.15-0.5 at L = 7, with a small TCI error).
@@ -41,4 +42,17 @@ end
     M1 = (Random.seed!(3); dense_tb3(hopping2MPO(g, 8, s3), s3))
     M2 = (Random.seed!(3); dense_tb3(hopping2MPO(g, 8, s3; nrandominitpivot=5, nsearchglobalpivot=5), s3))
     @test M1 == M2
+
+    # Layered builders without a geometry: since they set Lx, add_hopping! reached
+    # add_hopping_2D!, whose error asked for lattice=/geometry=, which add_hopping! lacks
+    Random.seed!(2)                       # twisted builder: hopping2MPO random pivots
+    for Hl in (bilayer_hamiltonian(:square, 2, 1), twisted_bilayer_hamiltonian(:square, 2, 1, 5.0))
+        err = try add_hopping!(Hl, 0.1); nothing catch e; e end
+        @test err isa ErrorException &&
+              occursin("add_hopping! cannot be used on a layered Hamiltonian", err.msg)
+        @test add_hopping_2D!(Hl, 0.1; Lx=Hl.Lx, Ly=Hl.L - Hl.Lx, lattice=:square) === Hl
+    end
+    # Layered sublattice builders carry a geometry, so add_hopping! still works there
+    Hb = bilayer_hamiltonian(:honeycomb, 2, 1; sublattice=true)
+    @test add_hopping!(Hb, 0.1) === Hb
 end
