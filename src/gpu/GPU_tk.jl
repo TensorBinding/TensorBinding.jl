@@ -1185,9 +1185,11 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         aux_site(H, :sublattice) : (nothing, :post)
 
     # ── L_pos: position qubits only (excluding aux sites) ───────────────────
+    # Count from the full site list, as the CPU get_bands does: H.L already
+    # excludes the aux indices, so subtracting them from it would drop one too many.
     isnothing(H.geometry) && error("get_bands_gpu: H.geometry must be set (needed to infer D).")
     D     = length(H.geometry(1))
-    L     = H.L
+    L     = length(H.sites)
     L_pos = L - (spin_proj ? 1 : 0) - (!isnothing(nambu_s_det)  ? 1 : 0) -
                 (!isnothing(layer_s_det)  ? 1 : 0) - (!isnothing(sublat_s_det) ? 1 : 0)
 
