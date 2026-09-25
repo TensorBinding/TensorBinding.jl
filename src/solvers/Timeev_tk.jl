@@ -4,15 +4,17 @@ using ITensorMPS
 """
     build_tdvp_propagator_mpo(H, dt, L, sites; maxdim, cutoff, reverse_step,
                               outputlevel, nsite, cross_tol, initial_positions,
-                              use_diagonal_pivots, expand_basis, interpolation_type) -> MPO
+                              use_diagonal_pivots, expand_basis, cache_columns,
+                              interpolation_type) -> MPO
 
 Build an MPO approximation of the short-time propagator `U(dt) = e^{-iH dt}` by
 sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
 
 `H` must already be multiplied by `-im` for Schrödinger evolution.
-Every sample is one TDVP run.  The diagonal is dominant for small `dt`; TCI starts
-from `(1, 1)` and QuanticsTCI moves its random initial pivots to large elements, so
-it lands on the diagonal without seeding.
+TDVP runs once per column `j` that TCI samples: `U|j⟩` is kept, and every other element
+of that column is an overlap with it (`cache_columns`).  The diagonal is dominant for
+small `dt`; TCI starts from `(1, 1)` and QuanticsTCI moves its random initial pivots to
+large elements, so it lands on the diagonal without seeding.
 
 Each sample evolves a basis state `|j⟩`, an MPS of bond dimension 1.  TDVP cannot leave
 the tangent space of that state, so on its own it drops every hop that flips three or
@@ -20,7 +22,8 @@ more qubits (the carry chains `0111 → 1000` of the quantics encoding, such as 
 bond of a chain).  By default `|j⟩` first gets the Krylov basis of `H|j⟩, H²|j⟩`
 (`ITensorMPS.expand(...; alg="global_krylov")`).  The samples then match the dense
 `exp(-iH dt)` to TDVP accuracy (chain_1d, `dt = 0.05`: Frobenius error 7e-5 at L = 3 and
-1.3e-4 at L = 6, limited by `cutoff`; 0.07 and 0.27 without the expansion).
+1.3e-4 at L = 6, limited by `cutoff`; 0.07 and 0.27 without the expansion).  The
+expansion makes each TDVP run about 4x more expensive (L = 8-10: 15-16 ms against 3.5-5 ms).
 
 !!! warning
     From about L = 5, the QTCI fit in `hopping2MPO` can miss those isolated carry-chain
@@ -41,10 +44,17 @@ bond of a chain).  By default `|j⟩` first gets the Krylov basis of `H|j⟩, H�
                           off at O(dt) (some hops come out 1.5x too large); it warns.
 - `cross_tol`           : TCI interpolation tolerance.
 - `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
-                          seeding costs O(N) extra TDVP runs (3-5x more at L = 8) and does
-                          not make TCI find the off-diagonal structure more reliably.
+                          seeding makes TCI sample every column, so it costs N TDVP runs
+                          (L = 8: 256 against 182-238 unseeded; L = 10: 1024 against 334),
+                          and it does not make TCI find the off-diagonal structure more
+                          reliably.
 - `expand_basis`        : Expand each basis state with its Krylov vectors before TDVP (see
                           above; needs `H::MPO`). Default `true`.
+- `cache_columns`       : Keep each evolved column `U|j⟩` (one MPS of a few kB per sampled
+                          `j`), so TDVP runs once per column instead of once per sampled
+                          element (L = 8: about 200 runs against 1500-2300).  The samples, and
+                          so the MPO, are the same either way; `false` saves the memory.
+                          Default `true`.
 - `interpolation_type`  : Element type for TCI sampling. Default `ComplexF64`.
 
 To reproduce the samples and seeding used before these defaults changed, pass
@@ -62,8 +72,9 @@ function build_tdvp_propagator_mpo(
     nsite = 2,
     cross_tol = 1e-8,
     initial_positions = [],
-    use_diagonal_pivots = false,  # true seeds all N diagonal positions: O(N) extra TDVP runs
+    use_diagonal_pivots = false,  # true seeds all N diagonal positions: TDVP on all N columns
     expand_basis = true,
+    cache_columns = true,
     interpolation_type = ComplexF64,
 )
     N = 2^L
@@ -75,16 +86,18 @@ function build_tdvp_propagator_mpo(
         initial_positions = [(i, i) for i in 1:N]
     end
 
-    function func(i, j)
-        psi_i = TensorBinding.binary_to_MPS(Int(i - 1), L, sites)
-        psi_j = TensorBinding.binary_to_MPS(Int(j - 1), L, sites)
+    # TCI samples many rows i of each column j: evolve each |j> once and keep U|j>.
+    evolved_columns = Dict{Int,MPS}()
+
+    function evolve_column(j::Int)
+        psi_j = TensorBinding.binary_to_MPS(j - 1, L, sites)
         if expand_basis
             # |j> has bond dimension 1: without the Krylov basis of H|j>, H^2|j> TDVP
             # cannot reach hops that flip three or more qubits (carry chains 0111 -> 1000).
             psi_j = ITensorMPS.expand(psi_j, H; alg = "global_krylov")
         end
 
-        psi_j_evolved = tdvp(
+        return tdvp(
             H,
             dt,
             psi_j;
@@ -96,6 +109,13 @@ function build_tdvp_propagator_mpo(
             reverse_step = reverse_step,
             outputlevel = outputlevel,
         )
+    end
+
+    function func(i, j)
+        psi_i = TensorBinding.binary_to_MPS(Int(i - 1), L, sites)
+        psi_j_evolved = cache_columns ?
+            get!(() -> evolve_column(Int(j)), evolved_columns, Int(j)) :
+            evolve_column(Int(j))
 
         return inner(psi_i, psi_j_evolved)
     end

@@ -19,17 +19,19 @@ end
 @testset "build_tdvp_propagator_mpo: default pivots cost and propagator accuracy" begin
     dt = 0.05
 
-    # Cost: the default seeds no pivots.  use_diagonal_pivots = true seeds all N diagonal
-    # positions, which takes more TDVP runs (paired over 16 seeds at L = 6: always more).
+    # Cost: the default seeds no pivots and runs TDVP once per sampled column j, keeping
+    # U|j> for the other elements of that column, so at most N runs.  Before, every sampled
+    # element was a TDVP run (L = 8: ~3600 seeded, ~700 unseeded).  use_diagonal_pivots =
+    # true makes TCI sample every column: exactly N runs.
     H4 = get_Hamiltonian("chain_1d", 1.0; L = 4)
     U4, n4 = _tdvp_build(H4, dt)
     U0, n0 = _tdvp_build(H4, dt; use_diagonal_pivots = false)
-    @test n4 > 0 && n4 == n0
+    @test 0 < n4 <= H4.N && n4 == n0
     @test get_matrix(U4, H4.sites) == get_matrix(U0, H4.sites)
-    H6 = get_Hamiltonian("chain_1d", 1.0; L = 6)
-    _, n6  = _tdvp_build(H6, dt)
-    _, n6d = _tdvp_build(H6, dt; use_diagonal_pivots = true)
-    @test n6 < n6d
+    H8 = get_Hamiltonian("chain_1d", 1.0; L = 8)
+    _, n8  = _tdvp_build(H8, dt)
+    _, n8d = _tdvp_build(H8, dt; use_diagonal_pivots = true)
+    @test n8 < n8d == H8.N
 
     # reverse_step = false counted terms of H twice: the hop 1 <-> 2 (two qubits flip) came
     # out 1.5x too large (|dU| = 0.025 at L = 4).  The default is now true; false warns.
@@ -54,4 +56,10 @@ end
         @test abs(M[c + 1, c] - Uex[c + 1, c]) < 1e-4
         @test norm(M - Uex) < 1e-3
     end
+
+    # cache_columns = false re-runs TDVP for every sampled element; the samples, and so the
+    # MPO, are the same.
+    Unc, nnc = _tdvp_build(H4, dt; cache_columns = false)
+    @test nnc > n4
+    @test get_matrix(Unc, H4.sites) == get_matrix(U4, H4.sites)
 end
