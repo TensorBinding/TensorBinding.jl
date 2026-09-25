@@ -17,7 +17,7 @@
 #       count N_el, which drives the chemical potential implicitly.
 #
 # Typical usage:
-#   ρ0 = get_density(H; Ncheb=30, method=:KPM)   # cheap rough guess
+#   ρ0 = get_density(H; Ncheb=30, method=:kpm)   # cheap rough guess
 #   ρ  = mcweeny_purify(ρ0; maxdim=40)
 #
 # Both functions accept `cutoff` and `maxdim` to control truncation

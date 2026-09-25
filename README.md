@@ -19,7 +19,7 @@ using Pkg
 Pkg.add("TensorBinding")
 ```
 
-Dependencies are resolved automatically: [ITensors.jl](https://github.com/ITensor/ITensors.jl), [ITensorMPS.jl](https://github.com/ITensor/ITensorMPS.jl), [QuanticsTCI.jl](https://github.com/tensor4all/QuanticsTCI.jl), [FFTW.jl](https://github.com/JuliaMath/FFTW.jl), and [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) (installed but only active when calling GPU functions — no GPU required for CPU workflows).
+Dependencies are resolved automatically: [ITensors.jl](https://github.com/ITensor/ITensors.jl), [ITensorMPS.jl](https://github.com/ITensor/ITensorMPS.jl), [QuanticsTCI.jl](https://github.com/tensor4all/QuanticsTCI.jl), and [FFTW.jl](https://github.com/JuliaMath/FFTW.jl). [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is optional and is not installed with the package — no GPU required for CPU workflows. To enable the `*_gpu` functions, add it to your own environment (`Pkg.add("CUDA")`) and run `using CUDA` at any point before the first GPU call (before or after `using TensorBinding`); without it, those calls stop with an error explaining how to load it.
 
 ---
 
