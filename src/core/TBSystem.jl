@@ -1380,9 +1380,9 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     # ── Spinless + :swave redirect ───────────────────────────────────────────
     if H.spin_s === nothing && type === :swave
         if Δ isa Number
-            println("Info: on-site (s-wave) pairing is forbidden for spinless fermions ",
-                    "(Δ(i,i) = 0 by Fermi antisymmetry).  ",
-                    "Constructing nearest-neighbour p-wave instead.")
+            @info("On-site (s-wave) pairing is forbidden for spinless fermions " *
+                   "(Δ(i,i) = 0 by Fermi antisymmetry).  " *
+                   "Constructing nearest-neighbour p-wave instead.")
             type = :pwave
         else
             error("On-site (s-wave) pairing is forbidden for spinless fermions.  " *

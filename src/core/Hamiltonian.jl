@@ -75,9 +75,9 @@ function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
     end
     citt = TensorCrossInterpolation.TensorTrain(ci.tci)
     mps  = MPS(citt) # modified from ITensors.MPS to MPS 
-    println("MPS COMPUTED!")
+    @debug "hopping2MPO: QTCI tensor train converted to MPS"
     mpo  = unfoldingscheme == :fused ? fused_mpo(mps, sites) : custom_mpo(mps, sites)
-    println("Turned into MPO!")
+    @debug "hopping2MPO: MPS turned into MPO"
     ITensorMPS.truncate!(mpo; cutoff=1e-8)
     return mpo
 end
@@ -98,7 +98,7 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
         includeendpoint=true,
         unfoldingscheme=:interleaved,
     )
-    println("got grid!")
+    @debug "qtci_matrix_to_MPO: quantics grid built"
     if !isempty(initial_positions)
         # QuanticsTCI takes the pivots positionally, as grid indices (Vector{Int})
         initialpivots = [collect(QuanticsGrids.origcoord_to_grididx(qgrid, Tuple(Float64.(pos))))
@@ -108,12 +108,12 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     else
         ci, _, _ = quanticscrossinterpolate(type, A_fun, qgrid; tolerance=tol)
     end
-    println("got qtci!")
+    @debug "qtci_matrix_to_MPO: QTCI done"
     citt = TensorCrossInterpolation.TensorTrain(ci.tci)
     mps  = ITensors.MPS(citt)
-    println("got MPS!")
+    @debug "qtci_matrix_to_MPO: MPS built"
     mpo  = custom_mpo(mps, sites)
-    println("got MPO!")
+    @debug "qtci_matrix_to_MPO: MPO built"
     ITensorMPS.truncate!(mpo; maxdim=20, cutoff=1e-8)
     return mpo
 end

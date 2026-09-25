@@ -496,7 +496,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             cosY_Q = apply(cosY_op, Q;  maxdim=maxdim, cutoff=cutoff)
             Q_sinX = apply(Q,  sinX_op; maxdim=maxdim, cutoff=cutoff)
             Q_cosX = apply(Q,  cosX_op; maxdim=maxdim, cutoff=cutoff)
-            println("Quenched operator products done")
+            @debug "get_C_op_MPO_from_P: quenched operator products done"
 
             # C1 = Q sinX P sinY Q − P sinX Q sinY P
             C1 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
@@ -504,7 +504,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             c1 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
             c1 = apply(c1,     sinY_P; maxdim=maxdim, cutoff=cutoff)
             C1 = +(C1, -1.0 * c1; maxdim=maxdim, cutoff=cutoff)
-            println("C1 done")
+            @debug "get_C_op_MPO_from_P: C1 done"
 
             # C2 = Q cosX P cosY Q − P cosX Q cosY P
             C2 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
@@ -512,7 +512,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             c2 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
             c2 = apply(c2,     cosY_P; maxdim=maxdim, cutoff=cutoff)
             C2 = +(C2, -1.0 * c2; maxdim=maxdim, cutoff=cutoff)
-            println("C2 done")
+            @debug "get_C_op_MPO_from_P: C2 done"
 
             # C3 = Q sinX P cosY Q − P sinX Q cosY P
             C3 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
@@ -520,7 +520,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             c3 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
             c3 = apply(c3,     cosY_P; maxdim=maxdim, cutoff=cutoff)
             C3 = +(C3, -1.0 * c3; maxdim=maxdim, cutoff=cutoff)
-            println("C3 done")
+            @debug "get_C_op_MPO_from_P: C3 done"
 
             # C4 = Q cosX P sinY Q − P cosX Q sinY P
             C4 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
@@ -528,7 +528,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             c4 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
             c4 = apply(c4,     sinY_P; maxdim=maxdim, cutoff=cutoff)
             C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
-            println("C4 done")
+            @debug "get_C_op_MPO_from_P: C4 done"
 
             if pk_mpo !== nothing
                 wrap(C) = apply(pk_mpo, apply(C, pk_mpo; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
@@ -536,7 +536,7 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                 C2 = wrap(C2)
                 C3 = wrap(C3)
                 C4 = wrap(C4)
-                println("PK wrapping done")
+                @debug "get_C_op_MPO_from_P: PK wrapping done"
             end
 
             calculate_chern_number = uc -> begin
