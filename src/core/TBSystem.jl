@@ -465,10 +465,59 @@ function _build_chain_1d(t, L, N, sites;
 end
 
 
+"""
+    chirality(r1, r2) -> Int
+
+Sign `ν = ±1` of the next-nearest-neighbour hop `r1 → r2` in [`haldane_hoppingf`](@ref):
+`+1` when `r2 - r1` points into the upper half-plane (angle in `[0, π)`), `-1` otherwise,
+so `chirality(r2, r1) == -chirality(r1, r2)`.
+"""
+function chirality(r1, r2)
+    # This assumes all NNN hoppings are via a triangle path on a 2D honeycomb
+    δ = r2 .- r1
+    θ = atan(δ[2], δ[1])  # angle from r1 to r2
+    # Map angle into 0 to 2π
+    θ = mod(θ, 2π)
+    # Assign ν = ±1 depending on angular sector
+    return if θ < π
+        +1  # counter-clockwise
+    else
+        -1  # clockwise
+    end
+end
+
+"""
+    haldane_hoppingf(r1, r2, i, j; t2=0.2, phi=π/2, M=0.0) -> Number
+
+Haldane-model matrix element between the sites at `r1` and `r2` of a honeycomb with
+bond length 1 laid out as in [`honeycomb_positions`](@ref): `M σ` on site, `-1` for
+nearest neighbours and `t2 exp(-i phi ν σ)` for next-nearest neighbours, with
+`ν = chirality(r1, r2)` and `σ` the sublattice sign of `r1` (`-1` on the sublattice of
+site 1, `+1` on the other). `i`, `j` are the site indices of the `f(i, j)` call pattern.
+"""
+function haldane_hoppingf(r1, r2, i, j; t2 = 0.2, phi=pi/2, M=0.0)
+    δ = r2 .- r1
+    d = norm(δ)
+    # Sublattice sign from the position: honeycomb_positions puts sublattice A (site 1)
+    # at x ∈ 1.5ℤ and B at x ∈ 1.5ℤ + 1, i.e. σ = (-1)^(ix+iy+1). The index parity
+    # (-1)^i only tracks ix in that row-major layout (2^Lx is even).
+    σ = isapprox(mod(r1[1], 1.5), 1.0; atol=1e-6) ? 1 : -1
+    if isapprox(d, 0.0; atol=1e-3)
+        return M*σ
+    elseif isapprox(d, 1.0; atol=1e-8)
+        return -1.0 #t1
+    elseif isapprox(d, √3; atol=1e-3)
+        ν = chirality(r1, r2)
+        return t2*exp(-1im*phi*ν*σ)
+    else
+        return 0.0
+    end
+end
+
 function _build_haldane(params, L, N, sites;
                         rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
-                           "Generate it with `honeycomb_positions($L)` or from `get_G()`."
+                           "Generate it with `honeycomb_positions($L)`."
     t2  = params.t2
     phi = params.phi
     M   = params.M
@@ -906,10 +955,10 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
         layers = _resolve_layer_selection(H.layer_s, layer)
         H_layered_term = nothing
         for ell in layers
-            H_pos = TBHamiltonian(H.L, H.N, term_sites, copy(zero_mpo),
-                                  H.geometry, H.geometry_uc, 0.0, 0.0,
-                                  nothing, nothing, nothing, H.sublattice_s, :post,
-                                  nothing, nothing, 0, nothing)
+            H_pos = TBHamiltonian(H; sites=term_sites, mpo=copy(zero_mpo),
+                                  scale=0.0, center=0.0,
+                                  spin_s=nothing, nambu_s=nothing, layer_s=nothing,
+                                  sublattice_s=H.sublattice_s, aux_side=:post)
             add_onsite!(H_pos, f; layer=nothing, sublat=sublat,
                         Lx=Lx, tol=tol, maxdim=maxdim)
             term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
