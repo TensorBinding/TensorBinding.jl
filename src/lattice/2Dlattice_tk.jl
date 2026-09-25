@@ -23,22 +23,12 @@ ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
     generate_kin_u(sites, num_site) -> MPO
 
 Binary-increment MPO: |n>->|n+1>(mod 2^L) on L = log2(num_site) qubits.
-Each term i handles one carry level: sigma_plus at bit i, sigma_minus on all
-lower bits (the bits that were 1 and get reset by the carry).
+Built as `shift_mpo(sites, 1; cyclic=true)`.
 """
 function generate_kin_u(sites, num_site)
     L  = Int(log2(num_site))
     @assert L == length(sites) "num_site must match the number of qubit sites"
     return shift_mpo(sites, 1; cyclic=true)
-    os = OpSum()
-    for i in 1:L                               # i = 1 is LSB, i = L is MSB
-        term  = OpSum()
-        term += 1, "sigma_plus",  L - (i-1)   # flip bit i: 0 ->1
-        for j in 1:L-i;   term *= ("Id",          j); end
-        for j in L+2-i:L; term *= ("sigma_minus",  j); end  # reset lower bits (carry-in)
-        os += term
-    end
-    return MPO(os, sites)
 end
 
 
@@ -46,21 +36,12 @@ end
     generate_kin_d(sites, num_site) -> MPO
 
 Binary-decrement MPO: |n>->|n-1>(mod 2^L). Hermitian conjugate of
-`generate_kin_u`; each term handles one borrow level.
+`generate_kin_u`, built as `shift_mpo(sites, -1; cyclic=true)`.
 """
 function generate_kin_d(sites, num_site)
     L  = Int(log2(num_site))
     @assert L == length(sites) "num_site must match the number of qubit sites"
     return shift_mpo(sites, -1; cyclic=true)
-    os = OpSum()
-    for i in 1:L
-        term  = OpSum()
-        term += 1, "sigma_minus", L - (i-1)   # flip bit i: 1 ->0
-        for j in 1:L-i;   term *= ("Id",         j); end
-        for j in L+2-i:L; term *= ("sigma_plus",  j); end  # set lower bits (borrow-in)
-        os += term
-    end
-    return MPO(os, sites)
 end
 
 
@@ -189,10 +170,9 @@ end
 # ============================================================
 # 6. NNN 2D kinetic builders
 #    Pattern for every function:
-#      1. Build ku = generate_kin_u, kd = generate_kin_d
-#      2. Raise to the nn-th power with compose_power
-#      3. Apply hopping weights: hop_fwd = h * ku^n,  hop_bwd = kd^n * h-
-#      4. Mask with _row_break_mpo and optionally _row_select/_checker
+#      1. Build K, Kdag = shift_pair_mpos(sites, nn) (or one shift_mpo)
+#      2. Apply hopping weights: hop_fwd = h * K,  hop_bwd = Kdag * dag(h)
+#      3. Mask with _row_break_mpo and optionally _row_select/_checker
 # ============================================================
 
 """
@@ -208,16 +188,6 @@ function kineticintra2DNNN(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwarg
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
     hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
@@ -236,16 +206,6 @@ function kineticinterNNNSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwa
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
     hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
@@ -262,16 +222,6 @@ function kineticinterNNNSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwa
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
     hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
@@ -293,17 +243,6 @@ function kineticinterNNNtriSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
     hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    sel = _row_select_mpo(Lx, Ly, sites; keep=:even)
-    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
-    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
 
@@ -322,17 +261,6 @@ function kineticinterNNNtriSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_
     src = apply(brk, sel; apply_kwargs...)
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
     hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    ku_n = compose_power(ku, nn; side=:right, apply_kwargs)
-    kd_n = compose_power(kd, nn; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, ku_n; apply_kwargs...)
-    hop_bwd = apply(kd_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    sel = _row_select_mpo(Lx, Ly, sites; keep=:odd)
-    hop_fwd = apply(sel, apply(brk, hop_fwd; apply_kwargs...); apply_kwargs...)
-    hop_bwd = apply(apply(hop_bwd, brk; apply_kwargs...), sel; apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 
@@ -354,16 +282,6 @@ function kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping::MPO;
     brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
     hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
     hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
-    ku   = generate_kin_u(sites, 2^L)
-    kd   = generate_kin_d(sites, 2^L)
-    kd_n = compose_power(kd, Nx - 1; side=:right, apply_kwargs)
-    ku_n = compose_power(ku, Nx - 1; side=:left,  apply_kwargs)
-    hop_fwd = apply(hopping, kd_n; apply_kwargs...)
-    hop_bwd = apply(ku_n, dag(hopping); apply_kwargs...)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(brk, hop_fwd; apply_kwargs...)
-    hop_bwd = apply(hop_bwd, brk; apply_kwargs...)
     return +(hop_fwd, hop_bwd; cutoff=1e-12)
 end
 

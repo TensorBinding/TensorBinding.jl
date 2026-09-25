@@ -91,10 +91,7 @@ function mcweeny_purify(ρ0::MPO;
             println("McWeeny iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
         end
         err < tol && break
-        # ρ³ = ρ² · ρ
-        #ρ3 = apply(ρ2, ρ; maxdim, cutoff)
-        #ITensorMPS.truncate!(ρ3; maxdim, cutoff)
-        # 3ρ² - 2ρ³
+        # 3ρ² - 2ρ³ = ρ·(3ρ - 2ρ²)
         ρ_inte = +(3.0 * ρ , -2.0 * ρ2; cutoff)
         ρ  = apply(ρ, ρ_inte; maxdim, cutoff) 
         ITensorMPS.truncate!(ρ; maxdim, cutoff)
