@@ -50,7 +50,8 @@ end
 
 """
     hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
-                unfoldingscheme=:interleaved) -> MPO
+                unfoldingscheme=:interleaved, nrandominitpivot=5,
+                nsearchglobalpivot=5) -> MPO
 
 Compress an arbitrary NxN hopping matrix `H[i,j] = f(i,j)` into an
 MPO using Quantics Tensor Cross Interpolation on a 2D quantics grid
@@ -62,23 +63,30 @@ MPO using Quantics Tensor Cross Interpolation on a 2D quantics grid
 
 `initial_positions` seeds the TCI pivots; useful when the matrix has
 known structure (e.g. near-diagonal for short-time propagators).
+
+`nrandominitpivot` (extra random initial pivots) and `nsearchglobalpivot` (random
+global-pivot search points per sweep) are passed to QuanticsTCI; the defaults are
+QuanticsTCI's own. Both draw from the global RNG, so the result depends on its state.
+With structural `initial_positions`, setting both to `0` gives a deterministic build
+that leaves the global RNG untouched.
 """
 function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
-                     unfoldingscheme=:interleaved)
+                     unfoldingscheme=:interleaved, nrandominitpivot::Int=5,
+                     nsearchglobalpivot::Int=5)
     L     = Int(log2(N))
     qgrid = QuanticsGrids.DiscretizedGrid{2}(
         L, (1, 1), (N, N);
         includeendpoint=true,
         unfoldingscheme=unfoldingscheme,
     )
+    qkw = (; tolerance=tol, nrandominitpivot, nsearchglobalpivot)
     if length(initial_positions) >= 1
         # QuanticsTCI takes the pivots positionally, as grid indices (Vector{Int})
         initialpivots = [collect(QuanticsGrids.origcoord_to_grididx(qgrid, Tuple(Float64.(pos))))
                          for pos in initial_positions]
-        ci, _, _ = quanticscrossinterpolate(type, f, qgrid, initialpivots;
-                                            tolerance=tol)
+        ci, _, _ = quanticscrossinterpolate(type, f, qgrid, initialpivots; qkw...)
     else
-        ci, _, _ = quanticscrossinterpolate(type, f, qgrid; tolerance=tol)
+        ci, _, _ = quanticscrossinterpolate(type, f, qgrid; qkw...)
     end
     citt = TensorCrossInterpolation.TensorTrain(ci.tci)
     mps  = MPS(citt) # modified from ITensors.MPS to MPS 

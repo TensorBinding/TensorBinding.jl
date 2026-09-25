@@ -514,6 +514,53 @@ function haldane_hoppingf(r1, r2, i, j; t2 = 0.2, phi=pi/2, M=0.0)
     end
 end
 
+# Structural QTCI pivots for the Haldane matrix: every pair within R (√3 < R < 2, so
+# on-site, NN and NNN) of the site nearest the centre of `rs` or of one of its neighbours.
+# Around that site honeycomb_positions layouts show every sublattice / bond-direction class.
+function _haldane_pivots(rs; R=1.8)
+    c0   = vec(sum(rs; dims=1)) ./ size(rs, 1)
+    c    = argmin([norm(rs[i, :] .- c0) for i in axes(rs, 1)])
+    near = [i for i in axes(rs, 1) if norm(rs[i, :] .- rs[c, :]) <= 2R]
+    rows = [i for i in near if norm(rs[i, :] .- rs[c, :]) <= R]
+    return [(i, j) for i in rows for j in near if norm(rs[j, :] .- rs[i, :]) <= R]
+end
+
+# Entry (i, j) (1-based) of a Qubit MPO, site 1 = most significant bit.
+function _mpo_entry(mpo::MPO, sites, i::Integer, j::Integer)
+    L = length(sites)
+    v = ITensor(1.0)
+    for k in 1:L
+        b = L - k
+        v *= mpo[k] * onehot(sites[k]' => (((i - 1) >> b) & 1) + 1) *
+                      onehot(sites[k]  => (((j - 1) >> b) & 1) + 1)
+    end
+    return scalar(v)
+end
+
+# Spot-check the compressed Haldane MPO against f at every pivot offset of a spread of
+# rows (lattice extremes plus an odd golden-ratio stride through the bulk), so a QTCI
+# that misses a bond class or an edge errors instead of returning a wrong Hamiltonian.
+function _check_haldane_mpo(mpo, sites, f, rs, piv; tol=1e-8, nbulk=16)
+    N    = size(rs, 1)
+    x, y = rs[:, 1], rs[:, 2]
+    s    = 2 * round(Int, 0.30901699437494745 * N) + 1
+    rows = unique([argmin(x), argmax(x), argmin(y), argmax(y),
+                   argmin(x .+ y), argmax(x .+ y), argmin(x .- y), argmax(x .- y),
+                   (1 + mod(k * s, N) for k in 0:nbulk-1)...])
+    offs = unique(j - i for (i, j) in piv)
+    atol = max(1e-6, 10 * tol) * maximum(abs(f(i, j)) for (i, j) in piv)
+    for i in rows, d in offs
+        j = i + d
+        1 <= j <= N || continue
+        got, want = _mpo_entry(mpo, sites, i, j), f(i, j)
+        abs(got - want) <= atol ||
+            error("get_Hamiltonian(\"haldane\"): the QTCI-compressed MPO is wrong at entry " *
+                  "($i, $j): $got instead of $want. Pass `rs` from honeycomb_positions, or " *
+                  "build the MPO with hopping2MPO and initial_positions suited to this layout.")
+    end
+    return nothing
+end
+
 function _build_haldane(params, L, N, sites;
                         rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
@@ -523,7 +570,14 @@ function _build_haldane(params, L, N, sites;
     M   = params.M
     f(i, j) = haldane_hoppingf(rs[Int(i), :], rs[Int(j), :],
                                 Int(i), Int(j); t2=t2, phi=phi, M=M)
-    mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64)
+    # QTCI from structural pivots only. The default all-ones pivot plus 5 random ones made
+    # the build depend on the global RNG, threw "maxsamplevalue is zero!" for M = 0 and
+    # often missed a bond class (a wrong MPO with a small TCI error estimate).
+    rsN = view(rs, 1:N, :)   # f only reads the first N rows
+    piv = _haldane_pivots(rsN)
+    mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64, initial_positions=piv,
+                      nrandominitpivot=0, nsearchglobalpivot=0)
+    _check_haldane_mpo(mpo, sites, f, rsN, piv; tol=tol)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     # Gershgorin bound (t1 = 1): a site has |M| on site, ≤ 3 NN and ≤ 6 NNN hops, so the
     # spectral radius is ≤ 3 + 6|t2| + |M| (nearly reached at phi = 0, π); pad by 10%.
