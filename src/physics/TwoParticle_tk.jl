@@ -173,24 +173,6 @@ end
 
 
 """
-    hopping_mpo_exciton(H_c, H_v) -> MPO
-
-Embed the electron (`H_c`) and hole (`H_v`) single-particle Hamiltonians
-into the interleaved 2L-site electron-hole space:
-
-    H_kin = H_c ⊗ I_h  -  I_e ⊗ H_v
-
-`H_c` sits at odd sites (1, 3, 5, …) and `H_v` at even sites (2, 4, 6, …).
-Both `TBHamiltonian` objects must have the same `L` and distinct site indices.
-"""
-function hopping_mpo_exciton(H_c::TBHamiltonian, H_v::TBHamiltonian)
-    @assert H_c.L == H_v.L "Electron and hole sectors must have the same system size"
-    sites_eh = collect(Iterators.flatten(zip(H_c.sites, H_v.sites)))
-    return interleave_mpo(H_c.mpo, sites_eh, 0) - interleave_mpo(H_v.mpo, sites_eh, 1)
-end
-
-
-"""
     build_interaction_op_exciton(L, sites, Ufunc) -> MPO
 
 Build the electron-hole interaction MPO on the 2L-site interleaved space.
