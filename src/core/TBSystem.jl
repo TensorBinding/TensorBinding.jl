@@ -525,8 +525,9 @@ function _build_haldane(params, L, N, sites;
                                 Int(i), Int(j); t2=t2, phi=phi, M=M)
     mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    # bandwidth ≈ 2*(3*t1 + 6*t2) + 2*M where t1=1; conservative upper bound
-    sc  = something(scale, (1.0 + abs(t2) + abs(M)) * 4.0)
+    # Gershgorin bound (t1 = 1): a site has |M| on site, ≤ 3 NN and ≤ 6 NNN hops, so the
+    # spectral radius is ≤ 3 + 6|t2| + |M| (nearly reached at phi = 0, π); pad by 10%.
+    sc  = something(scale, 1.1 * (3.0 + 6.0 * abs(t2) + abs(M)))
     rs_f = let m = Float64.(rs); i -> m[i, :]; end
     return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
