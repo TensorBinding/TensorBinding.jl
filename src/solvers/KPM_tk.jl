@@ -11,7 +11,6 @@ function _estimate_spectral_bounds(H_mpo::MPO, sites;
                                     dmrg_nsweeps::Int = 5,
                                     dmrg_maxdim       = [10, 20, 40],
                                     dmrg_linkdim::Int = 4)
-    @debug "KPM_Tn: estimating spectral bounds via DMRG…"
     E_min, _ = dmrg_gs(H_mpo, sites;
                         nsweeps      = dmrg_nsweeps,
                         maxdim       = dmrg_maxdim,
@@ -27,7 +26,8 @@ function _estimate_spectral_bounds(H_mpo::MPO, sites;
     E_max  = -E_max_neg
     center = (E_max + E_min) / 2
     scale  = (E_max - E_min) / 2 * 1.1
-    @debug "KPM_Tn: DMRG spectral bounds" E_min E_max center scale
+    # Visible by default: an automatic scale that misses the spectrum breaks KPM silently.
+    @info "KPM_Tn: spectral bounds estimated by DMRG" E_min E_max center scale
     return scale, center
 end
 
