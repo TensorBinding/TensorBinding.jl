@@ -1,0 +1,397 @@
+# physics/rpa/bubble.jl — non-interacting polarization bubble Π₀(ω) from the Green's
+# function of H_eff = I⊗H₂ − H₁⊗I on the interleaved 2L-site space: the density-matrix
+# and H_eff helpers (_get_density_matrix, _build_heff), get_bubble_mpo (KPM or Krylov
+# Green's function) and the Haydock-recursion variant (haydock_cf, eval_haydock_cf,
+# haydock_resolve_mpo, get_bubble_mpo_haydock).
+# Split verbatim from physics/RPA_tk.jl.
+
+# ============================================================
+# Internal helpers for TBHamiltonian API
+# ============================================================
+
+function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
+                              P_method::Symbol, Ncheb::Int,
+                              maxdim::Int, cutoff::Real,
+                              purify_method::Symbol, purify_maxdim::Int,
+                              purify_maxiters::Int, purify_tol::Float64,
+                              verbose::Bool)
+    if P_method == :purification
+        if H._density_cache !== nothing
+            verbose && println("  Reusing cached density matrix")
+            return H._density_cache
+        end
+        if purify_method == :mcweeny
+            verbose && println("  Running McWeeny purification")
+            return mcweeny_purify(H; maxiters=purify_maxiters, maxdim=purify_maxdim,
+                                     cutoff=cutoff, tol=purify_tol, verbose=verbose)
+        elseif purify_method == :sp2
+            Nel = H.N ÷ 2
+            verbose && println("  Running SP2 purification (Nel=$Nel)")
+            return sp2_purify(H; Nel=Nel, maxiters=purify_maxiters, maxdim=purify_maxdim,
+                                 cutoff=cutoff, tol=purify_tol, verbose=verbose)
+        else
+            error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
+        end
+    elseif P_method == :kpm
+        _ensure_scale!(H)
+        Tn_list, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
+                                 scale=H.scale, center=H.center, maxdim=maxdim, cutoff=cutoff)
+        fermi_rescaled = (ϵF - H.center) / H.scale
+        return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_rescaled, maxdim=maxdim,
+                                    cutoff=cutoff)
+    else
+        error("Unknown P_method: $P_method. Choose :purification or :kpm")
+    end
+end
+
+
+function _build_heff(H1_mpo::MPO, H2_mpo::MPO,
+                     sites1::Vector{<:Index}, sites2::Vector{<:Index})
+    id1  = MPO(sites1, "Id")
+    id2  = MPO(sites2, "Id")
+    H2op = interleave_mpo_tb(H2_mpo, sites1, sites2, :B)
+    Iop2 = interleave_mpo_tb(id2,    sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1,    sites1, sites2, :A)
+    H1op = interleave_mpo_tb(H1_mpo, sites1, sites2, :A)
+    return apply(Iop1, H2op) - apply(H1op, Iop2)
+end
+
+# ============================================================
+# High-level TBHamiltonian API
+# ============================================================
+
+"""
+    get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω; ...) -> MPO
+
+Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
+
+**Keyword arguments**
+- `ϵF`             : Fermi energy (physical units). Default `0.0`.
+- `P_method`       : `:purification` (default) or `:kpm` — how to compute density matrices.
+  With `:purification`, `H._density_cache` is reused if present.
+- `GF_method`      : `:kpm` (default) or `:krylov` — how to compute G_eff(ω).
+- `Ncheb`          : Chebyshev order (KPM methods only). Default `150`.
+- `maxdim`         : Maximum bond dimension. Default `200`.
+- `cutoff`         : SVD truncation cutoff. Default `1e-8`.
+- `purify_method`  : `:mcweeny` (default) or `:sp2`.
+- `purify_maxdim`  : Max bond dim during purification. Default `40`.
+- `purify_maxiters`: Max purification iterations. Default `30`.
+- `purify_tol`     : Purification convergence tolerance. Default `1e-5`.
+- `η`              : Lorentzian broadening for the GF. Default `1e-3`.
+- `krylov_nsweeps` : DMRG sweeps for Krylov solver. Default `12`.
+- `krylov_maxdim`  : Max bond dim for Krylov solver. Default `100`.
+- `krylov_cutoff`  : SVD cutoff for Krylov solver. Default `1e-8`.
+- `verbose`        : Print progress. Default `false`.
+"""
+function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
+                        ϵF::Real              = 0.0,
+                        P_method::Symbol      = :purification,
+                        GF_method::Symbol     = :kpm,
+                        Ncheb::Int            = 150,
+                        maxdim::Int           = 200,
+                        cutoff::Real          = 1e-8,
+                        purify_method::Symbol = :mcweeny,
+                        purify_maxdim::Int    = 40,
+                        purify_maxiters::Int  = 30,
+                        purify_tol::Float64   = 1e-5,
+                        η::Real               = 1e-3,
+                        krylov_nsweeps::Int   = 12,
+                        krylov_maxdim::Int    = 100,
+                        krylov_cutoff::Real   = 1e-8,
+                        verbose::Bool         = false)
+
+    L1 = H1.L; L2 = H2.L
+    @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    L      = L1
+    sites1 = H1.sites
+    # H1 and H2 usually share site indices (H1 === H2 for the charge bubble, the two
+    # spin sectors of one H for the magnon bubble). Interleaved as they are, the same
+    # Index would sit on two neighbouring tensors, so H2's operators are moved onto
+    # fresh copies of its sites.
+    sites2 = sim.(H2.sites)
+
+    # Interleaved combined sites: [s1[1], s2[1], s1[2], s2[2], …]
+    # This ensures each (A, B) pair has matching dimensions regardless of site type
+    # (Layer dim=5, Qubit dim=2, Honeycomb dim=2, etc.), making interleave_mpo_tb safe.
+    sites_combined = reduce(vcat, [[s1, s2] for (s1, s2) in zip(sites1, sites2)])
+
+    # ---- Density matrices ----
+    verbose && println("Polarization bubble: computing P1 (P_method=$P_method)...")
+    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters,
+                              purify_tol, verbose)
+    if H1 === H2
+        P2 = P1
+    else
+        verbose && println("Polarization bubble: computing P2...")
+        P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
+                                  purify_method, purify_maxdim, purify_maxiters,
+                                  purify_tol, verbose)
+    end
+    P2 = replace_sites(P2, sites2)
+
+    # ---- Numerator: I₁⊗P₂ − P₁⊗I₂ ----
+    id1  = MPO(sites1, "Id")
+    id2  = MPO(sites2, "Id")
+    P2op = interleave_mpo_tb(P2,  sites1, sites2, :B)
+    Iop2 = interleave_mpo_tb(id2, sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1, sites1, sites2, :A)
+    P1op = interleave_mpo_tb(P1,  sites1, sites2, :A)
+    numerator = ITensorMPS.truncate!(
+        apply(Iop1, P2op; maxdim, cutoff) - apply(P1op, Iop2; maxdim, cutoff);
+        cutoff=cutoff)
+    verbose && println("Polarization bubble: computed numerator")
+
+    # ---- GF of Heff = I⊗H₂ − H₁⊗I ----
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
+    verbose && println("Polarization bubble: Heff maxlinkdim = ", maxlinkdim(Heff))
+    if GF_method == :kpm
+        # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
+        Tn_listeff, scaleeff, centereff = KPM_Tn(Heff, Ncheb, sites_combined;
+                                                   maxdim=maxdim, cutoff=cutoff)
+        GF_mpo = (1/scaleeff) * get_Green_retarded_from_Tn(
+            Tn_listeff, Ncheb, (ω - centereff)/scaleeff;
+            η = η/scaleeff, maxdim=maxdim, cutoff=cutoff)
+    elseif GF_method == :krylov
+        GF_mpo = get_green_krylov(Heff, sites_combined, ω;
+                                   η=η, nsweeps=krylov_nsweeps,
+                                   maxdim=krylov_maxdim, cutoff=krylov_cutoff,
+                                   verbose=verbose)
+    else
+        error("Unknown GF_method: $GF_method. Choose :kpm or :krylov")
+    end
+    verbose && println("Polarization bubble: computed Heff GF (GF_method=$GF_method)")
+
+    # ---- Bubble: GF_eff · numerator ----
+    bubble2L = ITensorMPS.truncate!(apply(GF_mpo, numerator; maxdim, cutoff); cutoff=cutoff)
+    verbose && println("Polarization bubble: assembled bubble")
+
+    # ---- Collapse 2L-site MPO → L-site Π₀ on H1.sites ----
+    # finalsites mirrors sites_combined dims so swap_every_other_legs never hits a
+    # dimension mismatch, even when sites1 contains heterogeneous indices (Layer, Honeycomb…).
+    finalsites = [Index(dim(s), "Bubble,n=$i") for (i, s) in enumerate(sites_combined)]
+    bubble_iv  = swap_every_other_legs(bubble2L, finalsites)
+    return collapse_mpo_pairs(bubble_iv, H1.sites)
+end
+
+# ============================================================
+# Haydock recursion (operator-level Krylov)
+# ============================================================
+
+"""
+    haydock_cf(H_mpo, seed, N_steps; maxdim, cutoff, verbose)
+        -> (a, b, basis, norm0)
+
+Haydock (Lanczos) recursion with H_mpo acting on MPO vectors from the left.
+Starting from `seed`, builds an orthogonal Krylov basis under H_mpo using
+the Frobenius (Hilbert-Schmidt) inner product (A, B) = Tr[A† B].
+
+Three-term recurrence (Φ₀ = seed / β₀, β₀ = ||seed||_F):
+
+    Φₙ₊₁ = H·Φₙ − aₙ·Φₙ − bₙ·Φₙ₋₁    (b₁ = 0)
+
+Returns:
+- `a`    : diagonal coefficients a[1..N]
+- `b`    : b[1] = norm0 = ||seed||_F; b[2..N] = off-diagonal βₙ
+- `basis`: normalized Krylov MPOs {Φ₀, …, Φₙ₋₁}
+- `norm0`: sqrt(inner(seed, seed))
+
+The scalar projected GF ⟨seed|(z−H)⁻¹|seed⟩ is recovered via
+`eval_haydock_cf(a, b, z)`.  The full resolvent MPO (z−H)⁻¹|seed⟩ is
+recovered via `haydock_resolve_mpo(a, b, basis, z)`.
+"""
+function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
+                    maxdim::Int   = 200,
+                    cutoff::Real  = 1e-8,
+                    verbose::Bool = false)
+
+    a     = zeros(Float64, N_steps)
+    b     = zeros(Float64, N_steps)
+    basis = Vector{MPO}(undef, N_steps)
+
+    norm0    = sqrt(real(tr(apply(dag(seed), seed; cutoff=cutoff, maxdim=maxdim))))
+    b[1]     = norm0
+    Phi_prev = nothing
+    Phi_curr = (1.0 / norm0) * seed
+
+    actual_N = N_steps
+    for n in 1:N_steps
+        basis[n] = Phi_curr
+
+        HPhi = apply(H_mpo, Phi_curr; maxdim=maxdim, cutoff=cutoff)
+        a[n] = real(tr(apply(dag(Phi_curr), HPhi; cutoff=cutoff, maxdim=maxdim)))
+
+        r = +(HPhi, (-a[n]) * Phi_curr; maxdim=maxdim)
+        ITensorMPS.truncate!(r; cutoff=cutoff)
+        if n > 1
+            r = +(r, (-b[n]) * Phi_prev; maxdim=maxdim)
+            ITensorMPS.truncate!(r; cutoff=cutoff)
+        end
+
+        b_next = sqrt(max(0.0, real(tr(apply(dag(r), r; cutoff=cutoff, maxdim=maxdim)))))
+        verbose && println("  step $n: a=$(round(a[n];digits=5))  b_next=$(round(b_next;digits=5))  chi=$(maxlinkdim(Phi_curr))")
+
+        if b_next < 1e-12
+            verbose && println("  haydock_cf: invariant subspace at step $n")
+            actual_N = n
+            break
+        end
+
+        Phi_prev = Phi_curr
+        Phi_curr = (1.0 / b_next) * r
+        n < N_steps && (b[n + 1] = b_next)
+    end
+
+    return a[1:actual_N], b[1:actual_N], basis[1:actual_N], norm0
+end
+
+
+"""
+    eval_haydock_cf(a, b, z) -> ComplexF64
+
+Evaluate the Haydock continued fraction ⟨seed|(z−H)⁻¹|seed⟩ via backward
+recursion. `b[1]` must be norm0 = ||seed||_F (as returned by `haydock_cf`).
+
+    G(z) = b[1]² / (z − a[1] − b[2]²/(z − a[2] − b[3]²/…))
+
+Calling with truncated arrays a[1:N], b[1:N] gives the N-th CF convergent,
+whose sequence over N is suitable for Wynn ε-acceleration.
+"""
+function eval_haydock_cf(a::AbstractVector, b::AbstractVector, z::Number)
+    N = length(a)
+    f = ComplexF64(z) - a[N]
+    for n in N-1:-1:1
+        f = ComplexF64(z) - a[n] - b[n + 1]^2 / f
+    end
+    return b[1]^2 / f
+end
+
+
+"""
+    haydock_resolve_mpo(a, b, basis, z; maxdim, cutoff) -> MPO
+
+Reconstruct (z−H)⁻¹|seed⟩ as an MPO by solving the N×N Lanczos tridiagonal
+system and forming a linear combination of the Krylov basis MPOs:
+
+    (z·I − T) c = b[1]·e₁,   Π₀(z) = Σₙ c[n]·basis[n]
+
+where T has diagonal `a` and off-diagonal `b[2:]`, and b[1] = norm0.
+"""
+function haydock_resolve_mpo(a::AbstractVector, b::AbstractVector,
+                              basis::Vector{<:MPO}, z::Number;
+                              maxdim::Int  = 200,
+                              cutoff::Real = 1e-8)
+    N  = length(a)
+    zc = ComplexF64(z)
+    d  = [zc - a[n] for n in 1:N]
+    ev = N > 1 ? ComplexF64[-b[n] for n in 2:N] : ComplexF64[]
+    T  = Tridiagonal(ev, d, ev)
+    rhs       = zeros(ComplexF64, N)
+    rhs[1]    = b[1]
+    c         = T \ rhs
+
+    result = c[1] * basis[1]
+    for n in 2:N
+        result = +(result, c[n] * basis[n]; maxdim=maxdim)
+        ITensorMPS.truncate!(result; cutoff=cutoff)
+    end
+    return result
+end
+
+
+"""
+    get_bubble_mpo_haydock(H1, H2, ωlist; N_steps, η, maxdim, cutoff,
+                            ϵF, P_method, purify_method, purify_maxdim,
+                            purify_maxiters, purify_tol, Ncheb, verbose)
+        -> Vector{MPO}
+
+Compute the bare polarization bubble Π₀(ω) as an L-site MPO for each
+frequency in `ωlist` using Haydock recursion on H_eff = I⊗H₂ − H₁⊗I.
+
+The Krylov basis is built once from the seed Φ₀ = I⊗P₂ − P₁⊗I.  For each
+ω, the resolvent (ω+iη−H_eff)⁻¹Φ₀ is recovered by solving the N×N Lanczos
+tridiagonal system and forming a linear combination of the stored basis MPOs.
+
+Returns a `Vector{MPO}` compatible with `rpa_wynn_from_bubbles`.
+
+**Keyword arguments**
+- `N_steps`        : Haydock recursion depth. Default `30`.
+- `η`              : Lorentzian broadening. Default `1e-2`.
+- `maxdim`         : Maximum bond dimension. Default `200`.
+- `cutoff`         : SVD truncation cutoff. Default `1e-8`.
+- `ϵF`             : Fermi energy. Default `0.0`.
+- `P_method`       : `:purification` (default) or `:kpm`.
+- `purify_method`  : `:mcweeny` (default) or `:sp2`.
+- `purify_maxdim`  : Max bond dim during purification. Default `40`.
+- `purify_maxiters`: Max purification iterations. Default `30`.
+- `purify_tol`     : Purification convergence tolerance. Default `1e-5`.
+- `Ncheb`          : Chebyshev order for `:kpm` P_method. Default `150`.
+- `verbose`        : Print progress. Default `false`.
+"""
+function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
+                                  ωlist::AbstractVector{<:Real};
+                                  N_steps::Int          = 30,
+                                  η::Real               = 1e-2,
+                                  maxdim::Int           = 200,
+                                  cutoff::Real          = 1e-8,
+                                  ϵF::Real              = 0.0,
+                                  P_method::Symbol      = :purification,
+                                  purify_method::Symbol = :mcweeny,
+                                  purify_maxdim::Int    = 40,
+                                  purify_maxiters::Int  = 30,
+                                  purify_tol::Float64   = 1e-5,
+                                  Ncheb::Int            = 150,
+                                  verbose::Bool         = false)
+
+    L1 = H1.L; L2 = H2.L
+    @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    L              = L1
+    # Same 2L-site layout as get_bubble_mpo (and _build_heff): interleaved
+    # [s1[1], s2[1], …] with a fresh copy of H2's sites as the second register.
+    sites1         = H1.sites
+    sites2         = sim.(H2.sites)
+    sites_combined = reduce(vcat, [[s1, s2] for (s1, s2) in zip(sites1, sites2)])
+
+    # ---- Density matrices ----
+    verbose && println("Haydock bubble: computing P1 (P_method=$P_method)...")
+    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+    verbose && println("Haydock bubble: computing P2...")
+    P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
+                              purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+    P2 = replace_sites(P2, sites2)
+
+    # ---- Seed: I⊗P₂ − P₁⊗I on 2L-site combined space ----
+    id1  = MPO(sites1, "Id"); id2 = MPO(sites2, "Id")
+    P1op = interleave_mpo_tb(P1,  sites1, sites2, :A)
+    Iop2 = interleave_mpo_tb(id2, sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1, sites1, sites2, :A)
+    P2op = interleave_mpo_tb(P2,  sites1, sites2, :B)
+    seed = ITensorMPS.truncate!(
+        apply(Iop1, P2op; maxdim=maxdim, cutoff=cutoff) -
+        apply(P1op, Iop2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+    verbose && println("Haydock bubble: seed built, chi=$(maxlinkdim(seed))")
+
+    # ---- H_eff = I⊗H₂ − H₁⊗I ----
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
+    verbose && println("Haydock bubble: H_eff built, chi=$(maxlinkdim(Heff))")
+
+    # ---- Haydock recursion (once, independent of ω) ----
+    verbose && println("Haydock bubble: running $N_steps steps...")
+    a, b, basis, norm0 = haydock_cf(Heff, seed, N_steps;
+                                     maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+    verbose && println("Haydock bubble: $(length(a)) steps completed, norm0=$(round(norm0;digits=4))")
+
+    # ---- Assemble Π₀(ω) for each frequency ----
+    finalsites = [Index(dim(s), "Bubble,n=$i") for (i, s) in enumerate(sites_combined)]
+    bubbles    = Vector{MPO}(undef, length(ωlist))
+    for (i, ω) in enumerate(ωlist)
+        verbose && println("Haydock bubble: assembling Pi0 at omega=$ω ($i/$(length(ωlist)))...")
+        z          = ComplexF64(ω + im * η)
+        b2L        = haydock_resolve_mpo(a, b, basis, z; maxdim=maxdim, cutoff=cutoff)
+        biv        = swap_every_other_legs(b2L, finalsites)
+        bubbles[i] = collapse_mpo_pairs(biv, H1.sites)
+    end
+
+    return bubbles
+end

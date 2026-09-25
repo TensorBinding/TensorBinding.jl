@@ -62,7 +62,11 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                             dynamics (uses Hamiltonian, TBSystem)
 #   physics/SCF_tk.jl      — self-consistent mean-field SCF loop (uses KPM_tk,
 #                             Purification_tk, TBSystem)
-#   physics/RPA_tk.jl      — RPA susceptibility (uses KPM_tk, QFT_tk, TwoParticle_tk)
+#   physics/rpa/plumbing.jl — MPO kron/interleave site plumbing
+#   physics/rpa/bubble.jl   — polarization bubble Π₀(ω) (get_bubble_mpo, Haydock)
+#   physics/rpa/cheb2d.jl   — double-Chebyshev bubbles (full MPO, k-space diagonal)
+#   physics/rpa/dyson.jl    — RPA susceptibility: Dyson solve, Wynn series, magnon
+#                              channel (rpa/ uses KPM_tk, QFT_tk, TwoParticle_tk)
 #   physics/Topology_tk.jl — topological invariants: Chern marker, winding
 #                             number, Thouless pump (uses KPM_tk, Purification_tk)
 #   physics/Purification_tk.jl — density matrix purification: McWeeny, SP2
@@ -109,7 +113,10 @@ include("solvers/Krylov_tk.jl")
 include("solvers/DMRG_tk.jl")
 include("solvers/Timeev_tk.jl")
 include("physics/SCF_tk.jl")
-include("physics/RPA_tk.jl")
+include("physics/rpa/plumbing.jl")
+include("physics/rpa/bubble.jl")
+include("physics/rpa/cheb2d.jl")
+include("physics/rpa/dyson.jl")
 include("physics/Topology_tk.jl")
 include("physics/Purification_tk.jl")
 include("physics/TwoParticle_tk.jl")

@@ -11,7 +11,7 @@
 # where |M⟩⟩ is the vectorized (MPS) representation of the matrix M on a 2L-site
 # interleaved quantics chain (odd sites = row bits, even sites = column bits).
 #
-# Requires: interleave_mpo (RPA_tk.jl), custom_mpo (utils.jl).
+# Requires: interleave_mpo (physics/rpa/plumbing.jl), custom_mpo (utils.jl).
 
 
 
