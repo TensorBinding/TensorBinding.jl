@@ -1348,6 +1348,25 @@ function _cheb2d_out_sites(H1::TBHamiltonian, H2::TBHamiltonian, fname::Abstract
 end
 
 
+# The cheb2d diagonal bubbles Fourier-transform every site of D_mn as a position qubit
+# (conjugate_by_qft(W)), so H.sites must be exactly the H.L position qubits.
+function _cheb2d_require_position_sites(H1::TBHamiltonian, H2::TBHamiltonian,
+                                        fname::AbstractString)
+    for (name, H) in (("H1", H1), ("H2", H2))
+        length(H.sites) == H.L && continue
+        throw(ArgumentError(
+            "$fname: $name has $(length(H.sites)) site indices for $name.L = $(H.L) " *
+            "position qubits. This k-space diagonal Fourier-transforms every site, so " *
+            "spin, Nambu, layer and sublattice indices are not supported. For a " *
+            "spin-conserving spinful H, pass each spin sector " *
+            "TensorBinding._project_spin_sector(H, σ), σ = 1, 2, and add the two " *
+            "results to get the charge bubble. Otherwise use get_bubble_mpo_cheb2d, " *
+            "which keeps all of H.sites, with conjugate_by_qft(H, Π)."))
+    end
+    return nothing
+end
+
+
 
 
 """
@@ -1711,6 +1730,12 @@ across all frequencies; per-ω cost is a cheap scalar-weighted MPS addition.
 Use `get_bubble_mpo_cheb2d` when you need the full off-diagonal MPO (e.g. for
 RPA resummation).  Use this function when only χ₀(k,ω) is needed.
 
+`H1.sites` and `H2.sites` must be exactly the `H.L` position qubits: the QFT
+here treats every site as one, so a spin, Nambu, layer or sublattice index
+raises an `ArgumentError`. For a spin-conserving spinful `H`, the charge bubble
+is the sum of the results for the two spin sectors
+`TensorBinding._project_spin_sector(H, σ)`, `σ = 1, 2`.
+
 **Keyword arguments** — identical to `get_bubble_mpo_cheb2d`, plus:
 - `qft_tol`     : truncation tolerance inside `conjugate_by_qft`. Default `1e-9`.
 - `qft_maxdim`  : max bond dimension inside `conjugate_by_qft`. Default `100`.
@@ -1733,6 +1758,7 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                                  verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d")
     L = L1
     nω = length(ωlist)
 
@@ -1867,7 +1893,8 @@ end
 """
     get_bubble_diag_cheb2d_svd(H1, H2, ωlist; ..., svd_tol, svd_maxrank) -> Vector{MPS}
 
-Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`.
+Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`, with the same
+requirement that `H.sites` be the `H.L` position qubits.
 
 For each frequency ω the coefficient matrix `C[m,n](ω)` is rank-truncated via its own SVD:
 
@@ -1912,6 +1939,7 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
                                      verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d_svd: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_svd")
     L  = L1
     nω = length(ωlist)
 
@@ -2014,7 +2042,8 @@ end
 """
     get_bubble_diag_cheb2d_tucker(H1, H2, ωlist; ..., tucker_tol, tucker_maxrank, kernel) -> Vector{MPS}
 
-Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`.
+Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`, with the same requirement
+that `H.sites` be the `H.L` position qubits.
 
 Finds a global low-rank basis in the (m, n) indices shared across all frequencies by
 stacking the coefficient matrices and performing two mode-SVDs:
@@ -2067,6 +2096,7 @@ function get_bubble_diag_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
                                         verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_tucker")
     L  = L1
     nω = length(ωlist)
 

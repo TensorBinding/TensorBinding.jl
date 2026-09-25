@@ -1,7 +1,8 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test
 using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, _project_spin_sector,
                      get_bubble_mpo_cheb2d, get_bubble_mpo_cheb2d_tucker,
-                     chebyshev2d_gf_coeffs, _get_density_matrix
+                     get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd,
+                     get_bubble_diag_cheb2d_tucker, chebyshev2d_gf_coeffs, _get_density_matrix
 
 @testset "cheb2d bubbles on spinful and sublattice Hamiltonians" begin
     ω, η, Nc = 0.4, 0.3, 8
@@ -56,4 +57,13 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, _project_spin_sect
     # H1 and H2 on different site structures: an ArgumentError, not a failed assertion.
     @test_throws ArgumentError get_bubble_mpo_cheb2d(H2, Hu, [ω]; kw...)
     @test_throws ArgumentError get_bubble_mpo_cheb2d_tucker(H2, Hu, [ω]; kw...)
+
+    # The diagonal variants Fourier-transform every site as a position qubit: a register
+    # with a spin or sublattice index is refused up front; the spin sector still runs.
+    for f in (get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker)
+        @test_throws ArgumentError f(Hs, Hs, [ω]; kw...)
+        @test_throws ArgumentError f(Hk, Hk, [ω]; kw...)
+        d = f(Hu, Hu, [ω]; kw...)[1]
+        @test d isa MPS && siteinds(d) == Hu.sites
+    end
 end
