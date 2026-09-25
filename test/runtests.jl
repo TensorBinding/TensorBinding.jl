@@ -113,6 +113,11 @@ include("bugfix_rpa.jl")
 include("bugfix_scfnh.jl")
 include("bugfix_topology.jl")
 include("bugfix_gpu.jl")
+include("bugfix_pivots.jl")
+include("bugfix_truncate.jl")
+include("bugfix_rpamag.jl")
+include("bugfix_haldanescale.jl")
+include("bugfix_layeredlx.jl")
 
 # Characterization tests: the sampling planners' current output, pinned before
 # the code-organisation refactor (data in test/data/sampling_golden.jl).
