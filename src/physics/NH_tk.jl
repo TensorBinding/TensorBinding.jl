@@ -357,22 +357,6 @@ function loss_profile_mpo(H::TBHamiltonian, f;
 end
 
 """
-    nh_imag_onsite_mpo(H, f; prefactor=1im, Lx=nothing, type=Float64,
-                       space=:full)
-
-Build `prefactor * diag(f)`. The real profile MPO is constructed first by
-`loss_profile_mpo`, then the imaginary prefactor is multiplied afterward.
-This returns a term on the original Hilbert space, not an NH hermitized block.
-"""
-function nh_imag_onsite_mpo(H::TBHamiltonian, f;
-                            prefactor::Number = 1im,
-                            Lx=nothing,
-                            type = Float64,
-                            space::Symbol = :full)
-    return ComplexF64(prefactor) * loss_profile_mpo(H, f; Lx=Lx, type=type, space=space)
-end
-
-"""
     add_loss!(H, f; coefficient=-1im, space=:full, ...)
 
 Add a loss/gain term `coefficient * diag(f)` to the original Hamiltonian MPO.
@@ -391,30 +375,6 @@ function add_loss!(H::TBHamiltonian, f;
     ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
-end
-
-"""
-    add_nh_imag_onsite!(H, f; prefactor=1im, space=:full, ...)
-
-Backward-compatible name for adding `prefactor * diag(f)` to the original
-Hamiltonian MPO. This is not hermitization.
-"""
-function add_nh_imag_onsite!(H::TBHamiltonian, f;
-                             prefactor::Number = 1im,
-                             kwargs...)
-    return add_loss!(H, f; coefficient=prefactor, kwargs...)
-end
-
-"""
-    add_nh_loss!(H, f; prefactor=-1im, space=:full, ...)
-
-Convenience wrapper for onsite loss. By default this adds `-im * diag(f)`.
-Use `prefactor=1im` for gain or for the convention `i*f(x)`.
-"""
-function add_nh_loss!(H::TBHamiltonian, f;
-                      prefactor::Number = -1im,
-                      kwargs...)
-    return add_loss!(H, f; coefficient=prefactor, kwargs...)
 end
 
 function _nh_directional_hop(pos_s, N::Int, amplitude, nn::Integer, direction::Symbol;
@@ -718,47 +678,6 @@ function nh_reconstruct_spectral_mps(partials::AbstractVector{<:MPO}, n::Int,
 end
 
 """
-    nh_reconstruct_spectral_mpo(partials, n, NH; maxdim=400, cutoff=1e-8)
-        -> (ldos_mps, dos, rotated_mpo)
-
-High-bond-dimension reconstruction of the non-Hermitian spectral object.
-
-This mirrors the older all-site LDOS workflow: first reconstruct the full
-partial MPO on the hermitized block space, then left-multiply by
-`|1><2| x I` and take its trace / diagonal. Compared with
-`nh_reconstruct_spectral_mps`, this keeps the full MPO until the end, so it can
-represent all sites at once but usually needs a much larger `maxdim`.
-"""
-function nh_reconstruct_spectral_mpo(partials::AbstractVector{<:MPO}, n::Int,
-                                     NH::NonHermitianHamiltonian;
-                                     maxdim::Int = 400,
-                                     cutoff::Real = 1e-8,
-                                     rotate_row::Int = 1,
-                                     rotate_col::Int = 2,
-                                     diag_block::Int = 1)
-    N = 2 * n
-    length(partials) >= N || error("Expected at least $N partials, got $(length(partials)).")
-    weights = nh_jackson_weights(N)
-
-    A = partials[1]
-    for l in 2:2:N
-        order = (-1)^((l ÷ 2) - 1)
-        A = +(A, order * weights[l - 1] * partials[l];
-              maxdim=maxdim, cutoff=cutoff)
-    end
-    A *= 2.0 / (pi^2 * (N + 1))
-
-    rotator = nh_block_source(NH; row=rotate_row, col=rotate_col)
-    rotated = apply(rotator, A; maxdim=maxdim, cutoff=cutoff)
-    dos = tr(rotated)
-
-    ldos_block = contract_nh_block(rotated, NH.block_s;
-                                   row=diag_block, col=diag_block)
-    ldos_mps = extract_diagonal_to_mps(ldos_block)
-    return ldos_mps, dos, rotated
-end
-
-"""
     nh_spectral_function(NH, n; scale, maxdim=100, cutoff=1e-8,
                          source_row=2, source_col=1, block_row=2, block_col=1)
         -> (A_mps, dos, partials)
@@ -787,44 +706,6 @@ function nh_spectral_function(NH::NonHermitianHamiltonian, n::Int;
     A, dos = nh_reconstruct_spectral_mps(partials, n, NH.block_s;
                                          maxdim=maxdim, row=block_row, col=block_col)
     return A, dos, partials
-end
-
-"""
-    nh_spectral_function_allsite_mpo(NH, n; scale, maxdim=400, cutoff=1e-8)
-        -> (ldos_mps, dos, rotated_mpo, partials)
-
-Alternative non-default NH KPM path that reconstructs the full spectral MPO
-before extracting the LDOS. It can compute all sites in one object, but needs
-larger bond dimensions for accuracy.
-"""
-function nh_spectral_function_allsite_mpo(NH::NonHermitianHamiltonian, n::Int;
-                                          scale::Union{Nothing,Real} = nothing,
-                                          nh_scale_padding::Real = 1.05,
-                                          maxdim::Int = 400,
-                                          cutoff::Real = 1e-8,
-                                          dmrg_nsweeps::Int = 5,
-                                          dmrg_maxdim = [10, 20, 40],
-                                          dmrg_linkdim::Int = 4,
-                                          source_row::Int = 2,
-                                          source_col::Int = 1,
-                                          rotate_row::Int = 1,
-                                          rotate_col::Int = 2,
-                                          diag_block::Int = 1)
-    partials = nh_kpm_partials(NH, n; source_row=source_row, source_col=source_col,
-                               scale=scale, nh_scale_padding=nh_scale_padding,
-                               maxdim=maxdim, cutoff=cutoff,
-                               dmrg_nsweeps=dmrg_nsweeps,
-                               dmrg_maxdim=dmrg_maxdim,
-                               dmrg_linkdim=dmrg_linkdim)
-    ldos_mps, dos, rotated = nh_reconstruct_spectral_mpo(
-        partials, n, NH;
-        maxdim=maxdim,
-        cutoff=cutoff,
-        rotate_row=rotate_row,
-        rotate_col=rotate_col,
-        diag_block=diag_block,
-    )
-    return ldos_mps, dos, rotated, partials
 end
 
 """
