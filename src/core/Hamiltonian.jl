@@ -29,21 +29,6 @@ function kinetic_1d_nn(L, sites; boundary::Symbol=:open, bc=nothing)
 end
 
 
-"""
-    kinetic_1d_nn_custom(L, sites, hopping; boundary=:open) -> MPO
-
-Nearest-neighbour 1D kinetic MPO with a site-dependent hopping
-encoded as a diagonal MPO `hopping`.  Useful for spatially varying
-hopping amplitudes (e.g. SSH model, quasicrystals).
-"""
-function kinetic_1d_nn_custom(L, sites, hopping; boundary::Symbol=:open, bc=nothing)
-    @assert L == length(sites) "L must equal length(sites)"
-    bc === nothing || (boundary = Symbol(bc))
-    return shift_hopping_mpo(hopping, sites, 1;
-                             cyclic=_tb_periodic_boundary(boundary),
-                             cutoff=1e-8)
-end
-
 # ============================================================
 # General QTCI-based hopping MPO
 # ============================================================
@@ -131,51 +116,6 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     println("got MPO!")
     ITensorMPS.truncate!(mpo; maxdim=20, cutoff=1e-8)
     return mpo
-end
-
-# ============================================================
-# Specialised modulation functions
-# ============================================================
-
-"""
-    quasicrystal_modulation_30deg(i, L, L_chain, k, p) -> Float64
-
-On-site modulation for a p-fold quasicrystal pattern at wavevector k,
-centred on the middle of the 2D lattice.
-"""
-function quasicrystal_modulation_30deg(i, L, L_chain, k, p)
-    center   = 2^(L - 1) - L_chain / 2
-    center_x = mod((center - 1), L_chain) + 0.5
-    center_y = div(center - 1, L_chain) + 0.5
-    x        = mod((i - 1), L_chain) + 0.5
-    y        = div(i - 1, L_chain) + 0.5
-    x_rel    = x - center_x
-    y_rel    = y - center_y
-    modulation = 0.0
-    for n in 0:Int(p/2 - 1)
-        theta     = 2pi * n / p
-        r_proj    = x_rel * cos(theta) + y_rel * sin(theta)
-        modulation += cos(k * r_proj)
-    end
-    return modulation
-end
-
-
-"""
-    circular_mod(i, L, L_chain, k) -> Float64
-
-Circularly symmetric on-site modulation `cos(k * r)` where `r` is the
-distance from the centre of the 2D lattice.
-"""
-function circular_mod(i, L, L_chain, k)
-    center   = 2^(L - 1) - L_chain / 2
-    center_x = mod((center - 1), L_chain) + 0.5
-    center_y = div(center - 1, L_chain) + 0.5
-    x        = mod((i - 1), L_chain) + 0.5
-    y        = div(i - 1, L_chain) + 0.5
-    x_rel    = x - center_x
-    y_rel    = y - center_y
-    return cos(sqrt(x_rel^2 + y_rel^2) * k)
 end
 
 

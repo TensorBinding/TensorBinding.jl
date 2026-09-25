@@ -61,8 +61,6 @@ end
 build_shift_mpo(sites, q::Integer; cyclic::Bool=false) =
     build_shift_mpo(sites, q, cyclic)
 
-build_cyclic_shift_mpo(sites, q::Integer) = build_shift_mpo(sites, q, true)
-
 shift_adjoint_mpo(K::MPO) = swapprime(dag(K), 0, 1)
 
 function shift_mpo(sites, q::Integer; cyclic::Bool=false)
