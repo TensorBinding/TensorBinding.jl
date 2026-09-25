@@ -6,6 +6,12 @@
 # the Tier 1 code reorganisation (docs/dev/REORGANISATION_TODO.md). It pins
 # what the NH code did at that commit, remaining bugs included.
 #
+# The "Truncation" cases (maxdim / cutoff forwarding) were added later, at
+# 4cf90f8 on the same branch. src/ had changed since 1a5548b, but only outside
+# the NH code (TBSystem.jl, 2Dlattice_tk.jl, Timeev_tk.jl); the regeneration
+# that added the cases left every earlier record byte for byte unchanged (only
+# the provenance line and the case count moved).
+#
 # The case list lives in test/golden_nh.jl (module NHGolden); this script runs
 # every case once, in one process, and writes the records as Julia literals
 # (`repr` round-trips Float64 and ComplexF64 exactly). Line 4 of the data file

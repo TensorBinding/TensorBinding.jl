@@ -34,7 +34,13 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
 #     Tier 2 reordering of the arithmetic does not trip the test;
 #   * everything else (Int, Bool, Symbol, String, sizes, error records): equal
 #     with the same type;
-#   * every golden case must still exist and every case must have golden data.
+#   * every golden case must still exist and every case must have golden data;
+#   * every function in MIN_CASES keeps at least its floor of compared cases,
+#     so an empty or shrunken case list fails instead of passing vacuously.
+#
+# The "Truncation" section pins the forwarding of `maxdim` and `cutoff` through
+# hermitize, the NH KPM routines and nh_spectrum_grid (its header lists the few
+# truncations it cannot reach).
 #
 # Cases marked `requires = :name` exercise functions that the Tier 1 dead-code
 # list slates for deletion (nh_imag_onsite_mpo, add_nh_imag_onsite!,
@@ -680,6 +686,214 @@ case("aah_lossy_spectral_function") do
      count = length(P))
 end
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Truncation: maxdim / cutoff forwarding
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# None of the cases above truncates: on the 8-site chain every bond fits in
+# MAXDIM = 20 (and in the default maxdim = 100 / 200), so a caller that stopped
+# forwarding `maxdim` or `cutoff` would go unnoticed. The cases below use a
+# 16-site chain with complex non-reciprocal hopping and loss, whose hermitized
+# MPO has bonds [4, 6, 6, 2]. Each function is run once with a small maxdim
+# (cutoff left at its default) and once with TRUNC_CUTOFF = 1e-3 (maxdim left
+# at its default), so the two keywords are pinned separately:
+#   * TRUNC_MAXDIM = 4 truncates the hermitized MPO and the MPO Chebyshev steps;
+#   * TRUNC_MAXDIM_MPS = 3 serves the MPS-only recursions (_nh_kpm_mps_ldos,
+#     _nh_stochastic_online, modes :mps and :stochastic), whose bonds never
+#     exceed 4 on 16 sites;
+#   * the spectral MPS A(r, z) has bonds of at most 4 on 16 sites as well, so
+#     the maxdim that nh_spectral_function forwards to the reconstruction, and
+#     the one _nh_diag_online uses to accumulate A, get two 64-site cases
+#     (bonds up to 8) with TRUNC_MAXDIM_WIDE = 6.
+# MPO outputs are fingerprinted (32×32 dense matrices would bloat the data
+# file) together with their link dimensions, which show the truncation.
+#
+# The inputs and maxdims were chosen for conditioning. An odd maxdim on the MPO
+# recursion (3 on 16 sites; 5 and 7 on 64 sites), or 2 on the plain lossy
+# chain, made the results sensitive to rounding: 1e-13 relative noise on the
+# parent MPO moved truncated KPM outputs by far more than the comparison
+# tolerance (up to tens of percent), as when the cut splits a degenerate pair
+# of singular values. With the values below the same noise moves no recorded
+# value by more than 5% of the tolerance.
+#
+# Checked by scratch mutation of a copy of NH_tk.jl: dropping every
+# `maxdim=maxdim` outside the model builders fails all of these cases and none
+# of the cases above. Dropping one `maxdim=maxdim` or `cutoff=cutoff` at a
+# time in hermitize, the NH KPM routines or nh_spectrum_grid (the functions
+# slated for deletion aside) fails at least one of these cases, except where
+# the keyword cannot bind here: `apply(S, ·)` (S has bond dimension 1), maxdim
+# on A applied to a single-site probe (at most three basis states), cutoff on
+# the sum that hermitized_hamiltonian truncates again right after, and cutoff
+# on the final `- p_{k-2}` sum of _nh_kpm_mps_ldos.
+
+const TRUNC_L      = 4       # 16-site chain
+const TRUNC_Z      = 0.3 - 0.2im
+const TRUNC_MAXDIM = 4
+const TRUNC_MAXDIM_MPS = 3
+const TRUNC_CUTOFF = 1e-3
+const TRUNC_L_WIDE = 6       # 64-site chain
+const SCALE_WIDE   = 40.0    # above its spectral radius (about 21.7)
+const TRUNC_MAXDIM_WIDE = 6
+
+function trunc_chain(L::Int = TRUNC_L)
+    H = chain(L)
+    add_nh_nonreciprocal_hopping!(H, cprof, 0.2)
+    add_loss!(H, prof)
+    return H
+end
+
+trunc_nh(; L::Int = TRUNC_L, z = TRUNC_Z, kwargs...) = hermitize(trunc_chain(L); z = z, kwargs...)
+
+mpo_record(W::MPO, basis) = (fp = fp(dense_op(W, basis)), linkdims = linkdims(W))
+partials_record(P, basis) = (fps = [fp(dense_op(p, basis)) for p in P],
+                             maxlinkdims = [maxlinkdim(p) for p in P])
+
+case("hermitized_hamiltonian_truncated") do
+    H = trunc_chain()
+    Hf = hermitized_hamiltonian(H; z = TRUNC_Z)
+    Hm = hermitized_hamiltonian(H; z = TRUNC_Z, maxdim = TRUNC_MAXDIM)
+    Hc = hermitized_hamiltonian(H; z = TRUNC_Z, cutoff = TRUNC_CUTOFF)
+    Hp = hermitized_hamiltonian(H; z = TRUNC_Z, maxdim = TRUNC_MAXDIM, block_placement = :pre)
+    Hz = hermitized_hamiltonian(H; z = TRUNC_Z, cutoff = TRUNC_CUTOFF, convention = :H_minus_z)
+    (full = mpo_record(Hf.mpo, Hf.sites), maxdim = mpo_record(Hm.mpo, Hm.sites),
+     cutoff = mpo_record(Hc.mpo, Hc.sites), pre_maxdim = mpo_record(Hp.mpo, Hp.sites),
+     H_minus_z_cutoff = mpo_record(Hz.mpo, Hz.sites))
+end
+
+case("hermitize_truncated") do
+    H = trunc_chain()
+    NH = hermitize(H; z = TRUNC_Z)
+    rec(N) = mpo_record(N.hermitized.mpo, N.hermitized.sites)
+    (maxdim         = rec(hermitize(H; z = TRUNC_Z, maxdim = TRUNC_MAXDIM)),
+     cutoff         = rec(hermitize(H; z = TRUNC_Z, cutoff = TRUNC_CUTOFF)),
+     rebuild_maxdim = rec(hermitize(NH; maxdim = TRUNC_MAXDIM)),
+     rebuild_cutoff = rec(hermitize(NH; cutoff = TRUNC_CUTOFF)))
+end
+
+case("nh_kpm_scale_truncated") do
+    H = trunc_chain()
+    zs = (TRUNC_Z, -0.5)
+    (full   = nh_kpm_scale(H, zs),
+     maxdim = nh_kpm_scale(H, zs; maxdim = TRUNC_MAXDIM),
+     cutoff = nh_kpm_scale(H, zs; cutoff = TRUNC_CUTOFF))
+end
+
+case("nh_resolve_scale_truncated") do
+    NH = trunc_nh()
+    (maxdim = TB._nh_resolve_scale(NH; maxdim = TRUNC_MAXDIM),
+     cutoff = TB._nh_resolve_scale(NH; cutoff = TRUNC_CUTOFF))
+end
+
+case("nh_kpm_partials_truncated") do
+    NH = trunc_nh()
+    Hh, S = NH.hermitized, nh_block_source(NH)
+    s = Hh.sites
+    (hermitized_maxdim = partials_record(nh_kpm_partials(Hh, NHALF; source = S, scale = SCALE,
+                                                         maxdim = TRUNC_MAXDIM), s),
+     hermitized_cutoff = partials_record(nh_kpm_partials(Hh, NHALF; source = S, scale = SCALE,
+                                                         cutoff = TRUNC_CUTOFF), s),
+     nh_maxdim = partials_record(nh_kpm_partials(NH, NHALF; scale = SCALE, maxdim = TRUNC_MAXDIM), s),
+     nh_cutoff = partials_record(nh_kpm_partials(NH, NHALF; scale = SCALE, cutoff = TRUNC_CUTOFF), s),
+     nh_estimated_maxdim = partials_record(nh_kpm_partials(NH, 2; maxdim = TRUNC_MAXDIM), s),
+     nh_estimated_cutoff = partials_record(nh_kpm_partials(NH, 2; cutoff = TRUNC_CUTOFF), s))
+end
+
+case("nh_reconstruct_spectral_mps_truncated") do
+    NH = trunc_nh()
+    p = pos_sites(NH)
+    P = nh_kpm_partials(NH, NHALF; scale = SCALE)
+    Af, dosf = nh_reconstruct_spectral_mps(P, NHALF, NH.block_s)
+    Am, dosm = nh_reconstruct_spectral_mps(P, NHALF, NH.block_s; maxdim = 2)
+    (full = (A = dense_vec(Af, p), linkdims = linkdims(Af), dos = dosf),
+     maxdim_2 = (A = dense_vec(Am, p), linkdims = linkdims(Am), dos = dosm))
+end
+
+case("nh_spectral_function_truncated") do
+    NH = trunc_nh()
+    p, s = pos_sites(NH), NH.hermitized.sites
+    rec((A, dos, P)) = (A = dense_vec(A, p), linkdims = linkdims(A), dos = dos,
+                        count = length(P), last_partial = fp(dense_op(P[end], s)))
+    (maxdim = rec(nh_spectral_function(NH, NHALF; scale = SCALE, maxdim = TRUNC_MAXDIM)),
+     cutoff = rec(nh_spectral_function(NH, NHALF; scale = SCALE, cutoff = TRUNC_CUTOFF)))
+end
+
+case("nh_kpm_mps_ldos_truncated") do
+    NH = trunc_nh()
+    (maxdim = TB._nh_kpm_mps_ldos(NH, NHALF, 5; scale = SCALE, maxdim = TRUNC_MAXDIM_MPS),
+     cutoff = TB._nh_kpm_mps_ldos(NH, NHALF, 5; scale = SCALE, cutoff = TRUNC_CUTOFF))
+end
+
+case("nh_scalar_online_truncated") do
+    NH = trunc_nh()
+    (maxdim = TB._nh_scalar_online(NH, NHALF; scale = SCALE, maxdim = TRUNC_MAXDIM),
+     cutoff = TB._nh_scalar_online(NH, NHALF; scale = SCALE, cutoff = TRUNC_CUTOFF),
+     estimated_maxdim = TB._nh_scalar_online(NH, 2; maxdim = TRUNC_MAXDIM),
+     estimated_cutoff = TB._nh_scalar_online(NH, 2; cutoff = TRUNC_CUTOFF))
+end
+
+case("nh_diag_online_truncated") do
+    NH = trunc_nh()
+    p = pos_sites(NH)
+    rec((A, dos)) = (A = dense_vec(A, p), linkdims = linkdims(A), dos = dos)
+    (maxdim = rec(TB._nh_diag_online(NH, NHALF; scale = SCALE, maxdim = TRUNC_MAXDIM)),
+     cutoff = rec(TB._nh_diag_online(NH, NHALF; scale = SCALE, cutoff = TRUNC_CUTOFF)),
+     estimated_maxdim = rec(TB._nh_diag_online(NH, 2; maxdim = TRUNC_MAXDIM)),
+     estimated_cutoff = rec(TB._nh_diag_online(NH, 2; cutoff = TRUNC_CUTOFF)))
+end
+
+case("nh_stochastic_online_truncated") do
+    NH = trunc_nh()
+    (maxdim = TB._nh_stochastic_online(NH, NHALF; scale = SCALE, n_random = 1,
+                                       maxdim = TRUNC_MAXDIM_MPS),
+     cutoff = TB._nh_stochastic_online(NH, NHALF; scale = SCALE, n_random = 1,
+                                       cutoff = TRUNC_CUTOFF),
+     estimated_maxdim = TB._nh_stochastic_online(NH, 2; n_random = 1, maxdim = TRUNC_MAXDIM_MPS),
+     estimated_cutoff = TB._nh_stochastic_online(NH, 2; n_random = 1, cutoff = TRUNC_CUTOFF))
+end
+
+trunc_grid(; kwargs...) =
+    nh_spectrum_grid(trunc_chain(), (-0.5, 0.5), 2, (-0.2, -0.2), 1, NHALF; kwargs...)
+
+case("nh_spectrum_grid_truncated_scalar") do
+    (maxdim = grid_record(trunc_grid(scale = SCALE, maxdim = TRUNC_MAXDIM)),
+     cutoff = grid_record(trunc_grid(scale = SCALE, cutoff = TRUNC_CUTOFF)),
+     estimated_maxdim = grid_record(trunc_grid(maxdim = TRUNC_MAXDIM)),
+     estimated_cutoff = grid_record(trunc_grid(cutoff = TRUNC_CUTOFF)))
+end
+
+case("nh_spectrum_grid_truncated_diag") do
+    rec(out) = merge(grid_record(out), (Z_spatial = out[4],))
+    (maxdim = rec(trunc_grid(scale = SCALE, maxdim = TRUNC_MAXDIM, mode = :diag)),
+     cutoff = rec(trunc_grid(scale = SCALE, cutoff = TRUNC_CUTOFF, mode = :diag)))
+end
+
+case("nh_spectrum_grid_truncated_mps") do
+    (maxdim = grid_record(trunc_grid(scale = SCALE, maxdim = TRUNC_MAXDIM_MPS, mode = :mps,
+                                     probe_site = 5)),
+     cutoff = grid_record(trunc_grid(scale = SCALE, cutoff = TRUNC_CUTOFF, mode = :mps,
+                                     probe_site = 5)))
+end
+
+case("nh_spectrum_grid_truncated_stochastic") do
+    (maxdim = grid_record(trunc_grid(scale = SCALE, maxdim = TRUNC_MAXDIM_MPS, mode = :stochastic,
+                                     n_random = 1)),
+     cutoff = grid_record(trunc_grid(scale = SCALE, cutoff = TRUNC_CUTOFF, mode = :stochastic,
+                                     n_random = 1)))
+end
+
+# 64 sites: see TRUNC_MAXDIM_WIDE in the section header.
+case("nh_spectral_function_truncated_L6") do
+    NH = trunc_nh(L = TRUNC_L_WIDE)
+    A, dos, P = nh_spectral_function(NH, NHALF; scale = SCALE_WIDE, maxdim = TRUNC_MAXDIM_WIDE)
+    (A = dense_vec(A, pos_sites(NH)), linkdims = linkdims(A), dos = dos, count = length(P))
+end
+
+case("nh_diag_online_truncated_L6") do
+    NH = trunc_nh(L = TRUNC_L_WIDE)
+    A, dos = TB._nh_diag_online(NH, NHALF; scale = SCALE_WIDE, maxdim = TRUNC_MAXDIM_WIDE)
+    (A = dense_vec(A, pos_sites(NH)), linkdims = linkdims(A), dos = dos)
+end
+
 # ── Comparison ───────────────────────────────────────────────────────────────
 
 const FloatLike = Union{AbstractFloat, Complex{<:AbstractFloat}}
@@ -738,6 +952,44 @@ Evaluate the golden data file inside this module.
 """
 load_golden(path::AbstractString = DATA_FILE) = Base.include(@__MODULE__, path)
 
+# Minimum number of compared cases per function. A case counts for a function
+# when its name is the function's name (without a leading `_` or trailing `!`)
+# or starts with that name and `_`; cases marked `requires` never count, so
+# their deletion in Tier 1 leaves the floors alone. Without the floors an empty
+# case list (or data regenerated from one) would pass every check vacuously.
+# The floors are the counts when the table was written: raise one when adding
+# cases for its function; lower one only when retiring a case on purpose.
+const MIN_CASES = [
+    "nh_block_index"               => 1,
+    "hermitized_hamiltonian"       => 5,
+    "hermitize"                    => 4,
+    "add_nh_onsite"                => 5,
+    "loss_profile_mpo"             => 1,
+    "add_loss"                     => 1,
+    "nh_nonreciprocal_hopping_mpo" => 1,
+    "add_nh_nonreciprocal_hopping" => 1,
+    "add_nh_skin_hopping"          => 1,
+    "nh_kpm_scale"                 => 2,
+    "nh_resolve_scale"             => 2,
+    "nh_block_source"              => 1,
+    "nh_kpm_partials"              => 5,
+    "contract_nh_block"            => 2,
+    "nh_preprocess_partials"       => 1,
+    "nh_ones_mps"                  => 1,
+    "nh_jackson_weights"           => 1,
+    "nh_reconstruct_spectral_mps"  => 2,
+    "nh_spectral_function"         => 5,
+    "nh_kpm_probe_mps"             => 1,
+    "nh_kpm_mps_ldos"              => 2,
+    "nh_scalar_online"             => 2,
+    "nh_diag_online"               => 3,
+    "nh_random_probes"             => 1,
+    "nh_stochastic_online"         => 2,
+    "nh_spectrum_grid"             => 10,
+]
+
+counts_for(fname, names) = count(n -> n == fname || startswith(n, fname * "_"), names)
+
 function run_tests(golden = load_golden())
     expected = Dict(golden)
     @testset "NH outputs are pinned" begin
@@ -749,6 +1001,12 @@ function run_tests(golden = load_golden())
         isempty(missing_cases) || @error "Golden NH cases no longer in the case list" missing_cases
         @test isempty(missing_data)
         @test isempty(missing_cases)
+        compared = [c.name for c in CASES if c.requires === nothing && haskey(expected, c.name)]
+        for (fname, nmin) in MIN_CASES
+            n = counts_for(fname, compared)
+            n >= nmin || @error "Too few NH golden cases for $fname" found = n minimum = nmin
+            @test n >= nmin
+        end
         for c in CASES
             haskey(expected, c.name) || continue
             if !is_available(c)
