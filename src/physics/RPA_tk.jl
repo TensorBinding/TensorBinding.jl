@@ -2,13 +2,11 @@
 #
 # The working pipeline is:
 #
-#   1. get_Tnlists        — build the three Chebyshev lists needed for the bubble
-#   2. get_bublle_expanded_from_Tn — compute Π₀(ω) as a 2L-site MPO
-#   3. build_bubble_mpo   — wrap Π₀ into the final L-site polarization bubble MPO
-#   4. rpa_from_bubble_diag — solve (I - Π₀V) χ = Π₀ for the RPA susceptibility
+#   1. get_bubble_mpo       — polarization bubble Π₀(ω) as an L-site MPO
+#   2. rpa_from_bubble_diag — solve (I - Π₀V) χ = Π₀ for the RPA susceptibility
 
 # ============================================================
-# Tensor product utilities (MPO/MPS Kronecker product)
+# Tensor product utilities (MPO Kronecker product)
 # ============================================================
 
 """
@@ -29,31 +27,9 @@ function mpo_kron(A::MPO, B::MPO)
     return M
 end
 
-
-"""
-    mps_kron(A, B) -> MPS
-
-Concatenate two MPS into a single MPS on the combined site space,
-joined by a bond-dimension-1 link.
-"""
-function mps_kron(A::MPS, B::MPS)
-    LA = length(A)
-    LB = length(B)
-    M  = MPS([ITensor() for _ in 1:(LA+LB)], 1, LA+LB)
-    for j in 1:LA;  M[j]    = A[j];  end
-    for j in 1:LB;  M[LA+j] = B[j];  end
-    link     = Index(1, "Link_AB")
-    M[LA]   *= delta(link)
-    M[LA+1] *= delta(link)
-    return M
-end
-
 # ============================================================
 # Site-index manipulation helpers
 # ============================================================
-
-nsitelegs(T::ITensor) = count(i -> hastags(i, "Site"), inds(T))
-
 
 """
     interleave_mpo_tb(op, sites_A, sites_B, which) -> MPO
@@ -195,187 +171,8 @@ function interleave_mpo(target_mpo, phys_sites, n)
 end
 
 # ============================================================
-# MPO/MPS merging utilities
-# ============================================================
-
-"""
-    merge_mps_to_mpo(mps) -> MPO
-
-Contract each consecutive pair `(2i-1, 2i)` of an MPS into a single
-MPO tensor.  The resulting MPO has `length(mps) ÷ 2` sites.
-"""
-function merge_mps_to_mpo(mps)
-    N     = length(mps)
-    new_N = N ÷ 2
-    mpo   = MPO(new_N)
-    for i in 1:new_N
-        mpo[i] = mps[2i-1] * mps[2i]
-    end
-    return mpo
-end
-
-
-"""
-    convert_mpo(old_mps, new_sites) -> MPO
-
-Convert a `2N`-site MPS (typically from QTCI) into an `N`-site MPO
-by merging pairs and remapping physical indices to `new_sites`.
-"""
-function convert_mpo(old_mps, new_sites)
-    N       = length(new_sites)
-    old_mpo = merge_mps_to_mpo(old_mps)
-    new_mpo = MPO(N)
-    for i in 1:N
-        old_s1 = siteind(old_mps, 2i-1)
-        old_s2 = siteind(old_mps, 2i)
-        new_mpo[i] = replaceinds(old_mpo[i],
-                                 [old_s1, old_s2] => [new_sites[i]', new_sites[i]])
-    end
-    return new_mpo
-end
-
-# ============================================================
-# Swap-based interleaving (alternative approach via SWAP gates)
-# ============================================================
-
-function _swap_mpo(i::Integer, j::Integer, sites)::MPO
-    os  = OpSum()
-    os += 0.5, "Id", i, "Id", j
-    os += 0.5, "X",  i, "X",  j
-    os += 0.5, "Y",  i, "Y",  j
-    os += 0.5, "Z",  i, "Z",  j
-    return MPO(os, sites)
-end
-
-
-"""
-    apply_interleave_swaps(W, sites; cutoff, maxdim, verbose) -> MPO
-
-Re-order the sites of `W` from `[1…N, N+1…2N]` to the interleaved order
-`[1, N+1, 2, N+2, …]` by composing a sequence of adjacent SWAP gates.
-Truncates after each swap to control bond dimension growth.
-"""
-function apply_interleave_swaps(W::MPO, sites;
-                                cutoff::Real=1e-16, maxdim::Int=200,
-                                verbose::Bool=false)
-    L = length(sites)
-    @assert iseven(L)
-    N = L ÷ 2
-
-    swaps = Tuple{Int,Int}[]
-    order = collect(1:L)
-    for p in 1:L
-        desired = isodd(p) ? (p + 1) ÷ 2 : N + p ÷ 2
-        q = findfirst(==(desired), order)
-        if q != p
-            push!(swaps, (p, q))
-            order[p], order[q] = order[q], order[p]
-        end
-    end
-    verbose && @info "Number of swaps" length(swaps)
-
-    Wcur = W
-    for (a, b) in swaps
-        verbose && @info "Applying swap" (a, b)
-        S    = _swap_mpo(a, b, sites)
-        Wcur = apply(dag(S), Wcur, S)
-        ITensorMPS.truncate!(Wcur; cutoff=cutoff, maxdim=maxdim)
-        verbose && @info "maxlinkdim(W)" maxlinkdim(Wcur)
-    end
-    return Wcur
-end
-
-# ============================================================
-# Polarization bubble
-# ============================================================
-
-"""
-    get_Tnlists(H, H2, sites, sites2, N; a, maxdim)
-        -> (Tn_list1, Tn_list2, Tn_listeff)
-
-Build the three Chebyshev moment lists needed for the bubble:
-- `Tn_list1`   : moments for H₁ (system 1)
-- `Tn_list2`   : moments for H₂ (system 2)
-- `Tn_listeff` : moments for H_eff = I⊗H₂ − H₁⊗I on the combined 2L-site space
-"""
-function get_Tnlists(H, H2, sites, sites2, N; a=6, maxdim=100)
-    id1            = MPO(sites,  "Id")
-    id2            = MPO(sites2, "Id")
-    sites_combined = vcat(sites, sites2)
-    Tn_list1       = KPM_Tn(H,  N, sites,  maxdim=maxdim)
-    Tn_list2       = KPM_Tn(H2, N, sites2, maxdim=maxdim)
-    H2op  = interleave_mpo(a * H2, sites_combined, 1)
-    Iop2  = interleave_mpo(id2,    sites_combined, 1)
-    Iop1  = interleave_mpo(id1,    sites_combined, 0)
-    H1op  = interleave_mpo(a * H,  sites_combined, 0)
-    Heff  = apply(Iop1, H2op) - apply(H1op, Iop2)
-    Tn_listeff = KPM_Tn(Heff / a, N, sites_combined, maxdim=maxdim)
-    return Tn_list1, Tn_list2, Tn_listeff
-end
-
-
-"""
-    get_bublle_expanded_from_Tn(Tn_list1, Tn_list2, Tn_listeff,
-                                 sites1, sites2, N, ω, ϵF;
-                                 a, maxdim) -> MPO
-
-Compute the non-interacting polarization bubble Π₀(ω) as a 2L-site MPO
-using the Lehmann representation in terms of the Chebyshev moments.
-
-The bubble is:
-    Π₀(ω) = (P₁⊗I₂ − I₁⊗P₂) · G_eff(ω)
-where P₁, P₂ are density matrices (filled-band projectors) and
-G_eff is the retarded Green's function of H_eff = I⊗H₂ − H₁⊗I.
-"""
-function get_bublle_expanded_from_Tn(Tn_list1, Tn_list2, Tn_listeff,
-                                      sites1, sites2, N, ω, ϵF;
-                                      a=6, maxdim=200)
-    P1 = get_density_from_Tn(Tn_list1, N; fermi=ϵF/a, maxdim=maxdim)
-    println("Got P1")
-    P2 = get_density_from_Tn(Tn_list2, N; fermi=ϵF/a, maxdim=maxdim)
-    println("Got P2")
-    id1            = MPO(sites1, "Id")
-    id2            = MPO(sites2, "Id")
-    sites_combined = vcat(sites1, sites2)
-
-    P2op      = interleave_mpo(P2,  sites_combined, 1)
-    Iop2      = interleave_mpo(id2, sites_combined, 1)
-    Iop1      = interleave_mpo(id1, sites_combined, 0)
-    P1op      = interleave_mpo(P1,  sites_combined, 0)
-    numerator = ITensorMPS.truncate!(
-        apply(Iop1, P2op) - apply(P1op, Iop2); cutoff=1e-8)
-    println("Got numerator")
-
-    GF_rescaled = (1/a) * get_Green_retarded_from_Tn(Tn_listeff, N, ω/a;
-                                                      η=1e-3, maxdim=maxdim)
-    bubble2L = ITensorMPS.truncate!(apply(GF_rescaled, numerator); cutoff=1e-8)
-    println("Got GF")
-    return bubble2L
-end
-
-# ============================================================
 # Public RPA pipeline
 # ============================================================
-
-"""
-    build_bubble_mpo(ω; Tn_list1, Tn_list2, Tn_listeff,
-                        sites, sites2, finalsites, finalfinalsites,
-                        chi, ϵF, a, maxdim) -> MPO
-
-Compute the L-site polarization bubble Π₀(ω) from pre-computed
-Chebyshev lists.
-"""
-function build_bubble_mpo(ω;
-                          Tn_list1, Tn_list2, Tn_listeff,
-                          sites, sites2, finalsites, finalfinalsites,
-                          chi=150, ϵF=0.0, a=6, maxdim=200)
-    bubble             = get_bublle_expanded_from_Tn(
-        Tn_list1, Tn_list2, Tn_listeff,
-        sites, sites2, chi, ω, ϵF; a=a, maxdim=maxdim)
-    bubble_interleaved = swap_every_other_legs(bubble, finalsites)
-    return collapse_mpo_pairs(bubble_interleaved, finalfinalsites)
-end
-
 
 """
     rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
