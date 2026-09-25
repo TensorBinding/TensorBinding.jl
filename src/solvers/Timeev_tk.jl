@@ -16,6 +16,10 @@ it lands on the diagonal without seeding.
 
 ## Keyword arguments
 - `maxdim`, `cutoff`    : TDVP truncation parameters.
+- `reverse_step`        : Evolve the bond tensor backwards between two-site updates, as the
+                          TDVP projector splitting requires. Default `true` (the ITensorMPS
+                          default). `false` counts terms of `H` twice, so sampled elements are
+                          off at O(dt) (some hops come out 1.5x too large); it warns.
 - `cross_tol`           : TCI interpolation tolerance.
 - `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
                           seeding costs O(N) extra TDVP runs (3-5x more at L = 8) and does
@@ -29,7 +33,7 @@ function build_tdvp_propagator_mpo(
     H, dt, L, sites;
     maxdim = 50,
     cutoff = 1e-8,
-    reverse_step = false,
+    reverse_step = true,
     outputlevel = 0,
     nsite = 2,
     cross_tol = 1e-8,
@@ -38,6 +42,7 @@ function build_tdvp_propagator_mpo(
     interpolation_type = ComplexF64,
 )
     N = 2^L
+    reverse_step || @warn "build_tdvp_propagator_mpo: reverse_step=false skips TDVP's backward bond evolution and counts terms of H twice; the propagator is wrong at O(dt)."
 
     # Opt-in: the N diagonal pivots cost O(N) TDVP runs and are not needed for TCI to
     # find the near-identity structure (see the docstring).

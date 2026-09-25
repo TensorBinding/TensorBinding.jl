@@ -30,4 +30,13 @@ end
     _, n6  = _tdvp_build(H6, dt)
     _, n6d = _tdvp_build(H6, dt; use_diagonal_pivots = true)
     @test n6 < n6d
+
+    # reverse_step = false counted terms of H twice: the hop 1 <-> 2 (two qubits flip) came
+    # out 1.5x too large (|dU| = 0.025 at L = 4).  The default is now true; false warns.
+    Uex4 = exp(-im * dt * get_matrix(H4.mpo, H4.sites))
+    M4   = get_matrix(U4, H4.sites)
+    @test abs(M4[2, 3] - Uex4[2, 3]) < 1e-4
+    @test abs(M4[3, 2] - Uex4[3, 2]) < 1e-4
+    H3 = get_Hamiltonian("chain_1d", 1.0; L = 3)
+    @test_logs (:warn, r"reverse_step=false") match_mode=:any build_tdvp_propagator_mpo(H3, dt; reverse_step = false)
 end
