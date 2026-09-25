@@ -75,8 +75,11 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   physics/nh/kpm.jl      — non-Hermitian KPM: nh_kpm_*, spectral function,
 #                             nh_spectrum_grid (uses nh/model, KPM_tk, Utils)
 #   physics/QPI_tk.jl      — quasiparticle interference via KPM LDOS difference
-#                             + QFT (uses KPM_tk, QFT_tk)
-#   physics/QFT_tk.jl      — QFT conjugation and band structure get_bands
+#                             + QFT (uses KPM_tk, physics/qft)
+#   physics/qft/           — QFT conjugation (conjugation.jl), band structure
+#                             get_bands (bands.jl), high-symmetry k-paths
+#                             (kpath.jl), exciton spectra (exciton_spectra.jl),
+#                             aux-index projection (aux_projection.jl)
 #                             (uses TBSystem, KPM_tk)
 #   physics/Supercond_tk.jl — spin/Nambu extensions: add_spin!,
 #                              add_superconductivity! (uses TBSystem, Utils)
@@ -113,7 +116,11 @@ include("physics/TwoParticle_tk.jl")
 include("physics/nh/model.jl")
 include("physics/nh/kpm.jl")
 include("physics/QPI_tk.jl")
-include("physics/QFT_tk.jl")
+include("physics/qft/conjugation.jl")
+include("physics/qft/bands.jl")
+include("physics/qft/kpath.jl")
+include("physics/qft/exciton_spectra.jl")
+include("physics/qft/aux_projection.jl")
 include("physics/Supercond_tk.jl")
 include("gpu/GPU_tk.jl")
 

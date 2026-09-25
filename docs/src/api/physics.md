@@ -57,7 +57,9 @@ Pages   = ["physics/QPI_tk.jl"]
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/QFT_tk.jl"]
+Pages   = ["physics/qft/conjugation.jl", "physics/qft/bands.jl",
+           "physics/qft/kpath.jl", "physics/qft/exciton_spectra.jl",
+           "physics/qft/aux_projection.jl"]
 ```
 
 ## Superconductivity / Nambu
