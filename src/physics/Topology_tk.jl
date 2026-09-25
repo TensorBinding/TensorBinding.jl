@@ -617,6 +617,9 @@ Reuses `H._tn_cache` or `H._density_cache` when available.  `maxdim` and
 `cutoff` are forwarded uniformly to the projector computation and to all
 MPO multiplications in the Chern marker assembly.
 
+`Lambda` is an ASCII alias for `Λ`; when given, it takes precedence over `Λ`
+(as in `get_C_gpu`).
+
 See `get_C_op_MPO_from_P` for full documentation of the remaining arguments.
 
 # Returns
@@ -637,6 +640,7 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                quenched::Bool   = true,
                sequential::Bool = false)
     _require_binary_position_space(H, "get_C")
+    Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -647,7 +651,7 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
     P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
-                                l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
+                                l=l, Λ=Λ_val, maxdim=maxdim, cutoff=cutoff,
                                 quenched=quenched, sequential=sequential)
 end
 
