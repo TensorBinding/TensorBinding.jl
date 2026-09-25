@@ -409,6 +409,13 @@ end
 Validate that `U_mpo` agrees with direct TDVP on a set of computational basis states.
 Prints per-state overlap errors and phase-aligned distances, then returns the maxima.
 
+The reference is one TDVP step from the bare basis state, so it has the errors described
+in `build_tdvp_propagator_mpo`: it drops the hops that flip three or more qubits, and
+with the default `tdvp_reverse_step=false` it also counts terms of `H` twice.  An error
+of order `dt` therefore does not mean `U_mpo` is wrong (chain_1d, L = 4, `dt = 0.05`: a
+phase error of 0.056 for a `U_mpo` within 8e-5 of `exp(-iH dt)`).  At small L, compare
+with a dense `exp(-iH dt)` instead.
+
 A `TBHamiltonian` overload is available.
 """
 function check_tdvp_vs_U_mpo(
