@@ -159,7 +159,7 @@ function evolve_with_propagator(U_mpo, psi0, nsteps;
     psi = copy(psi0)
     for step in 1:nsteps
         psi = apply(U_mpo, psi; cutoff = cutoff, maxdim = maxdim)
-        truncate!(psi; cutoff = cutoff, maxdim = maxdim)
+        ITensorMPS.truncate!(psi; cutoff = cutoff, maxdim = maxdim)
         if normalize_each_step
             normalize!(psi)
         end
