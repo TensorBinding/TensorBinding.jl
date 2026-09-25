@@ -122,6 +122,7 @@ include("bugfix_tbsystem3.jl")
 include("bugfix_rpacheb2d.jl")
 include("bugfix_gpu3.jl")
 include("bugfix_tdvp.jl")
+include("bugfix_haldane_textbook.jl")
 
 # Characterization tests: the sampling planners' current output, pinned before
 # the code-organisation refactor (data in test/data/sampling_golden.jl).
