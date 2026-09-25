@@ -864,24 +864,6 @@ function fibonacci_ldos_sampling_plan(
     )
 end
 
-# Enumerate all block members for exciton block-reduce (positional averaging).
-# For :block, spatial_sampling_plan gives singleton groups; this expands each to the
-# full set of probe positions inside the coarse block, enumerated from plan.stride_x/y.
-function _exciton_block_groups(plan, Lx::Union{Nothing,Int}, L::Int)
-    nblocks = length(plan.centers)
-    Wx = plan.stride_x
-    if Lx === nothing
-        return [[ixp * Wx + d + 1 for d in 0:Wx-1] for ixp in 0:nblocks-1]
-    end
-    a  = plan.a
-    Wy = plan.stride_y
-    Nx = 2^Lx
-    return [let ixp = (iblock-1) % 2^a, iyp = (iblock-1) ÷ 2^a
-                [ixp*Wx + dx + (iyp*Wy + dy)*Nx + 1 for dy in 0:Wy-1 for dx in 0:Wx-1]
-            end
-            for iblock in 1:nblocks]
-end
-
 """
     ilinspace(xmin, xmax, num_x) -> Vector{Int}
 

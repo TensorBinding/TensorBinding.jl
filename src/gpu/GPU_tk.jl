@@ -264,7 +264,9 @@ function _make_delta_gpu(i::Index, j::Index, k::Index)
     return _tb_cuda_module().cu(ITensor(ComplexF32.(arr), idx))
 end
 
-function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Complex}=ComplexF32)
+# Dense GPU one-hot vector on `p.first` with element type `T`, real or complex,
+# so it matches the tensor it is contracted with (see extract_diagonal_to_mps_gpu).
+function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Number}=ComplexF32)
     i = p.first
     v = Int(p.second)
     1 <= v <= dim(i) || error("_onehot_gpu: state $v is outside index dimension $(dim(i)).")
@@ -869,7 +871,7 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
         if step % sample_every == 0 || step == nsteps
             sample_idx += 1
             amplitude[:, sample_idx] = _sample_state_amplitudes_gpu(ψ_gpu, plan;
-                component=component)
+                component=component, pointavg=pointavg)
             norms[sample_idx] = _state_norm_gpu(ψ_gpu)
             maxlinks[sample_idx] = maxlinkdim(ψ_gpu)
             (verbose || printinfo) &&
@@ -1096,7 +1098,8 @@ GPU handles: the full Chebyshev MPO recurrence (the dominant cost) and the
              QFT sandwich applied to each Chebyshev moment.
 CPU handles: k-group setup, KPM weight matrix, final scalar accumulation.
 
-Use `type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype.
+Use `type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype. Real types
+are rejected, because the quantics Fourier transform is complex.
 `dtype=...` is accepted as an alias for consistency with the non-Hermitian GPU
 entry points. ComplexF32 is faster, while ComplexF64 is safer at tight cutoffs
 on large systems.
@@ -1150,6 +1153,9 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     gpu_type = dtype === nothing ? type : dtype
     dtype !== nothing && dtype != type && type != ComplexF32 &&
         error("get_bands_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
+    gpu_type <: Complex || throw(ArgumentError(
+        "get_bands_gpu: the quantics Fourier transform is complex; " *
+        "use type=ComplexF32 or type=ComplexF64 (got $gpu_type)."))
     gpu_type == ComplexF32 && cutoff < 1e-6 &&
         @warn "get_bands_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
 
@@ -2727,9 +2733,6 @@ function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims,
 end
 
 
-# Block-member enumeration for exciton block-reduce (`_exciton_block_groups`)
-# lives in core/Utils.jl next to spatial_sampling_plan.
-
 """
     get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals;
                                  Lx, num_y, reduce,
@@ -2834,10 +2837,10 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
                     reduce  = reduce,
                     num_x   = _nx,
                     num_y   = num_y,
-                    num_avg = reduce === :point ? num_avg : 1,
+                    num_avg = num_avg,
                     x_start = x_start,
                     x_end   = x_end)
-        reduce === :block ? _exciton_block_groups(plan, Lx, H.L) : plan.groups
+        plan.groups
     end
     isempty(groups) && error("get_exciton_ldos_spatial_gpu: no spatial groups were selected.")
     for grp in groups
