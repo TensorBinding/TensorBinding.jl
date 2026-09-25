@@ -105,3 +105,11 @@ include("fibonacci_sampling.jl")
 include("metallic_mean.jl")
 include("kbonacci.jl")
 include("gpu_mps_ldos.jl")
+
+# Regression tests for the bugs found in the 2026-09 code audit
+# (docs/dev/REORGANISATION_TODO.md, "Bugs").
+include("bugfix_tbsystem.jl")
+include("bugfix_rpa.jl")
+include("bugfix_scfnh.jl")
+include("bugfix_topology.jl")
+include("bugfix_gpu.jl")
