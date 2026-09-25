@@ -49,7 +49,13 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   lattice/Twisted_tk.jl      — twisted multilayer Hamiltonians (uses TBSystem,
 #                                 Bilayer_tk)
 #   lattice/TJunction_tk.jl    — T/Y-junction geometries (uses TBSystem, Hamiltonian)
-#   solvers/KPM_tk.jl      — Chebyshev kernel polynomial method (uses TBSystem)
+#   solvers/kpm/           — Chebyshev kernel polynomial method, "KPM_tk" below
+#                             (uses TBSystem): kernels.jl (damping kernels, HODC
+#                             and DOS weights), recursion.jl (spectral bounds,
+#                             KPM_Tn/KPM_Tn_mps, online MPS recursion), cached.jl
+#                             (LDOS/Green's functions from cached T_n or μ_n),
+#                             ldos.jl (online and spatial LDOS), dos.jl (stochastic
+#                             and trace DOS), exciton.jl (exciton LDOS)
 #   solvers/Krylov_tk.jl   — Green's function via vectorized linsolve (uses TBSystem)
 #   solvers/DMRG_tk.jl     — ground-state and spectral DMRG (uses TBSystem)
 #   solvers/Timeev_tk.jl   — time evolution: TDVP, propagator MPO, density-matrix
@@ -90,7 +96,12 @@ include("lattice/Flake_tk.jl")
 include("lattice/Bilayer_tk.jl")
 include("lattice/Twisted_tk.jl")
 include("lattice/TJunction_tk.jl")
-include("solvers/KPM_tk.jl")
+include("solvers/kpm/kernels.jl")
+include("solvers/kpm/recursion.jl")
+include("solvers/kpm/cached.jl")
+include("solvers/kpm/ldos.jl")
+include("solvers/kpm/dos.jl")
+include("solvers/kpm/exciton.jl")
 include("solvers/Krylov_tk.jl")
 include("solvers/DMRG_tk.jl")
 include("solvers/Timeev_tk.jl")

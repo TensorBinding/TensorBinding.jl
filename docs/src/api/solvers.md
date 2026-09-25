@@ -8,7 +8,8 @@ CurrentModule = TensorBinding
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["solvers/KPM_tk.jl"]
+Pages   = ["solvers/kpm/kernels.jl", "solvers/kpm/recursion.jl", "solvers/kpm/cached.jl",
+           "solvers/kpm/ldos.jl", "solvers/kpm/dos.jl", "solvers/kpm/exciton.jl"]
 ```
 
 ## Krylov Green's Function

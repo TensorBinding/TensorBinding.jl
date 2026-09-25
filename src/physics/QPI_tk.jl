@@ -11,7 +11,7 @@
 #
 # Dependencies:
 #   central_index, _pos_sites, _invalidate_cache!  → TBSystem.jl
-#   KPM_Tn, get_ldos_spectrum                      → KPM_tk.jl
+#   KPM_Tn, get_ldos_spectrum                      → kpm/recursion.jl, kpm/cached.jl
 #   fix_sites                                      → Utils.jl
 #   sdf_disk, sdf_interval                         → Flake_tk.jl
 #   QuanticsTCI.quanticsfouriermpo, TCI.reverse    → external
