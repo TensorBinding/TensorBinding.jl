@@ -1624,27 +1624,6 @@ function get_ldos_diag_from_Tn(Tn_list, N::Int, ω_vals;
 end
 
 
-#for getting electron densities
-function get_density_quantics(A,L)
-    
-    xvals = range(0, (2^L - 1); length=2^L)
-    f(x) =  1 -  inner(random_mps(sites,to_binary_vector(Int(x),L))',A, random_mps(sites,to_binary_vector(Int(x),L)))
-    qtt, ranks, errors = quanticscrossinterpolate(Float64, f,  xvals ; tolerance=1e-8)
-
-    tt = TCI.tensortrain(qtt.tci)
-    density_mps = MPS(tt;sites)
-  
-    density_mpo = outer(density_mps',density_mps)
-    for i in 1:L
-        density_mpo.data[i] =  Quantics._asdiagonal(density_mps.data[i],sites[i])
-    end
-    
-    return qtt,density_mpo,density_mps
-end
-
-
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Exciton LDOS  (MPS-based only — no MPO Chebyshev for the 2L-site chain)
 # ─────────────────────────────────────────────────────────────────────────────
