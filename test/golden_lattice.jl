@@ -50,8 +50,11 @@ using TensorBinding: get_Hamiltonian, build_hamiltonian, MODEL_REGISTRY, lattice
 #     with the recorded `message_prefix` (first MESSAGE_PREFIX_CHARS characters
 #     of the first line of its message);
 #   * the number of cases per builder must equal EXPECTED_CASE_COUNTS below;
-#   * cases for functions on the Tier 1 deletion list (DELETABLE_FUNCTIONS) are
-#     skipped, not failed, once the function no longer exists.
+#   * a case that names a function which no longer exists is skipped, not
+#     failed, only when that function is on the Tier 1 deletion list
+#     (DELETABLE_FUNCTIONS: exactly the lattice-file functions of the
+#     checklist's "Delete dead and legacy code" section). A missing function
+#     that is not on that list fails the case.
 #
 # Every case reseeds the global RNG and the ITensors index-id RNG with its own
 # seed before it runs (QTCI draws random pivots from the global RNG).
@@ -84,16 +87,16 @@ const MESSAGE_PREFIX_CHARS = 60
 const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :add_hopping_2D           => 26,
     :add_tjunction            => 6,
-    :bilayer                  => 7,
-    :build_hamiltonian        => 17,
+    :bilayer                  => 8,
+    :build_hamiltonian        => 18,
     :central_index            => 3,
     :estimate_scale           => 16,
     :geom_counts              => 8,
     :geom_positions           => 4,
     :geometry_closure         => 9,
-    :get_hamiltonian          => 44,
+    :get_hamiltonian          => 45,
     :interlayer_mpo           => 5,
-    :kinetic2d                => 11,
+    :kinetic2d                => 12,
     :layer_ops                => 4,
     :lattice_positions        => 6,
     :legacy_hopping           => 10,
@@ -101,12 +104,12 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :mask                     => 13,
     :mask_hamiltonian         => 6,
     :model_registry           => 1,
-    :monolayer                => 4,
-    :multilayer               => 4,
+    :monolayer                => 5,
+    :multilayer               => 5,
     :parse_param_string       => 7,
     :positions                => 8,
     :preset1d                 => 7,
-    :preset2d                 => 8,
+    :preset2d                 => 9,
     :preset_geometry          => 11,
     :resolve_layer_selection  => 5,
     :sdf                      => 11,
@@ -118,19 +121,27 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :tjunction_hamiltonian    => 5,
     :tjunction_lattice        => 3,
     :tjunction_parts          => 5,
-    :twisted                  => 4,
+    :twisted                  => 5,
 )
 
-# Functions the Tier 1 checklist lists as dead code ("Delete dead and legacy
-# code"), plus unreferenced legacy builders of the same family. Their cases
-# are skipped once the function is gone; while it exists it must still match.
+# Exactly the functions that the Tier 1 checklist (docs/dev/REORGANISATION_TODO.md,
+# "Delete dead and legacy code") names for deletion and that live in the lattice
+# files (src/lattice/*.jl), and nothing else. A case that calls one of them is
+# skipped once the function is gone; while it exists it must still match. A
+# case whose function is missing and is NOT listed here fails (check_case):
+# deleting a function the checklist does not name, e.g. one still in use, is a
+# behaviour change. Change this set only together with that checklist section.
 const DELETABLE_FUNCTIONS = Set{Symbol}([
-    :intrachain_hopping, :interchain_hopping_square,
+    # 2Dlattice_tk.jl: `interchain_hopping_*` (2nd_plus/minus, triangle,
+    # honeycomb) "with their skeleton/template helpers", `_geom_n_sub`, `_nsublat`
     :interchain_hopping_square_2nd_plus, :interchain_hopping_square_2nd_minus,
     :interchain_hopping_triangle, :interchain_hopping_honeycomb,
     :skeleton, :odd_template, :even_template, :odd_skeleton, :even_skeleton,
+    :_geom_n_sub, :_nsublat,
+    # Twisted_tk.jl: `postpend_layer_projector/hopping`
     :postpend_layer_projector, :postpend_layer_hopping,
-    :sdf_interval, :_nsublat, :_geom_n_sub, :_geom_positions,
+    # Flake_tk.jl: `sdf_interval`
+    :sdf_interval,
 ])
 
 # ── Reproducible state ─────────────────────────────────────────────────────────
@@ -579,29 +590,43 @@ function run_case(builder::Symbol, @nospecialize(spec::NamedTuple))
     return BUILDERS[builder](spec)
 end
 
-"""
-    deleted_function(spec) -> Union{Symbol,Nothing}
+# The TensorBinding function behind each make_sdf kind.
+const SDF_FUNCTIONS = Dict{Symbol,Symbol}(
+    :disk => :sdf_disk, :rect => :sdf_rect, :halfplane => :sdf_halfplane,
+    :annulus => :sdf_annulus, :polygon => :sdf_convex_polygon, :interval => :sdf_interval,
+    :union => :sdf_union, :intersect => :sdf_intersect, :subtract => :sdf_subtract)
 
-The deletable function a case calls when it no longer exists in TensorBinding
-(the case is then skipped), `nothing` otherwise.
 """
-function deleted_function(@nospecialize(spec::NamedTuple))
+    case_functions(spec) -> Vector{Symbol}
+
+The TensorBinding functions a case names in its spec: `spec.fn` and the SDF
+builders of `spec.sdf`. (Functions a builder calls without naming them in the
+spec are reached directly; if one is gone, the case throws and fails.)
+"""
+function case_functions(@nospecialize(spec::NamedTuple))
     names = Symbol[]
     haskey(spec, :fn) && spec.fn isa Symbol && push!(names, spec.fn)
-    haskey(spec, :sdf) && _sdf_kinds!(names, spec.sdf)
-    for f in names
-        f in DELETABLE_FUNCTIONS && !isdefined(TB, f) && return f
-    end
-    return nothing
+    haskey(spec, :sdf) && _sdf_functions!(names, spec.sdf)
+    return unique!(names)
 end
 
-function _sdf_kinds!(names, spec::Tuple)
-    spec[1] === :interval && push!(names, :sdf_interval)
+function _sdf_functions!(names, spec::Tuple)
+    spec[1] isa Symbol && haskey(SDF_FUNCTIONS, spec[1]) && push!(names, SDF_FUNCTIONS[spec[1]])
     for x in spec
-        x isa Tuple && !isempty(x) && x[1] isa Symbol && _sdf_kinds!(names, x)
+        x isa Tuple && !isempty(x) && x[1] isa Symbol && _sdf_functions!(names, x)
     end
     return names
 end
+
+# Whether TensorBinding still defines `f`: the one place the runner asks.
+function_defined(f::Symbol) = isdefined(TB, f)
+
+"""
+    missing_functions(spec) -> Vector{Symbol}
+
+The functions of `case_functions(spec)` that TensorBinding no longer defines.
+"""
+missing_functions(@nospecialize(spec::NamedTuple)) = filter(f -> !function_defined(f), case_functions(spec))
 
 """
     evaluate(builder, spec, seed) -> (result, error)
@@ -724,10 +749,16 @@ function mismatch(@nospecialize(actual), @nospecialize(expected))
 end
 
 function check_case(@nospecialize(case))
-    gone = deleted_function(case.spec)
-    if gone !== nothing
-        @info "Lattice golden case skipped: $gone was deleted" case = case.name
-        @test_skip gone === nothing
+    gone = missing_functions(case.spec)
+    if !isempty(gone)
+        unlisted = filter(f -> !(f in DELETABLE_FUNCTIONS), gone)
+        if isempty(unlisted)
+            @info "Lattice golden case skipped: $(join(gone, ", ")) deleted (Tier 1 deletion list)" case = case.name
+            @test_skip isempty(gone)
+        else
+            @error "Lattice function removed but not on the Tier 1 deletion list (DELETABLE_FUNCTIONS)" case = case.name functions = unlisted
+            @test isempty(unlisted)
+        end
         return
     end
     actual, err = evaluate(case.builder, case.spec, case.seed)
@@ -770,6 +801,11 @@ function run_tests(cases)
         counts == EXPECTED_CASE_COUNTS ||
             @error "Golden case counts differ from EXPECTED_CASE_COUNTS" got = counts expected = EXPECTED_CASE_COUNTS
         @test counts == EXPECTED_CASE_COUNTS
+        # Every deletable function must be one that some case calls (no stale entries).
+        named = reduce(union!, (case_functions(case.spec) for case in cases); init = Set{Symbol}())
+        unused = setdiff(DELETABLE_FUNCTIONS, named)
+        isempty(unused) || @error "DELETABLE_FUNCTIONS names functions no case calls" unused
+        @test isempty(unused)
         for builder in unique(case.builder for case in cases)
             @testset "$builder" begin
                 for case in cases

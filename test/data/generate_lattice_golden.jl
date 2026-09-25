@@ -108,6 +108,11 @@ add!("kineticintra2DNNN_Lx2_Ly1_nn0", :kinetic2d, (fn = :kineticintra2DNNN, Lx =
 add!("kineticinterNNNSWNE_Lx2_Ly1_nn5", :kinetic2d, (fn = :kineticinterNNNSWNE, Lx = 2, Ly = 1, hopping = :test, nn = 5, kw = none))
 add!("kineticinterNNNSENW_Lx2_Ly1_nn3", :kinetic2d, (fn = :kineticinterNNNSENW, Lx = 2, Ly = 1, hopping = :test, nn = 3, kw = none))
 add!("kineticinterNNNtriSWNE_Lx2_Ly1_nn5", :kinetic2d, (fn = :kineticinterNNNtriSWNE, Lx = 2, Ly = 1, hopping = :test, nn = 5, kw = none))
+# The triangular SW->NE term only couples an odd row iy to row iy + 1, so on a
+# grid with one y-qubit (rows 0 and 1) it is identically zero. This case and the
+# Ly = 2 cases marked "SW->NE bonds present" below pin its nonzero bonds in every
+# builder that uses it (HUniform2Dtri, "triangular_2d", the :triangular stacks).
+add!("kineticinterNNNtriSWNE_Lx2_Ly2_nn5", :kinetic2d, (fn = :kineticinterNNNtriSWNE, Lx = 2, Ly = 2, hopping = :test, nn = 5, kw = none))
 add!("kineticinterNNNtriSENW_Lx2_Ly1_nn3", :kinetic2d, (fn = :kineticinterNNNtriSENW, Lx = 2, Ly = 1, hopping = :test, nn = 3, kw = none))
 add!("kineticinterNNNtri_bravais_diag_Lx2_Ly1", :kinetic2d,
      (fn = :kineticinterNNNtri_bravais_diag, Lx = 2, Ly = 1, hopping = :test, nn = nothing, kw = none))
@@ -125,6 +130,7 @@ add!("HAAH_L3_b0.4", :preset1d, (fn = :HAAH, args = (3, 0.5, 0.3, 1.0), kw = (b 
 for fn in (:HUniform2Dsquare, :HUniform2Dhex, :HUniform2Dtri, :HUniform2Dtri_bravais)
     add!("$(fn)_Lx2_Ly1", :preset2d, (; fn, args = (2, 1, 1.0), kw = none))
 end
+add!("HUniform2Dtri_Lx2_Ly2", :preset2d, (fn = :HUniform2Dtri, args = (2, 2, 0.8), kw = none))   # SW->NE bonds present
 add!("HChern8_Lx2_Ly2_default", :preset2d, (fn = :HChern8, args = (2, 2, 1.0, 1.0), kw = none))
 add!("HChern8_Lx2_Ly1_a1.5_t2", :preset2d, (fn = :HChern8, args = (2, 1, 0.5, 1.0), kw = (a = 1.5, t2 = 0.3)))
 add!("HQC2Dsquare_Lx2_Ly2_default", :preset2d, (fn = :HQC2Dsquare, args = (2, 2), kw = none))
@@ -187,6 +193,8 @@ add!("build_hamiltonian_ssh_missing_d", :build_hamiltonian, (model = "ssh", dims
 for model in ("square_2d", "hex_2d", "triangular_2d", "triangular_bravais", "qc2dsquare")
     add!("build_hamiltonian_$(model)_Lx2_Ly1", :build_hamiltonian, (; model, dims = (2, 1), kw = (mparams = "t=1.0",)))
 end
+add!("build_hamiltonian_triangular_2d_Lx2_Ly2", :build_hamiltonian,   # SW->NE bonds present
+     (model = "triangular_2d", dims = (2, 2), kw = (mparams = "t=0.8",)))
 add!("build_hamiltonian_chern8_Lx2_Ly1", :build_hamiltonian, (model = "chern8", dims = (2, 1), kw = (mparams = "V=0.5, t=1.0",)))
 add!("build_hamiltonian_1d_model_2d_call", :build_hamiltonian, (model = "uniform", dims = (2, 1), kw = (mparams = "t=1.0",)))
 add!("build_hamiltonian_chern8_missing_t", :build_hamiltonian, (model = "chern8", dims = (2, 1), kw = (mparams = "V=1.0",)))
@@ -244,6 +252,7 @@ gh("square_2d_L3_Lx2_Ly1_scale", "square_2d", 0.9, (L = 3, Lx = 2, Ly = 1, scale
 gh("square_2d_L3_Lx2_ref_sites", "square_2d", 1.0, (L = 3, Lx = 2); ref_sites = true)
 gh("hex_2d_L3_Lx2", "hex_2d", 1.0, (L = 3, Lx = 2))
 gh("triangular_2d_L3_Lx2", "triangular_2d", 1.0, (L = 3, Lx = 2))
+gh("triangular_2d_L4_Lx2", "triangular_2d", 0.8, (L = 4, Lx = 2))   # Ly = 2: SW->NE bonds present
 gh("triangular_bravais_L3_Lx2", "triangular_bravais", 1.0, (L = 3, Lx = 2))
 gh("chern8_L3_Lx2_explicit_scale", "chern8", (V = 0.5, t = 1.0), (L = 3, Lx = 2, scale = 5.0))
 gh("qc2dsquare_L4_Lx2_explicit_scale", "qc2dsquare", 1.0, (L = 4, Lx = 2, scale = 5.0))
@@ -301,6 +310,8 @@ add!("lattice_positions_unknown", :lattice_positions, (lattice = :foo, Lx = 1, L
 for lattice in (:square, :triangular, :honeycomb)
     add!("monolayer_hamiltonian_$(lattice)_Lx2_Ly1", :monolayer, (; lattice, Lx = 2, Ly = 1, kw = (t = 0.9,)))
 end
+# Ly = 2: the triangular SW->NE bonds are present (see section 6).
+add!("monolayer_hamiltonian_triangular_Lx2_Ly2", :monolayer, (lattice = :triangular, Lx = 2, Ly = 2, kw = (t = 0.9,)))
 add!("monolayer_hamiltonian_unknown", :monolayer, (lattice = :foo, Lx = 1, Ly = 1, kw = none))
 add!("prepend_layer_projector_3layers_k2", :layer_ops, (fn = :prepend_layer_projector, nlayers = 3, levels = (2,)))
 add!("prepend_layer_hopping_3layers_1_3", :layer_ops, (fn = :prepend_layer_hopping, nlayers = 3, levels = (1, 3)))
@@ -313,6 +324,8 @@ add!("twisted_bilayer_honeycomb_Lx1_Ly1_kwargs", :twisted,
 add!("twisted_multilayer_triangular_Lx1_Ly1_3layers", :twisted,
      (fn = :twisted_multilayer_hamiltonian, args = (:triangular, 1, 1, [0.0, 5.0, 10.0]), kw = none))
 add!("twisted_multilayer_one_layer", :twisted, (fn = :twisted_multilayer_hamiltonian, args = (:square, 1, 1, [0.0]), kw = none))
+add!("twisted_bilayer_triangular_Lx1_Ly2_10deg", :twisted,   # SW->NE bonds present
+     (fn = :twisted_bilayer_hamiltonian, args = (:triangular, 1, 2, 10.0), kw = none))
 
 add!("interlayer_mpo_square_AA", :interlayer_mpo, (lattice = :square, stacking = :AA, Lx = 2, Ly = 1, kw = (t_inter = 0.3,)))
 add!("interlayer_mpo_honeycomb_Bernal", :interlayer_mpo, (lattice = :honeycomb, stacking = :Bernal, Lx = 2, Ly = 1, kw = (t_inter = 0.4,)))
@@ -324,6 +337,7 @@ add!("bilayer_square_Lx2_Ly1_default", :bilayer, (lattice = :square, Lx = 2, Ly 
 add!("bilayer_honeycomb_Lx2_Ly1_Bernal", :bilayer,
      (lattice = :honeycomb, Lx = 2, Ly = 1, kw = (stacking = :Bernal, t_intra = 0.9, t_inter = 0.2)))
 add!("bilayer_triangular_Lx1_Ly1_AA", :bilayer, (lattice = :triangular, Lx = 1, Ly = 1, kw = (t_inter = 0.5,)))
+add!("bilayer_triangular_Lx1_Ly2_AA", :bilayer, (lattice = :triangular, Lx = 1, Ly = 2, kw = (t_inter = 0.5,)))   # SW->NE bonds present
 add!("bilayer_square_Lx1_Ly1_AA_complex_tinter", :bilayer, (lattice = :square, Lx = 1, Ly = 1, kw = (t_inter = 0.3im,)))
 add!("bilayer_honeycomb_Lx1_Ly1_sublattice_AA", :bilayer, (lattice = :honeycomb, Lx = 1, Ly = 1, kw = (sublattice = true,)))
 add!("bilayer_honeycomb_Lx1_Ly1_sublattice_Bernal", :bilayer,
@@ -335,6 +349,8 @@ add!("multilayer_honeycomb_Lx1_Ly1_3layers_Bernal", :multilayer,
 add!("multilayer_honeycomb_Lx1_Ly1_3layers_sublattice_Bernal", :multilayer,
      (lattice = :honeycomb, Lx = 1, Ly = 1, n_layers = 3, kw = (sublattice = true, stacking = :Bernal)))
 add!("multilayer_one_layer", :multilayer, (lattice = :square, Lx = 1, Ly = 1, n_layers = 1, kw = none))
+add!("multilayer_triangular_Lx1_Ly2_3layers", :multilayer,   # SW->NE bonds present
+     (lattice = :triangular, Lx = 1, Ly = 2, n_layers = 3, kw = none))
 
 # ═════════════════════════════════════════════════════════════════════════════
 # lattice/Flake_tk.jl
