@@ -302,13 +302,17 @@ Supported geometry strings
 |---------------|--------------------------------|-------------------------------|
 | `"chain_1d"`  | hopping amplitude `t::Number`  | direct MPO, no QTCI; use `add_onsite!` for potentials |
 | `"square_2d"` | hopping amplitude `t::Number`  | `Lx`, `Ly` (default `L÷2` each) |
-| `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 Float64 position matrix, required) |
+| `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 positions from `honeycomb_positions`, required) |
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
 | `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
 | `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple | `m` (required; `m=2` silver mean), `model`, `boundary` |
 | `"kbonacci"` | `(A, B, C, ...[, t, onsite])` or `(values=(a_1, ..., a_k)[, t, onsite])` NamedTuple | `k` (required; `k=3` Tribonacci), `model`, `boundary` |
 | `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 | `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
+
+`"haldane"` is the textbook, C3-symmetric Haldane model `⟨i|H|j⟩ = t2 exp(i phi ν_ij)`
+(Dirac masses `-M ± 3√3 t2 sin(phi)`, see [`haldane_hoppingf`](@ref)); it refuses an `rs`
+whose sites are not on the `honeycomb_positions` lattice.
 
 For `"kagome"` and `"lieb"`, `L = Lx + Ly` counts only the position qubits;
 the total atom count is `3 × 2^L`.  The sublattice index is stored in
@@ -465,53 +469,93 @@ function _build_chain_1d(t, L, N, sites;
 end
 
 
+# Sublattice sign of a honeycomb_positions site, read from the position: -1 on sublattice A
+# (the one of site 1, at x ∈ 1.5ℤ), +1 on B (x ∈ 1.5ℤ + 1), i.e. σ = (-1)^(ix+iy+1). The index
+# parity (-1)^i only tracks ix in that row-major layout (2^Lx is even).
+_haldane_sigma(r) = isapprox(mod(r[1], 1.5), 1.0; atol=1e-6) ? 1 : -1
+
 """
     chirality(r1, r2) -> Int
 
-Sign `ν = ±1` of the next-nearest-neighbour hop `r1 → r2` in [`haldane_hoppingf`](@ref):
-`+1` when `r2 - r1` points into the upper half-plane (angle in `[0, π)`), `-1` otherwise,
-so `chirality(r2, r1) == -chirality(r1, r2)`.
+Textbook Haldane sign `ν = ±1` of the next-nearest-neighbour hop between the sites at `r1`
+and `r2` of the [`honeycomb_positions`](@ref) lattice: `ν = sign((d1 × d2)_z)` for the path
+`r1 → k → r2` through their common nearest neighbour `k` (`d1 = r_k - r1`, `d2 = r2 - r_k`),
+so `+1` when the path turns left at `k`.
+
+On that lattice the bonds of an A site (x ∈ 1.5ℤ) point at 0° and ±120° and those of a B
+site at 180° and ±60°, so `ν = -σ sign(sin 3θ)`, with `θ` the angle of `r2 - r1` and `σ` the
+sublattice sign of `r1` (-1 on A, +1 on B). The three hops of a C3-related triple share one
+sign, and `chirality(r2, r1) == -chirality(r1, r2)`. The result is meaningless for pairs
+that are not next-nearest neighbours of that lattice.
 """
 function chirality(r1, r2)
-    # This assumes all NNN hoppings are via a triangle path on a 2D honeycomb
     δ = r2 .- r1
-    θ = atan(δ[2], δ[1])  # angle from r1 to r2
-    # Map angle into 0 to 2π
-    θ = mod(θ, 2π)
-    # Assign ν = ±1 depending on angular sector
-    return if θ < π
-        +1  # counter-clockwise
-    else
-        -1  # clockwise
-    end
+    # the six next-nearest directions sit at θ = ±30°, ±90°, ±150°, where sin 3θ = ±1
+    s = sin(3 * atan(δ[2], δ[1])) > 0 ? 1 : -1
+    return -_haldane_sigma(r1) * s
 end
 
 """
     haldane_hoppingf(r1, r2, i, j; t2=0.2, phi=π/2, M=0.0) -> Number
 
-Haldane-model matrix element between the sites at `r1` and `r2` of a honeycomb with
-bond length 1 laid out as in [`honeycomb_positions`](@ref): `M σ` on site, `-1` for
-nearest neighbours and `t2 exp(-i phi ν σ)` for next-nearest neighbours, with
-`ν = chirality(r1, r2)` and `σ` the sublattice sign of `r1` (`-1` on the sublattice of
-site 1, `+1` on the other). `i`, `j` are the site indices of the `f(i, j)` call pattern.
+Matrix element `⟨r1|H|r2⟩` of the textbook, C3-symmetric Haldane model
+`H = Σ_ij H_ij c†_i c_j` on the honeycomb with bond length 1 laid out as in
+[`honeycomb_positions`](@ref):
+
+- on site: `M σ`, with `σ = -1` on the sublattice of site 1 (x ∈ 1.5ℤ) and `+1` on the other;
+- nearest neighbours: `-1`;
+- next-nearest neighbours: `t2 exp(i phi ν)`, with `ν = chirality(r1, r2) = sign((d1 × d2)_z)`
+  for the path `r1 → k → r2` through the common nearest neighbour `k`.
+
+The Dirac masses are `-M ± 3√3 t2 sin(phi)`, so the model is a Chern insulator for
+`|M| < 3√3 |t2 sin(phi)|`. `i`, `j` are the site indices of the `f(i, j)` call pattern
+(unused).
+
+This is the convention of the manuscript's `build_APSOS_hamiltonian`: its `haldane_phases`
+table, added with [`add_hopping_2D!`](@ref) on the `"honeycomb"` preset, gives
+`⟨i|H|j⟩ = t2 exp(i phi ν_ij)` with the same `ν_ij`, so the same Chern number at the same
+`t2` and `phi`. It puts `+M` rather than `-M` on its sublattice 1, which leaves the Chern
+number unchanged. Earlier versions gave the four vertical next-nearest bonds `-ν`, which
+made the Dirac masses `-M ± √3 t2 sin(phi)`.
 """
 function haldane_hoppingf(r1, r2, i, j; t2 = 0.2, phi=pi/2, M=0.0)
-    δ = r2 .- r1
-    d = norm(δ)
-    # Sublattice sign from the position: honeycomb_positions puts sublattice A (site 1)
-    # at x ∈ 1.5ℤ and B at x ∈ 1.5ℤ + 1, i.e. σ = (-1)^(ix+iy+1). The index parity
-    # (-1)^i only tracks ix in that row-major layout (2^Lx is even).
-    σ = isapprox(mod(r1[1], 1.5), 1.0; atol=1e-6) ? 1 : -1
+    d = norm(r2 .- r1)
     if isapprox(d, 0.0; atol=1e-3)
-        return M*σ
+        return M * _haldane_sigma(r1)
     elseif isapprox(d, 1.0; atol=1e-8)
         return -1.0 #t1
     elseif isapprox(d, √3; atol=1e-3)
-        ν = chirality(r1, r2)
-        return t2*exp(-1im*phi*ν*σ)
+        return t2 * cis(phi * chirality(r1, r2))
     else
         return 0.0
     end
+end
+
+# haldane_hoppingf reads the sublattice from x and the chirality from the bond angle, which is
+# right only for sites of the honeycomb_positions lattice: rows at y ∈ (√3/2)ℤ and, once the
+# 1.5 shift of odd rows is undone, A at x ∈ 3ℤ and B at x ∈ 3ℤ + 1. One O(N) pass, no search.
+function _check_haldane_layout(rs, N; atol=1e-6)
+    size(rs, 1) >= N && size(rs, 2) == 2 ||
+        throw(ArgumentError("get_Hamiltonian(\"haldane\"): `rs` must be an N×2 position matrix " *
+                            "with at least N = $N rows, got size $(size(rs)). Generate it with " *
+                            "honeycomb_positions."))
+    h = √3 / 2
+    for i in 1:N
+        x, y = rs[i, 1], rs[i, 2]
+        ok = isfinite(x) && isfinite(y)
+        if ok
+            r  = round(Int, y / h)
+            u  = mod(x - (isodd(r) ? 1.5 : 0.0), 3.0)
+            ok = abs(y - r * h) <= atol && min(u, 3.0 - u, abs(u - 1.0)) <= atol
+        end
+        ok || throw(ArgumentError(
+            "get_Hamiltonian(\"haldane\"): site $i of `rs`, $((x, y)), is not on the " *
+            "honeycomb_positions lattice (bond length 1, one bond along x, sublattice A at " *
+            "x ∈ 1.5ℤ). haldane_hoppingf reads the sublattice and the Haldane chirality from " *
+            "the positions, which is only right there. Pass rs from honeycomb_positions (a " *
+            "translate by a lattice vector also works), or build the model with hopping2MPO."))
+    end
+    return nothing
 end
 
 # Structural QTCI pivots for the Haldane matrix: every pair within R (√3 < R < 2, so
@@ -565,6 +609,7 @@ function _build_haldane(params, L, N, sites;
                         rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
                            "Generate it with `honeycomb_positions($L)`."
+    _check_haldane_layout(rs, N)
     t2  = params.t2
     phi = params.phi
     M   = params.M
