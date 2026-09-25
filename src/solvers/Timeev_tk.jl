@@ -10,13 +10,16 @@ Build an MPO approximation of the short-time propagator `U(dt) = e^{-iH dt}` by
 sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
 
 `H` must already be multiplied by `-im` for Schrödinger evolution.
-The diagonal is dominant for small `dt`; by default TCI is seeded with all diagonal
-pivots (`use_diagonal_pivots=true`) so the near-identity structure is captured first.
+Every sample is one TDVP run.  The diagonal is dominant for small `dt`; TCI starts
+from `(1, 1)` and QuanticsTCI moves its random initial pivots to large elements, so
+it lands on the diagonal without seeding.
 
 ## Keyword arguments
 - `maxdim`, `cutoff`    : TDVP truncation parameters.
 - `cross_tol`           : TCI interpolation tolerance.
-- `use_diagonal_pivots` : Seed TCI with the N diagonal positions. Default `true`.
+- `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
+                          seeding costs O(N) extra TDVP runs (3-5x more at L = 8) and does
+                          not make TCI find the off-diagonal structure more reliably.
 - `interpolation_type`  : Element type for TCI sampling. Default `ComplexF64`.
 
 A `TBHamiltonian` overload applies `-im` internally:
@@ -31,13 +34,13 @@ function build_tdvp_propagator_mpo(
     nsite = 2,
     cross_tol = 1e-8,
     initial_positions = [],
-    use_diagonal_pivots = true,   # seed TCI with diagonal to capture near-identity structure
+    use_diagonal_pivots = false,  # true seeds all N diagonal positions: O(N) extra TDVP runs
     interpolation_type = ComplexF64,
 )
     N = 2^L
 
-    # For a short-time propagator the diagonal is dominant.  Seeding TCI with all
-    # diagonal positions ensures it captures that structure before exploring off-diagonal.
+    # Opt-in: the N diagonal pivots cost O(N) TDVP runs and are not needed for TCI to
+    # find the near-identity structure (see the docstring).
     if use_diagonal_pivots && isempty(initial_positions)
         initial_positions = [(i, i) for i in 1:N]
     end
