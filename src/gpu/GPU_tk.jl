@@ -3072,8 +3072,10 @@ Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
   intrinsically complex, so only `ComplexF32` / `ComplexF64` are accepted. Use
   `dtype=ComplexF64` to avoid NaN from ComplexF32 eigendecompositions on large
   systems at tight cutoffs (a warning is emitted for `ComplexF32` + `cutoff < 1e-6`).
-- The projector is built on CPU first (via `_get_projector`), then moved to GPU.
-  For method=:mcweeny this means the purification loop runs on GPU.
+- For `method=:mcweeny` and `method=:sp2`, only the initial guess
+  (`purification_initial_guess`) is built on CPU; it is moved to GPU and the
+  purification loop runs there. For `method=:KPM` the whole projector is built
+  on CPU (via `_get_projector`), then moved to GPU.
 - `get_C`'s `sequential` keyword is not accepted; the quenched marker is always
   assembled from the C1–C4 MPOs.
 
