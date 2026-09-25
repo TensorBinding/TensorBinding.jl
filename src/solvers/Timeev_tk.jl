@@ -4,7 +4,7 @@ using ITensorMPS
 """
     build_tdvp_propagator_mpo(H, dt, L, sites; maxdim, cutoff, reverse_step,
                               outputlevel, nsite, cross_tol, initial_positions,
-                              use_diagonal_pivots, interpolation_type) -> MPO
+                              use_diagonal_pivots, expand_basis, interpolation_type) -> MPO
 
 Build an MPO approximation of the short-time propagator `U(dt) = e^{-iH dt}` by
 sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
@@ -13,6 +13,25 @@ sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
 Every sample is one TDVP run.  The diagonal is dominant for small `dt`; TCI starts
 from `(1, 1)` and QuanticsTCI moves its random initial pivots to large elements, so
 it lands on the diagonal without seeding.
+
+Each sample evolves a basis state `|j⟩`, an MPS of bond dimension 1.  TDVP cannot leave
+the tangent space of that state, so on its own it drops every hop that flips three or
+more qubits (the carry chains `0111 → 1000` of the quantics encoding, such as the middle
+bond of a chain).  By default `|j⟩` first gets the Krylov basis of `H|j⟩, H²|j⟩`
+(`ITensorMPS.expand(...; alg="global_krylov")`).  The samples then match the dense
+`exp(-iH dt)` to TDVP accuracy (chain_1d, `dt = 0.05`: Frobenius error 7e-5 at L = 3 and
+1.3e-4 at L = 6, limited by `cutoff`; 0.07 and 0.27 without the expansion).
+
+!!! warning
+    From about L = 5, the QTCI fit in `hopping2MPO` can miss those isolated carry-chain
+    elements even though they are sampled correctly.  In 1D-chain tests it missed them
+    (max error ≈ `dt`) for most random seeds at L = 6 and for every seed at L = 8.  It does
+    the same on a plain hopping matrix.  For a chain, seeding `initial_positions` with the
+    elements near the middle boundary,
+    `[(N÷2+a, N÷2+b) for a in -3:4 for b in -3:4 if abs(a-b) <= 4]`, fixed L = 6.  From
+    L = 8, the final `truncate!(cutoff=1e-8)` in `hopping2MPO` also drops the second-order
+    elements (error ≈ `dt²/2`), because that cutoff is relative to ‖U‖² = N.  Check the
+    result against a dense `exp(-iH dt)` at small L.
 
 ## Keyword arguments
 - `maxdim`, `cutoff`    : TDVP truncation parameters.
@@ -24,7 +43,12 @@ it lands on the diagonal without seeding.
 - `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
                           seeding costs O(N) extra TDVP runs (3-5x more at L = 8) and does
                           not make TCI find the off-diagonal structure more reliably.
+- `expand_basis`        : Expand each basis state with its Krylov vectors before TDVP (see
+                          above; needs `H::MPO`). Default `true`.
 - `interpolation_type`  : Element type for TCI sampling. Default `ComplexF64`.
+
+To reproduce the samples and seeding used before these defaults changed, pass
+`reverse_step=false, expand_basis=false, use_diagonal_pivots=true`.
 
 A `TBHamiltonian` overload applies `-im` internally:
 `build_tdvp_propagator_mpo(H::TBHamiltonian, dt; ...)`.
@@ -39,6 +63,7 @@ function build_tdvp_propagator_mpo(
     cross_tol = 1e-8,
     initial_positions = [],
     use_diagonal_pivots = false,  # true seeds all N diagonal positions: O(N) extra TDVP runs
+    expand_basis = true,
     interpolation_type = ComplexF64,
 )
     N = 2^L
@@ -53,6 +78,11 @@ function build_tdvp_propagator_mpo(
     function func(i, j)
         psi_i = TensorBinding.binary_to_MPS(Int(i - 1), L, sites)
         psi_j = TensorBinding.binary_to_MPS(Int(j - 1), L, sites)
+        if expand_basis
+            # |j> has bond dimension 1: without the Krylov basis of H|j>, H^2|j> TDVP
+            # cannot reach hops that flip three or more qubits (carry chains 0111 -> 1000).
+            psi_j = ITensorMPS.expand(psi_j, H; alg = "global_krylov")
+        end
 
         psi_j_evolved = tdvp(
             H,

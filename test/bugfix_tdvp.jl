@@ -39,4 +39,19 @@ end
     @test abs(M4[3, 2] - Uex4[3, 2]) < 1e-4
     H3 = get_Hamiltonian("chain_1d", 1.0; L = 3)
     @test_logs (:warn, r"reverse_step=false") match_mode=:any build_tdvp_propagator_mpo(H3, dt; reverse_step = false)
+
+    # TDVP cannot leave the tangent space of a bond-dimension-1 basis state, so the middle
+    # hop N/2-1 <-> N/2 (011 <-> 100, all qubits flip) was dropped (|dU| = dt).  With the
+    # Krylov expansion every element matches exp(-iH dt) to TDVP accuracy: each sampled
+    # column is good to ~sqrt(cutoff) = 1e-4 (measured Frobenius 7e-5 / 8e-5 at L = 3 / 4,
+    # against 0.10 / 0.16 before).
+    U3, _ = _tdvp_build(H3, dt)
+    for (H, U) in ((H3, U3), (H4, U4))
+        Uex = exp(-im * dt * get_matrix(H.mpo, H.sites))
+        M   = get_matrix(U, H.sites)
+        c   = H.N ÷ 2
+        @test abs(M[c, c + 1] - Uex[c, c + 1]) < 1e-4
+        @test abs(M[c + 1, c] - Uex[c + 1, c]) < 1e-4
+        @test norm(M - Uex) < 1e-3
+    end
 end
