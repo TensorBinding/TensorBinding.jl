@@ -115,6 +115,34 @@ TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
                   _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
                   nothing, nothing, nothing)
 
+"""
+    TBHamiltonian(H::TBHamiltonian; field=value, ...) -> TBHamiltonian
+
+Copy `H` field by field, replacing the fields named as keywords. Every other field,
+including `Lx`, `interaction_mpo`, `fock_mpo` and `position_space`, keeps the value
+from `H`; MPOs and index vectors are shared, not deep-copied. The lazy caches
+(`_tn_cache`, `_tn_mps_cache`, `_tn_Ncheb`, `_density_cache`) start empty unless
+passed explicitly, since a copy usually carries a different operator.
+
+```julia
+Hbdg = TBHamiltonian(H; sites=[nambu_s; spin_s; H.sites], mpo=bdg_mpo,
+                     spin_s=spin_s, nambu_s=nambu_s, aux_side=:pre)
+```
+"""
+function TBHamiltonian(H::TBHamiltonian; kwargs...)
+    names = fieldnames(TBHamiltonian)
+    for k in keys(kwargs)
+        k in names || throw(ArgumentError("TBHamiltonian has no field `$k`"))
+    end
+    empty_caches = (_tn_cache=nothing, _tn_mps_cache=nothing, _tn_Ncheb=0,
+                    _density_cache=nothing)
+    vals = map(names) do f
+        haskey(kwargs, f)       ? kwargs[f] :
+        haskey(empty_caches, f) ? empty_caches[f] : getfield(H, f)
+    end
+    return TBHamiltonian(vals...)
+end
+
 # ============================================================
 # Position-space interface
 # ============================================================
