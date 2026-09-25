@@ -226,10 +226,9 @@ function add_hopping_2D!(H::TBHamiltonian, f;
 
         H_layered_term = nothing
         for ell in layers
-            H_pos = TBHamiltonian(H.L, H.N, term_sites, copy(zero_mpo),
-                                  geom, 0.0, 0.0,
-                                  nothing, nothing, nothing, H.sublattice_s, :post,
-                                  nothing, nothing, 0, nothing)
+            H_pos = TBHamiltonian(H; sites=term_sites, mpo=copy(zero_mpo),
+                                  geometry=geom, scale=0.0, center=0.0,
+                                  layer_s=nothing, aux_side=:post)
             add_hopping_2D!(H_pos, f;
                             Lx=Lx, Ly=Ly, nn=nn,
                             maxdim=maxdim, tol=tol)

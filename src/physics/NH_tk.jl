@@ -96,11 +96,9 @@ function hermitized_hamiltonian(H::TBHamiltonian;
     end
     ITensorMPS.truncate!(H_block; cutoff=cutoff, maxdim=maxdim)
 
-    return TBHamiltonian(H.L, H.N, sites, H_block,
-                         H.geometry, H.geometry_uc,
-                         Float64(scale), 0.0,
-                         H.spin_s, H.nambu_s, H.layer_s, H.sublattice_s, :pre,
-                         nothing, nothing, 0, nothing)
+    # The block operator is not a physical Hamiltonian: interactions stay on the parent.
+    return TBHamiltonian(H; sites=sites, mpo=H_block, scale=Float64(scale), center=0.0,
+                         aux_side=:pre, interaction_mpo=nothing, fock_mpo=nothing)
 end
 
 """
