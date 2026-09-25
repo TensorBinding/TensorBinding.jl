@@ -22,10 +22,11 @@ using TensorBinding: hopping2MPO, qtci_matrix_to_MPO, pairing2MPO, get_matrix,
     P = pairing2MPO(g, N, sites; initial_positions=[(i, i + 1) for i in 1:N-1])
     @test get_matrix(P, sites) ≈ [g(i, j) for i in 1:N, j in 1:N] atol=1e-8
 
-    # build_tdvp_propagator_mpo seeds the N diagonal pivots by default
+    # build_tdvp_propagator_mpo with use_diagonal_pivots=true seeds the N diagonal pivots
+    # (the default until ee1fb6d, where this path threw)
     for Lp in (3, 4)
         H  = get_Hamiltonian("chain_1d", 1.0; L=Lp)
-        U  = build_tdvp_propagator_mpo(H, 0.05)
+        U  = build_tdvp_propagator_mpo(H, 0.05; use_diagonal_pivots=true)
         @test U isa MPO && length(U) == Lp
         U0 = build_tdvp_propagator_mpo(H, 0.05; use_diagonal_pivots=false)
         @test get_matrix(U, H.sites) ≈ get_matrix(U0, H.sites) atol=1e-3
