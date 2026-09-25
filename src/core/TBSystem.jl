@@ -691,7 +691,7 @@ function _build_preset(geometry, params, L, N, sites;
         fix_sites(mpo, ref_sites)
         mpo_sites = ref_sites
     end
-    sc   = something(scale, _estimate_scale(geometry, params))
+    sc   = something(scale, _estimate_scale(geometry, params; mparams=get(kwargs, :mparams, "")))
     lx_2d = dim == 2 ? get(kwargs, :Lx, L ÷ 2) : nothing
     geom = _preset_geometry(geometry, isnothing(lx_2d) ? nothing : 2^lx_2d)
     H = TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
@@ -750,8 +750,10 @@ function _preset_geometry(geometry, Nx)
     return nothing
 end
 
-# Rough scale estimates for known geometries (used when scale=nothing)
-function _estimate_scale(geometry, params)
+# Rough scale estimates for known geometries (used when scale=nothing). `mparams` is the
+# parameter string _build_preset forwards to build_hamiltonian, if any.
+function _estimate_scale(geometry, params; mparams::AbstractString="")
+    geometry == "chernhex" && return _chernhex_scale(params, mparams)
     t = params isa Number ? abs(params) :
         params isa NamedTuple && hasfield(typeof(params), :t) ? abs(params.t) :
         params isa AbstractDict && haskey(params, :t) ? abs(params[:t]) : 1.0
@@ -763,8 +765,23 @@ function _estimate_scale(geometry, params)
     geometry == "hex_2d"       && return 4.0 * t
     geometry == "triangular_2d"     && return 7.0 * t
     geometry == "triangular_bravais" && return 7.0 * t
-    geometry in ("chern8","chernhex","qc2dsquare") && return 6.0 * t
+    geometry in ("chern8","qc2dsquare") && return 6.0 * t
     return 5.0 * t   # conservative fallback
+end
+
+# Default "chernhex" scale: the Gershgorin bound of H2DChernhex's terms (3 NN bonds of |t|,
+# 6 NNN bonds of |t2|, on-site |Ms| with Ms = ms, or ms + 3.3√3 t2 on the right half unless
+# uniformsemenoff), padded by 10% and never below the former default 6|t|. The parameters
+# are merged the way _build_preset and build_hamiltonian merge them: the `mparams` string,
+# then `params` on top, then the registry defaults.
+function _chernhex_scale(params, mparams::AbstractString)
+    p = _parse_param_string(mparams)
+    q = params isa AbstractDict || params isa NamedTuple ? pairs(params) : (:t => params,)
+    for (k, v) in q; p[k] = v; end
+    t, t2, ms = abs(p[:t]), p[:t2], p[:ms]
+    uniform   = get(p, :uniformsemenoff, MODEL_REGISTRY["chernhex"][4].uniformsemenoff)
+    Mmax      = uniform ? abs(ms) : max(abs(ms), abs(ms + 3.3 * sqrt(3) * t2))
+    return max(6.0 * t, 1.1 * (3.0 * t + 6.0 * abs(t2) + Mmax))
 end
 
 
