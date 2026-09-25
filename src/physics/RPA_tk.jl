@@ -510,7 +510,11 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L      = L1
     sites1 = H1.sites
-    sites2 = H2.sites
+    # H1 and H2 usually share site indices (H1 === H2 for the charge bubble, the two
+    # spin sectors of one H for the magnon bubble). Interleaved as they are, the same
+    # Index would sit on two neighbouring tensors, so H2's operators are moved onto
+    # fresh copies of its sites.
+    sites2 = sim.(H2.sites)
 
     # Interleaved combined sites: [s1[1], s2[1], s1[2], s2[2], …]
     # This ensures each (A, B) pair has matching dimensions regardless of site type
@@ -530,6 +534,7 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
                                   purify_method, purify_maxdim, purify_maxiters,
                                   purify_tol, verbose)
     end
+    P2 = replace_sites(P2, sites2)
 
     # ---- Numerator: I₁⊗P₂ − P₁⊗I₂ ----
     id1  = MPO(sites1, "Id")
@@ -544,7 +549,7 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     verbose && println("Polarization bubble: computed numerator")
 
     # ---- GF of Heff = I⊗H₂ − H₁⊗I ----
-    Heff = _build_heff(H1.mpo, H2.mpo, sites1, sites2)
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
     verbose && println("Polarization bubble: Heff maxlinkdim = ", maxlinkdim(Heff))
     if GF_method == :kpm
         # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
@@ -910,7 +915,11 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L              = L1
-    sites_combined = vcat(H1.sites, H2.sites)
+    # Same 2L-site layout as get_bubble_mpo (and _build_heff): interleaved
+    # [s1[1], s2[1], …] with a fresh copy of H2's sites as the second register.
+    sites1         = H1.sites
+    sites2         = sim.(H2.sites)
+    sites_combined = reduce(vcat, [[s1, s2] for (s1, s2) in zip(sites1, sites2)])
 
     # ---- Density matrices ----
     verbose && println("Haydock bubble: computing P1 (P_method=$P_method)...")
@@ -919,20 +928,21 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     verbose && println("Haydock bubble: computing P2...")
     P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
                               purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+    P2 = replace_sites(P2, sites2)
 
     # ---- Seed: I⊗P₂ − P₁⊗I on 2L-site combined space ----
-    id1  = MPO(H1.sites, "Id"); id2 = MPO(H2.sites, "Id")
-    P1op = interleave_mpo(P1,  sites_combined, 0)
-    Iop2 = interleave_mpo(id2, sites_combined, 1)
-    Iop1 = interleave_mpo(id1, sites_combined, 0)
-    P2op = interleave_mpo(P2,  sites_combined, 1)
+    id1  = MPO(sites1, "Id"); id2 = MPO(sites2, "Id")
+    P1op = interleave_mpo_tb(P1,  sites1, sites2, :A)
+    Iop2 = interleave_mpo_tb(id2, sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1, sites1, sites2, :A)
+    P2op = interleave_mpo_tb(P2,  sites1, sites2, :B)
     seed = ITensorMPS.truncate!(
         apply(Iop1, P2op; maxdim=maxdim, cutoff=cutoff) -
         apply(P1op, Iop2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
     verbose && println("Haydock bubble: seed built, chi=$(maxlinkdim(seed))")
 
     # ---- H_eff = I⊗H₂ − H₁⊗I ----
-    Heff = _build_heff(H1.mpo, H2.mpo, sites_combined)
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
     verbose && println("Haydock bubble: H_eff built, chi=$(maxlinkdim(Heff))")
 
     # ---- Haydock recursion (once, independent of ω) ----
@@ -942,7 +952,7 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     verbose && println("Haydock bubble: $(length(a)) steps completed, norm0=$(round(norm0;digits=4))")
 
     # ---- Assemble Π₀(ω) for each frequency ----
-    finalsites = siteinds("Qubit", 2L)
+    finalsites = [Index(dim(s), "Bubble,n=$i") for (i, s) in enumerate(sites_combined)]
     bubbles    = Vector{MPO}(undef, length(ωlist))
     for (i, ω) in enumerate(ωlist)
         verbose && println("Haydock bubble: assembling Pi0 at omega=$ω ($i/$(length(ωlist)))...")
@@ -1060,9 +1070,9 @@ function get_rpa_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
 
         term = deepcopy(Π0)
         s0   = -imag.(get_spect_k(term))
+        nq   = length(s0)
 
         if chi_partial === nothing
-            nq          = length(s0)
             chi_partial = zeros(Float64, K_max+1, nω, nq)
             chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
         end
@@ -1111,7 +1121,8 @@ absorbed into its neighbour, leaving a valid L-qubit MPO.
 
 Returns a new `TBHamiltonian` with `spin_s = nothing` and fresh (empty)
 caches; `scale` and `center` are reset to 0.0 so `_ensure_scale!` will
-re-estimate them on the first KPM call.
+re-estimate them on the first KPM call. All other fields (`Lx`,
+`interaction_mpo`, `fock_mpo`, `position_space`, …) are copied from `H`.
 """
 function _project_spin_sector(H::TBHamiltonian, sector::Int)
     H.spin_s === nothing &&
@@ -1138,14 +1149,10 @@ function _project_spin_sector(H::TBHamiltonian, sector::Int)
 
     new_sites = filter(i -> !hastags(i, "Spin"), H.sites)
 
-    return TBHamiltonian(
-        H.L, H.N, new_sites, MPO(new_tensors),
-        H.geometry, H.geometry_uc,
-        0.0, 0.0,
-        nothing, H.nambu_s, H.layer_s, H.sublattice_s,
-        H.aux_side,
-        nothing, nothing, 0, nothing
-    )
+    # interaction_mpo / fock_mpo live on the position sites (add_interaction!), which
+    # the projection leaves untouched, so they are kept along with Lx and position_space.
+    return TBHamiltonian(H; sites=new_sites, mpo=MPO(new_tensors),
+                         scale=0.0, center=0.0, spin_s=nothing)
 end
 
 
@@ -1244,9 +1251,9 @@ function get_magnon_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
         Π0   = get_bubble_mpo(H_up, H_dn, ω; verbose, kwargs...)
         term = deepcopy(Π0)
         s0   = -imag.(get_spect_k(term))
+        nq   = length(s0)
 
         if chi_partial === nothing
-            nq          = length(s0)
             chi_partial = zeros(Float64, K_max + 1, nω, nq)
             chi_wynn    = zeros(Float64, n_wynn,    nω, nq)
         end
