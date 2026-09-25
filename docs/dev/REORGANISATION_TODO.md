@@ -89,6 +89,73 @@ Line numbers refer to the working tree on that date and will drift.
 - [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
 - [ ] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
 
+### Found by the Tier 1 characterization sweep (2026-09-26; pinned as-is, not fixed)
+
+The golden tests pin today's behaviour, these bugs included; fixing one means regenerating
+the affected golden cases in the same commit.
+
+**Silently wrong results**
+- [ ] `get_density_from_Tn` expands θ(x − μ), the projector onto the EMPTY states (verified
+      against exact diagonalisation: ‖ρ − θ(H − ϵF)‖ = 0.004). Affects `get_density(:kpm)`,
+      `_get_projector(:KPM)` (Chern/winding markers flip sign vs `:mcweeny`) and RPA
+      `P_method=:kpm`. The manuscript scripts use `:mcweeny` and are unaffected.
+- [ ] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
+- [ ] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
+      electron sites (`interleave_mpo(..., 0)` targets even sites).
+- [ ] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
+      the kx = ky diagonal.
+- [ ] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
+- [ ] `honeycomb_sublattice_hamiltonian`/`honeycomb_nnn_hamiltonian` (and the `"honeycomb"`,
+      `"honeycomb_nnn"` presets) are ~1e-6 off after compression at cutoff 1e-8 (spurious entries).
+- [ ] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
+- [ ] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
+      bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
+- [ ] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
+- [ ] `sdf_convex_polygon` has its sign flipped (polygon masks are inverted).
+- [ ] RPA: `ϵF` never reaches the purification density (always half filling); `haydock_cf` uses
+      tr(conj(A)B) instead of tr(A†B).
+- [ ] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
+      states (quarter filling on sublattice/spin/BdG models).
+- [ ] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
+- [ ] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
+      `hermitize(NH)` forgets the convention and scale; `hermitized_hamiltonian` reports
+      `aux_side=:pre` and the parent's `L`/`N`.
+- [ ] `rk4_step_dm_nh_gpu` casts `dt/2`, `dt`, `dt/6` to Float32 even for ComplexF64 (~1e-8 error).
+- [ ] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
+      (see the memory note on interleave_mpo).
+
+**Crashes and unhelpful errors**
+- [ ] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
+      index — `project_aux` hard-codes `side=:pre` and never checks the index is on the tensor.
+      Same `:pre` hard-coding in `get_ldos_spatial(mode=:mpo)`.
+- [ ] `get_bands(H)` default `num_x=60` fails for 1D systems with L < 6; low-level `get_bands`
+      with `sublat_s` but `sublat_proj=false` silently transforms the sublattice index.
+- [ ] `aux_site(H, :spin)` errors on every BdG+spin model.
+- [ ] `get_ldos(:diag)` and `get_ldos_spectrum` throw on Fibonacci (projector leg order).
+- [ ] Empty-group checks in `get_exciton_ldos_spatial`/`get_exciton_bands` are unreachable
+      (BoundsError first); `mps_to_diagonal_mpo` fails on a 1-site MPS.
+- [ ] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
+- [ ] `haydock_cf` throws DomainError for complex Hermitian seeds.
+
+**Minor / API**
+- [ ] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
+      `get_density`/`get_scf` only `:kpm` (Tier 3).
+- [ ] `add_superconductivity!`'s scale update is dead (`_invalidate_cache!` resets it);
+      `get_scf` passes `scale=nothing`, overriding `scf_magnetic_hubbard`'s default.
+- [ ] `rms_error`/`_rms_error_gpu` and several `inner` calls rely on ITensors' deprecated index
+      matching ("will error in ITensors v0.4").
+- [ ] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
+- [ ] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
+- [ ] `MODEL_REGISTRY["chern8"]` uses absolute `t2=0.2` (HChern8 defaults to 0.2t); Lieb's
+      `geometry_uc` uses a triangular basis; `get_Hamiltonian` silently ignores `ref_sites` for
+      several geometries.
+- [ ] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
+- [ ] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
+- [ ] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
+- [ ] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
+- [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
+      `project_aux` error message names sublattice for every aux index.
+
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
