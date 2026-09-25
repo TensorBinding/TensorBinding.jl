@@ -411,6 +411,21 @@ function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
 end
 
+
+"""
+    _rpa_pair_sites(out_sites) -> Vector{Index}
+
+The `2L`-site `finalsites` for `rpa_from_bubble_diag` when Π₀ lives on the `L`
+indices `out_sites`: sites `2n-1` and `2n` both take `dim(out_sites[n])`, so
+`interleave_mpo` meets no dimension mismatch on a Kagome/Lieb sublattice or a
+Layer index. Dim-2 sites are the `"Qubit"` sites `siteinds("Qubit", 2L)` gives.
+"""
+function _rpa_pair_sites(out_sites)
+    return [dim(out_sites[cld(n, 2)]) == 2 ? siteind("Qubit", n) :
+                Index(dim(out_sites[cld(n, 2)]), "Site,n=$n")
+            for n in 1:2 * length(out_sites)]
+end
+
 # ============================================================
 # Internal helpers for TBHamiltonian API
 # ============================================================
@@ -593,7 +608,9 @@ interaction MPO `MPOV`.  Returns a 2L-site MPS encoding the diagonal
   `get_bubble_mpo(H, H, ω)`.
 - `:magnetic` — transverse spin bubble χ^{+−}: projects H onto its
   spin-↑ and spin-↓ blocks and calls `get_magnon_bubble`.
-  Requires `H.spin_s !== nothing`.
+  Requires `H.spin_s !== nothing`. `MPOV` and the result then live on the
+  spin-projected sites (`H.sites` without the spin index), as in
+  `get_magnon_susceptibility`.
 
 Internally solves the Dyson equation (I − Π₀V) χ = Π₀.
 All `get_bubble_mpo` keyword arguments are accepted and forwarded.
@@ -642,8 +659,10 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
         error("get_rpa_susceptibility: unknown mode=$mode. Choose :charge or :magnetic")
     end
 
-    finalsites = siteinds("Qubit", 2 * length(H.sites))
-    return rpa_from_bubble_diag(Π, MPOV, finalsites, H.sites;
+    # Π lives on out_sites: for :magnetic these are the spin-projected H_up.sites,
+    # one fewer than the spinful H.sites.
+    finalsites = _rpa_pair_sites(out_sites)
+    return rpa_from_bubble_diag(Π, MPOV, finalsites, out_sites;
                                  nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
 end
 
@@ -1205,7 +1224,8 @@ function get_magnon_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
     H_up = _project_spin_sector(H, 1)
     H_dn = _project_spin_sector(H, 2)
     Π = get_bubble_mpo(H_up, H_dn, ω; kwargs...)
-    finalsites = siteinds("Qubit", 2 * H.L)
+    # H.L counts position qubits only; H_up.sites also keeps any sublattice/layer index.
+    finalsites = _rpa_pair_sites(H_up.sites)
     return rpa_from_bubble_diag(Π, MPOV, finalsites, H_up.sites;
                                 nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
 end
