@@ -299,11 +299,13 @@ potential (`H_kin = H_tb − μ·I`).  `H_pair` encodes the pairing amplitude
 **Note**: for spinless fermions `c_i† c_j† = −c_j† c_i†`, so the pairing matrix
 must satisfy `Δ(i,j) = −Δ(j,i)`.  On-site (s-wave) pairing is therefore
 **forbidden**; the minimal allowed symmetry is **p-wave** (nearest-neighbour,
-antisymmetric).  For the Kitaev chain with uniform p-wave amplitude `Δ`:
+antisymmetric).  For the Kitaev chain with uniform p-wave amplitude `Δ` on the
+`L` position sites `sites`:
 ```julia
-H_pair = hopping2MPO(L, [(i, i+1, Δ) for i in 0:N-2], sites)   # Δ(i,i+1) = +Δ
+H_pair = pairingNNN(L, sites, Δ * MPO(sites, "Id"), 1)   # Δ(i,i+1) = +Δ, Δ(i+1,i) = −Δ
 ```
-The h.c. term `τ_- ⊗ H_pair†` (which carries `Δ(j,i) = −Δ`) is built automatically.
+`H_pair` must hold both entries of each antisymmetric pair itself; the h.c. term
+`τ_- ⊗ H_pair†` is built automatically.  For a general `Δ(i,j)` use `pairing2MPO`.
 
 The result is Hermitian for any `H_kin = H_kin†` and any complex `H_pair`.
 """
