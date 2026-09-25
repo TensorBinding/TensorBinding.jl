@@ -72,11 +72,11 @@ function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
         unfoldingscheme=unfoldingscheme,
     )
     if length(initial_positions) >= 1
-        initialpivots = [QuanticsGrids.origcoord_to_quantics(qgrid, pos)
+        # QuanticsTCI takes the pivots positionally, as grid indices (Vector{Int})
+        initialpivots = [collect(QuanticsGrids.origcoord_to_grididx(qgrid, Tuple(Float64.(pos))))
                          for pos in initial_positions]
-        ci, _, _ = quanticscrossinterpolate(type, f, qgrid;
-                                            tolerance=tol,
-                                            initialpivots=initialpivots)
+        ci, _, _ = quanticscrossinterpolate(type, f, qgrid, initialpivots;
+                                            tolerance=tol)
     else
         ci, _, _ = quanticscrossinterpolate(type, f, qgrid; tolerance=tol)
     end
@@ -107,11 +107,11 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     )
     println("got grid!")
     if !isempty(initial_positions)
-        initialpivots = [QuanticsGrids.origcoord_to_quantics(qgrid, Float64.(pos))
+        # QuanticsTCI takes the pivots positionally, as grid indices (Vector{Int})
+        initialpivots = [collect(QuanticsGrids.origcoord_to_grididx(qgrid, Tuple(Float64.(pos))))
                          for pos in initial_positions]
-        ci, _, _ = quanticscrossinterpolate(type, A_fun, qgrid;
-                                            tolerance=tol,
-                                            initialpivots=initialpivots)
+        ci, _, _ = quanticscrossinterpolate(type, A_fun, qgrid, initialpivots;
+                                            tolerance=tol)
     else
         ci, _, _ = quanticscrossinterpolate(type, A_fun, qgrid; tolerance=tol)
     end
