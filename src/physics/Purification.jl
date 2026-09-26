@@ -343,9 +343,8 @@ cache rules and defaults (see each).
 - `:kpm`: `get_density_from_Tn` on the Chebyshev list `Tn = (Tn_list, N)`. With
   `Tn = nothing` that is `H._tn_cache`, built by `KPM_Tn(H, Ncheb; …)` when it is
   absent or shorter than `Ncheb`. The result is stored in `H._density_cache`
-  unless `store=false`. The expansion is that of `get_density_from_Tn`, whose
-  coefficients give θ(x − μ) (docs/dev/REORGANISATION_TODO.md; kept until
-  decided).
+  unless `store=false`. The expansion is that of `get_density_from_Tn`, the
+  occupied-state projector θ(μ − x) (it was θ(x − μ) until v0.1.1).
 """
 function _density_matrix(H::TBHamiltonian, method::Symbol;
                          ϵF       = 0.0,

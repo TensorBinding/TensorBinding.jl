@@ -5,7 +5,11 @@
 # Reference: generated from commit 1a5548b ("Run the third-round audit regression
 # tests from runtests.jl", branch Anouar), before the Tier 1 code reorganisation
 # (docs/dev/REORGANISATION_TODO.md). The data pins what the code does at that commit,
-# remaining bugs included.
+# remaining bugs included. The 11 cases that use the KPM density (get_density(:kpm),
+# _get_projector(:KPM), get_C(:KPM), the SCF runs with density_method :kpm/:chebyshev)
+# were regenerated in the merge of release-0.1.1 into Anouar, which made
+# get_density_from_Tn the occupied-state projector; every other entry kept its values
+# (the get_W(:KPM) cases too: the winding marker is symmetric under P <-> 1 - P).
 #
 # The cases themselves are defined in test/golden_scftopo.jl (module ScftopoGolden),
 # which this script includes with SCFTOPO_GOLDEN_GENERATOR defined so that only the

@@ -96,10 +96,16 @@ The golden tests pin today's behaviour, these bugs included; fixing one means re
 the affected golden cases in the same commit.
 
 **Silently wrong results**
-- [ ] `get_density_from_Tn` expands θ(x − μ), the projector onto the EMPTY states (verified
+- [x] `get_density_from_Tn` expands θ(x − μ), the projector onto the EMPTY states (verified
       against exact diagonalisation: ‖ρ − θ(H − ϵF)‖ = 0.004). Affects `get_density(:kpm)`,
       `_get_projector(:KPM)` (Chern/winding markers flip sign vs `:mcweeny`) and RPA
       `P_method=:kpm`. The manuscript scripts use `:mcweeny` and are unaffected.
+      *Fixed in v0.1.1 (release-0.1.1, 5ef5b2d) and ported to `solvers/kpm/cached.jl` in the
+      merge of release-0.1.1 into Anouar: c₀ = 1 − acos(μ)/π, cₙ = −2 sin(n acos μ)/(nπ);
+      test/bugfix_density.jl. Regenerated golden cases: kpm 5, scftopo 11, rpa 42, gpu 1 (the
+      merge commit lists them). The winding marker σ_z(PxQ + QxP) is symmetric under P ↔ Q,
+      so `get_W(:KPM)` did not change; only the Chern marker changes sign (the pinned
+      Hofstadter case, whose marker is ~0, moved by 4e-11).*
 - [ ] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
 - [ ] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
       electron sites (`interleave_mpo(..., 0)` targets even sites).
@@ -406,7 +412,8 @@ the affected golden cases in the same commit.
       *`solvers/kpm/cached.jl` §3 (tier2/kpmkernels): each coefficient is a number or a
       tuple of factors applied left to right, so `2 * T * g * k` stays `((T·2)·g)·k`;
       `A = +(A, term; maxdim)` then `truncate!(A; cutoff)` as before. Used by
-      `get_density_from_Tn` (coefficients kept: the θ(x − μ) bug is still pending),
+      `get_density_from_Tn` (coefficients kept: the θ(x − μ) bug, fixed since by the
+      v0.1.1 merge, was then still pending),
       `get_Green_retarded_from_Tn`, `get_ldos_w_from_Tn`, both `_hodc` variants (their
       weight vectors) and `_weighted_mpo_sum` (rpa/cheb2d.jl, after dropping |w| < tol).
       The per-energy diagonal accumulators (`get_ldos_diag_from_Tn`, QPI, cheb2d
@@ -505,8 +512,8 @@ the affected golden cases in the same commit.
       deleted (golden-pinned by name, with their error texts) but are translation layers over
       it: each keeps its accepted symbols (`:purification` + `purify_method`, `:KPM`), its
       cache rule, prints and defaults (listed under "Found by the Tier 2 aux and density
-      kernels"), and the pending bugs stay (θ(x − μ) coefficients, RPA purification without
-      ϵF). `_purified_pair(guess, a₊, a₋; …)` purifies the two initial guesses of `sign_mpo`,
+      kernels"), and the pending bugs stay (θ(x − μ) coefficients, fixed since by the v0.1.1
+      merge; RPA purification without ϵF). `_purified_pair(guess, a₊, a₋; …)` purifies the two initial guesses of `sign_mpo`,
       `get_ldos_drho` and `get_dos_drho`. Outputs, caches and prints bit for bit unchanged.
       Not covered: `get_C_gpu`'s own GPU McWeeny/SP2 loops (the GPU-wrapper item below).*
 - [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn

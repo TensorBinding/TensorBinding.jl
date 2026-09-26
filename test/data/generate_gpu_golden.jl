@@ -4,7 +4,11 @@
 # Reference: first generated from commit 1a5548b ("Run the third-round audit
 # regression tests from runtests.jl") on branch Anouar, before the Tier 1 code
 # reorganisation (docs/dev/REORGANISATION_TODO.md). The data pins what the GPU
-# code computes at that commit, suspected bugs included.
+# code computes at that commit, suspected bugs included. The case
+# chern_chern8_kpm_lambda_c64 (get_C_gpu / get_C with method=:KPM) was
+# regenerated in the merge of release-0.1.1 into Anouar, which made the KPM
+# density the occupied-state projector (the marker changes sign); every other
+# entry kept its values.
 #
 # The cases (inputs, calls, tolerances and the CPU counterparts) are defined in
 # the GPUGoldenRunner module of test/golden_gpu.jl, which this script includes.

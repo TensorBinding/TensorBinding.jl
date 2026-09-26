@@ -7,7 +7,9 @@
 # split of the former KPM_tk.jl (docs/dev/REORGANISATION_TODO.md). It pins what the KPM
 # functions do today, suspected bugs included. Line 4 of the data file records
 # the git tree hash of the working-tree src/, which does not move when only
-# tests or docs change.
+# tests or docs change. The five density/* cases were regenerated in the merge
+# of release-0.1.1 into Anouar, which made get_density_from_Tn the
+# occupied-state projector; every other entry kept its values.
 #
 # The cases themselves (models, inputs, and which outputs are recorded) live in
 # KPMGoldenRunner in test/golden_kpm.jl, so that the test replays exactly what

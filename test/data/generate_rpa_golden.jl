@@ -7,6 +7,9 @@
 # the RPA code does at that commit, remaining bugs included. It was regenerated
 # at 4cf90f8, whose src/ computes the same RPA outputs, to add the keyword
 # forwarding and default-keyword cases; every earlier case kept its values.
+# The 42 cases with P_method=:kpm were regenerated in the merge of release-0.1.1
+# into Anouar, which made the KPM density the occupied-state projector; every
+# other case kept its values.
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain.
@@ -56,9 +59,10 @@
 #     order op()/OpSum MPOs use: it maps siteinds(op, i) in storage order onto
 #     (p, p'). Cases interleave_mpo_L2_n1 and ..._ketfirst give the same output
 #     for mutually transposed operators;
-#   * _get_density_matrix(:kpm) (get_density_from_Tn) returns the projector onto
-#     the states ABOVE ϵF (tr(P·H) > 0), :purification the one below, so the
-#     sign of every bubble flips with P_method;
+#   * (fixed in v0.1.1, cases regenerated) _get_density_matrix(:kpm)
+#     (get_density_from_Tn) returned the projector onto the states ABOVE ϵF
+#     (tr(P·H) > 0), :purification the one below, so the sign of every bubble
+#     flipped with P_method;
 #   * ϵF does not reach the :purification path (density_mcweeny and
 #     density_mcweeny_ef03 are identical);
 #   * the expansion Σ C[m,n] T_m(x) T_n(y) of chebyshev2d_gf_coeffs reproduces
