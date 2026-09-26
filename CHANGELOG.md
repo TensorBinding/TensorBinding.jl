@@ -48,7 +48,7 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Added
 
-- An export list: `using TensorBinding` now brings 60 main entry points into scope
+- An export list: `using TensorBinding` now brings 58 main entry points into scope
   (`get_Hamiltonian`, the `add_*!` mutators, `KPM_Tn`, `get_ldos_spatial`, `get_bands`,
   `get_scf`, the main `*_gpu` functions, …), listed by area under "Public API" on the
   documentation home page. Only names specific to TensorBinding are exported; the rest of
@@ -56,6 +56,11 @@ constructor that takes all 21 fields in order, caches included, remains.
   and `using TensorBinding: name` imports work as before. A script that defines its own
   top-level function or variable with one of these names now shadows the export; on Julia
   1.11 and earlier that definition is an error if the script used the exported name first.
+  A session that loads the source with
+  `include("src/TensorBinding.jl"); using .TensorBinding` and runs that setup again (or
+  also loads the installed package) now gets ambiguous names: bare calls fail with
+  `UndefVarError`, qualified `TensorBinding.name` calls still work. Restart the session
+  before re-running the setup, or use `] dev` and Revise with `using TensorBinding`.
 - `estimate_scale(geometry, params; L, method)`: KPM scale estimates for any
   `get_Hamiltonian` model, by the dense spectrum of the same model at a small size
   (`:small`), the padded row-sum bound of its terms (`:geometry`) or DMRG (`:dmrg`).

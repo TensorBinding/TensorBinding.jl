@@ -337,13 +337,20 @@ the affected golden cases in the same commit.
 
 ### Make the structure legible
 - [x] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
-      (done in tier1/exports) 60 entry points in 12 groups next to the six ITensors names, listed
+      (done in tier1/exports) 58 entry points in 12 groups next to the six ITensors names, listed
       under "Public API" in `docs/src/index.md`. Only names specific to TensorBinding are
-      exported: generic names (`truncate!`, `hermitize`, `get_matrix`, …), the lattice
-      `*_hamiltonian` builders, types and constants, and the names Tier 3 renames (`get_C`,
-      `get_W`, `get_C_gpu`, `get_valley_C`, `hopping2MPO`, `Exciton_Hamiltonian`, the magnon
-      functions) stay qualified. `test/exports.jl` checks the list against the exports of the
-      dependencies and standard libraries, and against the docs list.
+      exported: generic names (`truncate!`, `hermitize`, `get_matrix`, `get_density`,
+      `add_loss!`, …), the lattice `*_hamiltonian` builders, types and constants, and the
+      names Tier 3 renames (`get_C`, `get_W`, `get_C_gpu`, `get_valley_C`, `hopping2MPO`,
+      `Exciton_Hamiltonian`, the magnon functions) stay qualified. So does `get_ldos`: an
+      untracked plotting helper (examples/nontracked/plotting_helpers) that notebooks include
+      next to the package defines a different top-level `get_ldos`. `test/exports.jl` checks
+      the list against the exports of the dependencies and standard libraries, and against
+      the docs list. Left for the user: the example notebooks and manuscript scripts load the
+      source with `include(...); using .TensorBinding`, and re-running that setup in one
+      session makes the exported names ambiguous (see "Public API"). They call everything
+      qualified, so nothing breaks today; moving them to `using TensorBinding` would remove
+      the trap.
 - [x] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
       (2Dlattice runs 8, 8b, 8c, 8d, 8f; SCF header lists 8 sections, file has 9).
       *One `# ====` banner style with matching section numbers (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f).*
@@ -656,7 +663,8 @@ the affected golden cases in the same commit.
       `get_rpa_susceptibility(_wynn)(…; mode=:magnetic)`, which already compute the same channel
       (today the magnon functions forward any `kwargs...` to `get_bubble_mpo` and have their own
       error messages); `get_magnon_bubble` likewise. Moved from Tier 2's RPA item.
-- [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases),
+- [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases;
+      `get_C_gpu` and the valley-resolved `get_valley_C` are renamed with them),
       `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
       `exciton_mpo` for `Exciton_Hamiltonian`, fix `get_bublle_expanded_from_Tn`.
       Export the new names that are specific enough (add them to "Public API" in

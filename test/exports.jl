@@ -78,8 +78,8 @@ exported_names() = filter(n -> n !== :TensorBinding && Base.isexported(TB, n), n
 is_reexported(n) = isdefined(ITensors, n) && getglobal(ITensors, n) === getglobal(TB, n)
 
 # The names listed in the "Public API" section of docs/src/index.md: every `name` in
-# backticks in the section's bullet list (from its first "- " line to the section end;
-# the paragraph above the list is not read).
+# backticks in the section's bullet list, from its first "- " line to the first blank
+# line after it (the paragraphs above and below the list are not read).
 function documented_names(path)
     lines = rstrip.(readlines(path))
     start = findfirst(==("## Public API"), lines)
@@ -88,7 +88,8 @@ function documented_names(path)
     section = lines[(start + 1):(stop === nothing ? end : stop - 1)]
     first_item = findfirst(l -> startswith(l, "- "), section)
     first_item === nothing && return Set{Symbol}()
-    list = join(section[first_item:end], "\n")
+    last_item = something(findnext(isempty, section, first_item), length(section) + 1) - 1
+    list = join(section[first_item:last_item], "\n")
     return Set(Symbol(m.captures[1]) for m in eachmatch(r"`([^`]+)`", list))
 end
 

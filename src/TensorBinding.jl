@@ -25,13 +25,16 @@ using Base.Threads
 
 # Exports: the main entry points in groups, one comment line per group, alphabetical
 # inside each group (ignoring case). A name is exported only when it is specific to
-# TensorBinding; generic names (`truncate!`, `hermitize`, `get_matrix`, …), the lattice
-# builders `*_hamiltonian`, names Tier 3 will rename, and all types and constants stay
-# unexported and are called as `TensorBinding.name`. Types stay unexported because error
-# messages print them with `typeof`, which drops the `TensorBinding.` prefix once a type
-# is visible in Main, and the golden tests pin those messages. test/exports.jl checks the
-# list against the exports of the dependencies and the standard libraries, and against
-# the "Public API" list in docs/src/index.md.
+# TensorBinding; generic names (`truncate!`, `hermitize`, `get_matrix`, `get_density`,
+# …), the lattice builders `*_hamiltonian`, names Tier 3 will rename, and all types and
+# constants stay unexported and are called as `TensorBinding.name`. Types stay unexported
+# because error messages print them with `typeof`, which drops the `TensorBinding.` prefix
+# once a type is visible in Main, and the golden tests pin those messages. test/exports.jl
+# checks the list against the exports of the dependencies and the standard libraries, and
+# against the "Public API" list in docs/src/index.md. Running
+# `include("src/TensorBinding.jl"); using .TensorBinding` twice in one session makes a
+# second module with the same exports, so bare calls to them fail as ambiguous; the
+# "Public API" section says how to avoid it.
 
 # ITensors names every workflow needs (re-exported, the same objects)
 export expect, inner, MPO, MPS, OpSum, siteinds
@@ -43,8 +46,8 @@ export get_dos_stochastic, get_dos_trace, get_green_krylov, get_ldos_online,
        get_ldos_spatial, get_ldos_spectrum, KPM_Tn, KPM_Tn_mps
 # Band structure and quasiparticle interference
 export get_bands, get_qpi
-# Density matrix and purification
-export get_density, mcweeny_purify, sp2_purify
+# Density-matrix purification
+export mcweeny_purify, sp2_purify
 # Mean-field self-consistency
 export get_scf
 # Topology
@@ -52,7 +55,7 @@ export get_thouless_pump, get_valley_operator
 # RPA response
 export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_wynn
 # Non-Hermitian models and spectra
-export add_loss!, add_nh_nonreciprocal_hopping!, add_nh_onsite!, add_nh_skin_hopping!,
+export add_nh_nonreciprocal_hopping!, add_nh_onsite!, add_nh_skin_hopping!,
        nh_spectral_function, nh_spectrum_grid
 # Excitons
 export get_exciton_bands, get_exciton_continuum, get_exciton_ldos_spatial
