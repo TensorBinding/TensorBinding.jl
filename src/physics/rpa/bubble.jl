@@ -15,6 +15,16 @@
 # 1. Internal helpers for the TBHamiltonian API
 # ============================================================
 
+# The density matrix of a bubble: get_density's dispatcher (_density_matrix,
+# physics/Purification.jl) with the bubbles' own method symbols and rules.
+#
+#   P_method=:purification  purify_method (:mcweeny or :sp2), reusing the density
+#                           cache; ϵF is not passed, so the purification is always
+#                           at half filling (a pending bug, see
+#                           docs/dev/REORGANISATION_TODO.md), and SP2 targets H.N ÷ 2.
+#   P_method=:kpm           a fresh Chebyshev list of order Ncheb from the raw
+#                           KPM_Tn (not cached on H; it prints its progress), no
+#                           density cache read or written.
 function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
                               P_method::Symbol, Ncheb::Int,
                               maxdim::Int, cutoff::Real,
@@ -26,27 +36,22 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
             verbose && println("  Reusing cached density matrix")
             return H._density_cache
         end
-        if purify_method == :mcweeny
-            verbose && println("  Running McWeeny purification")
-            return mcweeny_purify(H; maxiters=purify_maxiters, maxdim=purify_maxdim,
-                                     cutoff=cutoff, tol=purify_tol, verbose=verbose)
-        elseif purify_method == :sp2
-            Nel = H.N ÷ 2
-            verbose && println("  Running SP2 purification (Nel=$Nel)")
-            return sp2_purify(H; Nel=Nel, maxiters=purify_maxiters, maxdim=purify_maxdim,
-                                 cutoff=cutoff, tol=purify_tol, verbose=verbose)
-        else
+        purify_method in (:mcweeny, :sp2) ||
             error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
-        end
+        Nel = H.N ÷ 2
+        verbose && println(purify_method == :mcweeny ? "  Running McWeeny purification" :
+                                                       "  Running SP2 purification (Nel=$Nel)")
+        return _density_matrix(H, purify_method; Nel=Nel, maxiters=purify_maxiters,
+                               maxdim=purify_maxdim, cutoff=cutoff, tol=purify_tol,
+                               verbose=verbose)
     elseif P_method == :kpm
         _ensure_scale!(H)
         Tn_list, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
                                  scale=H.scale, center=H.center,
                                  identity_mpo=physical_projector(H),
                                  maxdim=maxdim, cutoff=cutoff)
-        fermi_rescaled = (ϵF - H.center) / H.scale
-        return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_rescaled, maxdim=maxdim,
-                                    cutoff=cutoff)
+        return _density_matrix(H, :kpm; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff,
+                               Tn=(Tn_list, Ncheb), store=false)
     else
         error("Unknown P_method: $P_method. Choose :purification or :kpm")
     end

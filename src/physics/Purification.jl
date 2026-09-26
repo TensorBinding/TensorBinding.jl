@@ -24,7 +24,9 @@
 # at each MPO-MPO multiplication step.
 #
 # Entry points: get_density, mcweeny_purify, sp2_purify, purification_initial_guess,
-#   sign_mpo, get_ldos_drho, get_dos_drho.
+#   sign_mpo, get_ldos_drho, get_dos_drho. The dispatcher behind get_density,
+#   _density_matrix, also computes the density matrices of the RPA bubbles
+#   (_get_density_matrix) and the topological markers (_get_projector).
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
 #   solvers/kpm/cached.jl.
 
@@ -56,6 +58,23 @@ function _idempotency_error(ρ::MPO, ρ2::MPO)
     n_diff = norm(diff)
     n_rho  = norm(ρ)
     return n_rho > 0 ? n_diff / n_rho : n_diff
+end
+
+
+"""
+    _purified_pair(guess, a₊, a₋; maxiters, maxdim, cutoff, tol, verbose) -> (ρ₊, ρ₋)
+
+McWeeny-purify the initial guess `guess(a₊)`, then `guess(a₋)`, each built just
+before its purification: the two density matrices whose difference is
+`sign_mpo` (a = ±1/scale) and the finite-difference `get_ldos_drho` /
+`get_dos_drho` (a = ω ± δμ, the Fermi level of the initial guess).
+"""
+function _purified_pair(guess, a_p, a_m; maxiters, maxdim, cutoff, tol, verbose)
+    ρ_p = mcweeny_purify(guess(a_p); maxiters=maxiters, maxdim=maxdim,
+                                     cutoff=cutoff, tol=tol, verbose=verbose)
+    ρ_m = mcweeny_purify(guess(a_m); maxiters=maxiters, maxdim=maxdim,
+                                     cutoff=cutoff, tol=tol, verbose=verbose)
+    return ρ_p, ρ_m
 end
 
 
@@ -302,6 +321,45 @@ function get_density(H::TBHamiltonian;
         return H._density_cache
     end
 
+    return _density_matrix(H, method; ϵF=ϵF, Ncheb=Ncheb, kernel=kernel, lambda=lambda,
+                           maxdim=maxdim, cutoff=cutoff, Nel=Nel, maxiters=maxiters,
+                           tol=tol, verbose=verbose)
+end
+
+
+"""
+    _density_matrix(H, method; ϵF=0.0, Ncheb=150, kernel=:jackson, lambda=4.0,
+                    maxdim=40, cutoff=1e-8, Nel=H.N ÷ 2, maxiters=30, tol=1e-5,
+                    verbose=false, Tn=nothing, store=true) -> MPO
+
+The density-matrix dispatcher behind `get_density`, which checks the position
+space and the density cache first; the defaults are `get_density`'s. RPA's
+`_get_density_matrix` (physics/rpa/bubble.jl) and Topology's `_get_projector`
+(physics/Topology.jl) call it too, after translating their own method symbols,
+cache rules and defaults (see each).
+
+- `:mcweeny` / `:sp2`: `mcweeny_purify(H; ϵF, …)` / `sp2_purify(H; Nel, …)`, which
+  store the result in `H._density_cache`.
+- `:kpm`: `get_density_from_Tn` on the Chebyshev list `Tn = (Tn_list, N)`. With
+  `Tn = nothing` that is `H._tn_cache`, built by `KPM_Tn(H, Ncheb; …)` when it is
+  absent or shorter than `Ncheb`. The result is stored in `H._density_cache`
+  unless `store=false`. The expansion is that of `get_density_from_Tn`, whose
+  coefficients give θ(x − μ) (docs/dev/REORGANISATION_TODO.md; kept until
+  decided).
+"""
+function _density_matrix(H::TBHamiltonian, method::Symbol;
+                         ϵF       = 0.0,
+                         Ncheb    = 150,
+                         kernel   = :jackson,
+                         lambda   = 4.0,
+                         maxdim   = 40,
+                         cutoff   = 1e-8,
+                         Nel      = H.N ÷ 2,
+                         maxiters = 30,
+                         tol      = 1e-5,
+                         verbose  = false,
+                         Tn       = nothing,
+                         store    = true)
     if method == :mcweeny
         return mcweeny_purify(H; ϵF=ϵF, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                                  tol=tol, verbose=verbose)
@@ -309,14 +367,18 @@ function get_density(H::TBHamiltonian;
         return sp2_purify(H; Nel=Nel, maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                              tol=tol, verbose=verbose)
     elseif method == :kpm
-        if H._tn_cache === nothing || H._tn_Ncheb < Ncheb
-            KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+        if Tn === nothing
+            if H._tn_cache === nothing || H._tn_Ncheb < Ncheb
+                KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose)
+            end
+            Tn = (H._tn_cache, H._tn_Ncheb)
         end
+        Tn_list, N = Tn
         fermi_r = (ϵF - H.center) / H.scale
-        ρ = get_density_from_Tn(H._tn_cache, H._tn_Ncheb;
+        ρ = get_density_from_Tn(Tn_list, N;
                                   fermi=fermi_r, maxdim=maxdim, cutoff=cutoff,
                                   kernel=kernel, lambda=lambda)
-        H._density_cache = ρ
+        store && (H._density_cache = ρ)
         return ρ
     else
         error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")
@@ -358,15 +420,15 @@ function sign_mpo(A::MPO, sites;
                   verbose::Bool   = false)
     Id = MPO(sites, "Id")
 
-    ρ0_p = 0.5 * +(Id,  (1.0 / scale) * A; maxdim=maxdim, cutoff=cutoff)
-    ITensorMPS.truncate!(ρ0_p; maxdim=maxdim, cutoff=cutoff)
-    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
-                                  cutoff=cutoff, tol=tol, verbose=verbose)
-
-    ρ0_m = 0.5 * +(Id, (-1.0 / scale) * A; maxdim=maxdim, cutoff=cutoff)
-    ITensorMPS.truncate!(ρ0_m; maxdim=maxdim, cutoff=cutoff)
-    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
-                                  cutoff=cutoff, tol=tol, verbose=verbose)
+    # ρ₀± = (I ± A/scale) / 2
+    function guess(c)
+        ρ0 = 0.5 * +(Id, c * A; maxdim=maxdim, cutoff=cutoff)
+        ITensorMPS.truncate!(ρ0; maxdim=maxdim, cutoff=cutoff)
+        return ρ0
+    end
+    ρ_p, ρ_m = _purified_pair(guess, 1.0 / scale, -1.0 / scale;
+                              maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                              tol=tol, verbose=verbose)
 
     sA = +(ρ_p, -1.0 * ρ_m; maxdim=maxdim, cutoff=cutoff)
     ITensorMPS.truncate!(sA; maxdim=maxdim, cutoff=cutoff)
@@ -426,13 +488,10 @@ function get_ldos_drho(H::TBHamiltonian, ω::Real;
         error("get_ldos_drho: mode must be :mpo or :mps, got :$mode")
     _ensure_scale!(H)
 
-    ρ0_p = purification_initial_guess(H; ϵF = ω + dmu, maxdim=maxdim, cutoff=cutoff)
-    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
-                                 cutoff=cutoff, tol=tol, verbose=verbose)
-
-    ρ0_m = purification_initial_guess(H; ϵF = ω - dmu, maxdim=maxdim, cutoff=cutoff)
-    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
-                                 cutoff=cutoff, tol=tol, verbose=verbose)
+    guess(ϵ) = purification_initial_guess(H; ϵF=ϵ, maxdim=maxdim, cutoff=cutoff)
+    ρ_p, ρ_m = _purified_pair(guess, ω + dmu, ω - dmu;
+                              maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                              tol=tol, verbose=verbose)
 
     if mode == :mpo
         dρ = (1.0 / (2dmu)) * +(ρ_p, -1.0 * ρ_m; maxdim=maxdim, cutoff=cutoff)
@@ -472,13 +531,10 @@ function get_dos_drho(H::TBHamiltonian, ω::Real;
     _require_binary_position_space(H, "get_dos_drho")
     _ensure_scale!(H)
 
-    ρ0_p = purification_initial_guess(H; ϵF = ω + dmu, maxdim=maxdim, cutoff=cutoff)
-    ρ_p  = mcweeny_purify(ρ0_p; maxiters=maxiters, maxdim=maxdim,
-                                 cutoff=cutoff, tol=tol, verbose=verbose)
-
-    ρ0_m = purification_initial_guess(H; ϵF = ω - dmu, maxdim=maxdim, cutoff=cutoff)
-    ρ_m  = mcweeny_purify(ρ0_m; maxiters=maxiters, maxdim=maxdim,
-                                 cutoff=cutoff, tol=tol, verbose=verbose)
+    guess(ϵ) = purification_initial_guess(H; ϵF=ϵ, maxdim=maxdim, cutoff=cutoff)
+    ρ_p, ρ_m = _purified_pair(guess, ω + dmu, ω - dmu;
+                              maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
+                              tol=tol, verbose=verbose)
 
     return real(tr(ρ_p) - tr(ρ_m)) / (2dmu)
 end

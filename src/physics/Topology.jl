@@ -51,8 +51,8 @@
 # Entry points: get_C, get_W, get_valley_C, get_valley_operator, get_thouless_pump,
 #   thouless_pump, get_C_op_MPO_from_P.
 # Depends on: core/Utils.jl, core/TBSystem.jl, lattice/NNNeighbor.jl,
-#   solvers/kpm/recursion.jl, solvers/kpm/cached.jl, physics/Purification.jl*
-#   (* = included later; see the source map in src/TensorBinding.jl).
+#   solvers/kpm/recursion.jl, physics/Purification.jl (the density dispatcher
+#   _density_matrix behind _get_projector; see the source map in src/TensorBinding.jl).
 
 
 # ============================================================
@@ -74,6 +74,12 @@ Compute or retrieve the ground-state projector P for `H`.
   electron count (default: `H.N ÷ 2`).
 - `maxdim`, `cutoff`: bond dimension and truncation threshold forwarded to the
   underlying method.
+
+The projector comes from `get_density`'s dispatcher (`_density_matrix`,
+physics/Purification.jl), with the rules above: `:KPM` (not `get_density`'s
+`:kpm`) takes a cached Chebyshev list of any order, never touches the density
+cache and expands with `get_density_from_Tn`'s default cutoff (1e-8) rather
+than `cutoff`; `:sp2` runs `sp2_purify`'s default 40 iterations.
 """
 function _get_projector(H::TBHamiltonian;
                          method::Symbol   = :KPM,
@@ -83,22 +89,19 @@ function _get_projector(H::TBHamiltonian;
                          cutoff::Float64  = 1e-8,
                          Nel              = nothing)
     if method == :KPM
-        if H._tn_cache !== nothing
-            Tn_list = H._tn_cache
-            Ncheb   = H._tn_Ncheb
-        else
-            Tn_list, _, _ = KPM_Tn(H, Nchebychev; maxdim=maxdim, cutoff=cutoff)
-            Ncheb = Nchebychev
-        end
-        fermi_resc = (fermi - H.center) / H.scale
-        return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_resc, maxdim=maxdim)
+        Tn = H._tn_cache !== nothing ? (H._tn_cache, H._tn_Ncheb) :
+             (first(KPM_Tn(H, Nchebychev; maxdim=maxdim, cutoff=cutoff)), Nchebychev)
+        return _density_matrix(H, :kpm; ϵF=fermi, maxdim=maxdim, cutoff=1e-8,
+                               Tn=Tn, store=false)
     elseif method == :mcweeny
         H._density_cache !== nothing && return H._density_cache
-        return mcweeny_purify(H; ϵF=fermi, maxdim=maxdim, cutoff=cutoff)
+        return _density_matrix(H, :mcweeny; ϵF=fermi, maxiters=30, maxdim=maxdim,
+                               cutoff=cutoff, tol=1e-5, verbose=false)
     elseif method == :sp2
         H._density_cache !== nothing && return H._density_cache
         Nel_val = Nel === nothing ? H.N ÷ 2 : Int(Nel)
-        return sp2_purify(H; Nel=Nel_val, maxdim=maxdim, cutoff=cutoff)
+        return _density_matrix(H, :sp2; Nel=Nel_val, maxiters=40, maxdim=maxdim,
+                               cutoff=cutoff, tol=1e-5, verbose=false)
     else
         error("Unknown method: :$method. Choose :KPM, :mcweeny, or :sp2")
     end

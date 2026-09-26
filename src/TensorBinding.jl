@@ -107,7 +107,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # solvers/Timeev.jl          TDVP/RK4 step and trajectory kernels, propagator MPO,
 #                            density-matrix RK4 and observables
 #                            → Utils, Hamiltonian, TBSystem
-# physics/Purification.jl    McWeeny, SP2, get_density
+# physics/Purification.jl    McWeeny, SP2, get_density and its dispatcher _density_matrix
 #                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached
 # physics/Supercond.jl       pairing MPOs, spin/BdG assemblers
 #                            → Utils (sigma_± ops), MPOTools, Hamiltonian, AuxDOF
@@ -133,8 +133,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
 #                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
-#                            → Utils, TBSystem, NNNeighbor, kpm/recursion, kpm/cached,
-#                              Purification
+#                            → Utils, TBSystem, NNNeighbor, kpm/recursion, Purification
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
 #                            → Utils, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
