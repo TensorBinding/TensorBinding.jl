@@ -7,8 +7,10 @@
 # Entry points: HUniform, HSSH, HAAH, HUniform2Dsquare, HUniform2Dhex,
 #   HUniform2Dtri, HUniform2Dtri_bravais, HChern8, H2DChernhex, HQC2Dsquare.
 #
-# Depends on: core/Utils.jl (qtt_mpo), core/Hamiltonian.jl (kineticNNN) and
-# lattice/hopping2d.jl (the 2D kinetic builders).
+# Depends on: core/Utils.jl (qtt_mpo), core/MPOTools.jl (sum_mpos),
+# core/Hamiltonian.jl (kineticNNN) and lattice/hopping2d.jl (the 2D kinetic
+# builders). Each preset sums its terms left to right in the order written, every
+# partial sum compressed at `cutoff`.
 #
 # Split from the former lattice/2Dlattice_tk.jl.
 
@@ -146,9 +148,7 @@ function HUniform2Dtri(Lx::Integer, Ly::Integer, t;
     HinterNN   = kineticNNN(              L,       sites, hops, Nx)
     HinterSWNE = kineticinterNNNtriSWNE(  Lx, Ly, sites, hops, Nx + 1)
     HinterSENW = kineticinterNNNtriSENW(  Lx, Ly, sites, hops, Nx - 1)
-    Htot = +(HintraNN,   HinterNN;   cutoff=cutoff)
-    Htot = +(Htot,       HinterSWNE; cutoff=cutoff)
-    return  +(Htot,      HinterSENW; cutoff=cutoff)
+    return sum_mpos((HintraNN, HinterNN, HinterSWNE, HinterSENW); cutoff=cutoff)
 end
 
 
@@ -175,8 +175,7 @@ function HUniform2Dtri_bravais(Lx::Integer, Ly::Integer, t;
     Hintra = kineticintra2DNNN(Lx, Ly, sites, hops, 1)
     Hy     = kineticNNN(L,      sites, hops, Nx)
     Hdiag  = kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hops)
-    Htot   = +(Hintra, Hy;    cutoff=cutoff)
-    return   +(Htot,   Hdiag; cutoff=cutoff)
+    return sum_mpos((Hintra, Hy, Hdiag); cutoff=cutoff)
 end
 
 
@@ -225,9 +224,7 @@ function HChern8(Lx::Integer, Ly::Integer, V, t;
     HinterSWNE = kineticinterNNNSWNE(Lx, Ly, sites, hops_MPO2, Nx+1)
     HinterSENW = kineticinterNNNSENW(Lx, Ly, sites, hops_MPO3, Nx-1)
 
-    Htot = +(HinterNN,  HinterSWNE; cutoff=cutoff)
-    Htot = +(Htot,      HinterSENW; cutoff=cutoff)
-    return  +(Htot,     HintraNN;   cutoff=cutoff)
+    return sum_mpos((HinterNN, HinterSWNE, HinterSENW, HintraNN); cutoff=cutoff)
 end
 
 
@@ -291,11 +288,8 @@ function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
     HNNinter2 = kineticinterNNNSWNE( Lx, Ly, sites, hops_MPOalter, Nx+1)
     HNNinter3 = kineticinterNNNSENW( Lx, Ly, sites, hops_MPOalter, Nx-1)
 
-    Htot = +(Hintra, Hinter;    cutoff=cutoff)
-    Htot = +(Htot,   HNNinter1; cutoff=cutoff)
-    Htot = +(Htot,   HNNinter2; cutoff=cutoff)
-    Htot = +(Htot,   HNNinter3; cutoff=cutoff)
-    return  +(Htot,  on_site_MPO; cutoff=cutoff)
+    return sum_mpos((Hintra, Hinter, HNNinter1, HNNinter2, HNNinter3, on_site_MPO);
+                    cutoff=cutoff)
 end
 
 

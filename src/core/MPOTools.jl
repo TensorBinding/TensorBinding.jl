@@ -3,10 +3,12 @@
 # Contents: the MPO Kronecker product (mpo_kron), the interleaving site plumbing
 # (interleave_mpo, interleave_mpo_tb, swap_every_other_legs, collapse_mpo_pairs)
 # used by the RPA bubbles, the Krylov Green's function, the exciton QFT and the
-# two-particle Hamiltonian, MPO powers by squaring (compose_power) and the exact
-# rank-1 site projector (_site_projector_mpo).
+# two-particle Hamiltonian, MPO powers by squaring (compose_power), the exact
+# rank-1 site projector (_site_projector_mpo) and the left-to-right compressed
+# sum of MPO terms (sum_mpos) that the lattice builders assemble with.
 #
-# Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power.
+# Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power,
+#   sum_mpos.
 #
 # Depends on: Utils (_bra_ket, the sigma_d/sigma_u ops).
 #
@@ -237,4 +239,32 @@ function _site_projector_mpo(L::Int, pos_sites, n::Int)
         os *= 1, op, k
     end
     return MPO(os, pos_sites)
+end
+
+
+# ============================================================
+# 6. Sequential compressed sum of MPO terms
+# ============================================================
+
+"""
+    sum_mpos(terms; kwargs...) -> MPO
+
+Sum the MPOs in `terms` from left to right, `((t₁ + t₂) + t₃) + …`, compressing each
+partial sum as `+(a, b; kwargs...)` does (`cutoff`, `maxdim`, …). A single term is
+returned as it is.
+
+The order is part of the result: every partial sum is truncated, so summing the same
+terms in another order (or with the multi-argument `+(t₁, t₂, t₃; …)`) moves the
+output at the cutoff level. `terms` may be a lazy generator; each term is then built
+just before it is added.
+"""
+function sum_mpos(terms; kwargs...)
+    next = iterate(terms)
+    next === nothing && throw(ArgumentError("sum_mpos needs at least one term"))
+    total, state = next
+    while (next = iterate(terms, state)) !== nothing
+        term, state = next
+        total = +(total, term; kwargs...)
+    end
+    return total
 end

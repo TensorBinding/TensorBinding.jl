@@ -6,7 +6,7 @@
 #   tjunction_lattice_hamiltonian, tjunction_index.
 #
 # Depends on: core/Utils.jl (postpend_op, prepend_op), core/MPOTools.jl
-# (_site_projector_mpo), core/Hamiltonian.jl (kinetic_1d_nn), core/TBSystem.jl
+# (_site_projector_mpo, sum_mpos), core/Hamiltonian.jl (kinetic_1d_nn), core/TBSystem.jl
 # (TBHamiltonian, get_Hamiltonian, _pos_sites, _invalidate_cache!),
 # lattice/geometry.jl (tjunction_positions), lattice/masks2d.jl (_row_break_mpo)
 # and lattice/NNNeighbor.jl (_shift_mpo).
@@ -329,10 +329,10 @@ function tjunction_lattice_hamiltonian(Lx::Int, Ly::Int, L::Int,
     #   x-shift    (-1)   : arm 3 (210°) [src] → arm 1 (330°) [dst at ix-1]
     #   y-shift    (+Nx)  : arm 2 (90°)  [src] → arm 3 (210°) [dst at iy+1]
     #   diagonal (+Nx-1)  : arm 2 (90°)  [src] → arm 1 (330°) [dst at ix-1,iy+1]
-    H_total = +(H_chain_ext, H_junc_ext;             cutoff=cutoff)
-    H_total = +(H_total,     inter_hop(K1, D1, 1, 3); cutoff=cutoff)
-    H_total = +(H_total,     inter_hop(K2, D2, 3, 2); cutoff=cutoff)
-    H_total = +(H_total,     inter_hop(K3, D3, 1, 2); cutoff=cutoff)
+    H_total = sum_mpos((H_chain_ext, H_junc_ext,
+                        inter_hop(K1, D1, 1, 3),
+                        inter_hop(K2, D2, 3, 2),
+                        inter_hop(K3, D3, 1, 2)); cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
     # ── 5. Geometry ───────────────────────────────────────────────────────────

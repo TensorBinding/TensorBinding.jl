@@ -8,9 +8,9 @@
 #   monolayer_hamiltonian.
 #
 # Depends on: core/Utils.jl (fix_sites, prepend_layer_projector,
-# prepend_layer_hopping), core/Hamiltonian.jl (hopping2MPO), core/TBSystem.jl
-# (TBHamiltonian), lattice/geometry.jl (lattice_positions) and
-# core/ModelRegistry.jl (build_hamiltonian).
+# prepend_layer_hopping), core/MPOTools.jl (sum_mpos), core/Hamiltonian.jl
+# (hopping2MPO), core/TBSystem.jl (TBHamiltonian), lattice/geometry.jl
+# (lattice_positions) and core/ModelRegistry.jl (build_hamiltonian).
 #
 # Encoding: the first site is a dim-n_layers "Layer" index; the remaining
 # L = Lx+Ly sites are position qubits (quantics binary, row-major).
@@ -106,10 +106,8 @@ function twisted_multilayer_hamiltonian(
     # All layers share the same geometry; twist only affects interlayer terms.
     H_mono   = monolayer_hamiltonian(lattice, Lx, Ly, pos_sites;
                                      t = t_intra, cutoff = cutoff)
-    H_intra  = prepend_layer_projector(H_mono, layer_s, 1)
-    for k in 2:n_layers
-        H_intra = +(H_intra, prepend_layer_projector(H_mono, layer_s, k); cutoff=cutoff)
-    end
+    H_intra  = sum_mpos((prepend_layer_projector(H_mono, layer_s, k) for k in 1:n_layers);
+                        cutoff=cutoff)
 
     # ── Interlayer: Σ_{k<l} (|k⟩⟨l|⊗V_{kl} + |l⟩⟨k|⊗V_{lk})  ──
     H_inter = nothing

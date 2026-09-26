@@ -1,12 +1,12 @@
 # hopping2d.jl — kinetic (hopping) MPO builders for 2D lattice geometries, built from
 # the quantics binary representation: the binary shift MPOs, the square-lattice NN
 # hoppings and the long-range (NNN) kinetic builders for the square, triangular and
-# honeycomb lattices.
+# honeycomb lattices, the latter thin wrappers over one kernel (masked_shift_hopping).
 #
 # Entry points: generate_kin_u, generate_kin_d, intrachain_hopping,
-#   interchain_hopping_square, kineticintra2DNNN, kineticinterNNNSWNE,
-#   kineticinterNNNSENW, kineticinterNNNtriSWNE, kineticinterNNNtriSENW,
-#   kineticinterNNNtri_bravais_diag, kineticintra2DNNhex.
+#   interchain_hopping_square, masked_shift_hopping, kineticintra2DNNN,
+#   kineticinterNNNSWNE, kineticinterNNNSENW, kineticinterNNNtriSWNE,
+#   kineticinterNNNtriSENW, kineticinterNNNtri_bravais_diag, kineticintra2DNNhex.
 #
 # Depends on: core/Utils.jl (shift_mpo, shift_pair_mpos, shift_adjoint_mpo) and
 # lattice/masks2d.jl (the row-break, row-select and checkerboard masks).
@@ -26,7 +26,10 @@
     generate_kin_u(sites, num_site) -> MPO
 
 Binary-increment MPO: |n⟩ → |n+1⟩ (mod 2^L) on L = log2(num_site) qubits.
-Built as `shift_mpo(sites, 1; cyclic=true)`.
+Built as `shift_mpo(sites, 1; cyclic=true)`, after checking that `num_site` is
+`2^length(sites)`. The lattice builders call `shift_mpo` directly where that check
+cannot fail; `add_hopping_2D!` keeps `generate_kin_u/d`, because the check is the
+only thing there that rejects a Hamiltonian on a projected (non-binary) position space.
 """
 function generate_kin_u(sites, num_site)
     L  = Int(log2(num_site))
@@ -39,7 +42,7 @@ end
     generate_kin_d(sites, num_site) -> MPO
 
 Binary-decrement MPO: |n⟩ → |n-1⟩ (mod 2^L). Hermitian conjugate of
-`generate_kin_u`, built as `shift_mpo(sites, -1; cyclic=true)`.
+`generate_kin_u`, built as `shift_mpo(sites, -1; cyclic=true)` after the same check.
 """
 function generate_kin_d(sites, num_site)
     L  = Int(log2(num_site))
@@ -91,10 +94,57 @@ end
 # 3. NNN 2D kinetic builders
 # ============================================================
 
-# Pattern for every builder:
-#   1. Build K, Kdag = shift_pair_mpos(sites, nn) (or one shift_mpo)
-#   2. Apply hopping weights: hop_fwd = h * K,  hop_bwd = Kdag * dag(h)
-#   3. Mask with _row_break_mpo and optionally _row_select/_checker
+# Every builder of this section is one masked_shift_hopping call: a shift by q
+# with open boundaries, the hopping weights on the destination side and a source
+# mask that removes the bonds crossing a row boundary (plus, on the triangular and
+# honeycomb lattices, a row or checkerboard filter). The builders differ only in
+# q and the mask, and keep their own argument checks.
+
+"""
+    masked_shift_hopping(Lx, Ly, sites, hopping, q; src_mask,
+                         apply_kwargs=NamedTuple()) -> MPO
+
+Hermitian pair of shift hoppings on a `2^Lx × 2^Ly` grid (row-major encoding),
+
+    (hopping · K) · M  +  M · (K† · hopping†),    K = shift_mpo(sites, q; cyclic=false),
+
+summed at `cutoff=1e-12`, where the source mask `M` is given by `src_mask`:
+
+- `:xplus` / `:xplain`: `_row_break_mpo(Lx, Ly, sites; which=src_mask)`, which zeroes
+  the sources at the end / start of each row;
+- `:even` / `:odd`: `_row_select_mpo(Lx, Ly, sites; keep=src_mask)`;
+- `:checker`: `_row_checker_mpo(Lx, Ly, sites)`;
+- a tuple of these, e.g. `(:xplus, :even)`: their product, taken left to right;
+- an `MPO`, used as given.
+
+`apply_kwargs` go to every `apply` (the mask products included). This is the kernel of
+`kineticintra2DNNN`, `kineticinterNNNSWNE`, `kineticinterNNNSENW`,
+`kineticinterNNNtriSWNE`, `kineticinterNNNtriSENW`, `kineticinterNNNtri_bravais_diag`
+and `kineticintra2DNNhex`.
+"""
+function masked_shift_hopping(Lx, Ly, sites, hopping::MPO, q::Integer;
+                              src_mask, apply_kwargs = NamedTuple())
+    K, Kdag = shift_pair_mpos(sites, q; cyclic=false)
+    src = _source_mask_mpo(Lx, Ly, sites, src_mask, apply_kwargs)
+    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
+    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
+    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+end
+
+# The source mask of masked_shift_hopping from its `src_mask` description.
+_source_mask_mpo(Lx, Ly, sites, M::MPO, apply_kwargs) = M
+
+function _source_mask_mpo(Lx, Ly, sites, name::Symbol, apply_kwargs)
+    name in (:even, :odd) && return _row_select_mpo(Lx, Ly, sites; keep=name)
+    name === :checker     && return _row_checker_mpo(Lx, Ly, sites)
+    return _row_break_mpo(Lx, Ly, sites; which=name)
+end
+
+function _source_mask_mpo(Lx, Ly, sites, names::Tuple, apply_kwargs)
+    masks = [_source_mask_mpo(Lx, Ly, sites, name, apply_kwargs) for name in names]
+    return foldl((a, b) -> apply(a, b; apply_kwargs...), masks)
+end
+
 
 """
     kineticintra2DNNN(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
@@ -105,11 +155,7 @@ along x).  Row wrap-around at ix = Nx-1 is suppressed by `_row_break_mpo(:xplus)
 function kineticintra2DNNN(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn >= 1
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
-    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=:xplus, apply_kwargs)
 end
 
 
@@ -122,11 +168,7 @@ square lattice.  Row end-wrap suppressed by `_row_break_mpo(:xplus)`.
 function kineticinterNNNSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn >= 1
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
-    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=:xplus, apply_kwargs)
 end
 
 
@@ -139,11 +181,7 @@ Row start-wrap suppressed by `_row_break_mpo(:xplain)`.
 function kineticinterNNNSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn >= 1
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
-    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=:xplain, apply_kwargs)
 end
 
 
@@ -157,13 +195,7 @@ hops to the correct sublattice rows.
 function kineticinterNNNtriSWNE(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn >= 1
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    sel = _row_select_mpo(Lx, Ly, sites; keep=:even)
-    src = apply(brk, sel; apply_kwargs...)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
-    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=(:xplus, :even), apply_kwargs)
 end
 
 
@@ -176,13 +208,7 @@ Applies `_row_break_mpo(:xplain)` and `_row_select_mpo(:odd)`.
 function kineticinterNNNtriSENW(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
     L = Lx + Ly
     @assert L == length(sites) && nn >= 1
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplain)
-    sel = _row_select_mpo(Lx, Ly, sites; keep=:odd)
-    src = apply(brk, sel; apply_kwargs...)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
-    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=(:xplain, :odd), apply_kwargs)
 end
 
 
@@ -198,12 +224,7 @@ function kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping::MPO;
     L  = Lx + Ly
     Nx = 2^Lx
     @assert L == length(sites)
-    K = shift_mpo(sites, -(Nx - 1); cyclic=false)
-    Kdag = shift_adjoint_mpo(K)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), brk; apply_kwargs...)
-    hop_bwd = apply(brk, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, -(Nx - 1); src_mask=:xplus, apply_kwargs)
 end
 
 
@@ -214,12 +235,5 @@ Intra-row hopping for a honeycomb lattice.  Applies `_row_break_mpo(:xplus)`
 and `_row_checker_mpo` to implement the alternating A/B sublattice pattern.
 """
 function kineticintra2DNNhex(Lx, Ly, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTuple())
-    L = Lx + Ly
-    K, Kdag = shift_pair_mpos(sites, nn; cyclic=false)
-    brk = _row_break_mpo(Lx, Ly, sites; which=:xplus)
-    chk = _row_checker_mpo(Lx, Ly, sites)
-    src = apply(brk, chk; apply_kwargs...)
-    hop_fwd = apply(apply(hopping, K; apply_kwargs...), src; apply_kwargs...)
-    hop_bwd = apply(src, apply(Kdag, dag(hopping); apply_kwargs...); apply_kwargs...)
-    return +(hop_fwd, hop_bwd; cutoff=1e-12)
+    return masked_shift_hopping(Lx, Ly, sites, hopping, nn; src_mask=(:xplus, :checker), apply_kwargs)
 end

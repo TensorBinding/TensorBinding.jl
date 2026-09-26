@@ -44,7 +44,8 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans,
 #                            dense MPO matrices
 #                            → Fibonacci*
-# core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo
+# core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo,
+#                            sum_mpos
 #                            → Utils
 # core/Hamiltonian.jl        1D kinetic MPOs, the QTCI hopping builder hopping2MPO
 #                            → Utils
@@ -62,24 +63,25 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, TBSystem, Fibonacci (Fib* ops), geometry
 # lattice/masks2d.jl         row-break/select and checkerboard mask MPOs
 #                            → Utils (sigma_d/u ops)
-# lattice/hopping2d.jl       binary shift MPOs (generate_kin_u/d), 2D kinetic builders
+# lattice/hopping2d.jl       binary shift MPOs (generate_kin_u/d), masked_shift_hopping and
+#                            the 2D kinetic builders over it
 #                            → Utils, masks2d
 # lattice/presets.jl         preset QTCI model Hamiltonians H*
-#                            → Utils, Hamiltonian, hopping2d
+#                            → Utils, MPOTools, Hamiltonian, hopping2d
 # core/ModelRegistry.jl      model registry MODELS (MODEL_REGISTRY), build_hamiltonian, the
 #                            per-kind builders, the KPM scale maker estimate_scale
 #                            → Utils, TBSystem, geometry, Fibonacci, MetallicMean, KBonacci,
 #                              presets, sublattice*, DMRG*
 # lattice/sublattice.jl      kagome/Lieb/honeycomb/dice/SSH sublattice builders
-#                            → Utils, TBSystem, masks2d, hopping2d
+#                            → Utils, MPOTools, TBSystem, masks2d
 # lattice/NNNeighbor.jl      nth-neighbour hopping add_hopping_2D!, get_shell_disps
 #                            → Utils, TBSystem, geometry, masks2d, hopping2d
 # lattice/Flake.jl           signed-distance functions, QTCI flake masks
 #                            → TBSystem
 # lattice/Twisted.jl         twisted multilayer builders
-#                            → Utils, Hamiltonian, TBSystem, geometry, ModelRegistry
+#                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, ModelRegistry
 # lattice/Bilayer.jl         commensurate bilayer/multilayer builders
-#                            → Utils, TBSystem, geometry, hopping2d, sublattice, Twisted
+#                            → Utils, MPOTools, TBSystem, geometry, sublattice, Twisted
 # lattice/TJunction.jl       T/Y-junction builders
 #                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, masks2d, NNNeighbor
 # solvers/DMRG.jl            dmrg_gs, dmrg_spectral, the KPM spectral bounds (_ensure_scale!)

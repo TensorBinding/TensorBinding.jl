@@ -1,17 +1,17 @@
 # Bilayer.jl — commensurate bilayer and multilayer tight-binding Hamiltonians,
 # returned as a TBHamiltonian with a layer index. The interlayer coupling is built
 # exactly (without TCI) for the lattice-commensurate stackings :AA and :Bernal, as
-# products of shift operators (generate_kin_u/d) and a sublattice mask MPO
+# products of the periodic ±1 shift operators (shift_mpo) and a sublattice mask MPO
 # (get_diagonal_mpo). For general (e.g. twisted) interlayer couplings use
 # lattice/Twisted.jl.
 #
 # Entry points: bilayer_hamiltonian, multilayer_hamiltonian, interlayer_mpo.
 #
-# Depends on: core/Utils.jl (get_diagonal_mpo, fix_sites, postpend_op,
-# prepend_layer_projector, prepend_layer_hopping), core/TBSystem.jl (TBHamiltonian),
-# lattice/geometry.jl (honeycomb_sublattice_positions), lattice/hopping2d.jl
-# (generate_kin_u/d), lattice/sublattice.jl (honeycomb_sublattice_hamiltonian) and
-# lattice/Twisted.jl (monolayer_hamiltonian, included after this file).
+# Depends on: core/Utils.jl (shift_mpo, get_diagonal_mpo, fix_sites, postpend_op,
+# prepend_layer_projector, prepend_layer_hopping), core/MPOTools.jl (sum_mpos),
+# core/TBSystem.jl (TBHamiltonian), lattice/geometry.jl
+# (honeycomb_sublattice_positions), lattice/sublattice.jl
+# (honeycomb_sublattice_hamiltonian) and lattice/Twisted.jl (monolayer_hamiltonian).
 #
 # Site encoding, as in Twisted.jl:
 #   Site 1      : Layer index (a Qubit for bilayer_hamiltonian, dim = n_layers
@@ -47,10 +47,9 @@ operators.  This is symmetric (Hermitian for real t_inter).
 function _bernal_interlayer_mpo(L::Int, sites;
                                  t_inter::Number = 1.0,
                                  cutoff::Real    = 1e-8)
-    N   = 2^L
     D_A = get_diagonal_mpo(L, sites, x -> Float64(isodd(Int(x))))
-    K_u = generate_kin_u(sites, N)
-    K_d = generate_kin_d(sites, N)
+    K_u = shift_mpo(sites,  1; cyclic=true)
+    K_d = shift_mpo(sites, -1; cyclic=true)
     V   = +(t_inter * apply(K_u, D_A),
             conj(t_inter) * apply(D_A, K_d); cutoff=cutoff)
     ITensorMPS.truncate!(V; cutoff=cutoff)
@@ -311,21 +310,15 @@ function multilayer_hamiltonian(
         H_mono, geom, geom_uc =
             _explicit_sublattice_monolayer(lattice, Lx, Ly, pos_sites, sub_s;
                                            t=t_intra, cutoff=cutoff, maxdim=maxdim)
-        H_intra = prepend_layer_projector(H_mono, layer_s, 1)
-        for k in 2:n_layers
-            H_intra = +(H_intra,
-                        prepend_layer_projector(H_mono, layer_s, k); cutoff=cutoff)
-        end
+        H_intra = sum_mpos((prepend_layer_projector(H_mono, layer_s, k) for k in 1:n_layers);
+                           cutoff=cutoff)
 
-        H_inter = nothing
-        for k in 1:(n_layers - 1)
-            term = _explicit_sublattice_interlayer_pair(lattice, stacking,
-                                                        pos_sites, sub_s, layer_s,
-                                                        k, k + 1;
-                                                        t_inter=t_inter,
-                                                        cutoff=cutoff)
-            H_inter = H_inter === nothing ? term : +(H_inter, term; cutoff=cutoff)
-        end
+        H_inter = sum_mpos((_explicit_sublattice_interlayer_pair(lattice, stacking,
+                                                                 pos_sites, sub_s, layer_s,
+                                                                 k, k + 1;
+                                                                 t_inter=t_inter,
+                                                                 cutoff=cutoff)
+                            for k in 1:(n_layers - 1)); cutoff=cutoff)
 
         H_total = +(H_intra, H_inter; cutoff=cutoff)
         ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
@@ -343,21 +336,15 @@ function multilayer_hamiltonian(
     # Intralayer
     H_mono  = monolayer_hamiltonian(lattice, Lx, Ly, pos_sites;
                                     t=t_intra, cutoff=cutoff)
-    H_intra = prepend_layer_projector(H_mono, layer_s, 1)
-    for k in 2:n_layers
-        H_intra = +(H_intra,
-                    prepend_layer_projector(H_mono, layer_s, k); cutoff=cutoff)
-    end
+    H_intra = sum_mpos((prepend_layer_projector(H_mono, layer_s, k) for k in 1:n_layers);
+                       cutoff=cutoff)
 
     # Interlayer: only adjacent layers k ↔ k+1
     V = interlayer_mpo(lattice, stacking, Lx, Ly, pos_sites;
                        t_inter=t_inter, cutoff=cutoff)
-    H_inter = nothing
-    for k in 1:(n_layers - 1)
-        term = +(prepend_layer_hopping(V, layer_s, k,   k+1),
-                 prepend_layer_hopping(V, layer_s, k+1, k  ); cutoff=cutoff)
-        H_inter = H_inter === nothing ? term : +(H_inter, term; cutoff=cutoff)
-    end
+    H_inter = sum_mpos((+(prepend_layer_hopping(V, layer_s, k,   k+1),
+                          prepend_layer_hopping(V, layer_s, k+1, k  ); cutoff=cutoff)
+                        for k in 1:(n_layers - 1)); cutoff=cutoff)
 
     H_total = +(H_intra, H_inter; cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)

@@ -8,15 +8,18 @@
 #   lieb_positions, honeycomb_sublattice_positions, dice_positions,
 #   tjunction_positions.
 # Internals: the _*_geometry closures (the model registry in core/ModelRegistry.jl
-#   assigns one to each preset; _preset_geometry reads it there); _geom_positions;
-#   _resolve_2d_geometry, for add_hopping_2D! (lattice/NNNeighbor.jl).
+#   assigns one to each preset; _preset_geometry reads it there); _closure_positions and
+#   _basis_positions, which tabulate a closure or a Bravais lattice with a basis;
+#   _geom_positions; _resolve_2d_geometry, for add_hopping_2D! (lattice/NNNeighbor.jl).
 #
 # Depends on: core/TBSystem.jl (TBHamiltonian).
 #
 # Gathered, unchanged, from core/TBSystem.jl, lattice/sublattice.jl, the interim
 # lattice/model_registry.jl (now core/ModelRegistry.jl), lattice/Twisted.jl,
 # lattice/TJunction.jl and lattice/NNNeighbor.jl. The geometry_uc closures stay
-# inline in the builders that set them.
+# inline in the builders that set them. Tier 2 folded the eight position loops of
+# sections 2 and 3 into _closure_positions and _basis_positions (same values, bit
+# for bit).
 
 # ============================================================
 # 1. Geometry closures for the preset lattices
@@ -68,6 +71,14 @@ end
 # 2. Position tables for the preset lattices
 # ============================================================
 
+# The N × 2 table of a position closure `g` (row i = g(i)); the tables below are
+# the preset closures of section 1 evaluated at every site.
+function _closure_positions(g, N::Int)
+    rs = Matrix{Float64}(undef, N, 2)
+    for i in 1:N; rs[i, :] = g(i); end
+    return rs
+end
+
 """
     honeycomb_positions(L; Lx=L÷2) -> Matrix{Float64}
 
@@ -81,14 +92,7 @@ all inter-row bonds `(iy, ix) ↔ (iy+1, ix)`.
 Returns an `N × 2` matrix where row `i` (1-indexed) is the 2D position
 of quantics site `i-1`.
 """
-function honeycomb_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _hex_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
+honeycomb_positions(L::Int; Lx::Int = L ÷ 2) = _closure_positions(_hex_geometry(2^Lx), 2^L)
 
 """
     square_positions(L; Lx=L÷2) -> Matrix{Float64}
@@ -96,14 +100,7 @@ end
 Physical positions for the `2^L`-site square lattice in quantics row-major
 encoding `n = ix + iy·2^Lx`.  Site `i` (1-indexed) maps to `(ix, iy)`.
 """
-function square_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _square_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
+square_positions(L::Int; Lx::Int = L ÷ 2) = _closure_positions(_square_geometry(2^Lx), 2^L)
 
 """
     triangular_positions(L; Lx=L÷2) -> Matrix{Float64}
@@ -112,14 +109,7 @@ Physical positions for the `2^L`-site triangular lattice in quantics row-major
 encoding `n = ix + iy·2^Lx`, bond length = 1.  Odd rows are offset by 0.5 in x:
 `x = ix + 0.5·(iy % 2)`,  `y = iy·√3/2`.
 """
-function triangular_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _tri_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
+triangular_positions(L::Int; Lx::Int = L ÷ 2) = _closure_positions(_tri_geometry(2^Lx), 2^L)
 
 """
     triangular_bravais_positions(L; Lx=L÷2) -> Matrix{Float64}
@@ -128,19 +118,38 @@ Physical positions for the `2^L`-site Bravais triangular lattice in quantics
 row-major encoding `n = ix + iy·2^Lx`, bond length = 1.
 Bravais vectors a1=(1,0), a2=(1/2,√3/2):  `x = ix + iy/2`,  `y = iy·√3/2`.
 """
-function triangular_bravais_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _tri_bravais_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
+triangular_bravais_positions(L::Int; Lx::Int = L ÷ 2) =
+    _closure_positions(_tri_bravais_geometry(2^Lx), 2^L)
 
 
 # ============================================================
 # 3. Position tables for the explicit-sublattice lattices
 # ============================================================
+
+"""
+    _basis_positions(Lx, Ly, a1, a2, basis) -> Matrix{Float64}
+
+Atom positions of `2^Lx × 2^Ly` unit cells with an `n_sub`-atom basis, one row per
+atom in the MPO order of the sublattice builders: atom `i = n_sub·n + s` (1-indexed)
+is basis atom `s` of cell `n = ix + iy·2^Lx`, at `ix·a1 + iy·a2 + basis[s]`
+(`a1`, `a2` the Bravais vectors, `basis` the offsets).
+"""
+function _basis_positions(Lx::Int, Ly::Int, a1, a2, basis)
+    Nx    = 2^Lx
+    N_uc  = 2^(Lx + Ly)
+    n_sub = length(basis)
+    rs    = Matrix{Float64}(undef, n_sub * N_uc, 2)
+    for n in 0:N_uc-1
+        ix = n % Nx
+        iy = div(n, Nx)
+        ax = ix * a1[1] + iy * a2[1]
+        ay = ix * a1[2] + iy * a2[2]
+        for (s, b) in enumerate(basis)
+            rs[n_sub * n + s, :] = [ax + b[1], ay + b[2]]
+        end
+    end
+    return rs
+end
 
 """
     kagome_positions(Lx, Ly) -> Matrix{Float64}
@@ -159,22 +168,12 @@ Atom positions (lattice vectors a₁=(1,0), a₂=(½,√3/2)):
   C: (ix + iy/2 + ¼,    iy·√3/2 + √3/4)
 """
 function kagome_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 3 * N_uc, 2)
     sq3_2 = sqrt(3) / 2
     sq3_4 = sqrt(3) / 4
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 3n + 1
-        rs[base,   :] = [ax,        ay        ]   # A
-        rs[base+1, :] = [ax + 0.5,  ay        ]   # B
-        rs[base+2, :] = [ax + 0.25, ay + sq3_4]   # C
-    end
-    return rs
+    return _basis_positions(Lx, Ly, (1.0, 0.0), (0.5, sq3_2),
+                            ((0.0,  0.0  ),     # A
+                             (0.5,  0.0  ),     # B
+                             (0.25, sq3_4)))    # C
 end
 
 
@@ -195,18 +194,10 @@ Atom positions (lattice vectors a₁=(1,0), a₂=(0,1)):
   C: (ix,       iy + 0.5)   y-edge center
 """
 function lieb_positions(Lx::Int, Ly::Int)
-    Nx   = 2^Lx
-    N_uc = 2^(Lx + Ly)
-    rs   = Matrix{Float64}(undef, 3 * N_uc, 2)
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        base = 3n + 1
-        rs[base,   :] = [ix,       iy       ]   # A
-        rs[base+1, :] = [ix + 0.5, iy       ]   # B
-        rs[base+2, :] = [ix,       iy + 0.5 ]   # C
-    end
-    return rs
+    return _basis_positions(Lx, Ly, (1.0, 0.0), (0.0, 1.0),
+                            ((0.0, 0.0),     # A
+                             (0.5, 0.0),     # B
+                             (0.0, 0.5)))    # C
 end
 
 
@@ -227,21 +218,11 @@ Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
   B: (ix + iy/2 + ½,   iy·√3/2 + √3/6  )   displaced along the intra-cell bond
 """
 function honeycomb_sublattice_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 2 * N_uc, 2)
     sq3_2 = sqrt(3) / 2
     sq3_6 = sqrt(3) / 6
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 2n + 1
-        rs[base,   :] = [ax,        ay         ]   # A
-        rs[base+1, :] = [ax + 0.5,  ay + sq3_6 ]   # B
-    end
-    return rs
+    return _basis_positions(Lx, Ly, (1.0, 0.0), (0.5, sq3_2),
+                            ((0.0, 0.0  ),     # A
+                             (0.5, sq3_6)))    # B
 end
 
 
@@ -263,23 +244,13 @@ Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
   C: (ix + iy/2 + 1,    iy·√3/2 + √3/3)   at 2·(a₁+a₂)/3
 """
 function dice_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 3 * N_uc, 2)
     sq3_2 = sqrt(3) / 2
     sq3_6 = sqrt(3) / 6
     sq3_3 = sqrt(3) / 3
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 3n + 1
-        rs[base,   :] = [ax,        ay        ]   # A: origin
-        rs[base+1, :] = [ax + 0.5,  ay + sq3_6]   # B: (a1+a2)/3
-        rs[base+2, :] = [ax + 1.0,  ay + sq3_3]   # C: 2(a1+a2)/3
-    end
-    return rs
+    return _basis_positions(Lx, Ly, (1.0, 0.0), (0.5, sq3_2),
+                            ((0.0, 0.0  ),     # A: origin
+                             (0.5, sq3_6),     # B: (a1+a2)/3
+                             (1.0, sq3_3)))    # C: 2(a1+a2)/3
 end
 
 
