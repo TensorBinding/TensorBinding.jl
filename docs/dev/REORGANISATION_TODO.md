@@ -218,6 +218,13 @@ the affected golden cases in the same commit.
       Nambu sectors as `1:dim(nambu index)` and the spin sectors as `1:2`: the same for every
       Nambu index the package builds (dimension 2); kept as they were.
 
+### Found by the export-list checks (2026-09-26; not fixed)
+
+- [ ] `examples/spectral/aux_ldos_examples.ipynb` calls `TensorBinding.plot_ldos_2d`, which the
+      package does not define (the notebook's stored output already shows the UndefVarError).
+- [ ] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
+      uses; dropping it would remove a dependency (a Project.toml change, fine in any release).
+
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
