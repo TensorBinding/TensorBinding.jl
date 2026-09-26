@@ -1,4 +1,4 @@
-# Topology_tk.jl — topological invariants via KPM and MPO methods
+# Topology.jl — topological invariants via KPM and MPO methods
 #
 # Implements real-space Chern markers and winding numbers for arbitrary
 # tight-binding systems encoded in the quantics representation.

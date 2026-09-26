@@ -11,7 +11,7 @@
 # get_rpa_susceptibility_wynn; its k-space readout get_spect_k is in
 # physics/qft/conjugation.jl) and the transverse-spin channel (get_magnon_*; its
 # spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
-# Split verbatim from physics/RPA_tk.jl.
+# Split verbatim from the former physics/RPA_tk.jl.
 
 # ============================================================
 # Public RPA pipeline

@@ -1,9 +1,9 @@
-# Supercond_tk.jl — Pairing MPO builders and spin/BdG assemblers for MPO Hamiltonians
+# Supercond.jl — Pairing MPO builders and spin/BdG assemblers for MPO Hamiltonians
 #
 # The spin/Nambu indices, operator tables and prepend/postpend helpers that
 # were sections 0–2 of this file live in core/AuxDOF.jl.
 #
-# Follows the same prepend-core pattern as twisted_tk.jl: an auxiliary site
+# Follows the same prepend-core pattern as lattice/Twisted.jl: an auxiliary site
 # (spin or particle/hole) is prepended to a position-qubit MPO, extending
 # it by one site.  Multiple prepends can be chained:
 #

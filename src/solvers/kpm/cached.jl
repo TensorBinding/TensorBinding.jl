@@ -1,7 +1,8 @@
 # solvers/kpm/cached.jl — spectral quantities reconstructed from cached Chebyshev
 # data: get_ldos / get_ldos_spectrum on the H cache, the *_from_mun moment
 # reconstructions, the *_from_Tn density / Green's function / LDOS builders and
-# get_ldos_diag_from_Tn. Moved verbatim from solvers/KPM_tk.jl (Tier 1 split).
+# get_ldos_diag_from_Tn. Moved verbatim from the former solvers/KPM_tk.jl (Tier 1
+# split).
 
 # ============================================================
 # Cached-Chebyshev LDOS: get_ldos, get_ldos_spectrum

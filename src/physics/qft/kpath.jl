@@ -1,7 +1,7 @@
 # kpath.jl — High-symmetry k-path utilities for 2D get_bands
 #
 # Contains kpath_2d, hsk_honeycomb / hsk_square / hsk_triangular, _hs_label,
-# _hsk and kpath_setup.  Moved verbatim from section 3b of physics/QFT_tk.jl;
+# _hsk and kpath_setup.  Moved verbatim from section 3b of the former physics/QFT_tk.jl;
 # the overview and file map of physics/qft/ are at the top of bands.jl.
 
 # ============================================================

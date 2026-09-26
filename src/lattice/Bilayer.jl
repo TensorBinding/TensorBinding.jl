@@ -1,11 +1,11 @@
-# bilayer_tk.jl — Bilayer / multilayer tight-binding Hamiltonians via MPO
+# Bilayer.jl — Bilayer / multilayer tight-binding Hamiltonians via MPO
 #
 # Constructs the interlayer coupling exactly (without TCI) for lattice-
 # commensurate stackings by expressing the coupling as products of shift
 # operators (generate_kin_u/d) and sublattice mask MPOs (get_diagonal_mpo).
-# For general (e.g. twisted) interlayer potentials use twisted_tk.jl.
+# For general (e.g. twisted) interlayer potentials use Twisted.jl.
 #
-# Site encoding identical to twisted_tk.jl:
+# Site encoding identical to Twisted.jl:
 #   Site 1      : Layer index (dim = n_layers)
 #   Sites 2…L+1 : L position qubits (quantics binary, row-major)
 #
@@ -14,7 +14,9 @@
 #   Sites 2...L+1 : L unit-cell position qubits
 #   Site L+2      : Sublattice index
 #
-# Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl
+# Depends on: core/Utils.jl, core/TBSystem.jl, lattice/geometry.jl,
+# lattice/hopping2d.jl, lattice/sublattice.jl and lattice/Twisted.jl
+# (monolayer_hamiltonian, included after this file).
 
 
 # ─────────────────────────────────────────────────────────────────

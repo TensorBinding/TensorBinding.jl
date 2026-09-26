@@ -1,4 +1,4 @@
-# krylov_tk.jl — Green's function via vectorized linear solve
+# Krylov.jl — Green's function via vectorized linear solve
 #
 # Computes the retarded single-particle Green's function
 #
@@ -14,7 +14,7 @@
 # Also holds the operator-level Haydock (Lanczos) recursion haydock_cf,
 # eval_haydock_cf, haydock_resolve_mpo (moved from physics/rpa/bubble.jl).
 #
-# Requires: interleave_mpo (core/MPOTools.jl), custom_mpo (utils.jl).
+# Requires: interleave_mpo (core/MPOTools.jl), custom_mpo (core/Utils.jl).
 
 
 

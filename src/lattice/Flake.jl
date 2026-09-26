@@ -1,4 +1,4 @@
-# Flake_tk.jl — smooth flake masking for TBHamiltonian
+# Flake.jl — smooth flake masking for TBHamiltonian
 #
 # Restricts a Hamiltonian to an irregular domain by applying a smooth
 # diagonal mask M learned via QTCI:

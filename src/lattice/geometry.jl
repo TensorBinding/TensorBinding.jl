@@ -4,8 +4,9 @@
 # lattices, the explicit-sublattice lattices (kagome, Lieb, honeycomb, dice) and
 # the T/Y junction, the _geom_positions and lattice_positions dispatchers, and
 # _resolve_2d_geometry for add_hopping_2D!. Gathered, unchanged, from
-# core/TBSystem.jl, lattice/sublattice.jl, lattice/model_registry.jl,
-# lattice/Twisted_tk.jl, lattice/TJunction_tk.jl and lattice/NNNeighbor_tk.jl.
+# core/TBSystem.jl, lattice/sublattice.jl, the interim lattice/model_registry.jl
+# (now core/ModelRegistry.jl), lattice/Twisted.jl, lattice/TJunction.jl and
+# lattice/NNNeighbor.jl.
 # The geometry_uc closures stay inline in the builders that set them.
 
 # ============================================================

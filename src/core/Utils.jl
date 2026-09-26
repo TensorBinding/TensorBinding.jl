@@ -1,4 +1,4 @@
-﻿# utils.jl - shared infrastructure used across TensorBinding
+﻿# Utils.jl - shared infrastructure used across TensorBinding
 #
 # Functions here are pure plumbing: binary <-> MPS conversions,
 # site-index manipulation, diagonal MPO construction, and debug
@@ -1152,7 +1152,7 @@ diagonal MPOs for use with `kineticNNN` and the 2D kinetic builders.
 `xvals = 0:2^L-1`        for a 1D chain of 2^L sites
 `xvals = 0:Nx*Ny-1`      for a row-major flattened 2D grid
 
-See also `get_diagonal_mpo` in utils.jl for a simpler 1-based-index wrapper.
+See also `get_diagonal_mpo` (also in core/Utils.jl) for a simpler 1-based-index wrapper.
 """
 function qtt_mpo(L, xvals, sites, func;
                  tol_quantics::Real    = 1e-8,

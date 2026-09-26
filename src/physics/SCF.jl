@@ -1,4 +1,4 @@
-# SCF_tk.jl -- self-consistent mean-field loops
+# SCF.jl -- self-consistent mean-field loops
 #
 # This module keeps the SCF driver generic: the physical channel is encoded in
 # a user-provided Hartree/Fock/Pairing builder

@@ -1,4 +1,4 @@
-# Purification_tk.jl — density matrix purification methods
+# Purification.jl — density matrix purification methods
 #
 # These methods iteratively drive the eigenvalues of an approximate
 # density matrix toward exactly 0 or 1, approximating the zero-temperature

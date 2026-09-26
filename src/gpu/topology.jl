@@ -1,7 +1,7 @@
 # ============================================================
 # topology.jl — GPU Chern marker
 # ============================================================
-# Moved from gpu/GPU_tk.jl: get_C_gpu.
+# Moved from the former gpu/GPU_tk.jl: get_C_gpu.
 
 """
     get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;

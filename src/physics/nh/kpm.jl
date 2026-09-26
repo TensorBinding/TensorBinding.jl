@@ -2,7 +2,7 @@
 # universal Chebyshev scale (nh_kpm_scale), the partial Chebyshev recursion
 # (nh_kpm_partials), Jackson reconstruction of the spectral function
 # (nh_reconstruct_spectral_mps, nh_spectral_function), the online MPO / MPS /
-# stochastic _nh_* helpers and nh_spectrum_grid. Split from physics/NH_tk.jl;
+# stochastic _nh_* helpers and nh_spectrum_grid. Split from the former physics/NH_tk.jl;
 # the NonHermitianHamiltonian model and hermitize are in nh/model.jl.
 
 # ============================================================

@@ -1,7 +1,7 @@
 # ModelRegistry.jl — MODEL_REGISTRY and the build_hamiltonian dispatcher for
 # the preset builders in lattice/presets.jl. The _geom_positions helpers that
 # map a geometry name to its *_positions table live in lattice/geometry.jl.
-# Split from lattice/2Dlattice_tk.jl (as lattice/model_registry.jl).
+# Split from the former lattice/2Dlattice_tk.jl (first as lattice/model_registry.jl).
 
 # ============================================================
 # 1. Model registry + build_hamiltonian dispatcher

@@ -2,7 +2,7 @@
 # chebyshev2d_gf_coeffs, the full-MPO bubbles get_bubble_mpo_cheb2d(_tucker), the
 # k-space diagonal bubbles get_bubble_diag_cheb2d(_svd, _tucker), and their helpers
 # (_cheb2d_out_sites, _cheb2d_require_position_sites, _jackson_kernel, _weighted_mpo_sum).
-# Split verbatim from physics/RPA_tk.jl.
+# Split verbatim from the former physics/RPA_tk.jl.
 
 # ============================================================
 # Double Chebyshev decomposition for the polarization bubble

@@ -16,12 +16,12 @@
 # Contents, moved verbatim in Tier 1 of the reorganisation (in this order):
 #   0–2.  spin_index, _SPIN_OPS, Symbol prepend_op/postpend_op,
 #         prepend_spin/postpend_spin, nambu_index, _NAMBU_OPS,
-#         prepend_nambu/postpend_nambu            ← physics/Supercond_tk.jl
+#         prepend_nambu/postpend_nambu            ← physics/Supercond.jl
 #   add_spin!, add_zeeman!, add_superconductivity!, add_soc!
 #                                                 ← core/TBSystem.jl
-#   5b.   project_aux, _autoenable_proj, aux_site ← physics/qft/aux_projection.jl
+#   5b.   project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl
 #   Auxiliary sector projectors:
-#         _project_aux_block                      ← physics/SCF_tk.jl (section 5)
+#         _project_aux_block                      ← physics/SCF.jl (section 5)
 #         _project_spin_sector                    ← physics/rpa/dyson.jl
 #   _aux_setup, _ldos_make_psi0                   ← solvers/kpm/ldos.jl
 #
@@ -31,11 +31,11 @@
 # get_diagonal_mpo and _basis_state_mps (core/Utils.jl), hopping2MPO
 # (core/Hamiltonian.jl), _pos_sites, _invalidate_cache! and
 # _require_binary_position_space (core/TBSystem.jl), generate_kin_u/d
-# (lattice/hopping2d.jl) and pairingNNN/pairing2MPO (physics/Supercond_tk.jl).
+# (lattice/hopping2d.jl) and pairingNNN/pairing2MPO (physics/Supercond.jl).
 
 
 # ─────────────────────────────────────────────────────────────────
-# 0.  Symbol dispatch for prepend_op (defined in utils.jl)
+# 0.  Symbol dispatch for prepend_op (defined in core/Utils.jl)
 # ─────────────────────────────────────────────────────────────────
 
 
@@ -634,7 +634,7 @@ end
 
 
 # ============================================================
-# Auxiliary sector projectors  (_project_aux_block from physics/SCF_tk.jl,
+# Auxiliary sector projectors  (_project_aux_block from physics/SCF.jl,
 # _project_spin_sector from physics/rpa/dyson.jl)
 # ============================================================
 

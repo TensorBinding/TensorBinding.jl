@@ -1,7 +1,7 @@
 # ============================================================
 # primitives.jl — GPU-safe primitives
 # ============================================================
-# Moved from gpu/GPU_tk.jl: the QFT sandwich used by get_bands_gpu, dense GPU
+# Moved from the former gpu/GPU_tk.jl: the QFT sandwich used by get_bands_gpu, dense GPU
 # delta/one-hot tensors, MPS element evaluation (point, block, all-sites sum),
 # diagonal extraction and density profiles, diagonal-MPO embedding and
 # auxiliary-site projection.

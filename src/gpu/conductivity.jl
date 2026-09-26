@@ -1,7 +1,7 @@
 # ============================================================
 # conductivity.jl — conductivity-only Tucker/QFT/Hadamard block
 # ============================================================
-# Moved from gpu/GPU_tk.jl. No other code in src/, test/ or examples/ calls
+# Moved from the former gpu/GPU_tk.jl. No other code in src/, test/ or examples/ calls
 # these helpers (QFT operator build, GPU Hadamard product, weighted MPO sum,
 # GPU density matrix, Tucker components); kept in the package for now.
 

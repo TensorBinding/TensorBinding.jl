@@ -3,7 +3,7 @@
 # Contains conjugate_by_qft (plain and TBHamiltonian-aware), the aux-site
 # embedding helpers _embed_in_full_sites / _embed_displacement_in_full_sites,
 # the two-particle conjugate_by_qft_exciton and the k-space diagonal get_spect_k.
-# Moved verbatim from section 1 of physics/QFT_tk.jl (get_spect_k from
+# Moved verbatim from section 1 of the former physics/QFT_tk.jl (get_spect_k from
 # physics/rpa/dyson.jl); the overview and file map of physics/qft/ are at the
 # top of bands.jl.
 

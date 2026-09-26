@@ -1,7 +1,7 @@
 # ============================================================
 # bands.jl — GPU band structure
 # ============================================================
-# Moved from gpu/GPU_tk.jl: get_bands_gpu.
+# Moved from the former gpu/GPU_tk.jl: get_bands_gpu.
 
 """
     get_bands_gpu(H, Ncheb, ω_phys_vals; kwargs...)

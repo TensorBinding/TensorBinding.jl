@@ -1,7 +1,7 @@
 # ============================================================
 # exciton.jl — GPU exciton LDOS and Chebyshev convergence
 # ============================================================
-# Moved from gpu/GPU_tk.jl: get_exciton_ldos_spatial_gpu and
+# Moved from the former gpu/GPU_tk.jl: get_exciton_ldos_spatial_gpu and
 # get_exciton_cheb_convergence_gpu.
 
 """

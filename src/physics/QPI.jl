@@ -1,4 +1,4 @@
-# QPI_tk.jl — Quasiparticle Interference via single-impurity scattering
+# QPI.jl — Quasiparticle Interference via single-impurity scattering
 #
 # Pipeline:
 #   1. Build impurity potential V·|x₀⟩⟨x₀| analytically via OpSum (bond dim 1).
@@ -9,11 +9,12 @@
 #      we already have the diagonal, not a full MPO).
 #   6. QPI(k, ω) = |⟨k|δÃ_mps⟩|².
 #
-# Dependencies:
-#   central_index, _pos_sites, _invalidate_cache!  → TBSystem.jl
-#   KPM_Tn, get_ldos_spectrum                      → kpm/recursion.jl, kpm/cached.jl
-#   fix_sites                                      → Utils.jl
-#   sdf_disk, sdf_interval                         → Flake_tk.jl
+# Dependencies (step 2 runs its own Chebyshev loop, not KPM_Tn/get_ldos_spectrum):
+#   central_index, add_onsite!, _invalidate_cache! → core/TBSystem.jl
+#   fix_sites, extract_diagonal_to_mps             → core/Utils.jl
+#   _ensure_scale!                                 → solvers/DMRG.jl
+#   _kpm_weight_matrix                             → solvers/kpm/kernels.jl
+#   sdf_disk, sdf_interval                         → lattice/Flake.jl
 #   QuanticsTCI.quanticsfouriermpo, TCI.reverse    → external
 
 

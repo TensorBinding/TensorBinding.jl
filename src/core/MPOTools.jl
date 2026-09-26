@@ -4,8 +4,9 @@
 # used by the RPA bubbles, the Krylov Green's function, the exciton QFT and the
 # two-particle Hamiltonian, MPO powers by squaring (compose_power) and the exact
 # rank-1 site projector (_site_projector_mpo).
-# Moved verbatim from physics/rpa/plumbing.jl, core/Hamiltonian.jl and
-# lattice/TJunction_tk.jl (Tier 1 of docs/dev/REORGANISATION_TODO.md).
+# Moved verbatim from physics/rpa/plumbing.jl (an interim file split out of the
+# former physics/RPA_tk.jl), core/Hamiltonian.jl and lattice/TJunction.jl (Tier 1
+# of docs/dev/REORGANISATION_TODO.md).
 # Uses Utils (_bra_ket, the sigma_d/sigma_u ops).
 
 # ============================================================

@@ -1,6 +1,6 @@
 # solvers/kpm/ldos.jl — online real-space LDOS: get_ldos_online, get_ldos_spatial.
-# Moved verbatim from solvers/KPM_tk.jl (Tier 1 split); their helpers _aux_setup
-# and _ldos_make_psi0 live in core/AuxDOF.jl.
+# Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split); their helpers
+# _aux_setup and _ldos_make_psi0 live in core/AuxDOF.jl.
 
 # ============================================================
 # Online LDOS at a single position: get_ldos_online

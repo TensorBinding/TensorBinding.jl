@@ -3,8 +3,8 @@
 # Contains get_bands (low-level MPO method and the TBHamiltonian overloads)
 # (its helpers _eval_diag_mps and _kpm_weight_matrix now live in core/Utils.jl and
 # solvers/kpm/kernels.jl).  Moved verbatim from sections 3, 4 and 5 of
-# physics/QFT_tk.jl, together with that file's overview, which now describes the
-# whole physics/qft/ folder.
+# the former physics/QFT_tk.jl, together with that file's overview, which now
+# describes the whole physics/qft/ folder.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Overview
@@ -73,17 +73,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependencies outside physics/qft/
 # ─────────────────────────────────────────────────────────────────────────────
-# fix_sites, _kpm_kernel               → utils.jl
-# extract_diagonal_to_mps              → utils.jl
-# _eval_diag_mps                       → core/Utils.jl
-# interleave_mpo                       → core/MPOTools.jl
-# _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
-# TBHamiltonian                        → TBSystem.jl
-# _ensure_scale!                       → solvers/DMRG_tk.jl
-# _kpm_weight_matrix                   → solvers/kpm/kernels.jl
+# fix_sites, extract_diagonal_to_mps,
+#   _eval_diag_mps, kspace_sampling_plan,
+#   spatial_sampling_plan              → core/Utils.jl
+# interleave_mpo, mpo_kron             → core/MPOTools.jl
+# TBHamiltonian, _pos_sites,
+#   _require_binary_position_space     → core/TBSystem.jl
 # project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
-# _run_kpm_mps!, _dos_weight_matrix    → KPM_tk.jl
-# _kpm_weight_matrix                   → KPM_tk.jl
+# _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
+# _ensure_scale!                       → solvers/DMRG.jl
+# _kpm_weight_matrix, _dos_weight_matrix → solvers/kpm/kernels.jl
+# _run_kpm_mps!                        → solvers/kpm/recursion.jl
+# mpsexcitonQ, mpsexcitonQTrace, mpsexcitonKQ → physics/TwoParticle.jl
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # File structure  (src/physics/qft/, in include order)
@@ -105,7 +106,7 @@
 #                                  kpath_setup, _hs_label, _hsk
 # exciton_spectra.jl
 #       Exciton spectra (MPS-KPM)  get_exciton_bands, get_exciton_continuum
-#       (exciton MPS probes mpsexcitonQ/QTrace/KQ now live in TwoParticle_tk.jl,
+#       (exciton MPS probes mpsexcitonQ/QTrace/KQ now live in physics/TwoParticle.jl,
 #        mpsexciton in core/Utils.jl)
 # (5b. Aux index projection — project_aux, _autoenable_proj, aux_site — is in
 #  core/AuxDOF.jl.)

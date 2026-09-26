@@ -1,6 +1,6 @@
 # solvers/kpm/exciton.jl — CPU exciton KPM: bound-pair LDOS (get_exciton_ldos_spatial,
 # get_exciton_ldos), separation-resolved LDOS (get_exciton_ldos_separation) and
-# exciton_radius2. Moved verbatim from solvers/KPM_tk.jl (Tier 1 split).
+# exciton_radius2. Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split).
 
 # ============================================================
 # Exciton LDOS  (MPS-based only — no MPO Chebyshev for the 2L-site chain)

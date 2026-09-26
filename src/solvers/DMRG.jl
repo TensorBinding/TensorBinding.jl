@@ -1,4 +1,4 @@
-# DMRG_tk.jl — Variational ground state and spectral DMRG utilities
+# DMRG.jl — Variational ground state and spectral DMRG utilities
 #
 # Two physical functions:
 #   dmrg_gs       — ground state of H (standard DMRG energy minimisation)

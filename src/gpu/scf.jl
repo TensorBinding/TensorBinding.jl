@@ -1,7 +1,7 @@
 # ============================================================
 # scf.jl — GPU magnetic Hubbard SCF
 # ============================================================
-# Moved from gpu/GPU_tk.jl: the RMS/Hartree helpers, scf_magnetic_hubbard_gpu
+# Moved from the former gpu/GPU_tk.jl: the RMS/Hartree helpers, scf_magnetic_hubbard_gpu
 # and its post-convergence observables (get_scf_magnetization_gpu with
 # _tb_spatial_plan_gpu, get_scf_bands_gpu).
 

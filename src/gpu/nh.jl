@@ -1,7 +1,7 @@
 # ============================================================
 # nh.jl — GPU non-Hermitian KPM density of states
 # ============================================================
-# Moved from gpu/GPU_tk.jl: the NH block contraction/trace helpers, the online
+# Moved from the former gpu/GPU_tk.jl: the NH block contraction/trace helpers, the online
 # diagonal-trace and stochastic recurrences, and the
 # get_nh_dos_{grid,points}[_diag_trace]_gpu entry points.
 

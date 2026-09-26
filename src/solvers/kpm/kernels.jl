@@ -2,8 +2,8 @@
 # weight matrix _kpm_weight_matrix, the HODC contour kernel helpers
 # (compute_hodc_params, get_hodc_weights, get_hodc_gf_weights), the stochastic-DOS
 # weight matrix _dos_weight_matrix and the moment-column LDOS reconstruction
-# _reconstruct_ldos_moment_columns. Moved verbatim from solvers/KPM_tk.jl (Tier 1
-# split), physics/qft/bands.jl (_kpm_weight_matrix) and gpu/kpm.jl
+# _reconstruct_ldos_moment_columns. Moved verbatim from the former solvers/KPM_tk.jl
+# (Tier 1 split), physics/qft/bands.jl (_kpm_weight_matrix) and gpu/kpm.jl
 # (_reconstruct_ldos_moment_columns).
 
 # ============================================================

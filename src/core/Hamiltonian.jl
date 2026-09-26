@@ -1,7 +1,7 @@
 ﻿# Hamiltonian.jl - MPO construction for tight-binding Hamiltonians
 #
 # Functions here build Hamiltonian MPOs from hopping functions or
-# lattice parameters.  Low-level tensor utilities live in utils.jl.
+# lattice parameters.  Low-level tensor utilities live in core/Utils.jl.
 
 # ============================================================
 # 1D nearest-neighbour kinetic MPO (quantics binary encoding)

@@ -1,7 +1,8 @@
 # solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method:
 # the cached MPO and MPS recursions KPM_Tn / KPM_Tn_mps, and the online MPS recursion
-# _run_kpm_mps!. Moved verbatim from solvers/KPM_tk.jl (Tier 1 split). The DMRG
-# spectral bounds (_estimate_spectral_bounds, _ensure_scale!) live in solvers/DMRG_tk.jl.
+# _run_kpm_mps!. Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split).
+# The DMRG spectral bounds (_estimate_spectral_bounds, _ensure_scale!) live in
+# solvers/DMRG.jl.
 
 # ============================================================
 # Cached Chebyshev MPO recursion: KPM_Tn

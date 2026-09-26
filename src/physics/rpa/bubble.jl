@@ -2,8 +2,8 @@
 # function of H_eff = I⊗H₂ − H₁⊗I on the interleaved 2L-site space: the density-matrix
 # and H_eff helpers (_get_density_matrix, _build_heff), get_bubble_mpo (KPM or Krylov
 # Green's function) and the Haydock-recursion variant get_bubble_mpo_haydock (the
-# recursion haydock_cf, eval_haydock_cf, haydock_resolve_mpo is in solvers/Krylov_tk.jl).
-# Split verbatim from physics/RPA_tk.jl.
+# recursion haydock_cf, eval_haydock_cf, haydock_resolve_mpo is in solvers/Krylov.jl).
+# Split verbatim from the former physics/RPA_tk.jl.
 
 # ============================================================
 # Internal helpers for TBHamiltonian API
@@ -175,7 +175,7 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
 end
 
 # ============================================================
-# Haydock-recursion bubble (haydock_cf & co.: solvers/Krylov_tk.jl)
+# Haydock-recursion bubble (haydock_cf & co.: solvers/Krylov.jl)
 # ============================================================
 
 """

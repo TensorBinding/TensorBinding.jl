@@ -1,7 +1,7 @@
 # ============================================================
 # kpm.jl — GPU Chebyshev recurrence, spatial LDOS and stochastic DOS
 # ============================================================
-# Moved from gpu/GPU_tk.jl: KPM_Tn_gpu, get_ldos_spatial_gpu,
+# Moved from the former gpu/GPU_tk.jl: KPM_Tn_gpu, get_ldos_spatial_gpu,
 # get_ldos_spatial_mps_gpu and get_dos_stochastic_gpu. The CPU helper
 # _reconstruct_ldos_moment_columns lives in solvers/kpm/kernels.jl.
 

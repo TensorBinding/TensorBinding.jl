@@ -1,7 +1,7 @@
 # ============================================================
 # purification.jl — GPU McWeeny purification
 # ============================================================
-# Moved from gpu/GPU_tk.jl: _mcweeny_purify_gpu and the GPU-resident
+# Moved from the former gpu/GPU_tk.jl: _mcweeny_purify_gpu and the GPU-resident
 # _mcweeny_purify_mpo_gpu with its initial guess. The GPU SP2 loop is inline
 # in get_C_gpu (topology.jl).
 

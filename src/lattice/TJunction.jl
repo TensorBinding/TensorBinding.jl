@@ -1,4 +1,4 @@
-# TJunction_tk.jl — T/Y-junction Hamiltonians via a spin-1 (dim-3) chain-label index
+# TJunction.jl — T/Y-junction Hamiltonians via a spin-1 (dim-3) chain-label index
 #
 # A T-junction (Y-junction) connects three 1D chains at a common site.
 # The spin-1 index (dim-3) postpended to the MPO labels the branch:
@@ -18,7 +18,8 @@
 #     s = (i-1) % 3 + 1   (branch: 1=|-1⟩, 2=|0⟩, 3=|+1⟩)
 #   Total atoms: 3*N where N = 2^L.
 #
-# Depends on: utils.jl, Hamiltonian.jl, TBSystem.jl
+# Depends on: core/Utils.jl, core/MPOTools.jl, core/Hamiltonian.jl, core/TBSystem.jl,
+# lattice/geometry.jl, lattice/masks2d.jl and lattice/NNNeighbor.jl (_shift_mpo).
 
 
 # ─────────────────────────────────────────────────────────────────

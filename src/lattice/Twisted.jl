@@ -1,9 +1,10 @@
-# twisted_tk.jl — Twisted multilayer tight-binding Hamiltonians via MPO
+# Twisted.jl — Twisted multilayer tight-binding Hamiltonians via MPO
 #
 # Encoding: the first site is a dim-n_layers "Layer" index; the remaining
 # L = Lx+Ly sites are position qubits (quantics binary, row-major).
 #
-# Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl, TBSystem.jl
+# Depends on: core/Utils.jl, core/Hamiltonian.jl, core/TBSystem.jl,
+# lattice/geometry.jl and core/ModelRegistry.jl.
 
 # ─────────────────────────────────────────────────────────────────
 # 1.  Real-space lattice positions: lattice_positions lives in lattice/geometry.jl

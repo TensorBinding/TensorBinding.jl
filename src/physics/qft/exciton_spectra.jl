@@ -3,7 +3,7 @@
 # Contains get_exciton_bands (coherent pair probes at total momentum Q) and
 # get_exciton_continuum (stochastic trace over |k, Q-k>).  Both run on an MPO
 # already conjugated by conjugate_by_qft_exciton (conjugation.jl).  Moved
-# verbatim from the end of section 4 of physics/QFT_tk.jl; the overview and
+# verbatim from the end of section 4 of the former physics/QFT_tk.jl; the overview and
 # file map of physics/qft/ are at the top of bands.jl.
 
 # ============================================================
@@ -159,7 +159,7 @@ probes the coherent pair state `mpsexcitonQ(Q, H.sites)`.
 `H_QFT` supplies the already-QFT-conjugated MPO used in the MPS recursion. The
 original `H::TBHamiltonian` supplies metadata (`sites`, `N`, `L`, `scale`,
 `center`) and the exciton site convention. The exciton continuum remains an
-MPS-KPM calculation: no exciton MPO-KPM / `QFT_tk.get_bands` path is used.
+MPS-KPM calculation: no exciton MPO-KPM / `get_bands` path is used.
 
 Rows are energies, columns are total momenta. If `k_list` is provided, those
 1-indexed relative momenta are used deterministically for every `Q`; otherwise

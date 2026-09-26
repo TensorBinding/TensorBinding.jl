@@ -1,7 +1,7 @@
 # nh/model.jl -- non-Hermitian Hamiltonian model: the NonHermitianHamiltonian
 # wrapper and hermitization (hermitize, hermitized_hamiltonian), plus the
 # non-Hermitian model-building helpers (add_nh_onsite!, loss_profile_mpo,
-# add_loss!, non-reciprocal / skin hopping). Split from physics/NH_tk.jl; the
+# add_loss!, non-reciprocal / skin hopping). Split from the former physics/NH_tk.jl; the
 # NH KPM routines acting on the hermitized block Hamiltonian are in nh/kpm.jl.
 #
 # The core construction here hermitizes a non-Hermitian single-particle MPO by

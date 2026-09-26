@@ -1,7 +1,7 @@
 # ============================================================
 # timeev.jl — GPU time-evolution trajectories
 # ============================================================
-# Moved from gpu/GPU_tk.jl: RK4 density-matrix evolution under a non-Hermitian
+# Moved from the former gpu/GPU_tk.jl: RK4 density-matrix evolution under a non-Hermitian
 # Hamiltonian (get_nh_density_trajectory_gpu) and TDVP state amplitudes
 # (get_state_amplitude_trajectory_gpu), with their samplers.
 

@@ -1,6 +1,6 @@
 # solvers/kpm/dos.jl — total DOS: stochastic trace estimation (get_dos_stochastic)
 # and the deterministic tensor-network trace (get_dos_trace). Moved verbatim from
-# solvers/KPM_tk.jl (Tier 1 split).
+# the former solvers/KPM_tk.jl (Tier 1 split).
 
 # ============================================================
 # Stochastic full DOS (trace estimation via random diagonal sampling)

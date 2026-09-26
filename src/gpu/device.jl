@@ -1,8 +1,8 @@
 # ============================================================
 # device.jl — CUDA bridge, CPU/GPU transfers, GPU-residency checks
 # ============================================================
-# Moved from gpu/GPU_tk.jl. The first src/gpu/ file to be included, so it
-# also carries the toolkit overview that opened GPU_tk.jl.
+# Moved from the former gpu/GPU_tk.jl. The first src/gpu/ file to be included, so
+# it also carries the toolkit overview that opened that file.
 #
 # ============================================================
 # src/gpu/ — GPU production toolkit for TensorBinding

@@ -1,6 +1,6 @@
 # hopping2d.jl — kinetic/hopping MPO builders for 2D lattice geometries: binary
 # shift MPOs, square-lattice NN hoppings and the NNN kinetic builders.
-# Split from lattice/2Dlattice_tk.jl; the masks they apply live in masks2d.jl.
+# Split from the former lattice/2Dlattice_tk.jl; the masks they apply live in masks2d.jl.
 #
 # Provides hopping MPOs for square, triangular, and honeycomb lattices
 # built from the quantics binary representation.

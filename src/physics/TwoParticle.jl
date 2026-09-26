@@ -1,4 +1,4 @@
-# twoparticle_tk.jl — exciton/two-particle Hamiltonian construction (1-2) and
+# TwoParticle.jl — exciton/two-particle Hamiltonian construction (1-2) and
 # momentum-space MPS basis-state probes (3); the real-space probe mpsexciton
 # lives in core/Utils.jl
 

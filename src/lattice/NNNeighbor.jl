@@ -1,4 +1,4 @@
-﻿# nnneighbor_tk.jl - nth-nearest-neighbor hopping for 2D TBHamiltonians
+﻿# NNNeighbor.jl - nth-nearest-neighbor hopping for 2D TBHamiltonians
 #
 # Public API:
 #   add_hopping_2D!(H, f; Lx, Ly, nn=1, ...)  - f: scalar, f(dx,dy,fs,ts),

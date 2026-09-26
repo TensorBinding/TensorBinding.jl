@@ -21,123 +21,138 @@ using Base.Threads
 
 export MPO, MPS, OpSum, expect, inner, siteinds
 
-# Load order matters:
-#   core/Utils.jl          — Qubit op extensions (sigma_plus/minus, sigma_d/u),
-#                             binary/index helpers and product-state MPS
-#                             (incl. mpsexciton), MPS evaluation (eval_mps,
-#                             _eval_diag_mps), diagonal MPO construction (incl.
-#                             qtt_mpo), shift/Hadamard operators, prepend_op/
-#                             postpend_op and the layer prepend helpers, and every
-#                             sampling plan (spatial, k-space, Fibonacci) shared
-#                             by the CPU and GPU solvers (no deps)
-#   core/MPOTools.jl       — MPO Kronecker product, interleave/pair-collapse
-#                             site plumbing, compose_power, _site_projector_mpo
-#                             (uses Utils)
-#   core/Hamiltonian.jl    — 1D kinetic operators (kinetic_1d_nn, kineticNNN)
-#                             and the QTCI hopping MPO builders (uses Utils)
-#   core/TBSystem.jl       — position-space policy types, TBHamiltonian struct,
-#                             get_Hamiltonian, add_hopping!/add_onsite!/
-#                             add_interaction! and the position-space
-#                             interface (uses Utils, Hamiltonian)
-#   core/AuxDOF.jl         — auxiliary DOFs: spin/Nambu indices and op tables,
-#                             prepend/postpend_spin/nambu, add_spin!/add_zeeman!/
-#                             add_superconductivity!/add_soc!, project_aux,
-#                             aux_site, sector projectors, KPM aux setup
-#                             (uses Utils, TBSystem)
-#   position_spaces/Fibonacci.jl — projected Fibonacci space, automata,
-#                                   constructors, and conumbering (uses TBSystem)
-#   position_spaces/MetallicMean.jl — projected metallic-mean spaces (A -> A^m B,
-#                                      B -> A) on (m+1)-dimensional Qudit
-#                                      registers (uses TBSystem, Utils)
-#   position_spaces/KBonacci.jl — projected k-bonacci spaces (Tribonacci,
-#                                   Tetranacci, …) on the binary register with
-#                                   no k consecutive ones (uses TBSystem, Fibonacci)
-#   lattice/geometry.jl        — real-space geometry: i -> position closures and
-#                                 _preset_geometry, the *_positions tables (preset,
-#                                 sublattice and T/Y-junction lattices),
-#                                 _geom_positions, lattice_positions and
-#                                 _resolve_2d_geometry (uses TBSystem)
-#   lattice/masks2d.jl         — diagonal row/column/checkerboard mask MPOs for
-#                                 the 2D row-major layout (uses Utils' sigma_d/u)
-#   lattice/hopping2d.jl       — binary shift MPOs and 2D kinetic/hopping MPO
-#                                 builders (uses Utils, masks2d)
-#   lattice/presets.jl         — preset QTCI model Hamiltonians H* (uses
-#                                 Hamiltonian, hopping2d)
-#   core/ModelRegistry.jl      — MODEL_REGISTRY, _parse_param_string and the
-#                                 build_hamiltonian dispatcher (uses presets)
-#   lattice/sublattice.jl      — kagome/Lieb/honeycomb/dice/SSH sublattice
-#                                 Hamiltonians (uses Utils, TBSystem, masks2d,
-#                                 hopping2d, geometry)
-#   lattice/NNNeighbor_tk.jl   — generic nth-neighbor hopping accumulator
-#                                 add_hopping_2D! (uses TBSystem, masks2d,
-#                                 hopping2d, sublattice, geometry)
-#   lattice/Flake_tk.jl        — smooth flake masking via QTCI SDFs (uses TBSystem)
-#   lattice/Bilayer_tk.jl      — bilayer/multilayer commensurate-stacking
-#                                 Hamiltonians (uses TBSystem, hopping2d, sublattice,
-#                                 geometry)
-#   lattice/Twisted_tk.jl      — twisted multilayer Hamiltonians (uses TBSystem,
-#                                 Bilayer_tk, geometry)
-#   lattice/TJunction_tk.jl    — T/Y-junction geometries (uses TBSystem, Hamiltonian,
-#                                 MPOTools, geometry)
-#   solvers/DMRG_tk.jl     — ground-state and spectral DMRG, and the DMRG spectral
-#                             bounds _estimate_spectral_bounds/_ensure_scale! that
-#                             every KPM caller uses (uses TBSystem)
-#   solvers/kpm/           — Chebyshev kernel polynomial method, "KPM_tk" below
-#                             (uses TBSystem, AuxDOF, DMRG_tk): kernels.jl (damping
-#                             kernels, KPM/HODC/DOS weights, moment-column
-#                             reconstruction), recursion.jl (KPM_Tn/KPM_Tn_mps, online
-#                             MPS recursion), cached.jl (LDOS/Green's functions from
-#                             cached T_n or μ_n), ldos.jl (online and spatial LDOS),
-#                             dos.jl (stochastic and trace DOS), exciton.jl (exciton LDOS)
-#   solvers/Krylov_tk.jl   — Green's function via vectorized linsolve and the
-#                             Haydock recursion haydock_cf (uses TBSystem, MPOTools)
-#   solvers/Timeev_tk.jl   — time evolution: TDVP, propagator MPO, density-matrix
-#                             dynamics (uses Hamiltonian, TBSystem)
-#   physics/SCF_tk.jl      — self-consistent mean-field SCF loop (uses KPM_tk,
-#                             Purification_tk, TBSystem, AuxDOF)
-#   physics/rpa/bubble.jl   — polarization bubble Π₀(ω) (get_bubble_mpo,
-#                              get_bubble_mpo_haydock; uses Krylov_tk)
-#   physics/rpa/cheb2d.jl   — double-Chebyshev bubbles (full MPO, k-space diagonal)
-#   physics/rpa/dyson.jl    — RPA susceptibility: Dyson solve, Wynn series, magnon
-#                              channel (rpa/ uses MPOTools, KPM_tk, QFT_tk,
-#                              TwoParticle_tk, AuxDOF)
-#   physics/Topology_tk.jl — topological invariants: Chern marker, winding
-#                             number, Thouless pump (uses KPM_tk, Purification_tk)
-#   physics/Purification_tk.jl — density matrix purification: McWeeny, SP2
-#                                 (uses KPM_tk)
-#   physics/TwoParticle_tk.jl  — exciton/two-particle Hamiltonian and momentum-space
-#                                 MPS probes (uses TBSystem, Hamiltonian, Utils,
-#                                 MPOTools)
-#   physics/nh/model.jl    — non-Hermitian model: NonHermitianHamiltonian,
-#                             hermitization, add_loss!/add_nh_* builders
-#                             (uses TBSystem, Utils)
-#   physics/nh/kpm.jl      — non-Hermitian KPM: nh_kpm_*, spectral function,
-#                             nh_spectrum_grid (uses nh/model, KPM_tk, Utils)
-#   physics/QPI_tk.jl      — quasiparticle interference via KPM LDOS difference
-#                             + QFT (uses KPM_tk, physics/qft)
-#   physics/qft/           — QFT conjugation and the k-space diagonal get_spect_k
-#                             (conjugation.jl), band structure
-#                             get_bands (bands.jl), high-symmetry k-paths
-#                             (kpath.jl), exciton spectra (exciton_spectra.jl)
-#                             (uses TBSystem, AuxDOF, KPM_tk, MPOTools)
-#   physics/Supercond_tk.jl — pairing MPO builders (pairingNNN, pairing2MPO) and
-#                              spin/BdG assemblers (uses AuxDOF, Hamiltonian, Utils,
-#                              MPOTools)
-#   gpu/*.jl               — GPU production toolkit: _gpu mirrors of KPM/QFT/
-#                             Topology/SCF/TwoParticle entry points (uses CUDA,
-#                             KPM_tk, QFT_tk, Topology_tk, SCF_tk, TwoParticle_tk):
-#     gpu/device.jl        — CUDA bridge, CPU/GPU transfers, residency checks
-#     gpu/primitives.jl    — GPU-safe delta/one-hot, MPS evaluation, diagonal
-#                             extraction, aux projection, QFT sandwich
-#     gpu/kpm.jl           — KPM_Tn_gpu, spatial LDOS, stochastic DOS
-#     gpu/bands.jl         — get_bands_gpu
-#     gpu/topology.jl      — get_C_gpu
-#     gpu/purification.jl  — GPU McWeeny purification
-#     gpu/scf.jl           — scf_magnetic_hubbard_gpu and its observables
-#     gpu/exciton.jl       — exciton LDOS and Chebyshev convergence
-#     gpu/nh.jl            — non-Hermitian KPM density of states
-#     gpu/timeev.jl        — NH density and TDVP amplitude trajectories
-#     gpu/conductivity.jl  — conductivity-only Tucker/QFT/Hadamard helpers
+# Source map, in include order: one entry per file, what it holds on the first line
+# and, after →, the files it calls into (the files that define a function, type or
+# constant it uses).
+#
+# The → lists are derived from the code, not from intent: every name defined in the
+# package that the file uses, plus the ITensors op names it builds operators from
+# ("sigma_d", "FibRaise", …) and the builders ModelRegistry looks up by Symbol.
+# Files are named by stem, with kpm/, rpa/, nh/, qft/, gpu/ for the split folders.
+# "TBSystem" stands for the TBHamiltonian type and the position-space interface
+# (physical_projector, physical_site_state, …), which dispatches to the projected
+# spaces of position_spaces/. "—" means no other file of the package.
+#
+# A * marks a callee included LATER than its caller. That is legal: Julia resolves a
+# call inside a function body when the call runs, not when the file is loaded. The
+# order is therefore not a strict layering; a * says the callee is further down.
+#
+# core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans
+#                            → Fibonacci*
+# core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo
+#                            → Utils
+# core/Hamiltonian.jl        1D kinetic MPOs, the QTCI hopping builder hopping2MPO
+#                            → Utils
+# core/TBSystem.jl           TBHamiltonian, position spaces, get_Hamiltonian, add_hopping!/add_onsite!
+#                            → Utils, Hamiltonian, Fibonacci*, MetallicMean*, KBonacci*, geometry*,
+#                              ModelRegistry*, sublattice*, NNNeighbor*
+# core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors
+#                            → Utils, Hamiltonian, TBSystem, hopping2d*, Supercond*
+# position_spaces/Fibonacci.jl  Zeckendorf space, Fib* ops, constructors, conumbering
+#                            → Utils, TBSystem, geometry*
+# position_spaces/MetallicMean.jl  metallic-mean (A → AᵐB) spaces on Qudit registers
+#                            → Utils, TBSystem, geometry*
+# position_spaces/KBonacci.jl  k-bonacci spaces (no k consecutive ones)
+#                            → Utils, TBSystem, Fibonacci (Fib* ops), geometry*
+# lattice/geometry.jl        i → position closures, *_positions tables, _resolve_2d_geometry
+#                            → TBSystem
+# lattice/masks2d.jl         row-break/select and checkerboard mask MPOs
+#                            → Utils (sigma_d/u ops)
+# lattice/hopping2d.jl       binary shift MPOs (generate_kin_u/d), 2D kinetic builders
+#                            → Utils, masks2d
+# lattice/presets.jl         preset QTCI model Hamiltonians H*
+#                            → Utils, Hamiltonian, hopping2d
+# core/ModelRegistry.jl      MODEL_REGISTRY, build_hamiltonian
+#                            → presets
+# lattice/sublattice.jl      kagome/Lieb/honeycomb/dice/SSH sublattice builders
+#                            → Utils, TBSystem, masks2d, hopping2d
+# lattice/NNNeighbor.jl      nth-neighbour hopping add_hopping_2D!, get_shell_disps
+#                            → Utils, TBSystem, geometry, masks2d, hopping2d
+# lattice/Flake.jl           signed-distance functions, QTCI flake masks
+#                            → TBSystem
+# lattice/Bilayer.jl         commensurate bilayer/multilayer builders
+#                            → Utils, TBSystem, geometry, hopping2d, sublattice, Twisted*
+# lattice/Twisted.jl         twisted multilayer builders
+#                            → Utils, Hamiltonian, TBSystem, geometry, ModelRegistry
+# lattice/TJunction.jl       T/Y-junction builders
+#                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, masks2d, NNNeighbor
+# solvers/DMRG.jl            dmrg_gs, dmrg_spectral, the KPM spectral bounds (_ensure_scale!)
+#                            → Utils, TBSystem
+# solvers/kpm/kernels.jl     damping kernels, KPM/HODC/DOS weights, moment-column LDOS
+#                            → —
+# solvers/kpm/recursion.jl   KPM_Tn, KPM_Tn_mps, online MPS recursion _run_kpm_mps!
+#                            → TBSystem, DMRG
+# solvers/kpm/cached.jl      LDOS, density, Green's functions from cached T_n / μ_n
+#                            → Utils, TBSystem, kpm/kernels
+# solvers/kpm/ldos.jl        get_ldos_online, get_ldos_spatial
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
+# solvers/kpm/dos.jl         stochastic and trace DOS
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
+# solvers/kpm/exciton.jl     exciton LDOS
+#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion
+# solvers/Krylov.jl          get_green_krylov, Haydock recursion (haydock_cf & co.)
+#                            → Utils, MPOTools, TBSystem
+# solvers/Timeev.jl          TDVP, propagator MPO, density-matrix RK4 and observables
+#                            → Utils, Hamiltonian, TBSystem
+# physics/SCF.jl             mean-field SCF loops and drivers, BdG and profile helpers
+#                            → Utils, TBSystem, AuxDOF, DMRG, Purification*, Supercond*
+# physics/rpa/bubble.jl      polarization bubble Π₀(ω) via KPM, Krylov or Haydock
+#                            → Utils, MPOTools, TBSystem, DMRG, kpm/recursion, kpm/cached,
+#                              Krylov, Purification*
+# physics/rpa/cheb2d.jl      double-Chebyshev bubbles (full MPO, k-space diagonal)
+#                            → Utils, TBSystem, DMRG, kpm/recursion, rpa/bubble, qft/conjugation*
+# physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
+#                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation*
+# physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
+#                            → Utils, TBSystem, NNNeighbor, kpm/recursion, kpm/cached,
+#                              Purification*
+# physics/Purification.jl    McWeeny, SP2, get_density
+#                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached
+# physics/TwoParticle.jl     exciton Hamiltonian, momentum-space exciton MPS probes
+#                            → Utils, MPOTools, TBSystem
+# physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
+#                            → Utils, TBSystem
+# physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
+#                            → Utils, TBSystem, DMRG, nh/model
+# physics/QPI.jl             quasiparticle interference (LDOS difference + QFT)
+#                            → Utils, TBSystem, Flake, DMRG, kpm/kernels
+# physics/qft/conjugation.jl conjugate_by_qft(_exciton), aux-site embedding, get_spect_k
+#                            → Utils, MPOTools, TBSystem
+# physics/qft/bands.jl       get_bands; the overview of physics/qft/
+#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
+#                              qft/conjugation, qft/kpath*
+# physics/qft/kpath.jl       high-symmetry k-paths
+#                            → —
+# physics/qft/exciton_spectra.jl  exciton bands and continuum
+#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, TwoParticle
+# physics/Supercond.jl       pairing MPOs, spin/BdG assemblers
+#                            → Utils (sigma_± ops), MPOTools, Hamiltonian, AuxDOF
+# gpu/device.jl              CUDA bridge, transfers, residency checks; GPU toolkit overview
+#                            → —
+# gpu/primitives.jl          one-hot, MPS evaluation, diagonals, aux projection, QFT sandwich
+#                            → Utils, gpu/device
+# gpu/kpm.jl                 KPM_Tn_gpu, spatial LDOS, stochastic DOS
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, gpu/device,
+#                              gpu/primitives
+# gpu/bands.jl               get_bands_gpu
+#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels, qft/kpath,
+#                              gpu/device, gpu/primitives
+# gpu/topology.jl            get_C_gpu
+#                            → Utils, TBSystem, DMRG, Topology, Purification, gpu/device
+# gpu/purification.jl        McWeeny purification
+#                            → TBSystem, Purification, gpu/device
+# gpu/scf.jl                 scf_magnetic_hubbard_gpu and its observables
+#                            → Utils, TBSystem, SCF, gpu/device, gpu/primitives, gpu/bands,
+#                              gpu/purification
+# gpu/exciton.jl             exciton LDOS, Chebyshev convergence
+#                            → Utils, TBSystem, DMRG, kpm/kernels, gpu/device
+# gpu/nh.jl                  NH KPM density of states
+#                            → TBSystem, nh/model, nh/kpm, gpu/device, gpu/primitives
+# gpu/timeev.jl              NH density and TDVP amplitude trajectories
+#                            → Utils, TBSystem, gpu/device, gpu/primitives
+# gpu/conductivity.jl        conductivity-only Tucker/QFT/Hadamard helpers
+#                            → Utils, TBSystem, rpa/bubble, qft/conjugation, gpu/device,
+#                              gpu/primitives
 
 include("core/Utils.jl")
 include("core/MPOTools.jl")

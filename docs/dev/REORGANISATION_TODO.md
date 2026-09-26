@@ -264,11 +264,29 @@ the affected golden cases in the same commit.
 - [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
 - [ ] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
       (2Dlattice runs 8, 8b, 8c, 8d, 8f; SCF header lists 8 sections, file has 9).
-- [ ] Rewrite the load-order comment in `TensorBinding.jl` as a real dependency graph; fix the
-      include order where a solver depends on a physics file (KPM ↔ QFT, TBSystem → Supercond,
-      Krylov → RPA, Bilayer → Twisted, SCF/RPA/Topology → Purification).
-- [ ] File names: drop the `_tk` suffix; rename `2Dlattice_tk.jl`; fix header comments that
+- [x] Rewrite the load-order comment in `TensorBinding.jl` as a real dependency graph.
+      (done in tier1/rename) One entry per included file: what it holds and the files it calls
+      into, derived from the code (every package-defined name each file uses, plus ITensors op
+      names and the builders `build_hamiltonian` looks up by Symbol); `*` marks a call into a
+      file included later.
+- [ ] Fix the include order where a file calls into a later one. Of the original list, KPM ↔ QFT
+      and Krylov → RPA are gone (the shared helpers moved to `solvers/kpm/kernels.jl` and
+      `solvers/Krylov.jl`) and TBSystem → Supercond is now AuxDOF → Supercond. The map in
+      `TensorBinding.jl` shows what is left: Utils → Fibonacci; TBSystem → position_spaces/,
+      geometry, ModelRegistry, sublattice, NNNeighbor (the `get_Hamiltonian` builders); AuxDOF →
+      hopping2d, Supercond; position_spaces/ → geometry; Bilayer → Twisted; SCF → Purification,
+      Supercond; rpa/bubble, Topology → Purification; rpa/cheb2d, rpa/dyson → qft/conjugation;
+      qft/bands → qft/kpath. Several are cycles (TBSystem ↔ the lattice builders), so not every
+      one can be fixed by reordering.
+- [x] File names: drop the `_tk` suffix; rename `2Dlattice_tk.jl`; fix header comments that
       cite files that do not exist (`utils.jl`, `2D_lattice.jl`, `twoparticle_tk.jl`, `krylov_tk.jl`).
+      (renamed in 9f59782, comments in the next commit; tier1/rename) `lattice/{NNNeighbor,Flake,
+      Bilayer,Twisted,TJunction}.jl`, `solvers/{DMRG,Krylov,Timeev}.jl`, `physics/{SCF,Topology,
+      Purification,TwoParticle,QPI,Supercond}.jl`; `2Dlattice_tk.jl` had already been split into
+      `lattice/{masks2d,hopping2d,presets,sublattice,geometry}.jl` and `core/ModelRegistry.jl`.
+      Notes that record where code came from now say "the former …_tk.jl". Left as they are: the
+      `"NH_tk model-building helpers …"` error message in `physics/nh/model.jl` (a string that
+      test/data/nh_golden.jl pins, not a comment) and the old file names elsewhere in this checklist.
 - [ ] Re-save `2Dlattice_tk.jl` as UTF-8 and restore the mojibake symbols (√, ·, ≠ appear as
       `-`/`_`, e.g. `b=(1+-)/2` for the golden ratio).
 - [ ] Docstrings vs signatures: `get_ldos_spatial` omits 9 kwargs; `get_ldos_from_mun` omits

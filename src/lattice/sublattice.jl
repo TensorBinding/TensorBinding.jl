@@ -2,7 +2,7 @@
 # honeycomb, honeycomb NNN, dice/T3, SSH chain): the *_hamiltonian builders,
 # each returning a TBHamiltonian with the sublattice site postpended; the
 # matching *_positions tables live in lattice/geometry.jl. Split from
-# lattice/2Dlattice_tk.jl.
+# the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Kagome lattice

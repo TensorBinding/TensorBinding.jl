@@ -2,7 +2,7 @@
 # row/column-select and checkerboard masks used by the hopping builders
 # (hopping2d.jl) and the sublattice presets (sublattice.jl), built from the
 # single-qubit projectors sigma_d/sigma_u (core/Utils.jl). Split from
-# lattice/2Dlattice_tk.jl.
+# the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Row/column/checkerboard mask MPOs (diagonal, exact)
