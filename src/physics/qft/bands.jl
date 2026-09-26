@@ -8,9 +8,8 @@
 #
 # Entry point: get_bands.
 # Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl, lattice/masks2d.jl,
-#   solvers/DMRG.jl, solvers/kpm/kernels.jl, physics/qft/conjugation.jl,
-#   physics/qft/kpath.jl* (* = included later; see the source map in
-#   src/TensorBinding.jl).
+#   solvers/DMRG.jl, solvers/kpm/kernels.jl, solvers/kpm/recursion.jl,
+#   physics/qft/conjugation.jl, physics/qft/kpath.jl.
 #
 # == Overview of physics/qft/ ==
 # The quantics representation encodes a 1D or 2D real-space position index as
@@ -80,7 +79,8 @@
 # _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
 # _ensure_scale!                       → solvers/DMRG.jl
 # _rescaled_energies, _kpm_energy_grid → solvers/kpm/kernels.jl
-# _scaled_hamiltonian, _run_kpm_mps!   → solvers/kpm/recursion.jl
+# _scaled_hamiltonian, chebyshev_foreach,
+#   _run_kpm_mps!                      → solvers/kpm/recursion.jl
 # mpsexcitonQ, mpsexcitonQTrace, mpsexcitonKQ → physics/TwoParticle.jl
 #
 # == File structure (src/physics/qft/, in include order) ==
@@ -372,20 +372,13 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     # ── Chebyshev recurrence  T_0 = I,  T_1 = H̃,  T_n = 2H̃T_{n-1} − T_{n-2}
     # The recurrence runs on the full MPO space (L+1 sites when spin_proj=true).
     # Projection happens inside accumulate_Tn! so T_n itself is never modified.
-    Tkm2 = I_mpo   # T_0
-    Tkm1 = Ham_n   # T_1
-
-    accumulate_Tn!(Ak_w, Tkm2, 1)
-    accumulate_Tn!(Ak_w, Tkm1, 2)
-
-    for k in 3:Ncheb
-        Tk = +(2 * apply(Ham_n, Tkm1; cutoff=cutoff), -Tkm2; maxdim=maxdim)
-        Tk = ITensorMPS.truncate!(Tk; cutoff=cutoff)
-        accumulate_Tn!(Ak_w, Tk, k)
-        Tkm2 = Tkm1
-        Tkm1 = Tk
-        printinfo && (k % 10 == 0 || k == Ncheb) &&
-            println("Online KPM step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+    chebyshev_foreach(Ham_n, I_mpo, Ncheb; T1=Ham_n, maxdim=maxdim, cutoff=cutoff,
+                      apply_trunc=(:cutoff,), add_trunc=(:maxdim,),
+                      post_trunc=(:cutoff,)) do n, Tn
+        k = n + 1
+        accumulate_Tn!(Ak_w, Tn, k)
+        printinfo && k >= 3 && (k % 10 == 0 || k == Ncheb) &&
+            println("Online KPM step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
     end
 
     # ── Normalization: divide by the KPM DOS weight ───────────────────────────

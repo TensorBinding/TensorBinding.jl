@@ -12,7 +12,8 @@
 #   physical_projector, site_permutation), core/AuxDOF.jl (_aux_projection,
 #   _probe_sectors, probe_state, _project_aux_sectors), solvers/DMRG.jl
 #   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
-#   solvers/kpm/recursion.jl (_scaled_hamiltonian, _run_kpm_mps!).
+#   solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach,
+#   _run_kpm_mps!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1.
 
@@ -481,17 +482,14 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             end
         end
 
-        Tkm2 = I_mpo;  Tkm1 = Ham_n
-        accumulate_Tn!(Tkm2, 1);  accumulate_Tn!(Tkm1, 2)
-
-        for k in 3:Ncheb
-            Tk   = +(2 * apply(Ham_n, Tkm1; cutoff=cutoff), -Tkm2; maxdim=maxdim)
-            Tk   = ITensorMPS.truncate!(Tk; cutoff=cutoff)
-            accumulate_Tn!(Tk, k)
-            Tkm2 = Tkm1;  Tkm1 = Tk
-            verbose && (k % 15 == 0 || k == Ncheb) &&
+        chebyshev_foreach(Ham_n, I_mpo, Ncheb; T1=Ham_n, maxdim=maxdim, cutoff=cutoff,
+                          apply_trunc=(:cutoff,), add_trunc=(:maxdim,),
+                          post_trunc=(:cutoff,)) do n, Tn
+            k = n + 1
+            accumulate_Tn!(Tn, k)
+            verbose && k >= 3 && (k % 15 == 0 || k == Ncheb) &&
                 println("get_ldos_spatial [:mpo]  step $k/$Ncheb  " *
-                        "maxlinkdim=$(maxlinkdim(Tkm1))")
+                        "maxlinkdim=$(maxlinkdim(Tn))")
         end
 
         for iω in 1:Nω

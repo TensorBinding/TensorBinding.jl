@@ -9,7 +9,9 @@
 #   nh_reconstruct_spectral_mps, nh_kpm_scale, nh_block_source, contract_nh_block.
 # Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl (_project_end_site:
 #   the block contraction), solvers/DMRG.jl, solvers/kpm/kernels.jl
-#   (_kpm_kernel: the Jackson weights), physics/nh/model.jl.
+#   (_kpm_kernel: the Jackson weights), solvers/kpm/recursion.jl
+#   (chebyshev_foreach: the T_k(A) under every partial recurrence),
+#   physics/nh/model.jl.
 
 # ============================================================
 # 1. Non-Hermitian KPM scale
@@ -172,27 +174,45 @@ function nh_kpm_partials(Hh::TBHamiltonian, n::Int;
     sc == 0.0 && error("nh_kpm_partials requires a nonzero scale. Pass scale=... or set Hh.scale.")
 
     A = Hh.mpo / sc
-    Tkm2 = MPO(Hh.sites, "Id")
-    Tkm1 = A
     Pkm2 = 0.0 * source
     Pkm1 = source
     partials = MPO[Pkm2, Pkm1]
 
-    for k in 3:N
-        Pk = +(apply(2.0 * source, Tkm1; maxdim=maxdim, cutoff=cutoff),
+    # T_n(A) from chebyshev_foreach; P_{n+1} is built from T_n before T_{n+1}, as in
+    # the loop this replaced (the source term as apply(2S, T), the subtraction as a
+    # second sum).
+    chebyshev_foreach(A, MPO(Hh.sites, "Id"), N; T1=A, maxdim=maxdim, cutoff=cutoff,
+                      two=2.0) do n, Tn
+        1 <= n <= N - 2 || return
+        Pk = +(apply(2.0 * source, Tn; maxdim=maxdim, cutoff=cutoff),
                2.0 * apply(A, Pkm1; maxdim=maxdim, cutoff=cutoff);
                maxdim=maxdim, cutoff=cutoff)
         Pk = +(Pk, -Pkm2; maxdim=maxdim, cutoff=cutoff)
-
-        Tk = +(2.0 * apply(A, Tkm1; maxdim=maxdim, cutoff=cutoff),
-               -Tkm2; maxdim=maxdim, cutoff=cutoff)
-
         push!(partials, Pk)
         Pkm2, Pkm1 = Pkm1, Pk
-        Tkm2, Tkm1 = Tkm1, Tk
     end
 
     return partials
+end
+
+# One step P_k = 2S·T_{k−1} + 2A·P_{k−1} − P_{k−2} of the partial recurrence, as the
+# online evaluators below and the GPU diagonal traces (gpu/nh.jl) write it:
+# +(+(two·S·T_{k−1}, two·A·P_{k−1}), −P_{k−2}), the S product first, every product
+# and sum with `maxdim` and `cutoff`; `negone * P_{k−2}` for `-P_{k−2}` when
+# `negone` is a number, and a final truncate! with both when `retruncate`. T_{k−1}
+# comes from the caller's chebyshev_foreach. (nh_kpm_partials and the GPU stochastic
+# trace write the step differently and keep their own.)
+function _nh_partial_step(A::MPO, S::MPO, Tkm1, Pkm1, Pkm2;
+                          maxdim::Int, cutoff::Real,
+                          two::Number                   = 2.0,
+                          negone::Union{Nothing,Number} = nothing,
+                          retruncate::Bool              = false)
+    kw = (; maxdim, cutoff)
+    Pk = +(+(two * apply(S, Tkm1; kw...),
+             two * apply(A, Pkm1; kw...); kw...),
+           (negone === nothing ? -Pkm2 : negone * Pkm2); kw...)
+    retruncate && ITensorMPS.truncate!(Pk; kw...)
+    return Pk
 end
 
 function nh_kpm_partials(NH::NonHermitianHamiltonian, n::Int;
@@ -436,24 +456,21 @@ function _nh_kpm_mps_ldos(NH::NonHermitianHamiltonian, n::Int, probe_site::Int;
     ket_probe = _nh_kpm_probe_mps(Hh.sites, NH.block_s, 1, probe_site)
     bra_probe = _nh_kpm_probe_mps(Hh.sites, NH.block_s, 2, probe_site)
 
-    tkm2 = ket_probe
-    tkm1 = apply(A, ket_probe; maxdim=maxdim, cutoff=cutoff)
-    pkm2 = 0.0 * ket_probe
-    pkm1 = apply(S, ket_probe; maxdim=maxdim, cutoff=cutoff)
-
+    # |t_k⟩ from chebyshev_foreach (one-based k = n + 1); |p_k⟩ follows each |t_k⟩.
     partial_vals = zeros(ComplexF64, N)
-    partial_vals[2] = inner(bra_probe, pkm1)
-
-    for k in 3:N
-        tk     = +(2.0 * apply(A, tkm1; maxdim=maxdim, cutoff=cutoff),
-                   -tkm2; maxdim=maxdim, cutoff=cutoff)
-        s_tkm1 = 2.0 * apply(S, tkm1; maxdim=maxdim, cutoff=cutoff)
-        a_pkm1 = 2.0 * apply(A, pkm1; maxdim=maxdim, cutoff=cutoff)
-        pk     = +(+(s_tkm1, a_pkm1; maxdim=maxdim, cutoff=cutoff),
-                   -pkm2;              maxdim=maxdim, cutoff=cutoff)
-        partial_vals[k] = inner(bra_probe, pk)
-        tkm2 = tkm1;  tkm1 = tk
-        pkm2 = pkm1;  pkm1 = pk
+    tkm1 = pkm1 = pkm2 = nothing
+    chebyshev_foreach(A, ket_probe, N; maxdim=maxdim, cutoff=cutoff, two=2.0) do n, tk
+        k = n + 1
+        if k == 2
+            pkm2 = 0.0 * ket_probe
+            pkm1 = apply(S, ket_probe; maxdim=maxdim, cutoff=cutoff)
+            partial_vals[2] = inner(bra_probe, pkm1)
+        elseif k >= 3
+            pk = _nh_partial_step(A, S, tkm1, pkm1, pkm2; maxdim=maxdim, cutoff=cutoff)
+            partial_vals[k] = inner(bra_probe, pk)
+            pkm2 = pkm1;  pkm1 = pk
+        end
+        tkm1 = tk
     end
 
     weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
@@ -507,8 +524,6 @@ function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
     weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     ones_p  = nh_ones_mps(filter(!=(NH.block_s), Hh.sites))
 
-    Tkm2 = MPO(Hh.sites, "Id")
-    Tkm1 = A_op
     Pkm2 = 0.0 * source
     Pkm1 = source   # P_1
 
@@ -518,20 +533,20 @@ function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
 
     dos = weights[1] * _tr(Pkm1)   # l=2 term: order=+1, weight=weights[1]
 
-    for k in 3:N
-        Tk = +(2.0 * apply(A_op,   Tkm1; maxdim=maxdim, cutoff=cutoff),
-               -Tkm2; maxdim=maxdim, cutoff=cutoff)
-        Pk = +(+(2.0 * apply(source, Tkm1; maxdim=maxdim, cutoff=cutoff),
-                 2.0 * apply(A_op,   Pkm1; maxdim=maxdim, cutoff=cutoff);
-                 maxdim=maxdim, cutoff=cutoff),
-               -Pkm2; maxdim=maxdim, cutoff=cutoff)
-
-        if iseven(k)
-            dos += (-1)^(k ÷ 2 - 1) * weights[k - 1] * _tr(Pk)
+    # T_k from chebyshev_foreach (one-based k = n + 1); P_k follows each T_k.
+    Tkm1 = nothing
+    chebyshev_foreach(A_op, MPO(Hh.sites, "Id"), N; T1=A_op, maxdim=maxdim,
+                      cutoff=cutoff, two=2.0) do n, Tk
+        k = n + 1
+        if k >= 3
+            Pk = _nh_partial_step(A_op, source, Tkm1, Pkm1, Pkm2;
+                                  maxdim=maxdim, cutoff=cutoff)
+            if iseven(k)
+                dos += (-1)^(k ÷ 2 - 1) * weights[k - 1] * _tr(Pk)
+            end
+            Pkm2, Pkm1 = Pkm1, Pk
         end
-
-        Tkm2, Tkm1 = Tkm1, Tk
-        Pkm2, Pkm1 = Pkm1, Pk
+        Tkm1 = Tk
     end
 
     return dos * 2.0 / (π^2 * (N + 1))
@@ -579,32 +594,29 @@ function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
     source  = nh_block_source(NH; row=source_row, col=source_col)
     weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
 
-    Tkm2 = MPO(Hh.sites, "Id")
-    Tkm1 = A_op
     Pkm2 = 0.0 * source
     Pkm1 = source   # P_1
 
     _diag(P) = extract_diagonal_to_mps(
         contract_nh_block(P, NH.block_s; row=block_row, col=block_col))
-    
 
     A_mps = weights[1] * _diag(Pkm1)   # l=2 term: order=+1, weight=weights[1]
 
-    for k in 3:N
-        Tk = +(2.0 * apply(A_op,   Tkm1; maxdim=maxdim, cutoff=cutoff),
-               -Tkm2; maxdim=maxdim, cutoff=cutoff)
-        Pk = +(+(2.0 * apply(source, Tkm1; maxdim=maxdim, cutoff=cutoff),
-                 2.0 * apply(A_op,   Pkm1; maxdim=maxdim, cutoff=cutoff);
-                 maxdim=maxdim, cutoff=cutoff),
-               -Pkm2; maxdim=maxdim, cutoff=cutoff)
-
-        if iseven(k)
-            A_mps = +(A_mps, ((-1)^(k ÷ 2 - 1) * weights[k - 1]) * _diag(Pk);
-                      maxdim=maxdim)
+    # T_k from chebyshev_foreach (one-based k = n + 1); P_k follows each T_k.
+    Tkm1 = nothing
+    chebyshev_foreach(A_op, MPO(Hh.sites, "Id"), N; T1=A_op, maxdim=maxdim,
+                      cutoff=cutoff, two=2.0) do n, Tk
+        k = n + 1
+        if k >= 3
+            Pk = _nh_partial_step(A_op, source, Tkm1, Pkm1, Pkm2;
+                                  maxdim=maxdim, cutoff=cutoff)
+            if iseven(k)
+                A_mps = +(A_mps, ((-1)^(k ÷ 2 - 1) * weights[k - 1]) * _diag(Pk);
+                          maxdim=maxdim)
+            end
+            Pkm2, Pkm1 = Pkm1, Pk
         end
-
-        Tkm2, Tkm1 = Tkm1, Tk
-        Pkm2, Pkm1 = Pkm1, Pk
+        Tkm1 = Tk
     end
 
     A_mps = A_mps * (2.0 / (π^2 * (N + 1)))
@@ -705,24 +717,23 @@ function _nh_stochastic_online(NH::NonHermitianHamiltonian, n::Int;
     for _ in 1:n_random
         ket_probe, bra_probe = _nh_random_probes(Hh.sites, NH.block_s,
                                                   source_col, block_row)
-        tkm2 = ket_probe
-        tkm1 = apply(A_op, ket_probe; maxdim=maxdim, cutoff=cutoff)
-        pkm2 = 0.0 * ket_probe
-        pkm1 = apply(S,    ket_probe; maxdim=maxdim, cutoff=cutoff)
 
+        # |t_k⟩ from chebyshev_foreach (one-based k = n + 1); |p_k⟩ follows each |t_k⟩.
         partial_vals = zeros(ComplexF64, N)
-        partial_vals[2] = inner(bra_probe, pkm1)
-
-        for k in 3:N
-            tk = +(2.0 * apply(A_op, tkm1; maxdim=maxdim, cutoff=cutoff),
-                   -tkm2; maxdim=maxdim, cutoff=cutoff)
-            pk = +(+(2.0 * apply(S,    tkm1; maxdim=maxdim, cutoff=cutoff),
-                     2.0 * apply(A_op, pkm1; maxdim=maxdim, cutoff=cutoff);
-                     maxdim=maxdim, cutoff=cutoff),
-                   -pkm2; maxdim=maxdim, cutoff=cutoff)
-            partial_vals[k] = inner(bra_probe, pk)
-            tkm2 = tkm1; tkm1 = tk
-            pkm2 = pkm1; pkm1 = pk
+        tkm1 = pkm1 = pkm2 = nothing
+        chebyshev_foreach(A_op, ket_probe, N; maxdim=maxdim, cutoff=cutoff,
+                          two=2.0) do n, tk
+            k = n + 1
+            if k == 2
+                pkm2 = 0.0 * ket_probe
+                pkm1 = apply(S,    ket_probe; maxdim=maxdim, cutoff=cutoff)
+                partial_vals[2] = inner(bra_probe, pkm1)
+            elseif k >= 3
+                pk = _nh_partial_step(A_op, S, tkm1, pkm1, pkm2; maxdim=maxdim, cutoff=cutoff)
+                partial_vals[k] = inner(bra_probe, pk)
+                pkm2 = pkm1; pkm1 = pk
+            end
+            tkm1 = tk
         end
 
         val = ComplexF64(0)

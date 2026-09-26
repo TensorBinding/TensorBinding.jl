@@ -1,19 +1,23 @@
 # solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method
 #
 # Contents: the Chebyshev argument H̃ = (H − center)/scale of every KPM solver of
-# the package (_scaled_hamiltonian); the cached recursions that keep every order, as
-# MPOs T_n(H̃) (KPM_Tn) or as MPS T_n(H̃)|ψ₀⟩ (KPM_Tn_mps), each with a raw-MPO
-# method and a TBHamiltonian method that caches the list on H; and the online MPS
-# recursion that accumulates weighted moments ⟨ψ₀|T_n(H̃)|ψ₀⟩ without storing the
-# states (_run_kpm_mps!), shared by the LDOS, DOS and exciton solvers of
-# solvers/kpm/ and by physics/qft/exciton_spectra.jl.
+# the package (_scaled_hamiltonian); the three-term recursion T_{n+1} = 2H̃T_n − T_{n−1}
+# itself (chebyshev_foreach, one step _chebyshev_step), on MPOs or MPS, CPU or GPU,
+# with each caller's truncation policy as keywords; the cached recursions that keep
+# every order, as MPOs T_n(H̃) (KPM_Tn) or as MPS T_n(H̃)|ψ₀⟩ (KPM_Tn_mps), each with
+# a raw-MPO method and a TBHamiltonian method that caches the list on H; and the
+# online MPS recursion that accumulates weighted moments ⟨ψ₀|T_n(H̃)|ψ₀⟩ without
+# storing the states (_run_kpm_mps!), shared by the LDOS, DOS and exciton solvers of
+# solvers/kpm/, by physics/qft/exciton_spectra.jl and by two GPU solvers.
 #
-# Entry points: _scaled_hamiltonian, KPM_Tn, KPM_Tn_mps, _run_kpm_mps!
+# Entry points: _scaled_hamiltonian, chebyshev_foreach, KPM_Tn, KPM_Tn_mps,
+#   _run_kpm_mps!
 # Depends on: core/TBSystem.jl (TBHamiltonian, physical_projector),
 #   solvers/DMRG.jl (_estimate_spectral_bounds, _ensure_scale!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1; _scaled_hamiltonian (Tier 2)
-# replaced the rescaling written out in each solver.
+# replaced the rescaling written out in each solver, chebyshev_foreach (Tier 2) the
+# three-term loop written out in each of them (KPM, QFT, QPI, NH, GPU).
 
 # ============================================================
 # 1. The rescaled Hamiltonian H̃ = (H − center)/scale
@@ -44,7 +48,119 @@ _scaled_hamiltonian(H::TBHamiltonian; cutoff::Real,
 
 
 # ============================================================
-# 2. Cached Chebyshev MPO recursion: KPM_Tn
+# 2. The three-term recursion: chebyshev_foreach
+# ============================================================
+
+"""
+    chebyshev_foreach(f!, H̃::MPO, T₀, N::Integer; maxdim, cutoff, T1=nothing,
+                      apply_trunc=(:cutoff, :maxdim), add_trunc=(:cutoff, :maxdim),
+                      post_trunc=(), two=2, negone=nothing) -> T_last
+
+Run the Chebyshev recursion
+
+    T_{n+1} = 2 H̃ T_n − T_{n−1}
+
+from `T₀` and `T₁`, calling `f!(n, T_n)` for the orders `n = 0, 1, …, N − 1`, in that
+order, each as soon as `T_n` is built. With `T₀` an MPO the terms are operators (the
+operator Chebyshev series `T_n(H̃)` for `T₀ = I` or `physical_projector(H)`); with `T₀`
+an MPS they are the Chebyshev vectors `T_n(H̃)|ψ₀⟩`. The tensors stay on the device of
+`H̃` and `T₀` (CPU or GPU) with their element types; nothing is transferred.
+
+`T1` is `T₁`. By default it is `apply(H̃, T₀)` with the truncation of the step's
+product; the operator series pass `T1 = H̃` (`H̃ · I`, no product). Orders 0 and 1 are
+always visited, also for `N < 2`. Returns the last term built: `T_{N−1}`, or `T₁`
+when `N ≤ 2`.
+
+Each later term is one step (`_chebyshev_step`), in this order:
+
+    T_{n+1} = +(two * apply(H̃, T_n; <apply_trunc>), -T_{n−1}; <add_trunc>)
+    truncate!(T_{n+1}; <post_trunc>)          # skipped when post_trunc = ()
+
+where `<…>` passes the parameters named in the tuple, out of `:cutoff` and `:maxdim`,
+with the values of the `cutoff` and `maxdim` keywords; `negone * T_{n−1}` replaces
+`-T_{n−1}` when `negone` is a number. The callers differ in exactly these choices,
+and each keeps its own (so no result changes); "both" is `(:cutoff, :maxdim)`,
+"typed" is `T(2)` and `T(-1)` for the GPU element type `T`:
+
+| callers | `apply_trunc` | `add_trunc` | `post_trunc` | `two`, `negone` |
+|---------|---------------|-------------|--------------|-----------------|
+| `KPM_Tn`, `KPM_Tn_gpu`, `get_ldos_spatial(mode=:mpo)`, `get_bands`, `get_qpi` | `(:cutoff,)` | `(:maxdim,)` | `(:cutoff,)` | `2`, `nothing` |
+| `get_dos_trace` | `(:cutoff,)` | both | both | `2`, `nothing` |
+| `get_ldos_spatial_gpu`, `get_bands_gpu` | both | both | `(:cutoff,)` | typed |
+| `KPM_Tn_mps`, `_run_kpm_mps!` (also behind the GPU exciton LDOS and stochastic DOS) | both | both | `()` | `2`, `nothing` |
+| `get_ldos_spatial_mps_gpu`, the GPU NH stochastic trace | both | both | `()` | typed |
+| the CPU NH KPM (`nh_kpm_partials`, `_nh_*_online`, `_nh_kpm_mps_ldos`) | both | both | `()` | `2.0`, `nothing` |
+| the GPU NH diagonal traces | both | both | both | typed |
+
+The partial recurrence of the NH KPM, `P_k = 2S·T_{k−1} + 2A·P_{k−1} − P_{k−2}`, is
+not a Chebyshev recursion: it rides on the `T_n` of this one inside `f!`
+(physics/nh/kpm.jl, gpu/nh.jl).
+
+The recursion holds only the last two terms: it drops `T_{n−1}` before calling
+`f!(n + 1, T_{n+1})`, so a callback that frees GPU memory reclaims it. `f!` may keep
+`T_n` (the cached lists push it) but must not modify it.
+"""
+function chebyshev_foreach(f!, Htilde::MPO, T0::Union{MPO,MPS}, N::Integer;
+                           maxdim, cutoff,
+                           T1::Union{Nothing,MPO,MPS}    = nothing,
+                           apply_trunc::Tuple            = (:cutoff, :maxdim),
+                           add_trunc::Tuple              = (:cutoff, :maxdim),
+                           post_trunc::Tuple             = (),
+                           two::Number                   = 2,
+                           negone::Union{Nothing,Number} = nothing)
+    apply_kwargs = _trunc_kwargs(apply_trunc, maxdim, cutoff)
+    add_kwargs   = _trunc_kwargs(add_trunc, maxdim, cutoff)
+    post_kwargs  = _trunc_kwargs(post_trunc, maxdim, cutoff)
+    f!(0, T0)
+    Tnm1 = T0
+    Tn   = T1 === nothing ? apply(Htilde, T0; apply_kwargs...) : T1
+    f!(1, Tn)
+    for n in 2:N-1
+        Tnext = _chebyshev_step(Htilde, Tn, Tnm1; apply_kwargs, add_kwargs, post_kwargs,
+                                two, negone)
+        Tnm1 = Tn
+        Tn   = Tnext
+        f!(n, Tn)
+    end
+    return Tn
+end
+
+"""
+    _chebyshev_step(H̃, T_n, T_nm1; apply_kwargs, add_kwargs, post_kwargs=(;), two=2,
+                    negone=nothing) -> T_{n+1}
+
+One Chebyshev step `T_{n+1} = +(two * apply(H̃, T_n; apply_kwargs...), -T_{n−1};
+add_kwargs...)`, with `negone * T_{n−1}` for `-T_{n−1}` when `negone` is a number,
+then `truncate!(T_{n+1}; post_kwargs...)` unless `post_kwargs` is empty. The step of
+`chebyshev_foreach`; `get_exciton_cheb_convergence_gpu` calls it directly for its
+two recursions run in lockstep.
+"""
+function _chebyshev_step(Htilde::MPO, Tn, Tnm1;
+                         apply_kwargs::NamedTuple,
+                         add_kwargs::NamedTuple,
+                         post_kwargs::NamedTuple       = (;),
+                         two::Number                   = 2,
+                         negone::Union{Nothing,Number} = nothing)
+    Tnext = +(two * apply(Htilde, Tn; apply_kwargs...),
+              (negone === nothing ? -Tnm1 : negone * Tnm1); add_kwargs...)
+    isempty(post_kwargs) || ITensorMPS.truncate!(Tnext; post_kwargs...)
+    return Tnext
+end
+
+# The truncation keywords one stage of the step receives: the names listed, out of
+# :cutoff and :maxdim, with the values of `cutoff` and `maxdim`.
+function _trunc_kwargs(names::Tuple, maxdim, cutoff)
+    vals = map(names) do s
+        s === :cutoff ? cutoff :
+        s === :maxdim ? maxdim :
+        throw(ArgumentError("truncation parameters are :cutoff and :maxdim, got $(repr(s))"))
+    end
+    return NamedTuple{names}(vals)
+end
+
+
+# ============================================================
+# 3. Cached Chebyshev MPO recursion: KPM_Tn
 # ============================================================
 
 """
@@ -101,22 +217,14 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
     Ham_n   = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
     # ── Chebyshev recursion T_0 = I,  T_1 = H_scaled,  T_k = 2H·T_{k-1} − T_{k-2}
-    T_k_minus_2 = I_mpo
-    T_k_minus_1 = Ham_n
-    Tn_list = [T_k_minus_2, T_k_minus_1]
-
-    for k in 3:N+1
-        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff),
-                -T_k_minus_2; maxdim = maxdim)
-        T_k = ITensorMPS.truncate!(T_k; cutoff = cutoff)
-        T_k_minus_2 = T_k_minus_1
-        T_k_minus_1 = T_k
-        push!(Tn_list, T_k)
-        if verbose
-            if k%5 == 0 || k == N+1 # print info every 5 iterations and at the end
-                println("Computed T_$((k-1)) with maxlinkdim = ", ITensorMPS.maxlinkdim(T_k))
-            end
-        end
+    Tn_list = MPO[]
+    chebyshev_foreach(Ham_n, I_mpo, N + 1; T1 = Ham_n, maxdim = maxdim, cutoff = cutoff,
+                      apply_trunc = (:cutoff,), add_trunc = (:maxdim,),
+                      post_trunc = (:cutoff,)) do n, T_n
+        push!(Tn_list, T_n)
+        # print info every 5 orders and at the end
+        verbose && n >= 2 && ((n + 1) % 5 == 0 || n == N) &&
+            println("Computed T_$n with maxlinkdim = ", ITensorMPS.maxlinkdim(T_n))
     end
 
     return Tn_list, scale, center
@@ -237,7 +345,7 @@ end
 
 
 # ============================================================
-# 3. Cached Chebyshev MPS recursion: KPM_Tn_mps
+# 4. Cached Chebyshev MPS recursion: KPM_Tn_mps
 # ============================================================
 
 """
@@ -298,21 +406,11 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
 
     # ── Chebyshev recursion T_0 = |ψ₀⟩,  |T_1⟩ = H_scaled|ψ₀⟩,  |T_k⟩ = 2H_scaled|ψ_{k-1}⟩ − |ψ_{k-2}⟩
     psi0_n      = psi0 / norm(psi0)  # ensure normalisation
-    T_k_minus_2 = psi0_n
-    T_k_minus_1 = apply(Ham_n, psi0_n; cutoff = cutoff, maxdim = maxdim)
-    Tn_mps_list = [T_k_minus_2, T_k_minus_1]
-
-    for k in 3:N+1
-        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff, maxdim = maxdim),
-                -T_k_minus_2; cutoff = cutoff, maxdim = maxdim)
-        T_k_minus_2 = T_k_minus_1
-        T_k_minus_1 = T_k
-        push!(Tn_mps_list, T_k)
-        if verbose
-            if k % 10 == 0 || k == N + 1
-                println("Computed MPS T_$(k-1) with maxlinkdim = ", maxlinkdim(T_k))
-            end
-        end
+    Tn_mps_list = MPS[]
+    chebyshev_foreach(Ham_n, psi0_n, N + 1; maxdim = maxdim, cutoff = cutoff) do n, T_n
+        push!(Tn_mps_list, T_n)
+        verbose && n >= 2 && ((n + 1) % 10 == 0 || n == N) &&
+            println("Computed MPS T_$n with maxlinkdim = ", maxlinkdim(T_n))
     end
 
     return Tn_mps_list, scale, center
@@ -342,7 +440,7 @@ end
 
 
 # ============================================================
-# 4. Online MPS Chebyshev recursion (shared by the LDOS, DOS and exciton solvers)
+# 5. Online MPS Chebyshev recursion (shared by the LDOS, DOS and exciton solvers)
 # ============================================================
 
 """
@@ -353,6 +451,9 @@ end
 Online MPS Chebyshev KPM recursion.  Computes `μ_n = ⟨psi0|T_n(Ham_n)|psi0⟩`
 for n = 1…Ncheb and accumulates `W[n,iω] × μ_n × weight` into `accum[iω]`
 for each valid energy index.  Returns the `maxlinkdim` of the final state.
+The recursion is `chebyshev_foreach` with its MPS defaults (`cutoff` and `maxdim`
+on every product and sum). The GPU exciton LDOS and stochastic DOS call it with GPU
+tensors (`Ham_n` and `psi0` uploaded, `cutoff` as a `Float64`).
 """
 function _run_kpm_mps!(Ham_n::MPO, psi0::MPS, Ncheb::Int,
                         W::Matrix{Float64}, valid::Vector{Bool},
@@ -370,18 +471,11 @@ function _run_kpm_mps!(Ham_n::MPO, psi0::MPS, Ncheb::Int,
             accum[iω] += W[n, iω] * mu * weight
         end
     end
-    phi_km2 = psi0
-    phi_km1 = apply(Ham_n, psi0; cutoff=cutoff, maxdim=maxdim)
-    kpm_step!(phi_km2, 1)
-    kpm_step!(phi_km1, 2)
-    for k in 3:Ncheb
-        phi_k = +(2 * apply(Ham_n, phi_km1; cutoff=cutoff, maxdim=maxdim),
-                  -phi_km2; cutoff=cutoff, maxdim=maxdim)
-        kpm_step!(phi_k, k)
-        phi_km2 = phi_km1
-        phi_km1 = phi_k
-        verbose && (k % 10 == 0 || k == Ncheb) &&
-            println(label, " step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi_km1))")
+    phi_last = chebyshev_foreach(Ham_n, psi0, Ncheb; maxdim=maxdim, cutoff=cutoff) do n, phi
+        k = n + 1
+        kpm_step!(phi, k)
+        verbose && k >= 3 && (k % 10 == 0 || k == Ncheb) &&
+            println(label, " step $k/$Ncheb  maxlinkdim=$(maxlinkdim(phi))")
     end
-    return maxlinkdim(phi_km1)
+    return maxlinkdim(phi_last)
 end

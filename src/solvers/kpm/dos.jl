@@ -11,7 +11,7 @@
 #   (_aux_projection, _probe_sectors, probe_state), solvers/DMRG.jl
 #   (_ensure_scale!), solvers/kpm/kernels.jl
 #   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
-#   _run_kpm_mps!).
+#   chebyshev_foreach, _run_kpm_mps!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1.
 
@@ -254,18 +254,12 @@ function get_dos_trace(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     moments = zeros(Float64, Ncheb)
-    Tkm2 = P
-    Tkm1 = Ham_n
-    moments[1] = trace_diagonal(Tkm2)
-    moments[2] = trace_diagonal(Tkm1)
-    for k in 3:Ncheb
-        Tk = +(2 * apply(Ham_n, Tkm1; cutoff=cutoff), -Tkm2;
-               cutoff=cutoff, maxdim=maxdim)
-        ITensorMPS.truncate!(Tk; cutoff=cutoff, maxdim=maxdim)
-        moments[k] = trace_diagonal(Tk)
-        Tkm2, Tkm1 = Tkm1, Tk
-        verbose && (k % 10 == 0 || k == Ncheb) &&
-            println("get_dos_trace step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+    chebyshev_foreach(Ham_n, P, Ncheb; T1=Ham_n, maxdim=maxdim, cutoff=cutoff,
+                      apply_trunc=(:cutoff,), post_trunc=(:cutoff, :maxdim)) do n, Tn
+        k = n + 1
+        moments[k] = trace_diagonal(Tn)
+        verbose && k >= 3 && (k % 10 == 0 || k == Ncheb) &&
+            println("get_dos_trace step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
     end
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;

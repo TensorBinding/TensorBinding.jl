@@ -12,13 +12,13 @@
 #      we already have the diagonal, not a full MPO).
 #   6. QPI(k, ω) = |⟨k|δÃ_mps⟩|².
 #
-# Dependencies (step 2 runs its own Chebyshev loop, not KPM_Tn/get_ldos_spectrum):
+# Dependencies (step 2 runs an online chebyshev_foreach, not KPM_Tn/get_ldos_spectrum):
 #   central_index, add_onsite!, _invalidate_cache!,
 #   physical_projector                             → core/TBSystem.jl
 #   fix_sites, extract_diagonal_to_mps             → core/Utils.jl
 #   _ensure_scale!                                 → solvers/DMRG.jl
 #   _kpm_energy_grid                               → solvers/kpm/kernels.jl
-#   _scaled_hamiltonian                            → solvers/kpm/recursion.jl
+#   _scaled_hamiltonian, chebyshev_foreach         → solvers/kpm/recursion.jl
 #   sdf_disk, sdf_interval                         → lattice/Flake.jl
 #   QuanticsTCI.quanticsfouriermpo, TCI.reverse    → external
 
@@ -186,16 +186,13 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     function _run_online_ldos!(acc, Ham_sc, W, valid, denom, label)
-        Tkm2 = I_mpo;  Tkm1 = Ham_sc
-        _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tkm2); cutoff=cutoff), W, valid, 1)
-        _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tkm1); cutoff=cutoff), W, valid, 2)
-        for k in 3:Ncheb
-            Tk = ITensorMPS.truncate!(+(2 * apply(Ham_sc, Tkm1; cutoff=cutoff),
-                                         -Tkm2; maxdim=maxdim); cutoff=cutoff)
-            _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tk); cutoff=cutoff), W, valid, k)
-            Tkm2 = Tkm1;  Tkm1 = Tk
-            verbose && (k % 10 == 0 || k == Ncheb) &&
-                println("  QPI ", label, " $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+        chebyshev_foreach(Ham_sc, I_mpo, Ncheb; T1=Ham_sc, maxdim=maxdim, cutoff=cutoff,
+                          apply_trunc=(:cutoff,), add_trunc=(:maxdim,),
+                          post_trunc=(:cutoff,)) do n, Tn
+            k = n + 1
+            _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tn); cutoff=cutoff), W, valid, k)
+            verbose && k >= 3 && (k % 10 == 0 || k == Ncheb) &&
+                println("  QPI ", label, " $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
         end
         for iω in 1:Nω_loc
             valid[iω] && acc[iω] !== nothing || continue

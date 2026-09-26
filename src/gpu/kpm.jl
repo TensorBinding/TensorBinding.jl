@@ -11,7 +11,8 @@
 # aux projection _aux_projection/_project_aux_sectors, projected probes
 # _probe_sectors/probe_state), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
 # solvers/kpm/kernels.jl (energy grid, moment-column reconstruction),
-# solvers/kpm/recursion.jl (_scaled_hamiltonian), gpu/device.jl, gpu/primitives.jl.
+# solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach, _run_kpm_mps!:
+# the recurrences run on GPU tensors), gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
@@ -69,22 +70,17 @@ function KPM_Tn_gpu(H_mpo::MPO, N::Int, sites;
     Ham_n = _to_gpu_mpo(Ham_n, gpu_type)
 
     keep = keep_indices
-    T_k_minus_2 = I_mpo
-    T_k_minus_1 = Ham_n
     Tn_list = Vector{Union{MPO,Nothing}}(undef, N + 1)
-    Tn_list[1] = (keep === nothing || 1 ∈ keep) ? T_k_minus_2 : nothing
-    Tn_list[2] = (keep === nothing || 2 ∈ keep) ? T_k_minus_1 : nothing
-
-    for k in 3:N+1
-        T_k = +(2 * apply(Ham_n, T_k_minus_1; cutoff = cutoff),
-                -T_k_minus_2; maxdim = maxdim)
-        T_k = ITensorMPS.truncate!(T_k; cutoff = cutoff)
-        Tn_list[k] = (keep === nothing || k ∈ keep) ? T_k : nothing
-        T_k_minus_2 = T_k_minus_1
-        T_k_minus_1 = T_k
-        _gpu_gc!()
-        if verbose && (k % 5 == 0 || k == N+1)
-            println("  [gpu] T_$((k-1)) maxlinkdim=$(ITensorMPS.maxlinkdim(T_k))")
+    chebyshev_foreach(Ham_n, I_mpo, N + 1; T1 = Ham_n, maxdim = maxdim, cutoff = cutoff,
+                      apply_trunc = (:cutoff,), add_trunc = (:maxdim,),
+                      post_trunc = (:cutoff,)) do n, T_n
+        k = n + 1
+        Tn_list[k] = (keep === nothing || k ∈ keep) ? T_n : nothing
+        if k >= 3
+            _gpu_gc!()
+            if verbose && (k % 5 == 0 || k == N+1)
+                println("  [gpu] T_$n maxlinkdim=$(ITensorMPS.maxlinkdim(T_n))")
+            end
         end
     end
 
@@ -293,25 +289,20 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     gpu_cutoff = Float64(cutoff)
     two = gpu_type(2)
     negone = gpu_type(-1)
-    Tkm2 = I_mpo_gpu
-    Tkm1 = Ham_n_gpu
 
     (verbose || printinfo) &&
         println("  [gpu] ldos dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
-    accumulate_Tn_ldos_gpu!(accum, Tkm2, 1)
-    accumulate_Tn_ldos_gpu!(accum, Tkm1, 2)
-
-    for k in 3:Ncheb
-        Tk = +(two * apply(Ham_n_gpu, Tkm1; cutoff=gpu_cutoff, maxdim=maxdim),
-               negone * Tkm2; cutoff=gpu_cutoff, maxdim=maxdim)
-        ITensorMPS.truncate!(Tk; cutoff=gpu_cutoff)
-        accumulate_Tn_ldos_gpu!(accum, Tk, k)
-        Tkm2 = Tkm1
-        Tkm1 = Tk
-        _gpu_gc!()
-        (verbose || printinfo) && (k % 10 == 0 || k == Ncheb) &&
-            println("  [gpu] ldos step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+    chebyshev_foreach(Ham_n_gpu, I_mpo_gpu, Ncheb; T1=Ham_n_gpu, maxdim=maxdim,
+                      cutoff=gpu_cutoff, post_trunc=(:cutoff,),
+                      two=two, negone=negone) do n, Tn
+        k = n + 1
+        accumulate_Tn_ldos_gpu!(accum, Tn, k)
+        if k >= 3
+            _gpu_gc!()
+            (verbose || printinfo) && (k % 10 == 0 || k == Ncheb) &&
+                println("  [gpu] ldos step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
+        end
     end
 
     # ── KPM normalization ────────────────────────────────────────────────────
@@ -496,7 +487,6 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     moments = zeros(Float64, Ncheb, length(groups))
     linkdims = zeros(Int, length(groups))
 
-    apply_kwargs = (cutoff=Float64(cutoff), maxdim=maxdim)
     two = gpu_type(2)
     negone = gpu_type(-1)
     printinfo && println(
@@ -512,29 +502,11 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         for x in group
             psi0_gpu = _to_gpu_mps(physical_site_state(H, x), gpu_type)
 
-            function kpm_step!(phi, n)
+            chebyshev_foreach(Ham_n_gpu, psi0_gpu, Ncheb; maxdim=maxdim,
+                              cutoff=Float64(cutoff), two=two, negone=negone) do n, phi
                 mu = Float64(real(inner(psi0_gpu, phi)))
-                group_moments[n] += group_weight * mu
-            end
-
-            phi_km2 = psi0_gpu
-            kpm_step!(phi_km2, 1)
-            group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_km2))
-
-            phi_km1 = apply(Ham_n_gpu, phi_km2; apply_kwargs...)
-            kpm_step!(phi_km1, 2)
-            group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_km1))
-
-            for k in 3:Ncheb
-                phi_k = +(
-                    two * apply(Ham_n_gpu, phi_km1; apply_kwargs...),
-                    negone * phi_km2;
-                    apply_kwargs...,
-                )
-                kpm_step!(phi_k, k)
-                group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi_k))
-                phi_km2 = phi_km1
-                phi_km1 = phi_k
+                group_moments[n + 1] += group_weight * mu
+                group_maxlinkdim = max(group_maxlinkdim, maxlinkdim(phi))
             end
 
             _gpu_gc!()
@@ -658,28 +630,13 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     accum_full  = zeros(Float64, Nω)
     accum_bound = zeros(Float64, Nω)
 
+    # The CPU online recursion on GPU tensors (the moment μ_n, real part of a GPU
+    # inner product, enters W[n, iω] * μ_n * weight promoted to Float64 either way).
     function _run_kpm_mps_gpu!(psi0_gpu, accum, weight)
-        apply_kwargs = (cutoff=Float64(cutoff), maxdim=maxdim)
-        function kpm_step!(phi, n)
-            mu = Float64(real(inner(psi0_gpu, phi)))
-            for iω in 1:Nω
-                valid[iω] || continue
-                accum[iω] += W[n, iω] * mu * weight
-            end
-        end
-        phi_km2 = psi0_gpu
-        phi_km1 = apply(Ham_n_gpu, phi_km2; apply_kwargs...)
-        kpm_step!(phi_km2, 1)
-        kpm_step!(phi_km1, 2)
-        for k in 3:Ncheb
-            phi_k = +(2 * apply(Ham_n_gpu, phi_km1; apply_kwargs...),
-                      -phi_km2; apply_kwargs...)
-            kpm_step!(phi_k, k)
-            phi_km2 = phi_km1
-            phi_km1 = phi_k
-        end
+        χ = _run_kpm_mps!(Ham_n_gpu, psi0_gpu, Ncheb, W, valid, accum;
+                          weight=weight, cutoff=Float64(cutoff), maxdim=maxdim)
         _gpu_gc!()
-        return maxlinkdim(phi_km1)
+        return χ
     end
 
     function _exciton_pair_mps_gpu_seed(xe::Int, xh::Int)

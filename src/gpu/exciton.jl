@@ -6,7 +6,8 @@
 # Main entry points: get_exciton_ldos_spatial_gpu, get_exciton_cheb_convergence_gpu.
 # Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl,
 # solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
-# solvers/kpm/recursion.jl (_scaled_hamiltonian), gpu/device.jl.
+# solvers/kpm/recursion.jl (_scaled_hamiltonian, _run_kpm_mps!, _chebyshev_step),
+# gpu/device.jl.
 
 
 # ============================================================
@@ -148,7 +149,6 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
 
     nX           = length(groups)
     result       = zeros(Float64, Nω, nX)
-    apply_kwargs = (cutoff=Float64(cutoff), maxdim=maxdim)
 
     printinfo && println("  [gpu] exciton ldos dtype=$gpu_type")
 
@@ -161,27 +161,10 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
             psi0_gpu = _to_gpu_mps(mpsexciton(X, H.sites), gpu_type)
             accum    = zeros(Float64, Nω)
 
-            function kpm_step!(phi, n)
-                mu = Float64(real(inner(psi0_gpu, phi)))
-                for iω in 1:Nω
-                    valid[iω] || continue
-                    accum[iω] += W[n, iω] * mu
-                end
-            end
-
-            phi_km2 = psi0_gpu
-            phi_km1 = apply(Ham_n_gpu, phi_km2; apply_kwargs...)
-            kpm_step!(phi_km2, 1)
-            kpm_step!(phi_km1, 2)
-            for k in 3:Ncheb
-                phi_k = +(2 * apply(Ham_n_gpu, phi_km1; apply_kwargs...),
-                          -phi_km2; apply_kwargs...)
-                kpm_step!(phi_k, k)
-                phi_km2 = phi_km1
-                phi_km1 = phi_k
-            end
-
-            last_linkdim = maxlinkdim(phi_km1)
+            # The CPU online recursion on GPU tensors; weight 1.0 leaves each
+            # W[n, iω] * μ_n unchanged.
+            last_linkdim = _run_kpm_mps!(Ham_n_gpu, psi0_gpu, Ncheb, W, valid, accum;
+                                         weight=1.0, cutoff=Float64(cutoff), maxdim=maxdim)
             for iω in 1:Nω
                 valid[iω] || continue
                 result[iω, j] += accum[iω] / denom[iω]
@@ -271,7 +254,9 @@ function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::I
     ak_ref  = (cutoff=Float64(cutoff), maxdim=maxdim_ref)
     ak_test = (cutoff=Float64(cutoff), maxdim=maxdim_test)
 
-    # Chebyshev recursion: T_0 = psi0, T_1 = H̃·psi0,  T_n = 2H̃·T_{n-1} − T_{n-2}
+    # Chebyshev recursion: T_0 = psi0, T_1 = H̃·psi0,  T_n = 2H̃·T_{n-1} − T_{n-2}.
+    # Two recursions in lockstep (compared at every order), so the loop is written
+    # out here and each step is chebyshev_foreach's (_chebyshev_step).
     phi_ref_km2  = nothing;  phi_ref_km1  = psi0_gpu
     phi_test_km2 = nothing;  phi_test_km1 = psi0_gpu
 
@@ -290,10 +275,10 @@ function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::I
             phi_ref_new  = apply(Ham_n_gpu, phi_ref_km1;  ak_ref...)
             phi_test_new = apply(Ham_n_gpu, phi_test_km1; ak_test...)
         else
-            phi_ref_new  = +(2 * apply(Ham_n_gpu, phi_ref_km1;  ak_ref...),
-                             -phi_ref_km2;  ak_ref...)
-            phi_test_new = +(2 * apply(Ham_n_gpu, phi_test_km1; ak_test...),
-                             -phi_test_km2; ak_test...)
+            phi_ref_new  = _chebyshev_step(Ham_n_gpu, phi_ref_km1,  phi_ref_km2;
+                                           apply_kwargs=ak_ref,  add_kwargs=ak_ref)
+            phi_test_new = _chebyshev_step(Ham_n_gpu, phi_test_km1, phi_test_km2;
+                                           apply_kwargs=ak_test, add_kwargs=ak_test)
         end
 
         mu_ref   = Float64(real(inner(psi0_gpu, phi_ref_new)))

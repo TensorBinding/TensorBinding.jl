@@ -8,8 +8,9 @@
 # Main entry points: get_nh_dos_grid_gpu, get_nh_dos_points_gpu,
 # get_nh_dos_points_diag_trace_gpu, get_nh_dos_grid_diag_trace_gpu.
 # Depends on: core/TBSystem.jl, solvers/kpm/kernels.jl (_kpm_kernel: the NH Jackson
-# weights), physics/nh/model.jl (NonHermitianHamiltonian, hermitize),
-# physics/nh/kpm.jl (nh_kpm_scale, nh_block_source), gpu/device.jl, gpu/primitives.jl.
+# weights), solvers/kpm/recursion.jl (chebyshev_foreach: the T_k(A) recursions),
+# physics/nh/model.jl (NonHermitianHamiltonian, hermitize), physics/nh/kpm.jl
+# (nh_kpm_scale, nh_block_source, _nh_partial_step), gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
@@ -82,7 +83,7 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     sc == 0.0 && error("_nh_diag_trace_scalar_online_gpu requires a nonzero scale.")
     n > 0 || error("_nh_diag_trace_scalar_online_gpu requires n > 0.")
 
-    ak       = (cutoff=Float64(cutoff), maxdim=maxdim)
+    gpu_cutoff = Float64(cutoff)
     A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
     S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
     I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
@@ -93,8 +94,6 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
 
     verbose && println("    [gpu dtype=$dtype] A=$(eltype(A_op_gpu[1])) S=$(eltype(S_gpu[1])) I=$(eltype(I_gpu[1]))")
 
-    Tkm2 = I_gpu
-    Tkm1 = A_op_gpu
     Pkm2 = zero * S_gpu
     Pkm1 = S_gpu
 
@@ -103,32 +102,32 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
             row=block_row, col=block_col, maxdim=maxdim,
             cutoff=cutoff, dtype=dtype)
 
-    for k in 3:N
-        Tk = +(two * apply(A_op_gpu, Tkm1; ak...),
-               negone * Tkm2; ak...)
-        ITensorMPS.truncate!(Tk; ak...)
+    # T_k from chebyshev_foreach (one-based k = n + 1); P_k follows each T_k.
+    Tkm1 = nothing
+    chebyshev_foreach(A_op_gpu, I_gpu, N; T1=A_op_gpu, maxdim=maxdim,
+                      cutoff=gpu_cutoff, post_trunc=(:cutoff, :maxdim),
+                      two=two, negone=negone) do n, Tk
+        k = n + 1
+        if k >= 3
+            Pk = _nh_partial_step(A_op_gpu, S_gpu, Tkm1, Pkm1, Pkm2;
+                                  maxdim=maxdim, cutoff=gpu_cutoff,
+                                  two=two, negone=negone, retruncate=true)
 
-        Pk = +(+(two * apply(S_gpu, Tkm1; ak...),
-                 two * apply(A_op_gpu, Pkm1; ak...);
-                 ak...),
-               negone * Pkm2; ak...)
-        ITensorMPS.truncate!(Pk; ak...)
+            if iseven(k)
+                coeff = (-1)^(div(k, 2) - 1) * weights[k - 1]
+                trace_acc += ComplexF64(coeff) *
+                    _trace_nh_block_diagonal_gpu(Pk, NH.block_s;
+                        row=block_row, col=block_col, maxdim=maxdim,
+                        cutoff=cutoff, dtype=dtype)
+            end
 
-        if iseven(k)
-            coeff = (-1)^(div(k, 2) - 1) * weights[k - 1]
-            trace_acc += ComplexF64(coeff) *
-                _trace_nh_block_diagonal_gpu(Pk, NH.block_s;
-                    row=block_row, col=block_col, maxdim=maxdim,
-                    cutoff=cutoff, dtype=dtype)
+            Pkm2 = Pkm1
+            Pkm1 = Pk
+
+            (verbose || (printinfo && k % 15 == 0)) &&
+                println("    [gpu] NH scalar-diag cheb $k/$N  maxlinkdim(T)=$(maxlinkdim(Tk))  maxlinkdim(P)=$(maxlinkdim(Pkm1))")
         end
-
-        Tkm2 = Tkm1
         Tkm1 = Tk
-        Pkm2 = Pkm1
-        Pkm1 = Pk
-
-        (verbose || (printinfo && k % 15 == 0)) &&
-            println("    [gpu] NH scalar-diag cheb $k/$N  maxlinkdim(T)=$(maxlinkdim(Tkm1))  maxlinkdim(P)=$(maxlinkdim(Pkm1))")
     end
 
     _gpu_gc!()
@@ -170,35 +169,33 @@ function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
                 row=block_row, col=block_col, dtype=dtype));
         ak...)
 
-    Tkm2 = I_gpu
-    Tkm1 = A_op_gpu
     Pkm2 = zero * S_gpu
     Pkm1 = S_gpu
     A_mps = dtype(weights[1]) * _diag(Pkm1)
 
-    for k in 3:N
-        Tk = +(two * apply(A_op_gpu, Tkm1; ak...),
-               negone * Tkm2; ak...)
-        ITensorMPS.truncate!(Tk; ak...)
+    # T_k from chebyshev_foreach (one-based k = n + 1); P_k follows each T_k.
+    Tkm1 = nothing
+    chebyshev_foreach(A_op_gpu, I_gpu, N; T1=A_op_gpu, maxdim=maxdim,
+                      cutoff=ak.cutoff, post_trunc=(:cutoff, :maxdim),
+                      two=two, negone=negone) do n, Tk
+        k = n + 1
+        if k >= 3
+            Pk = _nh_partial_step(A_op_gpu, S_gpu, Tkm1, Pkm1, Pkm2;
+                                  maxdim=maxdim, cutoff=ak.cutoff,
+                                  two=two, negone=negone, retruncate=true)
 
-        Pk = +(+(two * apply(S_gpu, Tkm1; ak...),
-                 two * apply(A_op_gpu, Pkm1; ak...);
-                 ak...),
-               negone * Pkm2; ak...)
-        ITensorMPS.truncate!(Pk; ak...)
+            if iseven(k)
+                coeff = dtype((-1)^(div(k, 2) - 1) * weights[k - 1])
+                A_mps = +(A_mps, coeff * _diag(Pk); ak...)
+                ITensorMPS.truncate!(A_mps; ak...)
+            end
 
-        if iseven(k)
-            coeff = dtype((-1)^(div(k, 2) - 1) * weights[k - 1])
-            A_mps = +(A_mps, coeff * _diag(Pk); ak...)
-            ITensorMPS.truncate!(A_mps; ak...)
+            Pkm2 = Pkm1
+            Pkm1 = Pk
+
+            verbose && println("    [gpu] NH diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(P)=$(eltype(Pkm1[1]))")
         end
-
-        Tkm2 = Tkm1
         Tkm1 = Tk
-        Pkm2 = Pkm1
-        Pkm1 = Pk
-
-        verbose && println("    [gpu] NH diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(P)=$(eltype(Pkm1[1]))")
     end
 
     A_mps = dtype(2.0 / (pi^2 * (N + 1))) * A_mps
@@ -290,30 +287,33 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
         ket_probe, bra_probe = _nh_random_probes_gpu_seed(Hh.sites, NH.block_s,
                                                           source_col, block_row, rng,
                                                           dtype)
-        tkm2 = ket_probe
-        tkm1 = apply(A_op_gpu, ket_probe; apply_kwargs...)
-        pkm2 = z_gpu * ket_probe
-        pkm1 = apply(S_gpu, ket_probe; apply_kwargs...)
-
+        # |t_k⟩ from chebyshev_foreach (one-based k = n + 1); |p_k⟩ follows each
+        # |t_k⟩, in this function's own form of the step: the A product first, the
+        # S product only at even k, no subtraction at k = 3 (P_0 = 0).
         partial_vals = zeros(ComplexF64, N)
-        partial_vals[2] = inner(bra_probe, pkm1)
-
-        for k in 3:N
-            tk = +(two_gpu * apply(A_op_gpu, tkm1; apply_kwargs...),
-                   negone_gpu * tkm2; apply_kwargs...)
-            a_pkm1 = two_gpu * apply(A_op_gpu, pkm1; apply_kwargs...)
-            pk_base = if iseven(k)
-                s_tkm1 = two_gpu * apply(S_gpu, tkm1; apply_kwargs...)
-                +(s_tkm1, a_pkm1; apply_kwargs...)
-            else
-                a_pkm1
+        tkm1 = pkm1 = pkm2 = nothing
+        t_last = chebyshev_foreach(A_op_gpu, ket_probe, N; maxdim=maxdim,
+                                   cutoff=apply_kwargs.cutoff,
+                                   two=two_gpu, negone=negone_gpu) do n, tk
+            k = n + 1
+            if k == 2
+                pkm2 = z_gpu * ket_probe
+                pkm1 = apply(S_gpu, ket_probe; apply_kwargs...)
+                partial_vals[2] = inner(bra_probe, pkm1)
+            elseif k >= 3
+                a_pkm1 = two_gpu * apply(A_op_gpu, pkm1; apply_kwargs...)
+                pk_base = if iseven(k)
+                    s_tkm1 = two_gpu * apply(S_gpu, tkm1; apply_kwargs...)
+                    +(s_tkm1, a_pkm1; apply_kwargs...)
+                else
+                    a_pkm1
+                end
+                pk = k == 3 ? pk_base : +(pk_base, negone_gpu * pkm2; apply_kwargs...)
+                iseven(k) && (partial_vals[k] = inner(bra_probe, pk))
+                pkm2 = pkm1
+                pkm1 = pk
             end
-            pk = k == 3 ? pk_base : +(pk_base, negone_gpu * pkm2; apply_kwargs...)
-            iseven(k) && (partial_vals[k] = inner(bra_probe, pk))
-            tkm2 = tkm1
             tkm1 = tk
-            pkm2 = pkm1
-            pkm1 = pk
         end
 
         val = ComplexF64(0)
@@ -322,7 +322,7 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
         end
         dos_acc += val
 
-        verbose && println("    [gpu] NH probe $ir/$n_random  maxlinkdim=$(maxlinkdim(tkm1))")
+        verbose && println("    [gpu] NH probe $ir/$n_random  maxlinkdim=$(maxlinkdim(t_last))")
         _gpu_gc!()
     end
 

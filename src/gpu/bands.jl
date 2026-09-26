@@ -6,8 +6,9 @@
 # Depends on: core/Utils.jl (fix_sites, kspace_sampling_plan), core/TBSystem.jl,
 # core/AuxDOF.jl (_aux_projection, _project_aux_sectors), lattice/masks2d.jl (legacy sublattice
 # masks), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
-# (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian),
-# physics/qft/kpath.jl (kpath_setup), gpu/device.jl, gpu/primitives.jl.
+# (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
+# chebyshev_foreach), physics/qft/kpath.jl (kpath_setup), gpu/device.jl,
+# gpu/primitives.jl.
 
 """
     get_bands_gpu(H, Ncheb, ω_phys_vals;
@@ -217,24 +218,19 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Chebyshev recurrence (GPU) ───────────────────────────────────────────
-    Tkm2 = I_mpo_gpu
-    Tkm1 = Ham_n_gpu
     two = gpu_type(2)
     negone = gpu_type(-1)
 
-    accumulate_Tn_gpu!(Ak_w, Tkm2, 1)
-    accumulate_Tn_gpu!(Ak_w, Tkm1, 2)
-
-    for k in 3:Ncheb
-        Tk = +(two * apply(Ham_n_gpu, Tkm1; cutoff=cutoff, maxdim=maxdim),
-               negone * Tkm2; cutoff=cutoff, maxdim=maxdim)
-        ITensorMPS.truncate!(Tk; cutoff=cutoff)
-        accumulate_Tn_gpu!(Ak_w, Tk, k)
-        Tkm2 = Tkm1
-        Tkm1 = Tk
-        _gpu_gc!()
-        printinfo && (k % 10 == 0 || k == Ncheb) &&
-            println("  [gpu] bands step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+    chebyshev_foreach(Ham_n_gpu, I_mpo_gpu, Ncheb; T1=Ham_n_gpu, maxdim=maxdim,
+                      cutoff=cutoff, post_trunc=(:cutoff,),
+                      two=two, negone=negone) do n, Tn
+        k = n + 1
+        accumulate_Tn_gpu!(Ak_w, Tn, k)
+        if k >= 3
+            _gpu_gc!()
+            printinfo && (k % 10 == 0 || k == Ncheb) &&
+                println("  [gpu] bands step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
+        end
     end
 
     # ── KPM normalization: 1 / (π² Ncheb √(1 − ε²)) ────────────────────────

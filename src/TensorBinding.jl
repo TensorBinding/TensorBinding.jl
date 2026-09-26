@@ -133,8 +133,9 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # solvers/kpm/kernels.jl     damping kernels, KPM/HODC/DOS weights, moment-column LDOS, the
 #                            energy grid _kpm_energy_grid
 #                            → TBSystem
-# solvers/kpm/recursion.jl   rescaled H̃ (_scaled_hamiltonian), KPM_Tn, KPM_Tn_mps, online MPS
-#                            recursion _run_kpm_mps!
+# solvers/kpm/recursion.jl   rescaled H̃ (_scaled_hamiltonian), the three-term recursion
+#                            chebyshev_foreach, KPM_Tn, KPM_Tn_mps, online MPS recursion
+#                            _run_kpm_mps!
 #                            → TBSystem, DMRG
 # solvers/kpm/cached.jl      LDOS, density, Green's functions from cached T_n / μ_n; the
 #                            weighted T_n sum _chebyshev_sum
@@ -180,7 +181,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
 #                            → Utils, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
-#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, nh/model
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion,
+#                              nh/model
 # physics/QPI.jl             quasiparticle interference (LDOS difference + QFT)
 #                            → Utils, TBSystem, Flake, DMRG, kpm/kernels, kpm/recursion
 # gpu/device.jl              CUDA bridge, transfers, residency checks; GPU toolkit overview
@@ -203,8 +205,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # gpu/exciton.jl             exciton LDOS, Chebyshev convergence
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, gpu/device
 # gpu/nh.jl                  NH KPM density of states
-#                            → TBSystem, kpm/kernels, nh/model, nh/kpm, gpu/device,
-#                              gpu/primitives
+#                            → TBSystem, kpm/kernels, kpm/recursion, nh/model, nh/kpm,
+#                              gpu/device, gpu/primitives
 # gpu/timeev.jl              NH density and TDVP amplitude trajectories
 #                            → Utils, TBSystem, Timeev, gpu/device, gpu/primitives
 # gpu/conductivity.jl        conductivity-only Tucker/QFT/Hadamard helpers

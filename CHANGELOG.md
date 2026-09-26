@@ -69,6 +69,12 @@ constructor that takes all 21 fields in order, caches included, remains.
   position space, `nothing` otherwise) and the caches start empty. Every lattice, registry
   and position-space builder now constructs through it; the Hamiltonians they return are
   unchanged.
+- `chebyshev_foreach(f!, H̃, T₀, N; maxdim, cutoff, ...)`: the Chebyshev recursion
+  `T_{n+1} = 2H̃T_n − T_{n−1}` on MPOs (operator series) or MPS (Chebyshev vectors), with
+  CPU or GPU tensors, calling `f!(n, T_n)` at every order; keywords say where `cutoff` and
+  `maxdim` truncate (the product, the sum, an extra `truncate!`). The KPM, band-structure,
+  QPI, non-Hermitian and GPU solvers now all run their recursions through it, each with
+  its former truncation, so their results are unchanged bit for bit.
 
 ### Changed
 
