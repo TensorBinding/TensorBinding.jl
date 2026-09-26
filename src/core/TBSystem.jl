@@ -8,7 +8,7 @@
 # Contents: the position-space policy types and the interface the projected
 # spaces of position_spaces/ specialize (ambient_dimension, physical_projector,
 # physical_site_state, site_axis, site_permutation); TBHamiltonian with its
-# backward-compatible constructors and cache management (_invalidate_cache!,
+# keyword and copy constructors and cache management (_invalidate_cache!,
 # truncate!); get_Hamiltonian, which looks the geometry up in the model registry
 # (core/ModelRegistry.jl: builders, parameters, default KPM scales), and the direct
 # builders it holds (chain, Haldane, custom); central_index; the mutators
@@ -86,7 +86,9 @@ Fields
 - `interaction_mpo` : Hartree/CDW interaction kernel (fully scaled); used by `get_scf(H, channel)`
 - `fock_mpo`        : Fock/exchange interaction kernel (fully scaled)
 
-Do not construct directly — use [`get_Hamiltonian`](@ref).
+Build one with [`get_Hamiltonian`](@ref) or a lattice builder. The keyword constructor
+`TBHamiltonian(; L, N, sites, mpo, …)` builds one from its fields, and
+`TBHamiltonian(H; field=value, …)` copies one, replacing the named fields.
 """
 mutable struct TBHamiltonian
     L        :: Int
@@ -115,25 +117,38 @@ mutable struct TBHamiltonian
     position_space :: AbstractPositionSpace
 end
 
-# Backward-compatible full constructor (pre-position_space callers).
-TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
-              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
-              interaction_mpo, fock_mpo, Lx) =
-    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
-                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
-                  interaction_mpo, fock_mpo, Lx, BinaryPositionSpace())
+"""
+    TBHamiltonian(; L, N, sites, mpo, geometry=nothing, geometry_uc=nothing,
+                  scale=0.0, center=0.0, spin_s=nothing, nambu_s=nothing,
+                  layer_s=nothing, sublattice_s=nothing, aux_side=:pre, Lx=nothing,
+                  position_space=BinaryPositionSpace(), interaction_mpo=nothing,
+                  fock_mpo=nothing) -> TBHamiltonian
 
-# Backward-compatible 17-arg constructor (pre-interaction_mpo/pre-fock_mpo/pre-Lx callers);
-# appends nothing, nothing, nothing.
-TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
-              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
-                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
-                  nothing, nothing, nothing)
+Build a `TBHamiltonian` from its fields, by name. `L`, `N`, `sites` and `mpo` are
+required. Every other field defaults to "not set": no geometry, `scale = 0.0` (the KPM
+scale is then estimated by DMRG on first use), no auxiliary index, `aux_side = :pre`, no
+`Lx` (1D), the binary position space and no stored interaction. The lazy caches start
+empty. Values are converted to the field types, so `scale = 3` stores `3.0`.
+
+The builders behind `get_Hamiltonian`, `lattice/` and `position_spaces/` construct their
+Hamiltonians this way. To change some fields of an existing Hamiltonian, use the copy
+constructor `TBHamiltonian(H; field=value, ...)`.
+
+```julia
+s = siteinds("Qubit", 3)
+H = TBHamiltonian(; L=3, N=8, sites=s, mpo=kinetic_1d_nn(3, s), scale=2.5)
+```
+"""
+function TBHamiltonian(; L, N, sites, mpo, geometry=nothing, geometry_uc=nothing,
+                       scale=0.0, center=0.0, spin_s=nothing, nambu_s=nothing,
+                       layer_s=nothing, sublattice_s=nothing, aux_side=:pre, Lx=nothing,
+                       position_space=BinaryPositionSpace(), interaction_mpo=nothing,
+                       fock_mpo=nothing)
+    return TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+                         spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                         nothing, nothing, 0, nothing,    # empty lazy caches
+                         interaction_mpo, fock_mpo, Lx, position_space)
+end
 
 """
     TBHamiltonian(H::TBHamiltonian; field=value, ...) -> TBHamiltonian
@@ -247,37 +262,7 @@ function _require_binary_position_space(H::TBHamiltonian, api::AbstractString)
 end
 
 # ============================================================
-# 4. Backward-compatible positional constructors (13 to 16 arguments)
-# ============================================================
-
-# Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
-TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
-              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
-                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
-                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache)
-
-# Backward-compatible 15-arg constructor (pre-sublattice_s callers); inserts sublattice_s=nothing.
-TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
-              spin_s, nambu_s, layer_s, aux_side, _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
-                  spin_s, nambu_s, layer_s, nothing, aux_side, _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache)
-
-# Backward-compatible 14-arg constructor (pre-sublattice_s, pre-_tn_mps_cache callers).
-TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
-              spin_s, nambu_s, layer_s, aux_side, _tn_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
-                  spin_s, nambu_s, layer_s, nothing, aux_side, _tn_cache, nothing, _tn_Ncheb, _density_cache)
-
-# Backward-compatible 13-arg constructor (pre-sublattice_s, pre-aux_side callers); defaults to :pre.
-TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
-              spin_s, nambu_s, layer_s, _tn_cache, _tn_Ncheb, _density_cache) =
-    TBHamiltonian(L, N, sites, mpo, geometry, nothing, scale, center,
-                  spin_s, nambu_s, layer_s, nothing, :pre, _tn_cache, nothing, _tn_Ncheb, _density_cache)
-
-# ============================================================
-# 5. Cache management
+# 4. Cache management
 # ============================================================
 
 """
@@ -322,7 +307,7 @@ function truncate!(H::TBHamiltonian; cutoff::Real = 1e-10, maxdim = nothing)
 end
 
 # ============================================================
-# 6. get_Hamiltonian constructor
+# 5. get_Hamiltonian constructor
 # ============================================================
 
 """
@@ -476,7 +461,7 @@ function get_Hamiltonian(geometry::String, params;
 end
 
 # ============================================================
-# 7. Per-geometry builders (internal): 1D chain
+# 6. Per-geometry builders (internal): 1D chain
 # ============================================================
 
 function _build_chain_1d(t, L, N, sites;
@@ -489,12 +474,12 @@ function _build_chain_1d(t, L, N, sites;
     mpo = t * kinetic_1d_nn(L, sites; boundary=boundary)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     sc  = something(scale, _estimate_scale("chain_1d", t))   # 2.5|t|
-    return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L, N, sites, mpo, geometry=_chain_geometry(), scale=sc)
 end
 
 
 # ============================================================
-# 8. Haldane model (chirality, haldane_hoppingf, the "haldane" builder)
+# 7. Haldane model (chirality, haldane_hoppingf, the "haldane" builder)
 # ============================================================
 
 # Sublattice sign of a honeycomb_positions site, read from the position: -1 on sublattice A
@@ -659,12 +644,12 @@ function _build_haldane(params, L, N, sites;
     # Gershgorin bound, padded by 10% (nearly reached at phi = 0, π).
     sc  = something(scale, _SCALE_PADDING * _haldane_rowsum(t2, M))
     rs_f = let m = Float64.(rs); i -> m[i, :]; end
-    return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L, N, sites, mpo, geometry=rs_f, scale=sc)
 end
 
 
 # ============================================================
-# 9. Custom builder (the preset and multi-atom builders are in core/ModelRegistry.jl)
+# 8. Custom builder (the preset and multi-atom builders are in core/ModelRegistry.jl)
 # ============================================================
 
 function _build_custom(f, L, N, sites;
@@ -677,12 +662,12 @@ function _build_custom(f, L, N, sites;
     geom_f = geometry isa Matrix ? (let m = Float64.(geometry); i -> m[i, :]; end) : geometry
     mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    return TBHamiltonian(L, N, sites, mpo, geom_f, Float64(scale), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L, N, sites, mpo, geometry=geom_f, scale=Float64(scale))
 end
 
 
 # ============================================================
-# 10. Geometry utilities
+# 9. Geometry utilities
 # ============================================================
 
 """
@@ -706,7 +691,7 @@ function central_index(H::TBHamiltonian)
 end
 
 # ============================================================
-# 11. Additive interaction API
+# 10. Additive interaction API
 # ============================================================
 
 """
@@ -999,7 +984,7 @@ end
 
 
 # ============================================================
-# 12. Position-site accessor
+# 11. Position-site accessor
 # ============================================================
 
 """
@@ -1020,7 +1005,7 @@ end
 
 
 # ============================================================
-# 13. Interaction storage
+# 12. Interaction storage
 # ============================================================
 
 """
@@ -1071,7 +1056,7 @@ end
 
 
 # ============================================================
-# 14. Display
+# 13. Display
 # ============================================================
 
 function Base.show(io::IO, H::TBHamiltonian)

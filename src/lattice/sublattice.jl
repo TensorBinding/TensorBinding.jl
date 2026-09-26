@@ -143,8 +143,8 @@ function kagome_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
     scale = 4.5 * max(abs(t_AB), abs(t_AC), abs(t_BC))
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, nothing, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, scale,
+                         sublattice_s=S.sub_s, aux_side=:post)
 end
 
 
@@ -201,8 +201,8 @@ function lieb_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
     scale = 2.5 * max(abs(t_AB), abs(t_AC))
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, nothing, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, scale,
+                         sublattice_s=S.sub_s, aux_side=:post)
 end
 
 
@@ -257,8 +257,8 @@ function honeycomb_sublattice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 
 
     # Honeycomb spectrum: Dirac bands at ±3t bandwidth
     scale = 3.5 * abs(t)
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, nothing, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, scale,
+                         sublattice_s=S.sub_s, aux_side=:post)
 end
 
 
@@ -318,8 +318,8 @@ function honeycomb_nnn_hamiltonian(Lx::Integer, Ly::Integer,
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
     scale = 3.5 * abs(t) + 3.5 * abs(t2)
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, nothing, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, scale,
+                         sublattice_s=S.sub_s, aux_side=:post)
 end
 
 
@@ -384,8 +384,8 @@ function dice_hamiltonian(Lx::Integer, Ly::Integer, t::Number = 1.0;
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
 
     scale = 4.5 * max(abs(t_AB), abs(t_AC))
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, nothing, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, scale,
+                         sublattice_s=S.sub_s, aux_side=:post)
 end
 
 
@@ -444,6 +444,6 @@ function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0
         i -> [Float64(div(i - 1, 2))]
     end
 
-    return TBHamiltonian(S.L, S.N, S.all_sites, H_total, geom_f, geom_uc_f, scale, 0.0,
-                         nothing, nothing, nothing, S.sub_s, :post, nothing, nothing, 0, nothing)
+    return TBHamiltonian(; L=S.L, N=S.N, sites=S.all_sites, mpo=H_total, geometry=geom_f,
+                         geometry_uc=geom_uc_f, scale, sublattice_s=S.sub_s, aux_side=:post)
 end

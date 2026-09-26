@@ -127,11 +127,8 @@ function twisted_multilayer_hamiltonian(
     # ── Assembly ──────────────────────────────────────────────────
     H_total = +(H_intra, H_inter; cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
-    # scale=0.0 → lazy DMRG estimation on first KPM_Tn call
-    H = TBHamiltonian(L, 2^L, ext_sites, H_total, nothing, 0.0, 0.0,
-                      nothing, nothing, layer_s, nothing, 0, nothing)
-    H.Lx = Lx
-    return H
+    # scale left at 0.0 → lazy DMRG estimation on first KPM_Tn call
+    return TBHamiltonian(; L, N=2^L, sites=ext_sites, mpo=H_total, layer_s, Lx)
 end
 
 

@@ -343,11 +343,9 @@ function kbonacci_hamiltonian(
     scale_value > 0 || throw(ArgumentError("KPM scale must be positive"))
 
     N = kbonacci_site_count(k, L)
-    H = TBHamiltonian(L, N, sites, mpo, _chain_geometry(),
-                      scale_value, Float64(center),
-                      nothing, nothing, nothing, nothing, 0, nothing)
-    H.position_space = KBonacciPositionSpace(Int(k), P)
-    return H
+    return TBHamiltonian(; L, N, sites, mpo, geometry=_chain_geometry(), scale=scale_value,
+                         center=Float64(center),
+                         position_space=KBonacciPositionSpace(Int(k), P))
 end
 
 function _build_kbonacci(params, L::Integer;

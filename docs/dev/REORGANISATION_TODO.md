@@ -265,8 +265,9 @@ the affected golden cases in the same commit.
       `Purification_tk.jl:95–96`, unreachable code after early `return` in
       `2Dlattice_tk.jl` (`generate_kin_u/d` l.33–63, six kinetic builders l.388–543).
       *Removed in 3291292.*
-- [ ] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
+- [x] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
       190–214) once Tier 2 keyword constructor exists.
+      *Deleted in tier2/ctor, with the keyword constructor (Tier 2 below).*
 - [x] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
       `KPM_tk.jl` 14/30/31, `QFT_tk.jl` 1453–1470, `Topology_tk.jl` 499–539,
       `TBSystem.jl` 1175, RPA legacy pipeline; switch to `@info … maxlog=1` or `verbose` gates.
@@ -346,8 +347,18 @@ the affected golden cases in the same commit.
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
       projectors (`project_aux`, `_project_aux_block`, `_project_spin_sector`, `contract_nh_block`).
 - [ ] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
-- [ ] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
+- [x] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
       constructor; delete the six positional overloads.
+      *tier2/ctor: the 19 positional calls in `src` (chain, Haldane, custom, the preset
+      registry builder, the six sublattice builders, bilayer/multilayer/twisted, T-junction,
+      the three projected spaces) pass the same values by keyword; the `H.Lx = Lx` and
+      `H.position_space = …` lines after them moved into the call. Every builder's
+      Hamiltonian is field-by-field identical (MPO tensors bitwise). The copy constructor is
+      the existing `TBHamiltonian(H; field=value, …)` (v0.1.1), not a `similar` method; the
+      21-field positional constructor stays. The untracked scripts
+      `examples/nontracked/{exciton_benchmarking,Exciton_Resub}/scripts*/exciton_hio.jl` and
+      `examples/nontracked/Fibonacci_LDOS/fibonacci_hamiltonian_io.jl` call the 13-argument
+      form and need the keyword form.*
 - [x] One model registry entry per model (builder → `TBHamiltonian`, dim, params, geometry,
       scale) replacing `get_Hamiltonian`'s if-chain + `build_hamiltonian` + `_build_preset` +
       `_build_sublattice` + `_preset_geometry` + `_estimate_scale`; `_param(params, :t, default)`

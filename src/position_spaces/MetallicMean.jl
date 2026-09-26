@@ -326,11 +326,9 @@ function metallic_mean_hamiltonian(
     scale_value > 0 || throw(ArgumentError("KPM scale must be positive"))
 
     N = metallic_mean_site_count(m, L)
-    H = TBHamiltonian(L, N, sites, mpo, _chain_geometry(),
-                      scale_value, Float64(center),
-                      nothing, nothing, nothing, nothing, 0, nothing)
-    H.position_space = MetallicMeanPositionSpace(Int(m), P)
-    return H
+    return TBHamiltonian(; L, N, sites, mpo, geometry=_chain_geometry(), scale=scale_value,
+                         center=Float64(center),
+                         position_space=MetallicMeanPositionSpace(Int(m), P))
 end
 
 function _build_metallic_mean(params, L::Integer;

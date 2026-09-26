@@ -35,6 +35,14 @@ but could be called as `TensorBinding.name`:
 - the GPU aliases `get_nh_state_trajectory_gpu` (use `get_state_amplitude_trajectory_gpu`)
   and `nh_spectrum_grid_gpu` (use `get_nh_dos_grid_gpu`).
 
+The positional `TBHamiltonian` constructors with 13, 14, 15, 16, 17 and 20 arguments (the
+"backward-compatible" forms, which filled in the fields added since) are removed. Use the
+keyword constructor (see **Added**) instead:
+`TBHamiltonian(L, N, sites, mpo, geom, scale, 0.0, nothing, nothing, nothing, nothing, 0,
+nothing)` becomes `TBHamiltonian(; L, N, sites, mpo, geometry=geom, scale)`. To change
+fields of an existing Hamiltonian, use `TBHamiltonian(H; field=value, ...)`. The
+constructor that takes all 21 fields in order, caches included, remains.
+
 ### Added
 
 - `estimate_scale(geometry, params; L, method)`: KPM scale estimates for any
@@ -43,6 +51,13 @@ but could be called as `TensorBinding.name`:
   `get_Hamiltonian(...; scale=:small | :geometry | :dmrg)` builds with that estimate.
 - `interval_sampling_plan`: the automatic probe plan of `get_ldos_spatial_mps_gpu`, now a
   planner of its own in `core/Utils.jl` (same groups as before).
+- `TBHamiltonian(; L, N, sites, mpo, geometry, geometry_uc, scale, center, spin_s, nambu_s,
+  layer_s, sublattice_s, aux_side, Lx, position_space, interaction_mpo, fock_mpo)`: build a
+  Hamiltonian from its fields by name. Only `L`, `N`, `sites` and `mpo` are required; the
+  other fields default to "not set" (`scale = center = 0.0`, `aux_side = :pre`, the binary
+  position space, `nothing` otherwise) and the caches start empty. Every lattice, registry
+  and position-space builder now constructs through it; the Hamiltonians they return are
+  unchanged.
 
 ### Changed
 

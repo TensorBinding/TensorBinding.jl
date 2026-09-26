@@ -125,6 +125,9 @@ include("bugfix_gpu3.jl")
 include("bugfix_tdvp.jl")
 include("bugfix_haldane_textbook.jl")
 
+# The keyword TBHamiltonian constructor (the positional overloads are gone).
+include("tbhamiltonian_ctor.jl")
+
 # The KPM scale maker: estimate_scale and the default get_Hamiltonian scales.
 include("scale_maker.jl")
 

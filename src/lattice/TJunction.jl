@@ -364,8 +364,7 @@ function tjunction_lattice_hamiltonian(Lx::Int, Ly::Int, L::Int,
     j_scale = isnothing(coupling) ? abs(t_j) : maximum(abs.(coupling))
     scale   = 2.5 * abs(t) + 2.0 * j_scale + 2.0 * abs(t_inter)
 
-    return TBHamiltonian(Llat + L, Nlat * Nchain, all_sites, H_total,
-                         let m = rs; i -> m[i, :]; end, nothing, scale, 0.0,
-                         nothing, nothing, nothing, tj_s, :post,
-                         nothing, nothing, 0, nothing)
+    geom = let m = rs; i -> m[i, :]; end
+    return TBHamiltonian(; L=Llat + L, N=Nlat * Nchain, sites=all_sites, mpo=H_total,
+                         geometry=geom, scale, sublattice_s=tj_s, aux_side=:post)
 end

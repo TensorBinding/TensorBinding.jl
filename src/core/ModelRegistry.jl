@@ -206,9 +206,8 @@ function _build_preset(geometry, params, L, N, sites;
     sc   = something(scale, _estimate_scale(geometry, params; mparams=get(kwargs, :mparams, "")))
     lx_2d = entry.dim == 2 ? get(kwargs, :Lx, L ÷ 2) : nothing
     geom = _preset_geometry(geometry, isnothing(lx_2d) ? nothing : 2^lx_2d)
-    H = TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
-    H.Lx = lx_2d
-    return H
+    return TBHamiltonian(; L, N, sites=mpo_sites, mpo, geometry=geom, scale=Float64(sc),
+                         Lx=lx_2d)
 end
 
 # The 2D multi-atom lattices: the builder `entry.builder(Lx, Ly, params...)` with the
