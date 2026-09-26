@@ -1,46 +1,6 @@
-# solvers/kpm/ldos.jl — online real-space LDOS: get_ldos_online, get_ldos_spatial
-# and their helpers _aux_setup and _ldos_make_psi0. Moved verbatim from
-# solvers/KPM_tk.jl (Tier 1 split).
-
-# ============================================================
-# Shared KPM helpers  (used by get_ldos_online, get_ldos_spatial, get_dos_stochastic)
-# ============================================================
-
-"""
-    _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
-               layer_proj, proj_layer, sublat_proj, proj_sl) -> NamedTuple
-
-Detect all auxiliary DOF indices from `H` and compute sector iteration ranges.
-Returns a NamedTuple with fields:
-  `nambu_s_det`, `nambu_side_det`, `spin_s_det`,
-  `layer_s_det`, `layer_side_det`, `sublat_s_det`, `sublat_side_det`,
-  `nambu_range`, `spin_range`, `layer_range`, `sl_range`, `any_aux_proj`.
-"""
-function _aux_setup(H::TBHamiltonian,
-                    nambu_proj::Bool, proj_nambu,
-                    spin_proj::Bool,  proj_s,
-                    layer_proj::Bool, proj_layer,
-                    sublat_proj::Bool, proj_sl)
-    nambu_s_det,  nambu_side_det  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
-    spin_s_det                    = H.spin_s
-    layer_s_det,  layer_side_det  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
-
-    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
-        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
-    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
-        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
-    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
-        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
-    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
-        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
-    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
-
-    return (; nambu_s_det, nambu_side_det, spin_s_det,
-              layer_s_det, layer_side_det, sublat_s_det, sublat_side_det,
-              nambu_range, spin_range, layer_range, sl_range, any_aux_proj)
-end
-
+# solvers/kpm/ldos.jl — online real-space LDOS: get_ldos_online, get_ldos_spatial.
+# Moved verbatim from solvers/KPM_tk.jl (Tier 1 split); their helpers _aux_setup
+# and _ldos_make_psi0 live in core/AuxDOF.jl.
 
 # ============================================================
 # Online LDOS at a single position: get_ldos_online
@@ -135,39 +95,6 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
         result[iω] = accum[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
     end
     return result
-end
-
-
-# ============================================================
-# Auxiliary DOF helpers for LDOS
-# ============================================================
-
-"""
-    _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) -> MPS
-
-Product-state MPS over all `H.sites` for KPM evaluation in LDOS `:mps` mode.
-
-- Position sites encode `x-1` in big-endian binary (first position site = MSB).
-- Auxiliary sites are set to 1-based sector indices:
-  `σ_n` (nambu), `σ_s` (spin), `σ_l` (layer), `σ_sl` (sublattice).
-  Indices for absent aux dofs are ignored.
-"""
-function _ldos_make_psi0(H::TBHamiltonian, x::Int,
-                          σ_n::Int, σ_s::Int, σ_l::Int, σ_sl::Int)
-    k       = 0
-    pos_bit = H.L - 1   # bit index: MSB of (x-1) goes to the first position site
-    for s in H.sites
-        k *= dim(s)
-        if     !isnothing(H.nambu_s)      && s == H.nambu_s;      k += σ_n  - 1
-        elseif !isnothing(H.spin_s)       && s == H.spin_s;       k += σ_s  - 1
-        elseif !isnothing(H.layer_s)      && s == H.layer_s;      k += σ_l  - 1
-        elseif !isnothing(H.sublattice_s) && s == H.sublattice_s; k += σ_sl - 1
-        else
-            k += (x - 1) >> pos_bit & 1
-            pos_bit -= 1
-        end
-    end
-    return _basis_state_mps(k, H.sites)
 end
 
 

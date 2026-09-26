@@ -9,7 +9,7 @@
 # built on it: the Dyson linear solve (rpa_from_bubble_diag, get_rpa_susceptibility),
 # the Wynn ε-accelerated Neumann series (wynn_epsilon, rpa_wynn_from_bubbles,
 # get_spect_k, get_rpa_susceptibility_wynn) and the transverse-spin channel
-# (_project_spin_sector, get_magnon_*).
+# (get_magnon_*; its spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
 # Split verbatim from physics/RPA_tk.jl.
 
 # ============================================================
@@ -377,53 +377,6 @@ end
 # ============================================================
 # Magnon susceptibility (transverse S⁺S⁻ spin channel)
 # ============================================================
-
-"""
-    _project_spin_sector(H, sector) -> TBHamiltonian
-
-Project a spinful `TBHamiltonian` onto spin sector `sector` (1 = ↑, 2 = ↓)
-by contracting the spin site tensor with the projector |sector⟩⟨sector|.
-
-The spin index is identified by its "Spin" tag, so the function is robust
-to whether spin is prepended or postpended.  The contracted tensor is
-absorbed into its neighbour, leaving a valid L-qubit MPO.
-
-Returns a new `TBHamiltonian` with `spin_s = nothing` and fresh (empty)
-caches; `scale` and `center` are reset to 0.0 so `_ensure_scale!` will
-re-estimate them on the first KPM call. All other fields (`Lx`,
-`interaction_mpo`, `fock_mpo`, `position_space`, …) are copied from `H`.
-"""
-function _project_spin_sector(H::TBHamiltonian, sector::Int)
-    H.spin_s === nothing &&
-        error("_project_spin_sector: H is not spinful (spin_s is nothing)")
-    s = H.spin_s
-
-    spin_pos = findfirst(n -> any(i -> hastags(i, "Spin"), siteinds(H.mpo, n)),
-                         1:length(H.mpo))
-    spin_pos === nothing && error("_project_spin_sector: spin Index not found in MPO")
-
-    proj = ITensor(ComplexF64, s', s)
-    proj[s' => sector, s => sector] = 1.0
-
-    tensors    = ITensor[H.mpo[i] for i in 1:length(H.mpo)]
-    contracted = tensors[spin_pos] * proj   # only link indices remain
-
-    if spin_pos == 1
-        tensors[2]  = contracted * tensors[2]
-        new_tensors = tensors[2:end]
-    else
-        tensors[spin_pos - 1] = tensors[spin_pos - 1] * contracted
-        new_tensors = tensors[1:spin_pos - 1]
-    end
-
-    new_sites = filter(i -> !hastags(i, "Spin"), H.sites)
-
-    # interaction_mpo / fock_mpo live on the position sites (add_interaction!), which
-    # the projection leaves untouched, so they are kept along with Lx and position_space.
-    return TBHamiltonian(H; sites=new_sites, mpo=MPO(new_tensors),
-                         scale=0.0, center=0.0, spin_s=nothing)
-end
-
 
 """
     get_magnon_bubble(H, ω; ...) -> MPO

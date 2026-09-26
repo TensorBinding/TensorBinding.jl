@@ -41,7 +41,7 @@
 # Peak memory: O(3 MPOs) regardless of Ncheb.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# Auxiliary DOF projection  (section 5b, aux_projection.jl)
+# Auxiliary DOF projection  (section 5b, core/AuxDOF.jl)
 # ─────────────────────────────────────────────────────────────────────────────
 # Models with auxiliary DOFs (spin, Nambu, layer, sublattice) have an extra
 # site at the front (`:pre`) or back (`:post`) of the MPO.  `project_aux`
@@ -76,6 +76,7 @@
 # extract_diagonal_to_mps              → utils.jl
 # _row_checker_mpo, _col_select_mpo    → 2D_lattice.jl
 # TBHamiltonian, _ensure_scale!        → TBSystem.jl
+# project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
 # _run_kpm_mps!, _dos_weight_matrix    → KPM_tk.jl
 #
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,8 +98,8 @@
 # exciton_spectra.jl
 #       Exciton spectra (MPS-KPM)  get_exciton_bands, get_exciton_continuum
 #       (exciton MPS probes mpsexciton/Q/QTrace/KQ now live in TwoParticle_tk.jl)
-# aux_projection.jl
-#   5b. Aux index projection       project_aux, _autoenable_proj, aux_site
+# (5b. Aux index projection — project_aux, _autoenable_proj, aux_site — is in
+#  core/AuxDOF.jl.)
 
 
 

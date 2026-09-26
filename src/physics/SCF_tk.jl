@@ -295,29 +295,6 @@ end
 # 5. BdG / pairing helpers
 # ============================================================
 
-function _project_aux_block(mpo::MPO, aux_s::Index, row::Int, col::Int; tag::String="")
-    aux_pos = findfirst(n -> any(i -> i == aux_s || (!isempty(tag) && hastags(i, tag)),
-                                 siteinds(mpo, n)),
-                        1:length(mpo))
-    aux_pos === nothing && error("_project_aux_block: auxiliary index not found")
-
-    proj = ITensor(ComplexF64, aux_s', aux_s)
-    proj[aux_s' => row, aux_s => col] = 1.0
-
-    tensors = ITensor[mpo[i] for i in eachindex(mpo)]
-    contracted = tensors[aux_pos] * proj
-
-    if length(tensors) == 1
-        return MPO(ITensor[])
-    elseif aux_pos == 1
-        tensors[2] = contracted * tensors[2]
-        return MPO(tensors[2:end])
-    else
-        tensors[aux_pos - 1] = tensors[aux_pos - 1] * contracted
-        return MPO(vcat(tensors[1:aux_pos - 1], tensors[aux_pos + 1:end]))
-    end
-end
-
 function _pairing_profile_mps(delta, L::Int, sites;
                                   type=ComplexF64,
                                   tol::Real=1e-8)

@@ -181,11 +181,11 @@ the affected golden cases in the same commit.
       the conductivity-only Tucker/QFT/Hadamard block (~300 lines) → its example.
 
 ### Move misplaced helpers next to their callers
-- [ ] One `core/AuxDOF.jl` owning spin/Nambu indices and op tables, `prepend_spin`/`prepend_nambu`,
+- [x] One `core/AuxDOF.jl` owning spin/Nambu indices and op tables, `prepend_spin`/`prepend_nambu`,
       Symbol overloads of `prepend_op`/`postpend_op` (from `Supercond_tk.jl`), `project_aux`,
       `aux_site`, `_autoenable_proj` (from QFT), `_aux_setup`, `_ldos_make_psi0` (from KPM),
       and the four `add_spin!`/`add_zeeman!`/`add_superconductivity!`/`add_soc!` mutators
-      (from TBSystem). Include it right after TBSystem.
+      (from TBSystem). Include it right after TBSystem. (moved in tier1/move-auxdof)
 - [ ] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM.
 - [ ] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
       other product-state builders.
@@ -193,7 +193,8 @@ the affected golden cases in the same commit.
       `_site_projector_mpo`, `sigma_d/sigma_u` ops, layer prepend helpers → `core/Utils.jl`
       (or `lattice/Masks2D.jl` for the masks).
 - [ ] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
-- [ ] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
+- [x] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
+      (moved in tier1/move-auxdof; name kept: the rename is left to Tier 2's `_project_aux_sectors`)
 - [ ] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
       junction geometry, `geometry_uc` closures) → `lattice/Geometry.jl` with one `(Lx, Ly)`
       signature.

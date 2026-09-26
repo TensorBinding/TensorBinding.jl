@@ -24,3 +24,10 @@ Pages   = ["core/Hamiltonian.jl"]
 Modules = [TensorBinding]
 Pages   = ["core/TBSystem.jl"]
 ```
+
+## Auxiliary Degrees of Freedom
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/AuxDOF.jl"]
+```

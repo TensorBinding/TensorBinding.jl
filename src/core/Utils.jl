@@ -1107,7 +1107,7 @@ L sites to L+1 sites.  The returned MPO has site indices `[s; original...]`.
 **Dispatch rules**
 - Matrix form: `mat[i,j]` = <i|op|j> (1-indexed).  Element type is preserved.
 - Symbol form: named operator looked up by the type of `s` (tag `"Spin"` or
-  `"Nambu"`).  Defined in Supercond_tk.jl after the op dictionaries.
+  `"Nambu"`).  Defined in core/AuxDOF.jl after the op dictionaries.
 - Integer pair `(k, l)`: places a single 1 at row `k`, col `l` in a
   `dim(s) x dim(s)` zero matrix.  Covers layer hops and projectors for any
   dimension Layer index.
