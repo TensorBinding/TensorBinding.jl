@@ -7,7 +7,8 @@
 #
 # Entry points: nh_spectrum_grid, nh_spectral_function, nh_kpm_partials,
 #   nh_reconstruct_spectral_mps, nh_kpm_scale, nh_block_source, contract_nh_block.
-# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/kernels.jl
+# Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl (_project_end_site:
+#   the block contraction), solvers/DMRG.jl, solvers/kpm/kernels.jl
 #   (_kpm_kernel: the Jackson weights), physics/nh/model.jl.
 
 # ============================================================
@@ -222,28 +223,17 @@ end
     contract_nh_block(W, block_s; row=2, col=1) -> MPO
 
 Extract the `(row, col)` block of an MPO whose first or last site is `block_s`,
-returning an MPO on the remaining sites. The block position is auto-detected.
+returning an MPO on the remaining sites. The block position is auto-detected
+(the last site is tried first); the contraction is `project_aux`'s, off the
+diagonal (`_project_end_site`, core/AuxDOF.jl).
 """
 function contract_nh_block(W::MPO, block_s::Index; row::Int = 2, col::Int = 1)
     M = length(W)
     M >= 2 || error("contract_nh_block requires an MPO with a block site and at least one physical site.")
-    if siteind(W, M) == block_s
-        # Postpend: block is last
-        bt = W[M] * onehot(block_s => col) * onehot(block_s' => row)
-        tensors = ITensor[W[i] for i in 1:M-2]
-        push!(tensors, W[M-1] * bt)
-        return MPO(tensors)
-    elseif siteind(W, 1) == block_s
-        # Prepend: block is first
-        bt = W[1] * onehot(block_s => col) * onehot(block_s' => row)
-        tensors = ITensor[W[2] * bt]
-        for i in 3:M
-            push!(tensors, W[i])
-        end
-        return MPO(tensors)
-    else
-        error("NH block index must be the first or last MPO site for contract_nh_block.")
-    end
+    side = siteind(W, M) == block_s ? :post :
+           siteind(W, 1) == block_s ? :pre  :
+           error("NH block index must be the first or last MPO site for contract_nh_block.")
+    return _project_end_site(W, block_s, row, col, side)
 end
 
 """

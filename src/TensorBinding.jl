@@ -51,7 +51,8 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils
 # core/TBSystem.jl           TBHamiltonian, position spaces, get_Hamiltonian, add_hopping!/add_onsite!
 #                            → Utils, Hamiltonian, geometry*, ModelRegistry*, NNNeighbor*
-# core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors
+# core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors,
+#                            the aux projection AuxProjection/_project_aux_sectors, probe_state
 #                            → Utils, Hamiltonian, TBSystem, hopping2d*, Supercond*
 # lattice/geometry.jl        i → position closures, *_positions tables, _resolve_2d_geometry
 #                            → TBSystem
@@ -137,7 +138,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
 #                            → Utils, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
-#                            → Utils, TBSystem, DMRG, kpm/kernels, nh/model
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, nh/model
 # physics/QPI.jl             quasiparticle interference (LDOS difference + QFT)
 #                            → Utils, TBSystem, Flake, DMRG, kpm/kernels, kpm/recursion
 # gpu/device.jl              CUDA bridge, transfers, residency checks; GPU toolkit overview

@@ -7,8 +7,9 @@
 # Entry points: get_dos_stochastic, get_dos_trace
 # Depends on: core/Utils.jl (_basis_state_mps, extract_diagonal_to_mps,
 #   mpsexciton), core/TBSystem.jl (TBHamiltonian, physical_projector,
-#   physical_site_state, _is_binary_position_space), core/AuxDOF.jl (_aux_setup,
-#   _ldos_make_psi0), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+#   physical_site_state, _is_binary_position_space), core/AuxDOF.jl
+#   (_aux_projection, _probe_sectors, probe_state), solvers/DMRG.jl
+#   (_ensure_scale!), solvers/kpm/kernels.jl
 #   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
 #   _run_kpm_mps!).
 #
@@ -124,9 +125,10 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     N_phys = H.N
     is_exc = length(H.sites) == 2 * H.L
 
-    (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
-        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
-                      layer_proj, proj_layer, sublat_proj, proj_sl)
+    # Projections are not switched on automatically here (see the docstring).
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl,
+                             autoenable=false)
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                kernel=kernel, lambda=lambda, eta=eta,
@@ -137,7 +139,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     accum_full  = zeros(Float64, Nω)
     accum_bound = zeros(Float64, Nω)
 
-    if any_aux_proj
+    if _any_projected(aux)
         # ── Projected DOS: sample position states with fixed aux sectors ─────
         # Trace over position basis only, with aux dofs projected to selected
         # sectors.  Effective dimension = N_phys × n_sectors.
@@ -145,15 +147,13 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         # so only the position average (× N_phys) is needed for normalisation.
         D_eff = N_phys
 
+        sectors = _probe_sectors(aux)
         xs = rand(rng, 1:N_phys, N_sample)
         for (i, x) in enumerate(xs)
-            for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-                psi0 = _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl)
-                χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_full;
+            for σ in sectors
+                χ = _run_kpm_mps!(Ham_n, probe_state(H, x, σ), Ncheb, W, valid, accum_full;
                                    weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
-                verbose && i % 15 == 0 && σ_n == first(nambu_range) &&
-                    σ_s == first(spin_range) && σ_l == first(layer_range) &&
-                    σ_sl == first(sl_range) &&
+                verbose && i % 15 == 0 && σ == first(sectors) &&
                     println("Projected DOS sample $i/$N_sample  maxlinkdim=$χ")
             end
         end

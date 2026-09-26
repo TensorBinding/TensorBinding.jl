@@ -47,11 +47,13 @@
 # Models with auxiliary DOFs (spin, Nambu, layer, sublattice) have an extra
 # site at the front (`:pre`) or back (`:post`) of the MPO.  `project_aux`
 # removes it by contracting |σ⟩⟨σ| onto the auxiliary tensor, returning an
-# (L−1)-site position-only MPO ready for `conjugate_by_qft`.
+# (L−1)-site position-only MPO ready for `conjugate_by_qft`; the chain of these
+# removals over all requested sectors is `_project_aux_sectors`, shared with
+# get_ldos_spatial and the GPU methods.
 #
 # When `H::TBHamiltonian` is passed to `get_bands`, all auxiliary indices are
 # auto-detected from the struct fields (H.spin_s, H.nambu_s, H.layer_s,
-# H.sublattice_s) and never need to be passed manually.
+# H.sublattice_s) by `_aux_projection` and never need to be passed manually.
 #
 # == High-symmetry k-path shortcut (kpath.jl) ==
 # The `kpath` kwarg in the `TBHamiltonian` overload of `get_bands` eliminates
@@ -73,7 +75,8 @@
 # interleave_mpo, mpo_kron             → core/MPOTools.jl
 # TBHamiltonian, _pos_sites, physical_projector,
 #   _require_binary_position_space     → core/TBSystem.jl
-# project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
+# AuxProjection, AuxDOFProjection, _aux_projection,
+#   _project_aux_sectors               → core/AuxDOF.jl
 # _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
 # _ensure_scale!                       → solvers/DMRG.jl
 # _rescaled_energies, _kpm_energy_grid → solvers/kpm/kernels.jl
@@ -96,7 +99,8 @@
 # exciton_spectra.jl
 #   1. Exciton spectra (MPS-KPM)         get_exciton_bands, get_exciton_continuum
 #
-# Elsewhere: the aux-index projection (project_aux, aux_site, _autoenable_proj) is in
+# Elsewhere: the aux-index projection (AuxProjection, _aux_projection,
+# _project_aux_sectors, project_aux, aux_site, _autoenable_proj) is in
 # core/AuxDOF.jl; _eval_diag_mps (LSB-first diagonal readout, beside eval_mps),
 # ilinspace and kspace_sampling_plan (k-point centres and groups, shared with
 # get_bands_gpu) in core/Utils.jl; _kpm_energy_grid in solvers/kpm/kernels.jl; the
@@ -325,45 +329,19 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     #  Step 1b sublat_proj        → project aux sublattice index    (×1 … ×dim)
     #  Step 2  sublattice (legacy)→ apply mask sandwich             (×1 or ×2)
     #
-    # Aux sites are projected in outermost-first order (nambu → spin → layer →
-    # sublat).  After each removal the next aux moves to position 1 of the
-    # reduced MPO, so project_aux(:pre) always lands on the right site.
-    local _nambu_side = nambu_side
-    local _layer_side = layer_side
-    local _sublat_side = sublat_side
-    local _spin_idx    = isnothing(spin_s_aux) ? sites[1] : spin_s_aux
+    # Steps 0–1b are _project_aux_sectors (core/AuxDOF.jl), which projects the
+    # aux sites in outermost-first order (nambu → spin → layer → sublat).  After
+    # each removal the next aux moves to position 1 of the reduced MPO, so
+    # project_aux(:pre) always lands on the right site.  The spin step uses
+    # spin_s_aux (explicit Index) when provided, else sites[1].
+    aux = AuxProjection(AuxDOFProjection(nambu_proj,  proj_nambu, nambu_s,    nambu_side),
+                        AuxDOFProjection(spin_proj,   proj_s,     spin_s_aux, :pre),
+                        AuxDOFProjection(layer_proj,  proj_layer, layer_s,    layer_side),
+                        AuxDOFProjection(sublat_proj, proj_sl,    sublat_s,   sublat_side))
+    local _spin_idx = isnothing(spin_s_aux) ? sites[1] : spin_s_aux
     function accumulate_Tn!(ak_accum, Tn, n)
-        # Step 0: Nambu (BdG particle/hole) projection — outermost aux, project first.
-        # proj_nambu=nothing → sum particle+hole; proj_nambu=1/2 → select one sector.
-        after_nambu = nambu_proj ? [project_aux(Tn, nambu_s::Index, sec; side=_nambu_side)
-                                    for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] : MPO[Tn]
-
-        # Step 1: spin aux projection.
-        # Uses spin_s_aux (explicit Index) when provided, falls back to sites[1].
-        # proj_s=nothing → sum both channels; proj_s=1/2 → select one.
-        after_spin = spin_proj ? [project_aux(T, _spin_idx, sec; side=:pre)
-                                  for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] : after_nambu
-
-        # Step 1c: layer projection (bilayer / multilayer with H.layer_s).
-        # proj_layer=nothing → sum all layers; proj_layer=k → select layer k.
-        after_layer = if layer_proj
-            n_lay = dim(layer_s::Index)
-            lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
-            [project_aux(T, layer_s::Index, sec; side=_layer_side)
-             for T in after_spin for sec in lay_range]
-        else
-            after_spin
-        end
-
-        # Step 1b: sublattice aux projection (kagome/Lieb/honeycomb with H.sublattice_s).
-        # proj_sl=nothing → sum all sublattices; proj_sl=k → select sublattice k.
-        after_sl_aux = if sublat_proj
-            sl_range = isnothing(proj_sl) ? (1:dim(sublat_s::Index)) : (proj_sl:proj_sl)
-            [project_aux(T, sublat_s::Index, sec; side=_sublat_side)
-             for T in after_layer for sec in sl_range]
-        else
-            after_layer
-        end
+        # Steps 0, 1, 1c, 1b: proj_*=nothing sums every sector, an integer selects one.
+        after_sl_aux = _project_aux_sectors(Tn, aux; spin_index=_spin_idx)
 
         # Step 2: legacy sublattice mask projection (for 2-sublattice models without aux index)
         # proj_sl=nothing applies both masks; proj_sl=1/2 selects one.
@@ -371,11 +349,11 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
             masks = isnothing(proj_sl) ? [mask_A, mask_B] :
                     proj_sl == 1       ? [mask_A]          : [mask_B]
             sl_mpas = MPO[]
-            for T in after_sl_aux, mask in masks
+            for (T, _) in after_sl_aux, mask in masks
                 push!(sl_mpas, apply(apply(mask, T; cutoff=cutoff, maxdim=maxdim), mask; cutoff=cutoff, maxdim=maxdim))
             end
         else
-            sl_mpas = after_sl_aux
+            sl_mpas = (T for (T, _) in after_sl_aux)
         end
 
         # Step 3: QFT + diagonal sample + accumulate for every MPO in the list
@@ -501,8 +479,6 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
 
     _require_binary_position_space(H, "get_bands")
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
     ω_resc = _rescaled_energies(H, ω_phys_vals)
 
@@ -519,30 +495,25 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
             kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath; npts_per_segment = num_x)
     end
 
-    # Auto-detect all aux indices so the low-level function can exclude them
-    # from L_pos and pos_sites regardless of which projections are active.
-    nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
-        aux_site(H, :nambu) : (nothing, :pre)
-
-    spin_s_det = H.spin_s   # may be nothing; low-level falls back to sites[1] when nothing
-
-    layer_s_det, layer_side_det = !isnothing(H.layer_s) ?
-        aux_site(H, :layer) : (nothing, :pre)
-
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ?
-        aux_site(H, :sublattice) : (nothing, :post)
+    # Switch on the projection of every aux DOF on H and detect all aux indices,
+    # so the low-level function can exclude them from L_pos and pos_sites
+    # regardless of which projections are active. The spin Index may be nothing;
+    # the low-level method then falls back to sites[1].
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl)
+    (; nambu, spin, layer, sublat) = aux
 
     Ak_w = get_bands(H.mpo, H.scale, H.center, H.sites, Ncheb, D, ω_resc;
-                            spin_proj  = spin_proj,  proj_s     = proj_s,
-                            spin_s_aux = spin_s_det,
-                            nambu_proj = nambu_proj, proj_nambu = proj_nambu,
-                            nambu_s    = nambu_s_det, nambu_side = nambu_side_det,
-                            layer_proj = layer_proj, proj_layer  = proj_layer,
-                            layer_s    = layer_s_det, layer_side = layer_side_det,
+                            spin_proj  = spin.on,     proj_s     = proj_s,
+                            spin_s_aux = spin.index,
+                            nambu_proj = nambu.on,    proj_nambu = proj_nambu,
+                            nambu_s    = nambu.index, nambu_side = nambu.side,
+                            layer_proj = layer.on,    proj_layer  = proj_layer,
+                            layer_s    = layer.index, layer_side = layer.side,
                             sublattice = sublattice, proj_sl    = proj_sl,
-                            sublat_proj = sublat_proj,
-                            sublat_s    = sublat_s_det,
-                            sublat_side = sublat_side_det,
+                            sublat_proj = sublat.on,
+                            sublat_s    = sublat.index,
+                            sublat_side = sublat.side,
                             k_groups_override = k_groups_override,
                             xmin = xmin, xmax = xmax,
                             num_x = num_x, num_avg = num_avg,

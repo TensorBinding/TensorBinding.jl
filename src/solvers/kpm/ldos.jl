@@ -8,9 +8,9 @@
 #
 # Entry points: get_ldos_online, get_ldos_spatial
 # Depends on: core/Utils.jl (spatial_sampling_plan, extract_diagonal_to_mps,
-#   _eval_block_mps, binary_to_MPS, mpsexciton), core/TBSystem.jl (TBHamiltonian,
-#   physical_projector, physical_site_state, site_permutation), core/AuxDOF.jl
-#   (_autoenable_proj, _aux_setup, _ldos_make_psi0, project_aux), solvers/DMRG.jl
+#   _eval_block_mps, binary_to_MPS), core/TBSystem.jl (TBHamiltonian,
+#   physical_projector, site_permutation), core/AuxDOF.jl (_aux_projection,
+#   _probe_sectors, probe_state, _project_aux_sectors), solvers/DMRG.jl
 #   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
 #   solvers/kpm/recursion.jl (_scaled_hamiltonian, _run_kpm_mps!).
 #
@@ -85,8 +85,6 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                           sublat_proj::Bool = false,
                           proj_sl           = nothing)
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
     Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
@@ -95,18 +93,12 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     Nω     = length(ω_vals)
     accum  = zeros(Float64, Nω)
 
-    (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
-        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
-                      layer_proj, proj_layer, sublat_proj, proj_sl)
-    L_tot = length(H.sites)
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl)
 
     # ── MPS-based Chebyshev recursion, summed over requested aux sectors ──────
-    for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-        psi0 = any_aux_proj ?
-               _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
-               (L_tot == H.L ? physical_site_state(H, X) :
-                               mpsexciton(X, H.sites))
-        _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum;
+    for σ in _probe_sectors(aux)
+        _run_kpm_mps!(Ham_n, probe_state(H, X, σ), Ncheb, W, valid, accum;
                       cutoff=cutoff, maxdim=maxdim,
                       verbose=verbose, label="get_ldos_online")
     end  # sector loop
@@ -350,18 +342,13 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     nbx      = 2^block_a
 
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
-
-    (; nambu_s_det, nambu_side_det, spin_s_det,
-       layer_s_det, layer_side_det, sublat_s_det, sublat_side_det,
-       nambu_range, spin_range, layer_range, any_aux_proj) =
-        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
-                      layer_proj, proj_layer, sublat_proj, proj_sl)
+    # Every aux DOF present on H is projected (the flags are switched on here).
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl)
 
     # ── Bernal top-view guard ─────────────────────────────────────────────────
-    if layer_proj && isnothing(proj_layer) && !isnothing(sublat_s_det)
-        n_lay = dim(layer_s_det::Index)
+    if aux.layer.on && isnothing(proj_layer) && !isnothing(aux.sublat.index)
+        n_lay = dim(aux.layer.index::Index)
         @warn """get_ldos_spatial: proj_layer=nothing on a layered+sublattice Hamiltonian.
   Result accumulates sublattice columns by label across all $n_lay layers.
   For Bernal stacking this is NOT the physical top-view: even layers have their
@@ -382,8 +369,8 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     #       fills only sublattice k, others stay 0).
     #   • average (large scale): the sublattice is traced out — one value per
     #       unit cell, shape (Nω, ng),  col = ig  (mean over the n_sub atoms).
-    has_sublat   = !isnothing(sublat_s_det)
-    n_sub        = has_sublat ? dim(sublat_s_det::Index) : 1
+    has_sublat   = !isnothing(aux.sublat.index)
+    n_sub        = has_sublat ? dim(aux.sublat.index::Index) : 1
     # proj_sl=k pins a single sublattice → always resolved (that one column).
     resolve_sl   = has_sublat && (plan.resolve_sublattice || !isnothing(proj_sl))
     average_sl   = has_sublat && !resolve_sl
@@ -402,25 +389,21 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # Averaging collapses the n_sub atoms into one column per group.
     n_cols = average_sl ? ng : ng * n_sub
     result = zeros(Float64, Nω, n_cols)
-    L_tot  = length(H.sites)
 
     if mode == :mps
         # ── MPS mode ──────────────────────────────────────────────────────────
         n_total = sum(length(g) for g in groups)
         n_done  = 0
+        sectors = _probe_sectors(aux)
 
         for (ig, grp) in enumerate(groups)
             grp_accum = zeros(Float64, Nω, n_sub)  # per-sublattice accumulator
 
             for x in grp
-                for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range,
-                        σ_sl in sl_fill
-                    psi0 = any_aux_proj ?
-                           _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) :
-                           (L_tot == H.L ? physical_site_state(H, x) :
-                                           mpsexciton(x, H.sites))
+                for σ in sectors
+                    σ_sl = σ === nothing ? 1 : σ[4]   # the sublattice column
                     accum_loc = zeros(Float64, Nω)
-                    _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_loc;
+                    _run_kpm_mps!(Ham_n, probe_state(H, x, σ), Ncheb, W, valid, accum_loc;
                                   cutoff=cutoff, maxdim=maxdim)
 
                     for iω in 1:Nω
@@ -448,27 +431,20 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         # ── MPO mode: single online Chebyshev pass ────────────────────────────
         all_xs = unique(vcat(groups...))
 
-        # Build position-only eval states (drop sublat + any other projected aux)
-        aux_to_drop = Set{Index}()
-        (nambu_proj && !isnothing(nambu_s_det)) && push!(aux_to_drop, nambu_s_det::Index)
-        (spin_proj  && !isnothing(spin_s_det))  && push!(aux_to_drop, spin_s_det::Index)
-        (layer_proj && !isnothing(layer_s_det)) && push!(aux_to_drop, layer_s_det::Index)
-        has_sublat                              && push!(aux_to_drop, sublat_s_det::Index)
+        # Build position-only eval states: drop every projected aux site present
+        # on H (the flags are on for all of them, the sublattice included).
+        aux_to_drop = Set{Index}(d.index for d in (aux.nambu, aux.spin, aux.layer, aux.sublat)
+                                 if d.on && !isnothing(d.index))
         pos_sites = filter(s -> s ∉ aux_to_drop, H.sites)
 
         psi_dict = if isempty(aux_to_drop)
-            Dict(x => (L_tot == H.L ? physical_site_state(H, x) :
-                                      mpsexciton(x, H.sites)) for x in all_xs)
+            Dict(x => probe_state(H, x) for x in all_xs)
         else
             @assert length(pos_sites) == H.L "get_ldos_spatial: $(length(pos_sites)) position sites after dropping aux but expected H.L=$(H.L)."
             Dict(x => binary_to_MPS(x - 1, H.L, pos_sites) for x in all_xs)
         end
 
         accum = zeros(Float64, Nω, n_cols)
-
-        local _nambu_side  = nambu_side_det
-        local _layer_side  = layer_side_det
-        local _sublat_side = sublat_side_det
 
         # Reduce a diagonal profile MPS to per-pixel scalars, returning (u, value)
         # pairs where u is the 1-indexed output pixel (column unit):
@@ -485,52 +461,21 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             end
         end
 
+        # Project T_n onto every aux sector (nambu → spin → layer → sublattice,
+        # core/AuxDOF.jl) and accumulate each projection's diagonal. Resolved
+        # sublattice → each sector s gets its own column; averaged (large scale)
+        # → all sectors fold into the single per-pixel column u (mean over the
+        # n_sub atoms). Without a sublattice (n_sub = s = 1, scale 1.0) the
+        # column is the pixel u.
         function accumulate_Tn!(Tk, n)
-            # Non-sublattice projections (nambu → spin → layer)
-            after_nambu = nambu_proj ?
-                [project_aux(Tk, nambu_s_det::Index, sec; side=_nambu_side)
-                 for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] :
-                MPO[Tk]
-
-            after_spin = spin_proj ?
-                [project_aux(T, spin_s_det::Index, sec; side=:pre)
-                 for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] :
-                after_nambu
-
-            after_layer = if layer_proj
-                n_lay     = dim(layer_s_det::Index)
-                lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
-                [project_aux(T, layer_s_det::Index, sec; side=_layer_side)
-                 for T in after_spin for sec in lay_range]
-            else
-                after_spin
-            end
-
-            if has_sublat
-                # Project per sublattice sector. Resolved → each sector gets its
-                # own column; averaged (large scale) → all sectors fold into the
-                # single per-pixel column u (mean over the n_sub atoms).
-                for Tl in after_layer, s in sl_fill
-                    Tp     = project_aux(Tl, sublat_s_det::Index, s; side=_sublat_side)
-                    diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
-                    scale  = average_sl ? 1.0 / n_sub : 1.0
-                    for (u, val) in spatial_vals_cpu(diag_n)
-                        col = average_sl ? u : (u - 1) * n_sub + s
-                        for iω in 1:Nω
-                            valid[iω] || continue
-                            accum[iω, col] += W[n, iω] * val * scale
-                        end
-                    end
-                end
-            else
-                # No sublattice: one column per pixel (original behavior)
-                for Tp in after_layer
-                    diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
-                    for (u, val) in spatial_vals_cpu(diag_n)
-                        for iω in 1:Nω
-                            valid[iω] || continue
-                            accum[iω, u] += W[n, iω] * val
-                        end
+            for (Tp, s) in _project_aux_sectors(Tk, aux; sublattice=has_sublat)
+                diag_n = ITensorMPS.truncate!(extract_diagonal_to_mps(Tp); cutoff=cutoff)
+                scale  = average_sl ? 1.0 / n_sub : 1.0
+                for (u, val) in spatial_vals_cpu(diag_n)
+                    col = average_sl ? u : (u - 1) * n_sub + s
+                    for iω in 1:Nω
+                        valid[iω] || continue
+                        accum[iω, col] += W[n, iω] * val * scale
                     end
                 end
             end

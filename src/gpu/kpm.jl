@@ -7,8 +7,9 @@
 # Main entry points: KPM_Tn_gpu, get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu,
 # get_dos_stochastic_gpu.
 # Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan,
-# basis-state and exciton MPS builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (aux-site
-# detection, projected probes), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
+# basis-state and exciton MPS builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (the
+# aux projection _aux_projection/_project_aux_sectors, projected probes
+# _probe_sectors/probe_state), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
 # solvers/kpm/kernels.jl (energy grid, moment-column reconstruction),
 # solvers/kpm/recursion.jl (_scaled_hamiltonian), gpu/device.jl, gpu/primitives.jl.
 
@@ -218,24 +219,16 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     nbx      = 2^block_a    # coarse pixels along x (block mode)
 
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
+    # ── Aux projection: flags auto-enabled, indices detected ─────────────────
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl)
 
-    # ── Aux site detection ───────────────────────────────────────────────────
-    nambu_s_det,  nambu_side_det  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
-    spin_s_det                    = H.spin_s
-    layer_s_det,  layer_side_det  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
-
-    has_sublat = !isnothing(sublat_s_det)
-    n_sub      = has_sublat ? dim(sublat_s_det::Index) : 1
+    has_sublat = !isnothing(aux.sublat.index)
+    n_sub      = has_sublat ? dim(aux.sublat.index::Index) : 1
     # Large-scale sampling traces out the sublattice (one value per unit cell);
     # atomic-scale / proj_sl=k resolves it into per-atom columns. See plan above.
     resolve_sl = has_sublat && (plan.resolve_sublattice || !isnothing(proj_sl))
     average_sl = has_sublat && !resolve_sl
-    sl_fill    = has_sublat ?
-        (isnothing(proj_sl) ? (1:n_sub) : (proj_sl:proj_sl)) :
-        (1:1)
 
     # ── KPM setup ────────────────────────────────────────────────────────────
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
@@ -252,10 +245,8 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
-    local _nambu_side  = nambu_side_det
-    local _layer_side  = layer_side_det
-    local _sublat_side = sublat_side_det
-    local _spin_idx    = isnothing(spin_s_det) ? H.sites[1] : spin_s_det
+    # The spin Index to project; sites[1] for a Hamiltonian without spin.
+    spin_idx = isnothing(aux.spin.index) ? H.sites[1] : aux.spin.index
 
     # ── Online accumulation (GPU) ────────────────────────────────────────────
     # No QFT sandwich: positions are real-space, so after projections we extract
@@ -275,49 +266,20 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         end
     end
 
+    # Project T_n onto every aux sector (nambu → spin → layer → sublattice) and
+    # accumulate each projection's diagonal. Resolved sublattice → per-atom
+    # column; averaged → fold all atoms into the single per-pixel column u (mean
+    # over the n_sub atoms); no sublattice (n_sub = s = 1, scale 1.0) → pixel u.
     function accumulate_Tn_ldos_gpu!(ak_accum, Tn_gpu, n)
-        after_nambu = nambu_proj ?
-            [_project_aux_gpu(Tn_gpu, nambu_s_det::Index, sec; side=_nambu_side)
-             for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] :
-            MPO[Tn_gpu]
-
-        after_spin = spin_proj ?
-            [_project_aux_gpu(T, _spin_idx, sec; side=:pre)
-             for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] :
-            after_nambu
-
-        after_layer = if layer_proj
-            n_lay     = dim(layer_s_det::Index)
-            lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
-            [_project_aux_gpu(T, layer_s_det::Index, sec; side=_layer_side)
-             for T in after_spin for sec in lay_range]
-        else
-            after_spin
-        end
-
-        if has_sublat
-            # Resolved → per-atom column; averaged → fold all atoms into the
-            # single per-pixel column u (mean over the n_sub atoms).
-            for Tl in after_layer, s in sl_fill
-                Tp       = _project_aux_gpu(Tl, sublat_s_det::Index, s; side=_sublat_side)
-                diag_mps = ITensorMPS.truncate!(extract_diagonal_to_mps_gpu(Tp); cutoff=cutoff)
-                scale    = average_sl ? 1.0 / n_sub : 1.0
-                for (u, val) in spatial_vals_gpu(diag_mps)
-                    c = average_sl ? u : (u - 1) * n_sub + s
-                    for iω in 1:Nω
-                        valid[iω] || continue
-                        ak_accum[iω, c] += W[n, iω] * val * scale
-                    end
-                end
-            end
-        else
-            for Tp in after_layer
-                diag_mps = ITensorMPS.truncate!(extract_diagonal_to_mps_gpu(Tp); cutoff=cutoff)
-                for (u, val) in spatial_vals_gpu(diag_mps)
-                    for iω in 1:Nω
-                        valid[iω] || continue
-                        ak_accum[iω, u] += W[n, iω] * val
-                    end
+        for (Tp, s) in _project_aux_sectors(Tn_gpu, aux; project=_project_aux_gpu,
+                                            spin_index=spin_idx, sublattice=has_sublat)
+            diag_mps = ITensorMPS.truncate!(extract_diagonal_to_mps_gpu(Tp); cutoff=cutoff)
+            scale    = average_sl ? 1.0 / n_sub : 1.0
+            for (u, val) in spatial_vals_gpu(diag_mps)
+                c = average_sl ? u : (u - 1) * n_sub + s
+                for iω in 1:Nω
+                    valid[iω] || continue
+                    ak_accum[iω, c] += W[n, iω] * val * scale
                 end
             end
         end
@@ -682,9 +644,10 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     continuum_only && N_phys < 2 &&
         error("get_dos_stochastic_gpu: continuum_only=true requires H.N >= 2.")
 
-    (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
-        _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
-                      layer_proj, proj_layer, sublat_proj, proj_sl)
+    # Projections are not switched on automatically (as in get_dos_stochastic).
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl,
+                             autoenable=false)
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                kernel=kernel, lambda=lambda, eta=eta,
@@ -731,19 +694,18 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         return MPS(H.sites, state)
     end
 
-    if any_aux_proj
+    if _any_projected(aux)
         continuum_only &&
             error("get_dos_stochastic_gpu: continuum_only is not supported together with auxiliary projections.")
         D_eff = N_phys
         if N_sample > 0
+            sectors = _probe_sectors(aux)
             xs = rand(rng, 1:N_phys, N_sample)
             for (i, x) in enumerate(xs)
-                for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
-                    psi0_gpu = _to_gpu_mps(_ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl), gpu_type)
+                for σ in sectors
+                    psi0_gpu = _to_gpu_mps(probe_state(H, x, σ), gpu_type)
                     χ = _run_kpm_mps_gpu!(psi0_gpu, accum_full, 1.0/N_sample)
-                    (verbose || printinfo) && i % 10 == 0 &&
-                        σ_n == first(nambu_range) && σ_s == first(spin_range) &&
-                        σ_l == first(layer_range) && σ_sl == first(sl_range) &&
+                    (verbose || printinfo) && i % 10 == 0 && σ == first(sectors) &&
                         println("  [gpu] dos sample $i/$N_sample (projected)  maxlinkdim=$χ")
                 end
             end

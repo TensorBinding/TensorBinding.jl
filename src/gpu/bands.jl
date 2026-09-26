@@ -4,7 +4,7 @@
 #
 # Main entry point: get_bands_gpu.
 # Depends on: core/Utils.jl (fix_sites, kspace_sampling_plan), core/TBSystem.jl,
-# core/AuxDOF.jl (aux-site detection), lattice/masks2d.jl (legacy sublattice
+# core/AuxDOF.jl (_aux_projection, _project_aux_sectors), lattice/masks2d.jl (legacy sublattice
 # masks), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
 # (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian),
 # physics/qft/kpath.jl (kpath_setup), gpu/device.jl, gpu/primitives.jl.
@@ -90,21 +90,16 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         @warn "get_bands_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
 
     _ensure_scale!(H)
-    nambu_proj, spin_proj, layer_proj, sublat_proj =
-        _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
     ω_resc, W_kpm, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                    kernel=kernel, lambda=lambda)
     Nω     = length(ω_resc)
 
-    # ── Auto-detect aux indices (mirrors the CPU TBHamiltonian overload) ────
-    nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
-        aux_site(H, :nambu) : (nothing, :pre)
-    spin_s_det = H.spin_s
-    layer_s_det, layer_side_det = !isnothing(H.layer_s) ?
-        aux_site(H, :layer) : (nothing, :pre)
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ?
-        aux_site(H, :sublattice) : (nothing, :post)
+    # ── Aux projection: flags auto-enabled, indices detected (as on the CPU) ─
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl)
+    # The spin Index to project; sites[1] for a Hamiltonian without spin.
+    spin_idx = isnothing(aux.spin.index) ? H.sites[1] : aux.spin.index
 
     # ── L_pos: position qubits only (excluding aux sites) ───────────────────
     # Count from the full site list, as the CPU get_bands does: H.L already
@@ -112,8 +107,8 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     isnothing(H.geometry) && error("get_bands_gpu: H.geometry must be set (needed to infer D).")
     D     = length(H.geometry(1))
     L     = length(H.sites)
-    L_pos = L - (spin_proj ? 1 : 0) - (!isnothing(nambu_s_det)  ? 1 : 0) -
-                (!isnothing(layer_s_det)  ? 1 : 0) - (!isnothing(sublat_s_det) ? 1 : 0)
+    L_pos = L - (aux.spin.on ? 1 : 0) - (!isnothing(aux.nambu.index) ? 1 : 0) -
+                (!isnothing(aux.layer.index) ? 1 : 0) - (!isnothing(aux.sublat.index) ? 1 : 0)
 
     # ── k-path shortcut ──────────────────────────────────────────────────────
     kpath_ticks = nothing; kpath_labels = nothing
@@ -136,11 +131,10 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     # ── Position sites (used for QFT ops and optional sublattice masks) ──────
     aux_to_drop = Set{Index}()
-    spin_proj && push!(aux_to_drop,
-        isnothing(spin_s_det) ? H.sites[1] : spin_s_det::Index)
-    !isnothing(nambu_s_det)  && push!(aux_to_drop, nambu_s_det::Index)
-    !isnothing(layer_s_det)  && push!(aux_to_drop, layer_s_det::Index)
-    !isnothing(sublat_s_det) && push!(aux_to_drop, sublat_s_det::Index)
+    aux.spin.on && push!(aux_to_drop, spin_idx::Index)
+    for d in (aux.nambu, aux.layer, aux.sublat)
+        !isnothing(d.index) && push!(aux_to_drop, d.index::Index)
+    end
     pos_sites_cpu = filter(s -> s ∉ aux_to_drop, H.sites)
 
     # ── Legacy sublattice masks — pre-built on CPU, moved to GPU once ────────
@@ -177,64 +171,33 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     printinfo && println("  [gpu] bands dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
-    local _nambu_side = nambu_side_det
-    local _layer_side = layer_side_det
-    local _sublat_side = sublat_side_det
-    local _spin_idx = isnothing(spin_s_det) ? H.sites[1] : spin_s_det
-
     # ── Online accumulation — fully on GPU ──────────────────────────────────
     # Workflow: prebuild everything on CPU (done above), then T_n stays on GPU
     # for the entire accumulate step.  Only the final scalar() calls transfer
     # numbers out of the GPU — no explicit MPO/MPS moves back to CPU.
     #
     # Per step:
-    #   projection  → _project_aux_gpu  (dense typed projector, GPU throughout)
+    #   projection  → _project_aux_sectors with _project_aux_gpu (dense typed
+    #                 projector, GPU throughout)
     #   QFT         → _apply_qft_conj_gpu  (pre-built GPU QFT operators)
     #   diagonal    → extract_diagonal_to_mps_gpu (same GPU dtype as input)
     #   sampling    → _eval_diag_mps_gpu  (scalars pulled out of GPU directly)
     function accumulate_Tn_gpu!(ak_accum, Tn_gpu, n)
-        # Step 0: Nambu (BdG) projection
-        after_nambu = nambu_proj ?
-            [_project_aux_gpu(Tn_gpu, nambu_s_det::Index, sec; side=_nambu_side)
-             for sec in (isnothing(proj_nambu) ? (1:2) : (proj_nambu:proj_nambu))] :
-            MPO[Tn_gpu]
-
-        # Step 1: spin projection
-        after_spin = spin_proj ?
-            [_project_aux_gpu(T, _spin_idx, sec; side=:pre)
-             for T in after_nambu, sec in (isnothing(proj_s) ? (1:2) : (proj_s:proj_s))] :
-            after_nambu
-
-        # Step 1c: layer projection
-        after_layer = if layer_proj
-            n_lay     = dim(layer_s_det::Index)
-            lay_range = isnothing(proj_layer) ? (1:n_lay) : (proj_layer:proj_layer)
-            [_project_aux_gpu(T, layer_s_det::Index, sec; side=_layer_side)
-             for T in after_spin for sec in lay_range]
-        else
-            after_spin
-        end
-
-        # Step 1b: sublattice aux projection
-        after_sl_aux = if sublat_proj
-            sl_range = isnothing(proj_sl) ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl)
-            [_project_aux_gpu(T, sublat_s_det::Index, sec; side=_sublat_side)
-             for T in after_layer for sec in sl_range]
-        else
-            after_layer
-        end
+        # Steps 0, 1, 1c, 1b: Nambu → spin → layer → sublattice projections
+        after_sl_aux = _project_aux_sectors(Tn_gpu, aux; project=_project_aux_gpu,
+                                            spin_index=spin_idx)
 
         # Step 2: legacy sublattice mask sandwich (all GPU — masks pre-built above)
         if sublattice
             masks   = isnothing(proj_sl) ? [mask_A_gpu, mask_B_gpu] :
                       proj_sl == 1       ? [mask_A_gpu]              : [mask_B_gpu]
             sl_mpas = MPO[]
-            for T in after_sl_aux, mask in masks
+            for (T, _) in after_sl_aux, mask in masks
                 push!(sl_mpas, apply(apply(mask, T; cutoff=cutoff, maxdim=maxdim), mask;
                                      cutoff=cutoff, maxdim=maxdim))
             end
         else
-            sl_mpas = after_sl_aux
+            sl_mpas = (T for (T, _) in after_sl_aux)
         end
 
         # Step 3: QFT (GPU) → diagonal MPS (GPU) → scalar sampling (GPU)

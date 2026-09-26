@@ -294,7 +294,8 @@ end
 # Mirrors project_aux (CPU, core/AuxDOF.jl) but builds a dense projector on GPU,
 # with the element type of T, so every contraction stays on the GPU.  The
 # contracted site is absorbed into the neighbouring site, returning an MPO with
-# one fewer site.
+# one fewer site.  get_bands_gpu and get_ldos_spatial_gpu pass it as the
+# `project` step of _project_aux_sectors (core/AuxDOF.jl).
 #
 # setelt() produces a DiagBlockSparse ITensor that cu() leaves on CPU — we
 # therefore build the |sec><sec| projector as an explicit dense array instead.

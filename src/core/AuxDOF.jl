@@ -15,28 +15,34 @@
 #
 # Main entry points: add_spin!, add_zeeman!, add_superconductivity!, add_soc!,
 # spin_index, nambu_index, prepend_spin/postpend_spin,
-# prepend_nambu/postpend_nambu, project_aux, aux_site.
+# prepend_nambu/postpend_nambu, project_aux, aux_site, probe_state.
 #
-# Contents by section, moved verbatim in Tier 1 of the reorganisation from:
+# Contents by section (sections 1–8 and 10 were moved in Tier 1 of the
+# reorganisation from the files named on the right; Tier 2 added the shared
+# kernels of sections 8–10):
 #   1–2.  spin_index, _SPIN_OPS, Symbol prepend_op/postpend_op,
 #         prepend_spin/postpend_spin, nambu_index, _NAMBU_OPS,
 #         prepend_nambu/postpend_nambu            ← physics/Supercond.jl
 #   3–6.  add_spin!, add_zeeman!, add_superconductivity!, add_soc!
 #                                                 ← core/TBSystem.jl
 #   7.    project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl
-#   8.    _project_aux_block                      ← physics/SCF.jl
-#         _project_spin_sector                    ← physics/rpa/dyson.jl
-#   9–10. _aux_setup, _ldos_make_psi0             ← solvers/kpm/ldos.jl
+#   8.    the sector projectors: _project_end_site (behind project_aux and
+#         contract_nh_block), _block_projector and _absorb_aux_site (behind
+#         _project_aux_block ← physics/SCF.jl and _project_spin_sector
+#         ← physics/rpa/dyson.jl)
+#   9.    AuxProjection, _aux_projection, _project_aux_sectors, _probe_sectors,
+#         _aux_setup (the spectral methods' eight aux keywords, in one value)
+#   10.   _ldos_make_psi0 (← solvers/kpm/ldos.jl), probe_state
 #
 # Depends on: Utils, Hamiltonian, TBSystem, hopping2d*, Supercond* (a * marks a
 # file included later; see the source map in TensorBinding.jl).  Included right
 # after core/TBSystem.jl, this file needs only the ITensors types and
 # TBHamiltonian at definition time.  Its callees are resolved at run time: the
-# matrix-form prepend_op/postpend_op, get_diagonal_mpo and _basis_state_mps
-# (core/Utils.jl), hopping2MPO (core/Hamiltonian.jl), _pos_sites,
-# _invalidate_cache! and _require_binary_position_space (core/TBSystem.jl),
-# generate_kin_u/d (lattice/hopping2d.jl) and pairingNNN/pairing2MPO
-# (physics/Supercond.jl).
+# matrix-form prepend_op/postpend_op, get_diagonal_mpo, _basis_state_mps and
+# mpsexciton (core/Utils.jl), hopping2MPO (core/Hamiltonian.jl), _pos_sites,
+# _invalidate_cache!, _require_binary_position_space and physical_site_state
+# (core/TBSystem.jl), generate_kin_u/d (lattice/hopping2d.jl) and
+# pairingNNN/pairing2MPO (physics/Supercond.jl).
 
 
 # ============================================================
@@ -523,21 +529,23 @@ end
 #
 # Any auxiliary DOF (spin, Nambu, layer, sublattice) added with prepend_op /
 # postpend_op lives at the first or last site of the MPO as a dim-1-bonded
-# tensor.  The functions below implement the removal step used in Steps 0, 1,
-# 1b and 1c of the get_bands projection pipeline (physics/qft/bands.jl).
+# tensor.  project_aux is the removal step of the projection chain
+# _project_aux_sectors (section 9), which get_bands (physics/qft/bands.jl) and
+# get_ldos_spatial (solvers/kpm/ldos.jl) apply to every Chebyshev operator.
 #
 # project_aux(W, aux_s, sec; side)
 #   Contracts the projector |sec⟩⟨sec| onto the bra (aux_s') and ket (aux_s)
-#   physical indices of the aux tensor.  The resulting dim-1 link is absorbed
-#   into the adjacent position site, returning an (L−1)-site MPO.
+#   physical indices of the aux tensor (the kernel _project_end_site,
+#   section 8).  The resulting link is absorbed into the adjacent position
+#   site, returning an (L−1)-site MPO.
 #   `side=:pre` for prepended indices (spin, Nambu, layer);
 #   `side=:post` for postpended indices (sublattice).
 #
 # aux_site(H, which) -> (Index, Symbol)
 #   Extracts the auxiliary Index and its side (:pre or :post) from H.sites.
 #   `which` ∈ :spin, :nambu, :layer, :sublattice.
-#   Used by the TBHamiltonian overload to auto-detect all auxiliary indices
-#   and pass them to the low-level get_bands without user intervention.
+#   Used by _aux_projection (section 9) to auto-detect the auxiliary indices
+#   of a TBHamiltonian without user intervention.
 
 """
     project_aux(W, aux_s, σ; side=:pre) -> MPO
@@ -551,20 +559,8 @@ Contracts the projector |σ⟩⟨σ| on both bra and ket physical indices of the
 aux tensor; the resulting dim-1 link is absorbed into the adjacent position
 site.  Returns an (L−1)-site MPO suitable for `conjugate_by_qft`.
 """
-function project_aux(W::MPO, aux_s::Index, σ::Integer; side::Symbol = :pre)
-    L        = length(W)
-    pos      = side === :pre ? 1 : L
-    aux_proj = W[pos] * setelt(aux_s' => σ) * setelt(aux_s => σ)
-    new_tensors = Vector{ITensor}(undef, L - 1)
-    if side === :pre
-        new_tensors[1] = W[2] * aux_proj
-        for i in 2:L-1; new_tensors[i] = W[i+1]; end
-    else  # :post
-        for i in 1:L-2; new_tensors[i] = W[i]; end
-        new_tensors[L-1] = W[L-1] * aux_proj
-    end
-    return MPO(new_tensors)
-end
+project_aux(W::MPO, aux_s::Index, σ::Integer; side::Symbol = :pre) =
+    _project_end_site(W, aux_s, σ, σ, side)
 
 # Nothing-overloads: give Julia a compilable method when the Index is nothing,
 # so branches in get_bands can be type-checked without a MethodError.
@@ -577,8 +573,9 @@ project_aux(::MPO, ::Nothing, ::Integer; side::Symbol=:pre) =
         -> (nambu_proj, spin_proj, layer_proj, sublat_proj)
 
 Enable projection flags for any auxiliary DOF detected on `H`, emitting one
-`@info` record per auto-enabled flag.  Called at the top of every `TBHamiltonian`
-spectral method before any aux-index logic runs.
+`@info` record per auto-enabled flag.  Called by `_aux_projection` (with
+`autoenable=true`), which every `TBHamiltonian` spectral method but the
+stochastic DOS uses before any aux-index logic runs.
 """
 function _autoenable_proj(H::TBHamiltonian,
                            nambu_proj::Bool, spin_proj::Bool,
@@ -640,30 +637,89 @@ end
 
 
 # ============================================================
-# 8. Auxiliary sector projectors (_project_aux_block, _project_spin_sector)
+# 8. Auxiliary sector projectors
 # ============================================================
+#
+# Each projector removes one aux site from an MPO: it contracts that site with
+# |row⟩⟨col| on (s', s) and absorbs the remaining link tensor into a neighbour.
+# Two kernels do it, because their callers differ in the element type and the
+# contraction order they have always used:
+#
+#   _project_end_site   one-hot pair (Float64, so a real operator stays real),
+#                       an end site, absorbed as `W[neighbour] * block`
+#                       → project_aux, contract_nh_block (physics/nh/kpm.jl)
+#   _absorb_aux_site    a ComplexF64 projector (_block_projector), any site,
+#                       absorbed as `block * W[2]` or `W[pos − 1] * block`
+#                       → _project_aux_block, _project_spin_sector
+#
+# Merging the two would make project_aux's result complex for a real operator
+# (the golden tests record element types), or the SCF/RPA blocks real. The
+# wrappers keep what else differs: how
+# the site is found (given side, detected end, index or tag, "Spin" tag), their
+# checks and error messages, and _project_spin_sector's TBHamiltonian copy. The
+# GPU twins _project_aux_gpu (gpu/primitives.jl) and _contract_nh_block_gpu
+# (gpu/nh.jl) build dense device projectors instead (one-hot tensors do not move
+# to the GPU) and stay with the GPU code.
 
+"""
+    _project_end_site(W, s, row, col, side) -> MPO
+
+Contract the end site of `W` that carries `s` (the first site for `side=:pre`,
+the last for any other `side`) with the one-hot pair ⟨row| on `s'` and |col⟩ on
+`s`, and absorb the link tensor left over into the neighbouring site, as
+`W[neighbour] * block`. Returns the MPO without that site. Nothing is checked:
+the caller guarantees that `s` sits there (see project_aux, contract_nh_block).
+"""
+function _project_end_site(W::MPO, s::Index, row::Integer, col::Integer, side::Symbol)
+    L = length(W)
+    if side === :pre
+        block = W[1] * onehot(s' => row) * onehot(s => col)
+        return MPO(ITensor[W[2] * block; [W[i] for i in 3:L]])
+    else
+        block = W[L] * onehot(s' => row) * onehot(s => col)
+        return MPO(ITensor[[W[i] for i in 1:L-2]; W[L-1] * block])
+    end
+end
+
+# The ComplexF64 projector |row⟩⟨col| on (s', s) of _project_aux_block and
+# _project_spin_sector.
+function _block_projector(s::Index, row::Int, col::Int)
+    proj = ITensor(ComplexF64, s', s)
+    proj[s' => row, s => col] = 1.0
+    return proj
+end
+
+# Contract site `pos` of `mpo` with `proj` and absorb the result into site 2
+# (`pos == 1`, as `block * W[2]`) or site `pos − 1` (as `W[pos − 1] * block`).
+# Returns the tensors of the remaining sites, in order.
+function _absorb_aux_site(mpo::MPO, pos::Int, proj::ITensor)
+    tensors    = ITensor[mpo[i] for i in eachindex(mpo)]
+    contracted = tensors[pos] * proj
+    if pos == 1
+        tensors[2] = contracted * tensors[2]
+        return tensors[2:end]
+    end
+    tensors[pos - 1] = tensors[pos - 1] * contracted
+    return vcat(tensors[1:pos - 1], tensors[pos + 1:end])
+end
+
+"""
+    _project_aux_block(mpo, aux_s, row, col; tag="") -> MPO
+
+The `(row, col)` block of the aux site `aux_s` of `mpo`: that site is contracted
+with the ComplexF64 projector |row⟩⟨col| and absorbed into a neighbour. The site
+is the first one that carries `aux_s`, or an index tagged `tag` when `tag` is
+not empty; it may be anywhere in the MPO. A one-site MPO gives an empty MPO.
+"""
 function _project_aux_block(mpo::MPO, aux_s::Index, row::Int, col::Int; tag::String="")
     aux_pos = findfirst(n -> any(i -> i == aux_s || (!isempty(tag) && hastags(i, tag)),
                                  siteinds(mpo, n)),
                         1:length(mpo))
     aux_pos === nothing && error("_project_aux_block: auxiliary index not found")
 
-    proj = ITensor(ComplexF64, aux_s', aux_s)
-    proj[aux_s' => row, aux_s => col] = 1.0
-
-    tensors = ITensor[mpo[i] for i in eachindex(mpo)]
-    contracted = tensors[aux_pos] * proj
-
-    if length(tensors) == 1
-        return MPO(ITensor[])
-    elseif aux_pos == 1
-        tensors[2] = contracted * tensors[2]
-        return MPO(tensors[2:end])
-    else
-        tensors[aux_pos - 1] = tensors[aux_pos - 1] * contracted
-        return MPO(vcat(tensors[1:aux_pos - 1], tensors[aux_pos + 1:end]))
-    end
+    proj = _block_projector(aux_s, row, col)
+    length(mpo) == 1 && return MPO(ITensor[])
+    return MPO(_absorb_aux_site(mpo, aux_pos, proj))
 end
 
 
@@ -691,19 +747,11 @@ function _project_spin_sector(H::TBHamiltonian, sector::Int)
                          1:length(H.mpo))
     spin_pos === nothing && error("_project_spin_sector: spin Index not found in MPO")
 
-    proj = ITensor(ComplexF64, s', s)
-    proj[s' => sector, s => sector] = 1.0
-
-    tensors    = ITensor[H.mpo[i] for i in 1:length(H.mpo)]
-    contracted = tensors[spin_pos] * proj   # only link indices remain
-
-    if spin_pos == 1
-        tensors[2]  = contracted * tensors[2]
-        new_tensors = tensors[2:end]
-    else
-        tensors[spin_pos - 1] = tensors[spin_pos - 1] * contracted
-        new_tensors = tensors[1:spin_pos - 1]
-    end
+    kept = _absorb_aux_site(H.mpo, spin_pos, _block_projector(s, sector, sector))
+    # For a spin site inside the MPO (a postpended spin followed by a postpended
+    # Nambu site) the sites after it are dropped, as they always were; see
+    # docs/dev/REORGANISATION_TODO.md.
+    new_tensors = spin_pos == 1 ? kept : kept[1:spin_pos - 1]
 
     new_sites = filter(i -> !hastags(i, "Spin"), H.sites)
 
@@ -715,47 +763,199 @@ end
 
 
 # ============================================================
-# 9. Shared KPM helpers (get_ldos_online, get_ldos_spatial, get_dos_stochastic[_gpu])
+# 9. The auxiliary projection of a spectral method: AuxProjection
 # ============================================================
+#
+# The spectral methods (get_ldos_online, get_ldos_spatial, get_dos_stochastic,
+# get_bands and the GPU get_bands_gpu, get_ldos_spatial_gpu,
+# get_dos_stochastic_gpu) take the same eight keywords, a flag and a sector
+# selector per auxiliary DOF: nambu_proj/proj_nambu, spin_proj/proj_s,
+# layer_proj/proj_layer, sublat_proj/proj_sl. The keywords stay in every public
+# signature; inside, one AuxProjection carries them together with the Index and
+# the side of each DOF on the MPO. _aux_projection builds it from H (the
+# low-level get_bands from its explicit index keywords), _project_aux_sectors
+# applies it to a Chebyshev operator T_n (the MPO methods), and _probe_sectors
+# lists the sectors of the probe states (the MPS methods, with probe_state).
+#
+# A struct rather than keywords forwarded to _aux_setup: the projection chain
+# needs a flag, a selector, an Index and a side for each of the four DOFs, and
+# the low-level get_bands supplies the indices itself instead of detecting them
+# on H; one value lets both feed the same chain.
+
+"""
+    AuxDOFProjection(on, sector, index, side)
+
+How a spectral method treats one auxiliary DOF: `on` projects it (the `*_proj`
+flag, after `_autoenable_proj`), `sector` is the `proj_*` selector (`nothing`
+sums every sector, an integer keeps one), `index` is its Index on the MPO
+(`nothing` when absent) and `side` the end of the MPO it sits at (`:pre` first,
+`:post` last).
+"""
+struct AuxDOFProjection
+    on::Bool
+    sector
+    index
+    side::Symbol
+end
+
+"""
+    AuxProjection(nambu, spin, layer, sublat)
+
+The auxiliary projection of a spectral method: one `AuxDOFProjection` per DOF
+(the field `sublat` is the sublattice). Built by `_aux_projection(H; …)` from
+the eight public keywords, or by the low-level `get_bands` from its own.
+"""
+struct AuxProjection
+    nambu::AuxDOFProjection
+    spin::AuxDOFProjection
+    layer::AuxDOFProjection
+    sublat::AuxDOFProjection
+end
+
+"""
+    _aux_projection(H; nambu_proj=false, proj_nambu=nothing, spin_proj=false,
+                    proj_s=nothing, layer_proj=false, proj_layer=nothing,
+                    sublat_proj=false, proj_sl=nothing, autoenable=true)
+        -> AuxProjection
+
+The auxiliary projection a spectral method applies to `H`, from its eight
+public keywords. With `autoenable=true` the flag of every DOF present on `H` is
+switched on (`_autoenable_proj`, one `@info` per flag it enables); the stochastic
+DOS passes `false`. The Nambu, layer and sublattice sites are located with
+`aux_site`. The spin site is always taken to be the first one (`side = :pre`):
+its side is not detected, which is the postpended-spin segfault listed in
+docs/dev/REORGANISATION_TODO.md.
+"""
+function _aux_projection(H::TBHamiltonian;
+                         nambu_proj::Bool  = false, proj_nambu = nothing,
+                         spin_proj::Bool   = false, proj_s     = nothing,
+                         layer_proj::Bool  = false, proj_layer = nothing,
+                         sublat_proj::Bool = false, proj_sl    = nothing,
+                         autoenable::Bool  = true)
+    if autoenable
+        nambu_proj, spin_proj, layer_proj, sublat_proj =
+            _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
+    end
+    nambu_s,  nambu_side  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
+    layer_s,  layer_side  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
+    sublat_s, sublat_side = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
+    return AuxProjection(AuxDOFProjection(nambu_proj,  proj_nambu, nambu_s,  nambu_side),
+                         AuxDOFProjection(spin_proj,   proj_s,     H.spin_s, :pre),
+                         AuxDOFProjection(layer_proj,  proj_layer, layer_s,  layer_side),
+                         AuxDOFProjection(sublat_proj, proj_sl,    sublat_s, sublat_side))
+end
+
+# Whether any DOF is projected (the probe-state methods then fix the aux sectors).
+_any_projected(aux::AuxProjection) =
+    aux.nambu.on || aux.spin.on || aux.layer.on || aux.sublat.on
+
+# All `n` sectors, or the selected one.
+_sector_range(sector, n) = isnothing(sector) ? (1:n) : (sector:sector)
+
+"""
+    _project_aux_sectors(T, aux; project=project_aux, spin_index=nothing,
+                         sublattice=aux.sublat.on)
+
+The projections of the operator `T` onto every requested auxiliary sector,
+outermost DOF first: Nambu (sectors `1:2`, or `proj_nambu`), spin (`1:2`, or
+`proj_s`), layer (all its sectors, or `proj_layer`) and, when `sublattice` is
+true, the sublattice (all, or `proj_sl`). A DOF whose flag is off is left alone.
+Returns an iterator of `(T_proj, s)` pairs, `s` the sublattice sector (`1` when
+the sublattice is not projected), in the order of the four hand-written chains
+it replaced: the spin step runs over its sectors outermost (a two-dimensional
+comprehension), the others over their sectors innermost, so the Nambu sector
+varies fastest across the spin step. The Nambu, spin and layer lists are built
+when it is called, each sublattice projection when the iteration reaches it.
+
+- `project(T, index, σ; side)` removes one aux site: `project_aux` on the CPU,
+  `_project_aux_gpu` on the GPU.
+- `spin_index` is the spin Index to project; `nothing` takes `aux.spin.index`,
+  which must then be set (get_ldos_spatial). get_bands and the GPU methods pass
+  their fallback, `sites[1]` for a Hamiltonian without spin.
+- `sublattice`: get_bands projects the sublattice when `sublat_proj` is on, the
+  spatial LDOS whenever `H` has a sublattice index.
+"""
+function _project_aux_sectors(T::MPO, aux::AuxProjection;
+                              project          = project_aux,
+                              spin_index       = nothing,
+                              sublattice::Bool = aux.sublat.on)
+    (; nambu, spin, layer, sublat) = aux
+    Ts = nambu.on ?
+        [project(T, nambu.index::Index, σ; side=nambu.side)
+         for σ in _sector_range(nambu.sector, 2)] :
+        MPO[T]
+    if spin.on
+        s_idx = isnothing(spin_index) ? spin.index::Index : spin_index
+        Ts = [project(t, s_idx, σ; side=spin.side)
+              for t in Ts, σ in _sector_range(spin.sector, 2)]
+    end
+    if layer.on
+        n_lay = dim(layer.index::Index)
+        Ts = [project(t, layer.index::Index, σ; side=layer.side)
+              for t in Ts for σ in _sector_range(layer.sector, n_lay)]
+    end
+    sublattice || return ((t, 1) for t in Ts)
+    sl_range = _sector_range(sublat.sector, dim(sublat.index::Index))
+    return ((project(t, sublat.index::Index, σ; side=sublat.side), σ)
+            for t in Ts for σ in sl_range)
+end
+
+# The sectors a probe loop runs over for one DOF: all `nsectors` (default: the
+# dimension of its index) or the selected one when the DOF is projected and
+# present on H, else the placeholder 1:1.
+function _probe_range(d::AuxDOFProjection, nsectors = nothing)
+    (d.on && !isnothing(d.index)) || return 1:1
+    return _sector_range(d.sector, something(nsectors, dim(d.index::Index)))
+end
+
+"""
+    _probe_sectors(aux) -> Vector
+
+The auxiliary sectors `(σ_n, σ_s, σ_l, σ_sl)` (Nambu, spin, layer, sublattice) a
+probe-state method sums over, Nambu outermost and sublattice innermost: for each
+projected DOF present on `H` all its sectors (the spin sectors are `1:2`) or the
+selected one, `1` for the others. `[nothing]` when no DOF is projected: one plain
+position probe. Each entry is the third argument of `probe_state`.
+"""
+function _probe_sectors(aux::AuxProjection)
+    _any_projected(aux) || return [nothing]
+    rn, rs = _probe_range(aux.nambu), _probe_range(aux.spin, 2)
+    rl, rsl = _probe_range(aux.layer), _probe_range(aux.sublat)
+    return [(σ_n, σ_s, σ_l, σ_sl) for σ_n in rn for σ_s in rs for σ_l in rl for σ_sl in rsl]
+end
 
 """
     _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
                layer_proj, proj_layer, sublat_proj, proj_sl) -> NamedTuple
 
-Detect all auxiliary DOF indices from `H` and compute sector iteration ranges.
-Returns a NamedTuple with fields:
-  `nambu_s_det`, `nambu_side_det`, `spin_s_det`,
-  `layer_s_det`, `layer_side_det`, `sublat_s_det`, `sublat_side_det`,
-  `nambu_range`, `spin_range`, `layer_range`, `sl_range`, `any_aux_proj`.
+The flat view of `_aux_projection(H; …, autoenable=false)` with the probe ranges.
+Fields: `nambu_s_det`, `nambu_side_det`, `spin_s_det`, `layer_s_det`,
+`layer_side_det`, `sublat_s_det`, `sublat_side_det` (the indices and sides),
+`nambu_range`, `spin_range`, `layer_range`, `sl_range` (the sector ranges of
+`_probe_sectors`) and `any_aux_proj`. The package itself now uses the
+`AuxProjection`; the KPM golden test pins this view.
 """
 function _aux_setup(H::TBHamiltonian,
                     nambu_proj::Bool, proj_nambu,
                     spin_proj::Bool,  proj_s,
                     layer_proj::Bool, proj_layer,
                     sublat_proj::Bool, proj_sl)
-    nambu_s_det,  nambu_side_det  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
-    spin_s_det                    = H.spin_s
-    layer_s_det,  layer_side_det  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
-    sublat_s_det, sublat_side_det = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
-
-    nambu_range = (nambu_proj && !isnothing(nambu_s_det)) ?
-        (isnothing(proj_nambu) ? (1:dim(nambu_s_det::Index)) : (proj_nambu:proj_nambu)) : (1:1)
-    spin_range  = (spin_proj  && !isnothing(spin_s_det)) ?
-        (isnothing(proj_s)     ? (1:2)                        : (proj_s:proj_s))         : (1:1)
-    layer_range = (layer_proj && !isnothing(layer_s_det)) ?
-        (isnothing(proj_layer) ? (1:dim(layer_s_det::Index))  : (proj_layer:proj_layer))  : (1:1)
-    sl_range    = (sublat_proj && !isnothing(sublat_s_det)) ?
-        (isnothing(proj_sl)    ? (1:dim(sublat_s_det::Index)) : (proj_sl:proj_sl))        : (1:1)
-    any_aux_proj = nambu_proj || spin_proj || layer_proj || sublat_proj
-
-    return (; nambu_s_det, nambu_side_det, spin_s_det,
-              layer_s_det, layer_side_det, sublat_s_det, sublat_side_det,
-              nambu_range, spin_range, layer_range, sl_range, any_aux_proj)
+    aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
+                             layer_proj, proj_layer, sublat_proj, proj_sl,
+                             autoenable=false)
+    (; nambu, spin, layer, sublat) = aux
+    return (; nambu_s_det = nambu.index, nambu_side_det = nambu.side,
+              spin_s_det  = spin.index,
+              layer_s_det = layer.index, layer_side_det = layer.side,
+              sublat_s_det = sublat.index, sublat_side_det = sublat.side,
+              nambu_range = _probe_range(nambu), spin_range = _probe_range(spin, 2),
+              layer_range = _probe_range(layer), sl_range = _probe_range(sublat),
+              any_aux_proj = _any_projected(aux))
 end
 
 
 # ============================================================
-# 10. Auxiliary DOF helpers for LDOS
+# 10. Probe states of the MPS methods
 # ============================================================
 
 """
@@ -785,3 +985,21 @@ function _ldos_make_psi0(H::TBHamiltonian, x::Int,
     end
     return _basis_state_mps(k, H.sites)
 end
+
+"""
+    probe_state(H, x) -> MPS
+    probe_state(H, x, σ) -> MPS
+
+The probe state |x⟩ of the MPS Chebyshev methods at unit cell `x`
+(`get_ldos_online`, `get_ldos_spatial(mode=:mps)`, the stochastic DOS). With
+`σ = nothing` (the default) it is the position probe: `physical_site_state(H, x)`
+when `H.sites` are the `H.L` position sites, the exciton pair state |x, x⟩
+(`mpsexciton`) when `H` has more sites. With `σ = (σ_n, σ_s, σ_l, σ_sl)`, an entry
+of `_probe_sectors`, it is the binary product state with the auxiliary sites set
+to those sectors (`_ldos_make_psi0`).
+"""
+probe_state(H::TBHamiltonian, x::Integer, ::Nothing = nothing) =
+    length(H.sites) == H.L ? physical_site_state(H, x) : mpsexciton(x, H.sites)
+
+probe_state(H::TBHamiltonian, x::Integer, σ::NTuple{4,Integer}) =
+    _ldos_make_psi0(H, x, σ...)
