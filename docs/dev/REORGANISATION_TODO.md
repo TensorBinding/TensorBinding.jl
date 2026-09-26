@@ -334,7 +334,14 @@ the affected golden cases in the same commit.
       *Progress prints → `@debug` (f6a29c4), DMRG scale report → `@info` (56b3787), `_autoenable_proj` → `@info` (4cf039f).*
 
 ### Make the structure legible
-- [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
+- [x] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
+      (done in tier1/exports) 60 entry points in 12 groups next to the six ITensors names, listed
+      under "Public API" in `docs/src/index.md`. Only names specific to TensorBinding are
+      exported: generic names (`truncate!`, `hermitize`, `get_matrix`, …), the lattice
+      `*_hamiltonian` builders, types and constants, and the names Tier 3 renames (`get_C`,
+      `get_W`, `get_C_gpu`, `get_valley_C`, `hopping2MPO`, `Exciton_Hamiltonian`, the magnon
+      functions) stay qualified. `test/exports.jl` checks the list against the exports of the
+      dependencies and standard libraries, and against the docs list.
 - [x] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
       (2Dlattice runs 8, 8b, 8c, 8d, 8f; SCF header lists 8 sections, file has 9).
       *One `# ====` banner style with matching section numbers (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f).*
@@ -569,6 +576,8 @@ the affected golden cases in the same commit.
 - [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases),
       `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
       `exciton_mpo` for `Exciton_Hamiltonian`, fix `get_bublle_expanded_from_Tn`.
+      Export the new names that are specific enough (add them to "Public API" in
+      `docs/src/index.md` too; `test/exports.jl` checks both).
 - [ ] Replace hidden mutable caches (`_tn_cache`, `_tn_mps_cache`, `_density_cache`,
       `_ensure_scale!` side effects, solvers mutating user Hamiltonians) with an explicit
       `KPMExpansion` object passed to the reconstruction functions.

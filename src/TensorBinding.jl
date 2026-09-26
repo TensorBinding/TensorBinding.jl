@@ -1,6 +1,6 @@
-# TensorBinding.jl — the package module: its dependencies, the re-exported
-# ITensors names, the source map below (what each file holds and calls into) and
-# the include order. The API reference is in docs/src/api/.
+# TensorBinding.jl — the package module: its dependencies, the export list, the
+# source map below (what each file holds and calls into) and the include order. The
+# API reference is in docs/src/api/.
 
 """
 TensorBinding provides tight-binding physics on MPS/MPO tensor-network representations.
@@ -23,7 +23,50 @@ import TensorCrossInterpolation as TCI
 using FFTW
 using Base.Threads
 
-export MPO, MPS, OpSum, expect, inner, siteinds
+# Exports: the main entry points in groups, one comment line per group, alphabetical
+# inside each group (ignoring case). A name is exported only when it is specific to
+# TensorBinding; generic names (`truncate!`, `hermitize`, `get_matrix`, …), the lattice
+# builders `*_hamiltonian`, names Tier 3 will rename, and all types and constants stay
+# unexported and are called as `TensorBinding.name`. Types stay unexported because error
+# messages print them with `typeof`, which drops the `TensorBinding.` prefix once a type
+# is visible in Main, and the golden tests pin those messages. test/exports.jl checks the
+# list against the exports of the dependencies and the standard libraries, and against
+# the "Public API" list in docs/src/index.md.
+
+# ITensors names every workflow needs (re-exported, the same objects)
+export expect, inner, MPO, MPS, OpSum, siteinds
+# Model construction and mutation
+export add_hopping!, add_hopping_2D!, add_interaction!, add_onsite!, add_soc!, add_spin!,
+       add_superconductivity!, add_tjunction!, add_zeeman!, get_Hamiltonian
+# Spectral functions: KPM moments, LDOS, DOS, Krylov Green's function
+export get_dos_stochastic, get_dos_trace, get_green_krylov, get_ldos_online,
+       get_ldos_spatial, get_ldos_spectrum, KPM_Tn, KPM_Tn_mps
+# Band structure and quasiparticle interference
+export get_bands, get_qpi
+# Density matrix and purification
+export get_density, mcweeny_purify, sp2_purify
+# Mean-field self-consistency
+export get_scf
+# Topology
+export get_thouless_pump, get_valley_operator
+# RPA response
+export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_wynn
+# Non-Hermitian models and spectra
+export add_loss!, add_nh_nonreciprocal_hopping!, add_nh_onsite!, add_nh_skin_hopping!,
+       nh_spectral_function, nh_spectrum_grid
+# Excitons
+export get_exciton_bands, get_exciton_continuum, get_exciton_ldos_spatial
+# Time evolution
+export build_tdvp_propagator_mpo, evolve_rk4_dm_nh, evolve_rk4_dm_timedep,
+       evolve_with_propagator, evolve_with_tdvp, evolve_with_tdvp_timedep
+# Sampling plans
+export fibonacci_ldos_sampling_plan, kspace_sampling_plan, spatial_sampling_plan
+# GPU entry points (need `using CUDA`)
+export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
+       get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu, get_nh_density_trajectory_gpu,
+       get_nh_dos_grid_gpu, get_nh_dos_points_gpu, get_scf_bands_gpu,
+       get_scf_magnetization_gpu, get_state_amplitude_trajectory_gpu, KPM_Tn_gpu,
+       scf_magnetic_hubbard_gpu
 
 # Source map, in include order: one entry per file, what it holds on the first line
 # and, after →, the files it calls into (the files that define a function, type or

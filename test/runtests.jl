@@ -4,7 +4,8 @@ using ITensorMPS
 using LinearAlgebra
 using Test
 
-# The package keeps a minimal export list; pull in the API functions we test.
+# The API functions tested below, imported by name (most are also exported; the export
+# list is checked in test/exports.jl).
 using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
                      mcweeny_purify, get_ldos, get_bands, get_W,
                      add_spin!, add_interaction!, get_scf
@@ -99,6 +100,9 @@ using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
     end
 
 end
+
+# The export list: defined, no clash with the dependencies, resolvable, in the docs.
+include("exports.jl")
 
 include("fibonacci.jl")
 include("fibonacci_sampling.jl")
