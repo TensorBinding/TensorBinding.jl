@@ -1,8 +1,13 @@
-# nh/model.jl -- non-Hermitian Hamiltonian model: the NonHermitianHamiltonian
+# nh/model.jl — non-Hermitian Hamiltonian model: the NonHermitianHamiltonian
 # wrapper and hermitization (hermitize, hermitized_hamiltonian), plus the
 # non-Hermitian model-building helpers (add_nh_onsite!, loss_profile_mpo,
 # add_loss!, non-reciprocal / skin hopping). Split from the former physics/NH_tk.jl; the
 # NH KPM routines acting on the hermitized block Hamiltonian are in nh/kpm.jl.
+#
+# Entry points: hermitize, hermitized_hamiltonian, NonHermitianHamiltonian,
+#   nh_block_index, add_nh_onsite!, loss_profile_mpo, add_loss!,
+#   nh_nonreciprocal_hopping_mpo, add_nh_nonreciprocal_hopping!, add_nh_skin_hopping!.
+# Depends on: core/Utils.jl, core/TBSystem.jl.
 #
 # The core construction here hermitizes a non-Hermitian single-particle MPO by
 # adding one dim-2 auxiliary block index:
@@ -18,7 +23,7 @@
 # quantics encoding, matching binary_to_MPS / eval_mps directly.
 
 # ============================================================
-# Hermitization: NonHermitianHamiltonian wrapper
+# 1. Hermitization: NonHermitianHamiltonian wrapper
 # ============================================================
 
 """
@@ -33,6 +38,8 @@ Fields
 - `z`          : complex reference point used in `zI - H`
 - `block_s`    : dim-2 auxiliary Index tagged `"NHBlock"`
 - `hermitized` : Hermitian `TBHamiltonian` on `[parent.sites...; block_s]`
+                 (`[block_s; parent.sites...]` for `block_placement = :pre`)
+- `block_placement` : `:post` or `:pre`, where `block_s` sits in `hermitized.sites`
 
 The hermitized Hamiltonian can be passed to existing MPO/KPM routines. Avoid
 calling tight-binding mutation helpers like `add_onsite!` on `hermitized`;
@@ -58,8 +65,9 @@ with the existing KPM code paths.
 nh_block_index() = Index(2, "Qubit,NHBlock")
 
 """
-    hermitized_hamiltonian(H; z=0, block_s=nh_block_index(), cutoff=1e-8,
-                           maxdim=200, scale=0.0, block_placement=:post) -> TBHamiltonian
+    hermitized_hamiltonian(H; z=0.0, block_s=nh_block_index(), cutoff=1e-8,
+                           maxdim=200, scale=0.0, convention=:z_minus_H,
+                           block_placement=:post) -> TBHamiltonian
 
 Return the Hermitian block Hamiltonian
 
@@ -68,7 +76,9 @@ Return the Hermitian block Hamiltonian
   (zI-H)'  0      ]
 ```
 
-as a `TBHamiltonian`. `block_placement` controls where the auxiliary block site lives:
+as a `TBHamiltonian`. `convention=:z_minus_H` (default) puts `zI - H` in the upper
+block as written; `convention=:H_minus_z` uses `H - zI` instead.
+`block_placement` controls where the auxiliary block site lives:
 - `:post` (default) — site order `[H.sites...; block_s]`; position qubits occupy 1:L directly
 - `:pre`            — site order `[block_s; H.sites...]`; original layout before postpend change
 
@@ -110,10 +120,12 @@ function hermitized_hamiltonian(H::TBHamiltonian;
 end
 
 """
-    hermitize(H; z=0, cutoff=1e-8, maxdim=200, scale=0.0)
-        -> NonHermitianHamiltonian
+    hermitize(H; z=0.0, cutoff=1e-8, maxdim=200, scale=0.0, convention=:z_minus_H,
+              block_placement=:post) -> NonHermitianHamiltonian
 
-Build a `NonHermitianHamiltonian` wrapper without modifying `H`.
+Build a `NonHermitianHamiltonian` wrapper without modifying `H`. It takes the
+keywords of `hermitized_hamiltonian` except `block_s` (a fresh `nh_block_index()`
+is used).
 """
 function hermitize(H::TBHamiltonian;
                    z::Number = 0.0,
@@ -135,7 +147,8 @@ function hermitize(H::TBHamiltonian;
 end
 
 """
-    hermitize(NH; z=NH.z, cutoff=1e-8, maxdim=200, scale=0.0)
+    hermitize(NH; z=NH.z, cutoff=1e-8, maxdim=200, scale=0.0, convention=:z_minus_H,
+              block_placement=NH.block_placement) -> NonHermitianHamiltonian
 
 Rebuild the hermitized block Hamiltonian from `NH.parent`, optionally at a new
 reference point `z`.
@@ -158,7 +171,7 @@ function Base.show(io::IO, NH::NonHermitianHamiltonian)
 end
 
 # ============================================================
-# Non-Hermitian model-building helpers
+# 2. Non-Hermitian model-building helpers
 # ============================================================
 
 function _nh_position_sites_only(H::TBHamiltonian)
@@ -265,7 +278,8 @@ function loss_profile_mpo(H::TBHamiltonian, f;
 end
 
 """
-    add_loss!(H, f; coefficient=-1im, space=:full, ...)
+    add_loss!(H, f; coefficient=-1im, Lx=nothing, tol=1e-8, maxdim=200,
+              type=Float64, space=:full)
 
 Add a loss/gain term `coefficient * diag(f)` to the original Hamiltonian MPO.
 This only modifies `H.mpo`; it does not create the hermitized NH block.
@@ -308,7 +322,8 @@ function _nh_directional_hop(pos_s, N::Int, amplitude, nn::Integer, direction::S
 end
 
 """
-    nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward; nn=1, ...)
+    nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward; nn=1, tol=1e-8,
+                                 maxdim=200, type=ComplexF64)
 
 Build the position-space MPO
 
@@ -334,7 +349,8 @@ function nh_nonreciprocal_hopping_mpo(H::TBHamiltonian, t_forward, t_backward;
 end
 
 """
-    add_nh_nonreciprocal_hopping!(H, t_forward, t_backward; nn=1, ...)
+    add_nh_nonreciprocal_hopping!(H, t_forward, t_backward; nn=1, tol=1e-8,
+                                  maxdim=200, type=ComplexF64)
 
 Add asymmetric hopping directly to `H`. This is the skin-effect helper:
 choose, for example, `t_forward=t*exp(g)` and `t_backward=t*exp(-g)`.
@@ -353,7 +369,7 @@ function add_nh_nonreciprocal_hopping!(H::TBHamiltonian, t_forward, t_backward;
 end
 
 """
-    add_nh_skin_hopping!(H, t, g; nn=1, convention=:exp)
+    add_nh_skin_hopping!(H, t, g; nn=1, convention=:exp, tol=1e-8, maxdim=200)
 
 Convenience wrapper for non-reciprocal skin hopping.
 

@@ -576,31 +576,31 @@ project_aux(::MPO, ::Nothing, ::Integer; side::Symbol=:pre) =
     _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
         -> (nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-Enable projection flags for any auxiliary DOF detected on `H`, printing one
-info line per auto-enabled flag.  Called at the top of every `TBHamiltonian`
+Enable projection flags for any auxiliary DOF detected on `H`, emitting one
+`@info` record per auto-enabled flag.  Called at the top of every `TBHamiltonian`
 spectral method before any aux-index logic runs.
 """
 function _autoenable_proj(H::TBHamiltonian,
                            nambu_proj::Bool, spin_proj::Bool,
                            layer_proj::Bool, sublat_proj::Bool)
     if !isnothing(H.nambu_s) && !nambu_proj
-        println("Info: H.nambu_s detected; auto-enabling nambu_proj=true ",
-                "(pass proj_nambu=1/2 to select particle/hole sector).")
+        @info "H.nambu_s detected; auto-enabling nambu_proj=true " *
+              "(pass proj_nambu=1/2 to select particle/hole sector)."
         nambu_proj = true
     end
     if !isnothing(H.spin_s) && !spin_proj
-        println("Info: H.spin_s detected; auto-enabling spin_proj=true ",
-                "(pass proj_s=1/2 to select ↑/↓ sector).")
+        @info "H.spin_s detected; auto-enabling spin_proj=true " *
+              "(pass proj_s=1/2 to select ↑/↓ sector)."
         spin_proj = true
     end
     if !isnothing(H.layer_s) && !layer_proj
-        println("Info: H.layer_s detected; auto-enabling layer_proj=true ",
-                "(pass proj_layer=k to select a layer).")
+        @info "H.layer_s detected; auto-enabling layer_proj=true " *
+              "(pass proj_layer=k to select a layer)."
         layer_proj = true
     end
     if !isnothing(H.sublattice_s) && !sublat_proj
-        println("Info: H.sublattice_s detected; auto-enabling sublat_proj=true ",
-                "(pass proj_sl=k to select a sublattice).")
+        @info "H.sublattice_s detected; auto-enabling sublat_proj=true " *
+              "(pass proj_sl=k to select a sublattice)."
         sublat_proj = true
     end
     return nambu_proj, spin_proj, layer_proj, sublat_proj

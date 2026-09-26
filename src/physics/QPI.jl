@@ -1,7 +1,10 @@
 # QPI.jl — Quasiparticle Interference via single-impurity scattering
 #
+# Entry point: get_qpi (helper: _impurity_mpo).
+#
 # Pipeline:
-#   1. Build impurity potential V·|x₀⟩⟨x₀| analytically via OpSum (bond dim 1).
+#   1. Build impurity potential V·|x₀⟩⟨x₀| analytically via OpSum (bond dim 1),
+#      or a Gaussian potential via add_onsite! (impurity_mode=:gaussian).
 #   2. Compute diagonal LDOS MPS for clean and perturbed Hamiltonians via KPM.
 #   3. Subtract: δA_mps = ldos_imp - ldos_clean  (real-space diagonal LDOS difference).
 #   4. Optionally apply a smooth disk window (apodization) to suppress edge effects.
@@ -44,7 +47,7 @@ end
 
 """
     get_qpi(H, Ncheb, ω_phys_vals;
-            impurity_site=nothing, V=1.0,
+            impurity_site=nothing, V=1.0, impurity_mode=:delta, sigma=1.5,
             window_fraction=nothing, window_sigma=1.5,
             kernel=:jackson, lambda=4.0,
             maxdim=100, cutoff=1e-8, verbose=false)
@@ -54,10 +57,12 @@ Compute the Quasiparticle Interference (QPI) pattern from a single on-site impur
 
 **Algorithm**
 
-1. Place impurity `V · |x₀−1⟩⟨x₀−1|` at site `x0` (default: geometric center via
-   `central_index`).  The impurity MPO is built analytically from `OpSum` (no QTCI).
-2. Run KPM Chebyshev expansion for the clean (`H`) and perturbed (`H_imp`) systems
-   and extract the site-resolved diagonal LDOS as `Vector{MPS}` via `get_ldos_spectrum`.
+1. Place impurity `V · |x₀−1⟩⟨x₀−1|` at site `x₀ = impurity_site` (default: geometric
+   center via `central_index`).  The impurity MPO is built analytically from `OpSum`
+   (no QTCI); `impurity_mode=:gaussian` adds a Gaussian potential instead.
+2. Run an online KPM Chebyshev recursion for the clean (`H`) and perturbed (`H_imp`)
+   systems and accumulate the site-resolved diagonal LDOS as one MPS per energy
+   (no `T_n` cache is stored).
 3. For each energy `ω`:
    - Subtract LDOS MPS: `δA_mps = ldos_imp[ω] − ldos_clean[ω]`.
    - If `window_fraction` is set, multiply `δA_mps` element-wise by a smooth disk mask
@@ -77,7 +82,7 @@ Compute the Quasiparticle Interference (QPI) pattern from a single on-site impur
 
 **Keyword arguments**
 - `impurity_site`   : 1-indexed site index for the impurity (default: `central_index(H)`).
-- `V`               : Impurity potential strength.
+- `V`               : Impurity potential strength.  Default: `1.0`.
 - `impurity_mode`   : `:delta` (default) — exact rank-1 projector `V·|x₀⟩⟨x₀|` via `OpSum`;
                       `:gaussian` — smooth Gaussian potential `V·exp(-|r−r₀|²/2σ²)` built
                       via `add_onsite!` (lower bond dimension for the KPM recursion).
@@ -88,11 +93,12 @@ Compute the Quasiparticle Interference (QPI) pattern from a single on-site impur
                       with radius `window_fraction × min_half_extent` of the bounding box.
                       Requires `H.geometry` to be set.  Default: `nothing` (no windowing).
 - `window_sigma`    : Sigmoid roll-off half-width in lattice units.  Default: `1.5`.
-- `kernel`          : KPM kernel (`:jackson` or `:lorentz`).
-- `lambda`          : Lorentz kernel width.
-- `maxdim`          : Maximum bond dimension for MPS/MPO operations.
-- `cutoff`          : SVD truncation cutoff.
-- `verbose`         : Print progress.
+- `kernel`          : KPM kernel (`:jackson` (default), `:lorentz`, `:fejer` or
+                      `:dirichlet`).
+- `lambda`          : Lorentz kernel parameter.  Default: `4.0`.
+- `maxdim`          : Maximum bond dimension for MPS/MPO operations.  Default: `100`.
+- `cutoff`          : SVD truncation cutoff.  Default: `1e-8`.
+- `verbose`         : Print progress.  Default: `false`.
 
 **Returns** `Matrix{Float64}` of shape `(Nω, N)` where `N = H.N`.
 Column index `k+1` (1-based) corresponds to 0-indexed momentum `k`.

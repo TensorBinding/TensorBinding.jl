@@ -587,7 +587,7 @@ case!("Krylov", "krylov_green_ishermitian_flag", 306) do
                                      ishermitian=true)))
 end
 
-# ── Haydock recursion (physics/RPA_tk.jl today; Tier 1 moves it to Krylov) ─────
+# ── Haydock recursion (solvers/Krylov.jl; formerly physics/RPA_tk.jl) ─────────
 
 const HAYDOCK_Z = ComplexF64[0.1 + 0.2im, -1.0 + 0.05im, 2.0 + 0.1im]
 

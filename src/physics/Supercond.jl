@@ -1,7 +1,12 @@
 # Supercond.jl — Pairing MPO builders and spin/BdG assemblers for MPO Hamiltonians
 #
 # The spin/Nambu indices, operator tables and prepend/postpend helpers that
-# were sections 0–2 of this file live in core/AuxDOF.jl.
+# used to open this file live in core/AuxDOF.jl.
+#
+# Entry points: pairingNNN, pairing2MPO, spin_hamiltonian, bdg_hamiltonian,
+#   bdg_spin_hamiltonian.
+# Depends on: core/Utils.jl (the "sigma_plus"/"sigma_minus" ops), core/MPOTools.jl,
+#   core/Hamiltonian.jl, core/AuxDOF.jl.
 #
 # Follows the same prepend-core pattern as lattice/Twisted.jl: an auxiliary site
 # (spin or particle/hole) is prepended to a position-qubit MPO, extending
@@ -15,9 +20,9 @@
 #   spin:  state 1 = ↑,        state 2 = ↓
 #   Nambu: state 1 = particle,  state 2 = hole
 
-# ─────────────────────────────────────────────────────────────────
-# 3.  Antisymmetric pairing MPO builders
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. Antisymmetric pairing MPO builders
+# ============================================================
 
 """
     pairingNNN(L, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
@@ -89,9 +94,9 @@ function pairing2MPO(f, N, sites; tol=1e-8, initial_positions=[],
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 4.  Higher-level assemblers
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Higher-level assemblers
+# ============================================================
 
 """
     spin_hamiltonian(H_up, H_down, spin_s;

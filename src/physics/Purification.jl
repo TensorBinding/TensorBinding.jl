@@ -22,13 +22,18 @@
 #
 # Both functions accept `cutoff` and `maxdim` to control truncation
 # at each MPO-MPO multiplication step.
+#
+# Entry points: get_density, mcweeny_purify, sp2_purify, purification_initial_guess,
+#   sign_mpo, get_ldos_drho, get_dos_drho.
+# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
+#   solvers/kpm/cached.jl.
 
 # ============================================================
-# Shared helpers
+# 1. Shared helpers
 # ============================================================
 
 """
-    _mpo_sq(ρ, sites; maxdim, cutoff) -> MPO
+    _mpo_sq(ρ; maxdim, cutoff) -> MPO
 
 Compute `ρ²` via `apply` and truncate immediately.  The intermediate
 bond dimension of `apply` is controlled by `maxdim`.
@@ -55,7 +60,7 @@ end
 
 
 # ============================================================
-# McWeeny purification
+# 2. McWeeny purification
 # ============================================================
 
 """
@@ -72,7 +77,7 @@ idempotency residual ‖ρ² - ρ‖/‖ρ‖ < `tol` or `maxiters` is reached.
 - `maxdim`   : maximum MPO bond dimension during multiplication
 - `cutoff`   : cutoff during truncation
 - `tol`      : convergence threshold on ‖ρ²−ρ‖/‖ρ‖
-- `verbose`  : print residual at each iteration
+- `verbose`  : print the residual every 15 iterations
 
 # Returns
 Purified density matrix MPO.
@@ -101,7 +106,7 @@ end
 
 
 # ============================================================
-# SP2 purification
+# 3. SP2 purification
 # ============================================================
 
 """
@@ -152,12 +157,12 @@ end
 
 
 # ============================================================
-# Convenience: build initial guess from the resolvent (Id - H/scale)/2
+# 4. Initial guess (Id - H/scale)/2 and the TBHamiltonian overloads
 # ============================================================
 
 """
     purification_initial_guess(H_mpo, scale, sites; maxdim=40, cutoff=1e-8) -> MPO
-    purification_initial_guess(H::TBHamiltonian; maxdim=40, cutoff=1e-8) -> MPO
+    purification_initial_guess(H::TBHamiltonian; ϵF=0.0, maxdim=40, cutoff=1e-8) -> MPO
 
 Construct the simplest valid initial guess for purification:
 
@@ -167,7 +172,8 @@ This maps the rescaled spectrum ∈ [-1, 1] to ρ₀ eigenvalues ∈ [0, 1],
 the required input range for both `mcweeny_purify` and `sp2_purify`.
 
 The `TBHamiltonian` overload calls `_ensure_scale!` automatically and
-accounts for a non-zero spectral center.
+accounts for a non-zero spectral center; `ϵF` shifts the level of the guess,
+ρ₀ = (I − (H − (center + ϵF)·I)/scale) / 2.
 """
 function purification_initial_guess(H_mpo::MPO, scale::Float64, sites; maxdim::Int= 40,
                                     cutoff::Float64 = 1e-8)
@@ -191,13 +197,15 @@ end
 
 
 """
-    mcweeny_purify(H::TBHamiltonian; ϵF, maxiters, maxdim, cutoff, tol, verbose) -> MPO
+    mcweeny_purify(H::TBHamiltonian; ϵF=0.0, maxiters=30, maxdim=40, cutoff=1e-8,
+                   tol=1e-5, verbose=false) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs McWeeny purification,
 caches the result in `H._density_cache`, and returns the purified density matrix.
 
-`ϵF` shifts the Fermi level of the initial guess ρ₀ = (I − (H − ϵF·I)/scale) / 2,
-allowing purification to target a band other than half-filling. Default `0.0`.
+`ϵF` shifts the Fermi level of the initial guess ρ₀ = (I − (H − (center + ϵF)·I)/scale) / 2
+(see `purification_initial_guess`), allowing purification to target a band other
+than half-filling. Default `0.0`.
 """
 function mcweeny_purify(H::TBHamiltonian;
                         ϵF::Real        = 0.0,
@@ -216,7 +224,8 @@ end
 
 
 """
-    sp2_purify(H::TBHamiltonian; Nel, maxiters, maxdim, cutoff, tol, verbose) -> MPO
+    sp2_purify(H::TBHamiltonian; Nel=H.N ÷ 2, maxiters=40, maxdim=40, cutoff=1e-8,
+               tol=1e-5, verbose=false) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs SP2 purification,
 caches the result in `H._density_cache`, and returns the purified density matrix.
@@ -239,12 +248,13 @@ end
 
 
 # ============================================================
-# Unified high-level density-matrix wrapper
+# 5. Unified high-level density-matrix wrapper
 # ============================================================
 
 """
-    get_density(H::TBHamiltonian; method, ϵF, Ncheb, kernel, lambda,
-                maxdim, cutoff, Nel, maxiters, tol, verbose) -> MPO
+    get_density(H::TBHamiltonian; method=:mcweeny, ϵF=0.0, Ncheb=150, kernel=:jackson,
+                lambda=4.0, maxdim=40, cutoff=1e-8, Nel=H.N ÷ 2, maxiters=30,
+                tol=1e-5, verbose=false) -> MPO
 
 Compute and cache the zero-temperature density matrix P = θ(ϵF − H).
 
@@ -257,7 +267,8 @@ Set `H._density_cache = nothing` to force a fresh computation.
 - `:kpm`               — KPM Chebyshev expansion of the Fermi step function
 
 **Keyword arguments**
-- `ϵF`      : Fermi energy in physical units (`:kpm` only). Default `0.0`.
+- `ϵF`      : Fermi energy in physical units (`:kpm` and `:mcweeny`; `:sp2` fixes
+  the filling through `Nel` instead). Default `0.0`.
 - `Ncheb`   : Chebyshev order (`:kpm` only). Default `150`.
   Reuses `H._tn_cache` if already built at order ≥ `Ncheb`; otherwise calls
   `KPM_Tn` to build and cache it.
@@ -314,7 +325,7 @@ end
 
 
 # ============================================================
-# Sign of an MPO via purification
+# 6. Sign of an MPO via purification
 # ============================================================
 
 """
@@ -364,7 +375,7 @@ end
 
 
 # ============================================================
-# LDoS via finite-difference density matrix derivative
+# 7. LDoS and DOS via the finite-difference density-matrix derivative
 # ============================================================
 
 """

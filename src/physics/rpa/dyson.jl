@@ -1,4 +1,5 @@
-# physics/rpa/dyson.jl — Random Phase Approximation (polarization bubble + Dyson inversion)
+# physics/rpa/dyson.jl — Random Phase Approximation: Dyson solve, Wynn-accelerated
+# series and the magnon channel
 #
 # The working pipeline is:
 #
@@ -12,14 +13,21 @@
 # physics/qft/conjugation.jl) and the transverse-spin channel (get_magnon_*; its
 # spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
 # Split verbatim from the former physics/RPA_tk.jl.
+#
+# Entry points: get_rpa_susceptibility, get_rpa_susceptibility_wynn,
+#   rpa_wynn_from_bubbles, rpa_from_bubble_diag, get_magnon_bubble,
+#   get_magnon_susceptibility, get_magnon_susceptibility_wynn.
+# Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, core/AuxDOF.jl,
+#   physics/rpa/bubble.jl, physics/qft/conjugation.jl* (* = included later; see the
+#   source map in src/TensorBinding.jl).
 
 # ============================================================
-# Public RPA pipeline
+# 1. Dyson solve
 # ============================================================
 
 """
     rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
-                         nsweeps, maxdim, cutoff) -> MPS
+                         nsweeps=20, maxdim=400, cutoff=1e-8) -> MPS
 
 Solve the RPA Dyson equation  (I − Π₀V) χ = Π₀  for the interacting
 susceptibility χ using DMRG-style linear solve.
@@ -67,11 +75,12 @@ function _rpa_pair_sites(out_sites)
 end
 
 # ============================================================
-# High-level TBHamiltonian API
+# 2. High-level TBHamiltonian API
 # ============================================================
 
 """
-    get_rpa_susceptibility(H::TBHamiltonian, MPOV, ω; mode, ...) -> MPS
+    get_rpa_susceptibility(H::TBHamiltonian, MPOV, ω; mode=:charge, rpa_nsweeps=20,
+                           rpa_maxdim=400, rpa_cutoff=1e-8, <get_bubble_mpo keywords>) -> MPS
 
 Compute the RPA susceptibility χ(ω) for a system described by `H` with
 interaction MPO `MPOV`.  Returns a 2L-site MPS encoding the diagonal
@@ -141,7 +150,7 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
 end
 
 # ============================================================
-# Wynn ε-algorithm accelerated RPA
+# 3. Wynn ε-algorithm accelerated RPA
 # ============================================================
 
 """
@@ -168,8 +177,8 @@ end
 
 
 """
-    rpa_wynn_from_bubbles(Π0_list, MPOV; K_max, maxdim_apply, cutoff_apply, verbose)
-    -> (chi_partial, chi_wynn)
+    rpa_wynn_from_bubbles(Π0_list, MPOV; K_max=6, maxdim_apply=200, cutoff_apply=1e-8,
+                          verbose=false) -> (chi_partial, chi_wynn)
 
 Wynn ε-accelerated RPA susceptibility from a pre-computed list of bubble MPOs.
 
@@ -237,9 +246,9 @@ end
 
 
 """
-    get_rpa_susceptibility_wynn(H, MPOV, ωlist; mode, K_max, maxdim_apply,
-                                 cutoff_apply, verbose, <bubble kwargs>)
-                                 -> (chi_partial, chi_wynn)
+    get_rpa_susceptibility_wynn(H, MPOV, ωlist; mode=:charge, K_max=6,
+                                 maxdim_apply=200, cutoff_apply=1e-8, verbose=false,
+                                 <get_bubble_mpo keywords>) -> (chi_partial, chi_wynn)
 
 Compute the RPA susceptibility χ_RPA(q,ω) for all frequencies in `ωlist` using
 the Wynn ε-algorithm for Padé acceleration of the geometric (bubble) series.
@@ -252,7 +261,7 @@ the Wynn ε-algorithm for Padé acceleration of the geometric (bubble) series.
 
 **Key idea**: instead of inverting (I − Π₀V), build the Neumann series
   T₀ = Π₀,  Tₙ = Tₙ₋₁·V·Π₀  (so Σ Tₙ → χ_RPA as K→∞),
-extract scalars `sₙ(q,ω) = −Im⟨q|Tₙ(ω)|q⟩/π` via `get_spect_k`, and apply
+extract scalars `sₙ(q,ω) = −Im⟨q|Tₙ(ω)|q⟩` (no 1/π factor) via `get_spect_k`, and apply
 Wynn ε to the partial-sum sequence per (q,ω) for fast convergence.
 
 **Returns**
@@ -356,11 +365,11 @@ function get_rpa_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
 end
 
 # ============================================================
-# Magnon susceptibility (transverse S⁺S⁻ spin channel)
+# 4. Magnon susceptibility (transverse S⁺S⁻ spin channel)
 # ============================================================
 
 """
-    get_magnon_bubble(H, ω; ...) -> MPO
+    get_magnon_bubble(H, ω; kwargs...) -> MPO
 
 Non-interacting transverse spin polarization bubble Π₀^{+−}(ω) for a
 spinful `TBHamiltonian`.
@@ -385,7 +394,8 @@ end
 
 
 """
-    get_magnon_susceptibility(H, MPOV, ω; ...) -> MPS
+    get_magnon_susceptibility(H, MPOV, ω; rpa_nsweeps=20, rpa_maxdim=400,
+                              rpa_cutoff=1e-8, kwargs...) -> MPS
 
 RPA transverse spin susceptibility χ^{+−}_RPA(ω) for a spinful
 `TBHamiltonian`.
@@ -416,7 +426,9 @@ end
 
 
 """
-    get_magnon_susceptibility_wynn(H, MPOV, ωlist; K_max, ...) -> (chi_partial, chi_wynn)
+    get_magnon_susceptibility_wynn(H, MPOV, ωlist; K_max=6, maxdim_apply=200,
+                                   cutoff_apply=1e-8, verbose=false,
+                                   kwargs...) -> (chi_partial, chi_wynn)
 
 Wynn ε-accelerated transverse spin RPA susceptibility over a frequency list.
 

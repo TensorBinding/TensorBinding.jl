@@ -9,13 +9,14 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, TBHamiltonian, rep
                      get_bubble_mpo_cheb2d_tucker, get_bubble_diag_cheb2d,
                      get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker
 
-# Characterization ("golden") tests for src/physics/RPA_tk.jl.
+# Characterization ("golden") tests for src/physics/rpa/ (the former
+# src/physics/RPA_tk.jl).
 #
 # These tests pin what the RPA code computes *today*, bugs included, so that the
-# Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split RPA_tk.jl into
-# physics/rpa/{Bubble,Cheb2D,Dyson}.jl, move the MPO kron/interleave plumbing to
-# core/Utils.jl, the Haydock recursion to solvers/Krylov.jl and get_spect_k
-# to the QFT conjugation file) cannot silently change an output. The expected
+# Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split the former RPA_tk.jl
+# into physics/rpa/{bubble,cheb2d,dyson}.jl, move the MPO kron/interleave plumbing to
+# core/MPOTools.jl, the Haydock recursion to solvers/Krylov.jl and get_spect_k
+# to physics/qft/conjugation.jl) cannot silently change an output. The expected
 # values live in `test/data/rpa_golden.jl`, written by
 # `test/data/generate_rpa_golden.jl` (see its header for how to rerun it).
 #

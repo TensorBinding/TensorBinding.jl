@@ -4,12 +4,14 @@ using TensorBinding: get_Hamiltonian, get_bands, conjugate_by_qft, conjugate_by_
                      kpath_setup, kpath_2d, hsk_honeycomb, hsk_square, hsk_triangular,
                      add_spin!, add_superconductivity!, fibonacci_hamiltonian, TBHamiltonian
 
-# Characterization ("golden") tests for src/physics/QFT_tk.jl.
+# Characterization ("golden") tests for src/physics/qft/ (the former
+# src/physics/QFT_tk.jl).
 #
 # These tests pin what the QFT/band-structure code computes *today*, bugs
 # included, so that the Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md:
-# splitting QFT_tk.jl into Conjugation/Bands/KPath, moving the exciton spectra
-# and the aux projection helpers) cannot silently change an output. The expected
+# splitting the former QFT_tk.jl into physics/qft/{conjugation,bands,kpath}.jl,
+# moving the exciton spectra to physics/qft/exciton_spectra.jl and the aux
+# projection helpers to core/AuxDOF.jl) cannot silently change an output. The expected
 # values live in test/data/qft_golden.jl, written by
 # test/data/generate_qft_golden.jl from the cases defined below.
 #
@@ -250,7 +252,7 @@ end
 # exciton contact term cost ~30 s of first-call compilation and the explicit
 # sublattice builders ~13 s, while the QFT code under test only sees the MPO,
 # the site list and the TBHamiltonian fields. It also keeps these tests about
-# QFT_tk.jl: a change in a lattice builder does not fail them.
+# physics/qft/: a change in a lattice builder does not fail them.
 const FIXTURES = Dict{Symbol,Any}()
 const FIXTURE_BUILDERS = Dict{Symbol,Tuple{Int,Function}}()
 fixture!(f, name, seed) = (FIXTURE_BUILDERS[name] = (seed, f); name)
@@ -279,7 +281,7 @@ bitrev(n, L) = sum(((n >> (L - j)) & 1) << (j - 1) for j in 1:L)
 
 Open-boundary nearest-neighbour square lattice on 2^Lx × 2^Ly sites, linear
 index n = ix + iy·2^Lx encoded MSB-first on the L = Lx + Ly qubits (the 2D
-encoding documented at the top of QFT_tk.jl), returned in the `densemat`
+encoding documented at the top of physics/qft/bands.jl), returned in the `densemat`
 convention.
 """
 function square_dense(Lx, Ly; t=-1.0)

@@ -1,13 +1,22 @@
 # kpath.jl — High-symmetry k-path utilities for 2D get_bands
 #
 # Contains kpath_2d, hsk_honeycomb / hsk_square / hsk_triangular, _hs_label,
-# _hsk and kpath_setup.  Moved verbatim from section 3b of the former physics/QFT_tk.jl;
-# the overview and file map of physics/qft/ are at the top of bands.jl.
+# _hsk and kpath_setup.  Split from the former physics/QFT_tk.jl; the overview
+# and file map of physics/qft/ are at the top of bands.jl.
+#
+# Entry points: kpath_setup, kpath_2d, hsk_honeycomb, hsk_square, hsk_triangular.
+# Depends on: nothing else in the package.
+#
+# The preferred user interface is the kpath kwarg in get_bands(H::TBHamiltonian):
+#   res = get_bands(H, Ncheb, 2, omega;
+#                   kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
+#   # res.Ak — (Nω × Nk) spectral function
+#   # res.ticks, res.labels — ready for xticks=(res.ticks, res.labels)
 
 # ============================================================
-# 3b. High-symmetry k-path utilities  (2D)
+# 1. High-symmetry k-points and explicit paths (2D)
+# ============================================================
 #
-# Low-level:
 #   kpath_2d(hs_points, Lx; npts_per_segment)
 #       Takes explicit (kx_idx, ky_idx) tuples, interpolates between them.
 #       Returns (k_groups, tick_positions) for use with k_groups_override.
@@ -17,24 +26,12 @@
 #       quantics integer units (0-based; verified analytically for honeycomb,
 #       approximate for triangular).  Use Latin symbol names (G, M, K, Kp, X)
 #       — no non-ASCII input required.
-#
-# High-level (called internally by get_bands kpath shortcut):
-#   _hsk(lattice, Lx, Ly)     — dispatch to the right hsk_* function
-#   _hs_label(sym)            — symbol → display string (G → "Γ", Kp → "K'")
-#   kpath_setup(lattice, ...)  — builds (k_groups, ticks, labels) from symbols
-#
-# The preferred user interface is the kpath kwarg in get_bands(H::TBHamiltonian):
-#   res = get_bands(H, Ncheb, 2, omega;
-#                   kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
-#   # res.Ak — (Nω × Nk) spectral function
-#   # res.ticks, res.labels — ready for xticks=(res.ticks, res.labels)
-# ============================================================
 
 """
     kpath_2d(hs_points, Lx; npts_per_segment=20) -> (k_groups, tick_positions)
 
-Build k-groups for `get_bands(…; D=2, k_groups_override=k_groups)` sampling
-along a high-symmetry path.
+Build k-groups for `get_bands(H, Ncheb, 2, ω; k_groups_override=k_groups)`
+sampling along a high-symmetry path.
 
 `hs_points` is an ordered list of `(kx_idx, ky_idx)` integer tuples defining
 the path vertices (0-based, kx_idx ∈ [0, 2^Lx−1]).  `npts_per_segment` points
@@ -173,7 +170,13 @@ function hsk_triangular(Lx::Int, Ly::Int)
 end
 
 
-# ── High-symmetry path helpers ───────────────────────────────────────────────
+# ============================================================
+# 2. Symbol-based path setup (the get_bands kpath shortcut)
+# ============================================================
+#
+#   _hs_label(sym)            — symbol → display string (G → "Γ", Kp → "K'")
+#   _hsk(lattice, Lx, Ly)     — dispatch to the right hsk_* function
+#   kpath_setup(lattice, ...) — builds (k_groups, ticks, labels) from symbols
 
 # Symbol → display string for axis tick labels.
 # Use Latin aliases (G, Kp, …) in code; display shows the traditional notation.

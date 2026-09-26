@@ -1,5 +1,5 @@
 # Generator for test/data/qft_golden.jl, the pinned ("golden") outputs of
-# src/physics/QFT_tk.jl, checked by test/golden_qft.jl.
+# src/physics/qft/ (the former src/physics/QFT_tk.jl), checked by test/golden_qft.jl.
 #
 # Reference: first generated from commit 1a5548b ("Run the third-round audit
 # regression tests from runtests.jl"), before Tier 1 of the code-organisation

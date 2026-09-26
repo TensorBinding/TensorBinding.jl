@@ -4,9 +4,15 @@
 # Green's function) and the Haydock-recursion variant get_bubble_mpo_haydock (the
 # recursion haydock_cf, eval_haydock_cf, haydock_resolve_mpo is in solvers/Krylov.jl).
 # Split verbatim from the former physics/RPA_tk.jl.
+#
+# Entry points: get_bubble_mpo, get_bubble_mpo_haydock.
+# Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, solvers/DMRG.jl,
+#   solvers/kpm/recursion.jl, solvers/kpm/cached.jl, solvers/Krylov.jl,
+#   physics/Purification.jl* (* = included later; see the source map in
+#   src/TensorBinding.jl).
 
 # ============================================================
-# Internal helpers for TBHamiltonian API
+# 1. Internal helpers for the TBHamiltonian API
 # ============================================================
 
 function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
@@ -57,7 +63,7 @@ function _build_heff(H1_mpo::MPO, H2_mpo::MPO,
 end
 
 # ============================================================
-# High-level TBHamiltonian API
+# 2. High-level TBHamiltonian API
 # ============================================================
 
 """
@@ -175,14 +181,14 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
 end
 
 # ============================================================
-# Haydock-recursion bubble (haydock_cf & co.: solvers/Krylov.jl)
+# 3. Haydock-recursion bubble (haydock_cf & co.: solvers/Krylov.jl)
 # ============================================================
 
 """
-    get_bubble_mpo_haydock(H1, H2, ωlist; N_steps, η, maxdim, cutoff,
-                            ϵF, P_method, purify_method, purify_maxdim,
-                            purify_maxiters, purify_tol, Ncheb, verbose)
-        -> Vector{MPO}
+    get_bubble_mpo_haydock(H1, H2, ωlist; N_steps=30, η=1e-2, maxdim=200, cutoff=1e-8,
+                            ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                            purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                            Ncheb=150, verbose=false) -> Vector{MPO}
 
 Compute the bare polarization bubble Π₀(ω) as an L-site MPO for each
 frequency in `ωlist` using Haydock recursion on H_eff = I⊗H₂ − H₁⊗I.

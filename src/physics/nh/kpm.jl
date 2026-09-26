@@ -1,18 +1,23 @@
-# nh/kpm.jl -- non-Hermitian KPM on the hermitized block Hamiltonian: the
+# nh/kpm.jl — non-Hermitian KPM on the hermitized block Hamiltonian: the
 # universal Chebyshev scale (nh_kpm_scale), the partial Chebyshev recursion
 # (nh_kpm_partials), Jackson reconstruction of the spectral function
 # (nh_reconstruct_spectral_mps, nh_spectral_function), the online MPO / MPS /
 # stochastic _nh_* helpers and nh_spectrum_grid. Split from the former physics/NH_tk.jl;
 # the NonHermitianHamiltonian model and hermitize are in nh/model.jl.
+#
+# Entry points: nh_spectrum_grid, nh_spectral_function, nh_kpm_partials,
+#   nh_reconstruct_spectral_mps, nh_kpm_scale, nh_block_source, contract_nh_block.
+# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, physics/nh/model.jl.
 
 # ============================================================
-# Non-Hermitian KPM scale
+# 1. Non-Hermitian KPM scale
 # ============================================================
 
 """
     nh_kpm_scale(H, z_points; scale=nothing, padding=1.05, maxdim=200,
-                 cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10,20,40],
-                 dmrg_linkdim=4, printinfo=false)
+                 cutoff=1e-8, convention=:z_minus_H, block_placement=:post,
+                 dmrg_nsweeps=5, dmrg_maxdim=[10,20,40], dmrg_linkdim=4,
+                 printinfo=false)
 
 Return one universal, zero-centered Chebyshev scale for NH KPM over all
 complex points in `z_points`.
@@ -110,7 +115,7 @@ function _nh_resolve_scale(NH::NonHermitianHamiltonian;
 end
 
 # ============================================================
-# Non-Hermitian KPM partial recursion
+# 2. Partial recursion and Jackson reconstruction (MPO)
 # ============================================================
 
 """
@@ -132,8 +137,11 @@ nh_block_source(NH::NonHermitianHamiltonian; row::Int = 2, col::Int = 1) =
     nh_block_source(NH.hermitized, NH.block_s; row=row, col=col)
 
 """
-    nh_kpm_partials(Hh, n; source, scale, maxdim=100, cutoff=1e-8)
+    nh_kpm_partials(Hh, n; source, scale=nothing, maxdim=100, cutoff=1e-8)
         -> Vector{MPO}
+    nh_kpm_partials(NH, n; source=nothing, source_row=2, source_col=1, scale=nothing,
+                    nh_scale_padding=1.05, maxdim=100, cutoff=1e-8, dmrg_nsweeps=5,
+                    dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4) -> Vector{MPO}
 
 Compute the auxiliary "partial" Chebyshev recursion used by the old
 non-Hermitian spectral algorithm. If `A = Hh / scale` and `S` is the block
@@ -147,6 +155,10 @@ P_k = 2 S T_{k-1}(A) + 2 A P_{k-1} - P_{k-2}
 
 while `T_k(A)` is advanced in parallel. The returned vector has length `2n`
 and stores `P_0, P_1, ..., P_{2n-1}`.
+
+The `NonHermitianHamiltonian` method builds `S` with `nh_block_source(NH;
+row=source_row, col=source_col)` unless `source` is given, and resolves the scale
+from `NH.hermitized.scale` or `nh_kpm_scale`.
 """
 function nh_kpm_partials(Hh::TBHamiltonian, n::Int;
                          source::MPO,
@@ -319,9 +331,10 @@ function nh_reconstruct_spectral_mps(partials::AbstractVector{<:MPO}, n::Int,
 end
 
 """
-    nh_spectral_function(NH, n; scale, maxdim=100, cutoff=1e-8,
-                         source_row=2, source_col=1, block_row=2, block_col=1)
-        -> (A_mps, dos, partials)
+    nh_spectral_function(NH, n; scale=nothing, nh_scale_padding=1.05, maxdim=100,
+                         cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+                         dmrg_linkdim=4, source_row=2, source_col=1,
+                         block_row=2, block_col=1) -> (A_mps, dos, partials)
 
 Convenience wrapper for the full non-Hermitian KPM spectral calculation at
 the reference point stored in `NH.z`.
@@ -348,6 +361,10 @@ function nh_spectral_function(NH::NonHermitianHamiltonian, n::Int;
                                          maxdim=maxdim, row=block_row, col=block_col)
     return A, dos, partials
 end
+
+# ============================================================
+# 3. Online evaluators (MPO trace, diagonal, MPS probe, stochastic)
+# ============================================================
 
 """
     _nh_kpm_probe_mps(sites, block_s, block_state, site_r) -> MPS
@@ -394,7 +411,7 @@ end
 
 
 """
-    _nh_kpm_mps_ldos(NH, n, probe_site; scale, maxdim, cutoff) -> Real
+    _nh_kpm_mps_ldos(NH, n, probe_site; scale, maxdim=100, cutoff=1e-8) -> Real
 
 Online MPS NH KPM: compute the site-resolved spectral weight A(probe_site, z)
 using the dual-chain MPS partial recursion, keeping only 4 MPS in memory at a time.
@@ -459,7 +476,10 @@ end
 
 
 """
-    _nh_scalar_online(NH, n; scale, maxdim, cutoff) -> ComplexF64
+    _nh_scalar_online(NH, n; scale=nothing, nh_scale_padding=1.05, maxdim=100,
+                      cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+                      dmrg_linkdim=4, source_row=2, source_col=1,
+                      block_row=2, block_col=1) -> ComplexF64
 
 Online NH KPM scalar DOS: run the partial Chebyshev recursion and accumulate
 Tr[block_{2,1}(P_k)] contributions in a single pass, keeping only two partial
@@ -529,7 +549,10 @@ end
 
 
 """
-    _nh_diag_online(NH, n; scale, maxdim, cutoff) -> (A_mps, dos)
+    _nh_diag_online(NH, n; scale=nothing, nh_scale_padding=1.05, maxdim=100,
+                    cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+                    dmrg_linkdim=4, source_row=2, source_col=1,
+                    block_row=2, block_col=1) -> (A_mps, dos)
 
 Online NH KPM diagonal spectral function: run the partial Chebyshev recursion
 and accumulate the site-resolved diagonal MPS A(r, z) in a single pass, keeping
@@ -643,7 +666,10 @@ end
 
 
 """
-    _nh_stochastic_online(NH, n; scale, n_random=10, maxdim, cutoff) -> Real
+    _nh_stochastic_online(NH, n; scale=nothing, nh_scale_padding=1.05, n_random=10,
+                          maxdim=100, cutoff=1e-8, dmrg_nsweeps=5,
+                          dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4, source_row=2,
+                          source_col=1, block_row=2, block_col=1) -> Real
 
 Stochastic trace NH KPM DOS: estimate Tr[block_{2,1}(P_k)] via Monte Carlo
 averaging over `n_random` random product-state probes on the position sites.
@@ -720,11 +746,16 @@ function _nh_stochastic_online(NH::NonHermitianHamiltonian, n::Int;
 end
 
 
+# ============================================================
+# 4. Complex-energy grid driver
+# ============================================================
+
 """
     nh_spectrum_grid(H, xlims, nx, ylims, ny, n; scale=nothing,
                      nh_scale_padding=1.05, convention=:z_minus_H,
-                     mode=:scalar, probe_site=0, n_random=10,
-                     maxdim=100, cutoff=1e-8, verbose=false)
+                     block_placement=:post, mode=:scalar, probe_site=0,
+                     n_random=10, maxdim=100, cutoff=1e-8, dmrg_nsweeps=5,
+                     dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4, verbose=false)
 
 Evaluate the NH KPM spectral weight on a rectangular complex energy grid.
 

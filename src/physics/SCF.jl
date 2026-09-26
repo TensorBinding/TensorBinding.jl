@@ -1,6 +1,6 @@
-# SCF.jl -- self-consistent mean-field loops
+# SCF.jl — self-consistent mean-field loops
 #
-# This module keeps the SCF driver generic: the physical channel is encoded in
+# This file keeps the SCF driver generic: the physical channel is encoded in
 # a user-provided Hartree/Fock/Pairing builder
 #
 #     hartree_builder(density_mps, sites) -> MPO
@@ -8,8 +8,14 @@
 # so CDW, magnetic mean-field, superconducting pairing, etc. can share the same
 # density -> mean-field -> density iteration skeleton.
 #
-# Sections
-# --------
+# Entry points: get_scf; the drivers scf_meanfield, scf_magnetic_hubbard,
+#   scf_swave_superconducting, scf_swave_hubbard and scf_pwave_equalspin; the
+#   Hartree/Fock builder factories, the BdG profile extractors and the initial guesses.
+# Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl, solvers/DMRG.jl,
+#   physics/Purification.jl*, physics/Supercond.jl* (* = included later; see the
+#   source map in src/TensorBinding.jl).
+#
+# == Sections ==
 #   1. Density / profile extraction
 #   2. Interaction-to-mean-field (one-shot MPO builders)
 #   3. Builder factories (closures for SCF loops)
@@ -18,6 +24,7 @@
 #   6. SCF loop drivers
 #   7. Internal utilities
 #   8. Entry points
+#   9. Antiferromagnetic / Néel initial-guess density matrices
 
 
 # ============================================================
@@ -128,7 +135,7 @@ V_H[n] = U * (rho[n] - background)
 ```
 
 This is intentionally local and minimal; pass a custom `hartree_builder` to
-`meanfield` for long-range interactions or other channels.
+`scf_meanfield` for long-range interactions or other channels.
 """
 function cdw_hartree_builder(U::Number;
                                  background::Real = 0.5,
@@ -142,10 +149,12 @@ function cdw_hartree_builder(U::Number;
 end
 
 """
-    dense_hartree_builder(V, L, sites; background=nothing, kwargs...)
+    dense_hartree_builder(V, L, sites; background=nothing, type=Float64, tol=1e-8,
+                          maxdim=100, cutoff=1e-8, kwargs...)
 
 Return a Hartree builder backed by a dense interaction kernel. `V` can be an
-existing interaction MPO or a function `V(i, j)` on 0-indexed coordinates.
+existing interaction MPO or a function `V(i, j)` on 0-indexed coordinates;
+`type`, `tol` and `kwargs...` go to `get_mpo` when `V` is a function.
 """
 function dense_hartree_builder(V, L::Int, sites;
                                    background = nothing,
@@ -191,8 +200,10 @@ function _pair_term(term)
 end
 
 """
-    pair_distance_interaction_mpo(L, sites, distance, weight=1; kwargs...)
-    pair_distance_interaction_mpo(L, sites, terms; kwargs...)
+    pair_distance_interaction_mpo(L, sites, distance, weight=1; type=Float64, tol=1e-8,
+                                  maxdim=100, cutoff=1e-8)
+    pair_distance_interaction_mpo(L, sites, terms; type=Float64, tol=1e-8,
+                                  maxdim=100, cutoff=1e-8)
 
 Build an interaction MPO for arbitrary fixed-distance site pairs. For a bond
 weight `w(i)` on the pair `(i, i+d)`, the operator contains
@@ -237,11 +248,14 @@ function pair_distance_interaction_mpo(L::Int, sites, terms::AbstractVector;
 end
 
 """
-    pair_distance_hartree_builder(L, sites, distance, weight=1; kwargs...)
-    pair_distance_hartree_builder(L, sites, terms; kwargs...)
+    pair_distance_hartree_builder(L, sites, distance_or_terms, weight=1;
+                                  background=nothing, type=Float64, tol=1e-8,
+                                  maxdim=100, cutoff=1e-8)
 
 Return a Hartree builder for sparse pair interactions generated from
-non-cyclic shift MPOs.
+non-cyclic shift MPOs. `distance_or_terms` is either one distance (with `weight`)
+or a vector of `distance => weight` terms (`weight` is then ignored), as in
+`pair_distance_interaction_mpo`.
 """
 function pair_distance_hartree_builder(L::Int, sites, distance_or_terms, weight=1;
                                            background = nothing,
@@ -474,8 +488,8 @@ function _pwave_bond_profile(anom_mpo::MPO, sites, distance::Integer;
 end
 
 """
-    pwave_equalspin_anomalous_profiles(density_mpo, Hbdg; distance=1)
-        -> (F_up, F_dn)
+    pwave_equalspin_anomalous_profiles(density_mpo, Hbdg; distance=1,
+                                       maxdim=100, cutoff=1e-8) -> (F_up, F_dn)
 
 Extract nearest-neighbor equal-spin triplet anomalous bond profiles from a
 spinful BdG density matrix. The profile value at `i` corresponds to the bond
@@ -504,7 +518,7 @@ end
 # ============================================================
 
 """
-    meanfield(H0, hartree_builder; kwargs...) -> NamedTuple
+    scf_meanfield(H0, hartree_builder; kwargs...) -> NamedTuple
 
 Generic self-consistent mean-field loop.
 
@@ -916,7 +930,7 @@ end
     scf_swave_hubbard(H0, U; kwargs...) -> NamedTuple
 
 Attractive on-site Hubbard s-wave SCF. This is a convenience wrapper around
-`swave_superconducting` with the Hartree channel enabled. Positive `U`
+`scf_swave_superconducting` with the Hartree channel enabled. Positive `U`
 means attraction by default:
 
 ```text
@@ -1163,7 +1177,7 @@ Like `get_scf(H0, U, channel)` but reads the interaction from `H0.interaction_mp
 
 For `:cdw` the default `interaction=:dense` passes the stored MPO directly to
 `dense_hartree_builder`.  For `:magnetic` the stored MPO is handled by
-`magnetic_hubbard` which dispatches on `U::Union{Number,MPO}`.
+`scf_magnetic_hubbard` which dispatches on `U::Union{Number,MPO}`.
 
 Calling with `:swave` or `:pwave` raises an informative error — those channels
 require an explicit coupling constant.
@@ -1197,6 +1211,20 @@ Hmf = res.ham
 Supported channels are `:CDW`, `:magnetic`, `:swave`, and `:pwave`.
 The wrapper keeps the lower-level SCF routines available while providing a
 single `get_*` style entry point for notebooks.
+
+**Keywords** (defaults; the channels a keyword reaches, if not all)
+- `interaction=:local` (`:local`, `:dense` or `:distance`), `distance=1`: CDW
+  interaction kind and pair distance (`:cdw`).
+- `background=0.5` (`:cdw`, `:magnetic`); `fermi=0.0` (`:cdw`, `:magnetic`).
+- `initial_density=nothing`, `initial_hartree=nothing`, `density_mode=:direct`,
+  `Nel=H0.N ÷ 2`, `spectral_bounds=nothing`, `stop_on_increase=false` (`:cdw`).
+- `density_method=:sp2`, or `method` (default `nothing`), which takes precedence.
+- `Ncheb=100`, `scale=nothing`, `purification_scale_padding=1.05`, `maxdim=100`,
+  `cutoff=1e-8`, `purif_maxiter=40`, `purif_tol=1e-6`, `verbose=true`.
+- `tol=1e-6`, `maxiters=30`, `mixing=0.4`: passed to the drivers as `scf_tol`,
+  `max_scf_iter` and `mix` (`tol` is also the QTCI tolerance of the CDW builders).
+- `builder_kwargs...`: to the CDW Hartree builder for `:cdw`, to the driver
+  (`scf_magnetic_hubbard`, `scf_swave_hubbard`, `scf_pwave_equalspin`) otherwise.
 """
 function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                  interaction::Symbol = :local,
@@ -1313,9 +1341,10 @@ end
 
 # ============================================================
 # 9. Antiferromagnetic / Néel initial-guess density matrices
-#    Used as seeds for mean-field SCF on interacting models.
-#    Return (density_MPO, density_MPS).
 # ============================================================
+#
+# Used as seeds for mean-field SCF on interacting models.
+# Return (density_MPO, density_MPS).
 
 """
     initial_guess_trivial_up_1D(L, sites) -> (MPO, MPS)

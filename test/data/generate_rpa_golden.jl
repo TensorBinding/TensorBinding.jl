@@ -1,5 +1,5 @@
 # Generator for test/data/rpa_golden.jl, the pinned ("golden") outputs of
-# src/physics/RPA_tk.jl, checked by test/golden_rpa.jl.
+# src/physics/rpa/ (the former src/physics/RPA_tk.jl), checked by test/golden_rpa.jl.
 #
 # Reference: the golden data was generated from commit 1a5548b (branch Anouar,
 # "Run the third-round audit regression tests from runtests.jl"), before the

@@ -8,11 +8,11 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
                      nh_spectral_function, nh_spectrum_grid
 
 # Characterization ("golden") tests for the non-Hermitian toolkit,
-# src/physics/NH_tk.jl.
+# src/physics/nh/ (the former src/physics/NH_tk.jl).
 #
 # These tests pin what the NH code computes *today*, bugs included, so that the
-# Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split NH_tk.jl into
-# NH_model.jl and NH_KPM.jl, move helpers, delete dead code) cannot silently
+# Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split the former NH_tk.jl
+# into nh/model.jl and nh/kpm.jl, move helpers, delete dead code) cannot silently
 # change an output. The expected values live in `test/data/nh_golden.jl`,
 # written by `test/data/generate_nh_golden.jl` (see its header for the commit it
 # was generated from and how to rerun it). Both files use the case list below.
@@ -719,7 +719,7 @@ end
 # of singular values. With the values below the same noise moves no recorded
 # value by more than 5% of the tolerance.
 #
-# Checked by scratch mutation of a copy of NH_tk.jl: dropping every
+# Checked by scratch mutation of a copy of the former NH_tk.jl: dropping every
 # `maxdim=maxdim` outside the model builders fails all of these cases and none
 # of the cases above. Dropping one `maxdim=maxdim` or `cutoff=cutoff` at a
 # time in hermitize, the NH KPM routines or nh_spectrum_grid (the functions

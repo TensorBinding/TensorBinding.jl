@@ -47,14 +47,21 @@
 #
 # Bond dimension and truncation are controlled uniformly through `maxdim` and
 # `cutoff` kwargs, which are threaded into every apply, add, and truncate! call.
+#
+# Entry points: get_C, get_W, get_valley_C, get_valley_operator, get_thouless_pump,
+#   thouless_pump, get_C_op_MPO_from_P.
+# Depends on: core/Utils.jl, core/TBSystem.jl, lattice/NNNeighbor.jl,
+#   solvers/kpm/recursion.jl, solvers/kpm/cached.jl, physics/Purification.jl*
+#   (* = included later; see the source map in src/TensorBinding.jl).
 
 
 # ============================================================
-# Helper: ground-state projector from TBHamiltonian
+# 1. Ground-state projector from a TBHamiltonian
 # ============================================================
 
 """
-    _get_projector(H; method, fermi, Nchebychev, maxdim, cutoff, Nel) -> MPO
+    _get_projector(H; method=:KPM, fermi=0.0, Nchebychev=300, maxdim=40,
+                   cutoff=1e-8, Nel=nothing) -> MPO
 
 Compute or retrieve the ground-state projector P for `H`.
 
@@ -62,7 +69,7 @@ Compute or retrieve the ground-state projector P for `H`.
   runs `KPM_Tn(H, Nchebychev)`.  The Fermi level `fermi` (in physical units)
   is rescaled internally.
 - `method=:mcweeny`: returns `H._density_cache` if set; otherwise runs McWeeny
-  purification.  `fermi` is ignored.
+  purification with `ϵF=fermi`.
 - `method=:sp2`: same but uses SP2 purification.  `Nel` sets the target
   electron count (default: `H.N ÷ 2`).
 - `maxdim`, `cutoff`: bond dimension and truncation threshold forwarded to the
@@ -99,7 +106,7 @@ end
 
 
 # ============================================================
-# 1D winding number
+# 2. 1D winding number
 # ============================================================
 
 """
@@ -109,8 +116,8 @@ end
           quenched=true, l=nothing, Λ=10) -> Function
 
 Compute the real-space winding number and return a closure
-`calculate_winding(α::Int) -> ComplexF64` that evaluates the local winding
-number density at any site `α` (1-indexed).
+`calculate_winding(uc::Int) -> ComplexF64` that evaluates the local winding
+marker of unit cell `uc` (1-indexed; see Returns).
 
 The winding number operator is
 
@@ -141,7 +148,7 @@ assigns the same x-coordinate to both A and B sites of each UC.
 
 # Arguments
 - `method`    : `:KPM`, `:mcweeny`, or `:sp2` (see `_get_projector`).
-- `fermi`     : Fermi level in physical energy units (KPM only).
+- `fermi`     : Fermi level in physical energy units (`:KPM` and `:mcweeny`).
 - `Nchebychev`: Chebyshev order when `method=:KPM` and no cache is present.
 - `maxdim`    : MPO bond dimension during all multiplications.
 - `cutoff`    : truncation threshold during all multiplications.
@@ -243,10 +250,11 @@ end
 
 
 # ============================================================
-# 2D — quenched (periodic) position operator builders
+# 3. Quenched (periodic) position operator builders
 # ============================================================
 #
-# These are low-level helpers called by get_C_op_MPO_from_P.
+# These are low-level helpers called by get_W, get_C_op_MPO_from_P and
+# get_pump_xop.
 # `sites` must be the L position-qubit indices only (not the full H.sites
 # for sublattice models); callers extend the result with postpend_op.
 # xfunc(i, L_chain) receives a 0-indexed UC number (0 … 2^L−1) and returns
@@ -299,16 +307,16 @@ end
 
 
 # ============================================================
-# 2D Chern marker from a pre-computed projector
+# 4. 2D Chern marker from a pre-computed projector
 # ============================================================
 
 """
     get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                         l=nothing, Λ=10, maxdim=500, cutoff=1e-8,
-                        quenched=true) -> Function
+                        quenched=true, sequential=false, pk_mpo=nothing) -> Function
 
-Build the real-space Chern marker and return a closure `calculate_chern_number(α)`
-that evaluates it at any physical site `α` (1-indexed).
+Build the real-space Chern marker and return a closure `calculate_chern_number(uc)`
+that evaluates it for unit cell `uc` (1-indexed; see Returns).
 
 # Coordinate functions
 
@@ -345,6 +353,10 @@ Position operators use xfunc/yfunc directly:
 
 Most accurate for OBC systems or bulk-averaged quantities (no per-site centring).
 
+In both modes the marker is divided by the unit-cell area `A_cell = |a₁ × a₂|`,
+with `a₁`, `a₂` the steps of `xfunc`/`yfunc` from unit cell 0 to unit cells 1 and
+`L_chain`.
+
 # Arguments
 - `P`       : ground-state projector MPO (over `sites`)
 - `L`       : number of position qubits; system has `2^L` unit cells
@@ -355,6 +367,11 @@ Most accurate for OBC systems or bulk-averaged quantities (no per-site centring)
 - `maxdim`  : MPO bond dimension during all multiplications
 - `cutoff`  : truncation threshold during all multiplications and subtractions
 - `quenched`: `true` = 4-term sin/cos decomposition; `false` = flat operators
+- `sequential`: quenched mode only; `true` skips the C1–C4 MPO×MPO products and
+  applies `P` and the position operators to each basis state inside the closure
+  (see `get_C`)
+- `pk_mpo`  : optional MPO `PK` (e.g. a valley projector, see `get_valley_C`);
+  when given, the marker is evaluated as `⟨α|PK C_op PK|α⟩`
 
 # Returns
 `calculate_chern_number(uc::Int) -> ComplexF64` where `uc` is a 1-indexed
@@ -368,14 +385,16 @@ L_chain = 2^(L ÷ 2)
 xfunc(i, _) = Float64(mod(i, L_chain))
 yfunc(i, _) = Float64(div(i, L_chain))
 C_at  = get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc; Λ=L_chain, maxdim=100)
-chern = real(sum(C_at(α) for α in 1:2^L)) / L_chain^2
+uc_c  = (L_chain ÷ 2) * L_chain + L_chain ÷ 2 + 1   # central unit cell
+C_c   = real(C_at(uc_c))
 ```
 
 # Example — honeycomb via get_C (auto-derived geometry)
 ```julia
 C_at  = get_C(H)   # xfunc/yfunc from H.geometry_uc automatically
-N_sub = 2 * H.N
-chern = real(sum(C_at(α) for α in 1:N_sub)) / (2^(H.L ÷ 2))^2
+Nx    = 2^(H.L ÷ 2)                                  # unit cells per row
+uc_c  = (Nx ÷ 2) * Nx + Nx ÷ 2 + 1                   # central unit cell
+C_c   = real(C_at(uc_c))   # sums the A and B atoms of that cell
 ```
 """
 function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
@@ -589,7 +608,7 @@ end
 
 
 # ============================================================
-# 2D Chern marker from TBHamiltonian
+# 5. 2D Chern marker from a TBHamiltonian
 # ============================================================
 
 """
@@ -610,8 +629,9 @@ in which case they are auto-derived:
   Bravais unit-cell position for all sublattice atoms in the same UC.
 - Otherwise falls back to `H.geometry(i+1)[1/2]`.
 
-When `xfunc`/`yfunc` are auto-derived for a sublattice model, `α` in the
-returned closure ranges over `1 … n_sub·2^L` (all physical sites).
+For a sublattice model the functions still receive the physical site number
+(`0 … n_sub·2^L − 1`), while the returned closure takes a unit-cell number
+`uc ∈ 1 … 2^L` and sums over the `n_sub` atoms of that cell (see Returns).
 
 Reuses `H._tn_cache` or `H._density_cache` when available.  `maxdim` and
 `cutoff` are forwarded uniformly to the projector computation and to all
@@ -661,7 +681,7 @@ end
 
 
 # ============================================================
-# Valley operator and valley Chern number (honeycomb)
+# 6. Valley operator and valley Chern number (honeycomb)
 # ============================================================
 
 """
@@ -738,9 +758,9 @@ end
 
 """
     get_valley_C(H, xfunc=nothing, yfunc=nothing;
-                 valley=:K, method=:mcweeny, fermi=0.0, l=nothing, Λ=10,
-                 Nchebychev=300, maxdim=500, cutoff=1e-8,
-                 Nel=nothing, quenched=true) -> Function
+                 valley=:K, use_sign=true, method=:mcweeny, fermi=0.0, l=nothing,
+                 Λ=10, Nchebychev=300, maxdim=500, cutoff=1e-8,
+                 Nel=nothing, quenched=true, sequential=false) -> Function
 
 Compute the valley-resolved Chern marker and return a closure
 `calculate_valley_chern(uc::Int) -> ComplexF64`.
@@ -810,28 +830,26 @@ end
 
 
 # ============================================================
-# Thouless charge pump — 1D adiabatic invariant
+# 7. Thouless charge pump — 1D adiabatic invariant
 # ============================================================
 #
-# Computes the pumped charge per cycle (= Chern number) via
+# Computes the pumped charge per cycle (= Chern number) from the local marker
 #
-#   C = (i/2π) ∫₀ᵀ Tr[P(t) [Ṗ(t), x̂]] dt
+#   M1Q(r, t) = ⟨r| P(t) U†(t) x̂ U(t) P(t) |r⟩,   C = M1Q(r, T) − M1Q(r, 0)
 #
-# This avoids building the time-ordered evolution operator U(t)
-# explicitly.  P(t) is supplied as an array of MPOs computed at
-# Nt evenly-spaced time steps; Ṗ(t) is estimated by central
+# where U(t) is the adiabatic evolution generated by h(t) = [Ṗ(t), P(t)] and
+# propagated with a second-order Taylor step.  P(t) is supplied as an array of
+# MPOs computed at Nt evenly-spaced time steps; Ṗ(t) is estimated by central
 # finite differences (one-sided at the endpoints).
 #
-# Building blocks
-# ---------------
+# == Building blocks ==
 #   get_pump_xop       — position operator MPO (flat or quenched)
-#   berry_curvature_integrand — Tr[P [Ṗ, x]] at one time step
-#   thouless_pump      — time-integrate over a P_array
+#   thouless_pump      — propagate U over a P_array and evaluate M1Q
 #   get_thouless_pump  — high-level: builds P(t) then calls thouless_pump
 
 
 """
-    get_pump_xop(L, sites, xfunc; quenched=false, Λ=nothing) -> MPO
+    get_pump_xop(L, sites, xfunc; quenched=false, Λ=-1.0) -> MPO
 
 Diagonal position operator MPO for the Thouless pump formula.
 
@@ -841,8 +859,9 @@ length `N = 2^L`, and returns the raw coordinate.  For a 1-indexed chain:
 
 - `quenched=false` (default): diagonal entries are `xfunc(i, N)` directly.
 - `quenched=true`: entries are `Λ * sin(xfunc(i, N) / Λ)`, which smooths
-  the discontinuity at PBC at the cost of a `Λ` prefactor.  `Λ` defaults to
-  `N` (one full period), giving `sin(x/N) * N ≈ x` for `x ≪ N`.
+  the discontinuity at PBC at the cost of a `Λ` prefactor.  A negative `Λ`
+  (the default `-1.0`) means `Λ = N` (one full period), giving
+  `sin(x/N) * N ≈ x` for `x ≪ N`.
 """
 function get_pump_xop(L::Int, sites::Vector{<:Index}, xfunc;
                       quenched::Bool = false,
@@ -858,8 +877,9 @@ end
 
 
 """
-    thouless_pump(P_array, dt, x_op, sites; r_center, maxdim, cutoff,
-                  verbose, return_trajectory) -> Float64 or (Float64, Vector{Float64})
+    thouless_pump(P_array, dt, x_op, sites; r_center, maxdim=100, cutoff=1e-8,
+                  verbose=false, return_trajectory=false)
+        -> Float64 or (Float64, Vector{Float64})
 
 Compute the Thouless pump invariant (Chern number) using the local M1Q marker:
 
@@ -878,7 +898,7 @@ Finite differences for ∂P/∂t use central differences (one-sided at endpoints
 - `dt`                : time step (`T / Nt`).
 - `x_op`              : position operator MPO from `get_pump_xop`.
 - `sites`             : physical site indices (for identity MPO and `matrix_checker`).
-- `r_center`          : 0-indexed bulk site at which to evaluate M1Q.
+- `r_center`          : 0-indexed bulk site at which to evaluate M1Q (required).
 - `maxdim`            : max bond dimension for all MPO operations.
 - `cutoff`            : SVD truncation threshold.
 - `verbose`           : print M1Q(0), M1Q(T), and bond dimension at each step.
@@ -954,10 +974,10 @@ end
 
 """
     get_thouless_pump(H_of_t, Nt, T, xfunc;
-                      P_method=:mcweeny, Nchebychev=200,
+                      P_method=:mcweeny, fermi=0.0, Nchebychev=200,
                       maxdim=100, cutoff=1e-8,
                       quenched=false, Λ=-1.0,
-                      r_center=nothing, Nel=nothing, verbose=false) -> Float64
+                      Nel=nothing, r_center=nothing, verbose=false) -> Float64
 
 High-level Thouless pump: build `P(t_k)` for `k = 0…Nt-1` via `P_method`,
 then compute the M1Q invariant C = M1Q(T) − M1Q(0).
@@ -968,7 +988,8 @@ then compute the M1Q invariant C = M1Q(T) − M1Q(0).
 - `Nt`       : number of time steps.
 - `T`        : period of the pump cycle.
 - `xfunc`    : coordinate function `(i, N) -> Float64`, 0-indexed.
-- `P_method` : `:mcweeny`, `:sp2`, or `:KPM`.
+- `P_method` : `:mcweeny`, `:sp2`, or `:KPM`; `fermi`, `Nchebychev` and `Nel` are
+               passed to `_get_projector` with it.
 - `r_center` : 0-indexed bulk site for M1Q evaluation; defaults to `N ÷ 2`.
 - `quenched` : `false` = flat x̂; `true` = sin-quenched (removes PBC discontinuity).
 - `verbose`  : print progress.

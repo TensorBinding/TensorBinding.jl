@@ -1,5 +1,6 @@
 # Generator for test/data/nh_golden.jl, the pinned ("golden") outputs of the
-# non-Hermitian toolkit (src/physics/NH_tk.jl), checked by test/golden_nh.jl.
+# non-Hermitian toolkit (src/physics/nh/, the former src/physics/NH_tk.jl), checked
+# by test/golden_nh.jl.
 #
 # Reference: the golden data was first generated from commit 1a5548b ("Run the
 # third-round audit regression tests from runtests.jl", branch Anouar), before

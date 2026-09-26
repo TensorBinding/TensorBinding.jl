@@ -2,19 +2,25 @@
 #
 # Contains get_exciton_bands (coherent pair probes at total momentum Q) and
 # get_exciton_continuum (stochastic trace over |k, Q-k>).  Both run on an MPO
-# already conjugated by conjugate_by_qft_exciton (conjugation.jl).  Moved
-# verbatim from the end of section 4 of the former physics/QFT_tk.jl; the overview and
-# file map of physics/qft/ are at the top of bands.jl.
+# already conjugated by conjugate_by_qft_exciton (conjugation.jl).  Split from
+# the former physics/QFT_tk.jl; the overview and file map of physics/qft/ are at
+# the top of bands.jl.
+#
+# Entry points: get_exciton_bands, get_exciton_continuum.
+# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/kernels.jl,
+#   solvers/kpm/recursion.jl, physics/TwoParticle.jl.
 
 # ============================================================
-# Exciton momentum-space spectra (MPS-KPM)
+# 1. Exciton momentum-space spectra (MPS-KPM)
 # ============================================================
 
 """
-    get_exciton_bands(H_QFT, H, Ncheb, omega_phys_vals; Q_list, Q_groups,
-                      num_q, num_avg, q_start, q_end, kernel,
-                      lambda, eta, m_order, maxdim, cutoff,
-                      verbose, printinfo) -> Matrix{Float64}
+    get_exciton_bands(H_QFT, H, Ncheb, omega_phys_vals; Q_list=nothing, Q_groups=nothing,
+                      num_q=nothing, num_avg=1, q_start=nothing, q_end=nothing,
+                      kernel=:jackson, lambda=4.0, eta=0.0, m_order=4, maxdim=100,
+                      cutoff=1e-8, verbose=false, printinfo=false,
+                      q_groups=nothing, K_list=nothing, K_groups=nothing, k_groups=nothing,
+                      num_k=H.N, k_start=1, k_end=H.N) -> Matrix{Float64}
 
 CPU momentum-space exciton bands from an already-QFT-conjugated exciton MPO.
 This is the MPS-KPM analogue of `get_exciton_ldos_spatial`: for each total
@@ -30,7 +36,8 @@ sets the basis convention for `mpsexcitonQ`.
 Rows are energies, columns are total momenta/groups. `Q_list` selects momenta
 directly. `Q_groups` (or alias `q_groups`) averages several momentum probes into
 one output column. `K_list`, `K_groups`, `k_groups`, `num_k`, `k_start`, and
-`k_end` are accepted as backward-compatible aliases.
+`k_end` are accepted as backward-compatible aliases; `num_q`, `q_start` and
+`q_end` fall back to `num_k = H.N`, `k_start = 1` and `k_end = H.N`.
 """
 function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                            Q_list           = nothing,
@@ -142,10 +149,11 @@ end
 
 """
     get_exciton_continuum(H_QFT, H, Ncheb, omega_phys_vals;
-                          Q_list, num_q, q_start, q_end,
-                          N_sample, k_list, seed, normalize,
-                          kernel, lambda, eta, m_order, maxdim, cutoff,
-                          verbose, printinfo) -> Matrix{Float64}
+                          Q_list=nothing, num_q=H.N, q_start=1, q_end=H.N,
+                          N_sample=4, k_list=nothing, seed=42, normalize=true,
+                          kernel=:jackson, lambda=4.0, eta=0.0, m_order=4,
+                          maxdim=100, cutoff=1e-8, verbose=false,
+                          printinfo=false) -> Matrix{Float64}
 
 Stochastic MPS-KPM trace over the electron-hole continuum at fixed total
 momentum. For each selected total momentum `Q`, this estimates

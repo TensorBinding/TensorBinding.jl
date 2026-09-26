@@ -1,17 +1,23 @@
-# TwoParticle.jl — exciton/two-particle Hamiltonian construction (1-2) and
-# momentum-space MPS basis-state probes (3); the real-space probe mpsexciton
-# lives in core/Utils.jl
+# TwoParticle.jl — exciton/two-particle Hamiltonian construction (sections 1-2) and
+# momentum-space MPS basis-state probes (section 3); the real-space probe
+# mpsexciton lives in core/Utils.jl.
+#
+# Entry points: exciton_hamiltonian, Exciton_Hamiltonian, build_interaction_op_exciton,
+#   mpsexcitonQ, mpsexcitonQTrace, mpsexcitonKQ.
+# Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl.
 
-# ─────────────────────────────────────────────────────────────────
-# 1.  High-level constructor (returns TBHamiltonian)
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. High-level constructor (returns TBHamiltonian)
+# ============================================================
 
 """
-    exciton_hamiltonian(geometry, params, Ufunc; L, [on_site, scale, tol_quantics,
-        maxbonddim_quantics, tol, cutoff, maxdim, kwargs...]) -> TBHamiltonian
+    exciton_hamiltonian(geometry, params, Ufunc; L, on_site=nothing, scale=nothing,
+        tol_quantics=1e-8, maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+        maxdim=200, kwargs...) -> TBHamiltonian
 
-    exciton_hamiltonian(H_c, H_v, Ufunc; [on_site, scale, tol_quantics,
-        maxbonddim_quantics, tol, cutoff, maxdim]) -> TBHamiltonian
+    exciton_hamiltonian(H_c, H_v, Ufunc; on_site=nothing, scale=nothing,
+        tol_quantics=1e-8, maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+        maxdim=200) -> TBHamiltonian
 
 Build an exciton Hamiltonian and wrap it in a `TBHamiltonian` for use with
 TensorBinding's KPM, DMRG, and spectral tools.
@@ -45,7 +51,8 @@ TensorBinding's KPM, DMRG, and spectral tools.
 - `on_site`             : conduction band edge modulation `V(x)`, 1-indexed.
                           Applied as `+V` to electron and `−V` to valence sector
                           (type-I confinement). Compressed via QTCI.
-- `scale`               : exciton spectral half-bandwidth (0.0 → lazy DMRG estimate).
+- `scale`               : exciton spectral half-bandwidth; `nothing` (default) stores
+                          `0.0`, i.e. a lazy DMRG estimate on first use.
 - `tol_quantics`        : QTCI tolerance for `Ufunc` and `on_site`. Default `1e-8`.
 - `maxbonddim_quantics` : QTCI max bond dimension. Default `100`.
 - `tol`                 : MPO assembly truncation tolerance. Default `1e-8`.
@@ -98,19 +105,22 @@ function exciton_hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2.  Low-level MPO builder
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Low-level MPO builder
+# ============================================================
 
 """
-    Exciton_Hamiltonian(H_c, H_v, Ufunc; on_site, tol_quantics, maxbonddim_quantics,
-                        tol, cutoff, maxdim) -> MPO
+    Exciton_Hamiltonian(H_c, H_v, Ufunc; on_site=nothing, tol_quantics=1e-8,
+                        maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+                        maxdim=200) -> MPO
 
 Build the exciton Hamiltonian on the interleaved 2L-site electron-hole space:
 
     H_exc = (H_c ⊗ I_h − I_e ⊗ H_v) + U
 
-where `U` is the contact interaction diagonal MPO built from `Ufunc`.
+where `U` is the contact interaction diagonal MPO built from `Ufunc` by
+`build_interaction_op_exciton`; it carries `−Ufunc(x)` on the states with electron
+and hole both at `x`, so a positive `Ufunc` is attractive.
 
 `H_c` and `H_v` are `TBHamiltonian` objects for the electron and hole
 single-particle sectors (any geometry: `"chain_1d"`, `"square_2d"`, etc.).
@@ -180,6 +190,9 @@ Build the electron-hole interaction MPO on the 2L-site interleaved space.
 `Ufunc(x)` gives the interaction strength when electron and hole are both
 at position `x` (contact interaction). `sites` must be the 2L-site interleaved
 site index vector.
+
+The returned diagonal MPO holds `−Ufunc(x)` on the states with electron and hole
+both at `x` and zero elsewhere: a positive `Ufunc` is attractive.
 """
 function build_interaction_op_exciton(L, sites, Ufunc)
     evals = range(1, 2^L, length=2^L)
@@ -195,13 +208,9 @@ function build_interaction_op_exciton(L, sites, Ufunc)
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 3.  MPS probes (momentum-space)
-# ─────────────────────────────────────────────────────────────────
-
-# ------------------------------------------------------------
-# Exciton momentum-basis MPS probes
-# ------------------------------------------------------------
+# ============================================================
+# 3. Exciton momentum-basis MPS probes
+# ============================================================
 
 """
     mpsexcitonQ(Q, sites) -> MPS

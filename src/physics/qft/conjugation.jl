@@ -3,17 +3,16 @@
 # Contains conjugate_by_qft (plain and TBHamiltonian-aware), the aux-site
 # embedding helpers _embed_in_full_sites / _embed_displacement_in_full_sites,
 # the two-particle conjugate_by_qft_exciton and the k-space diagonal get_spect_k.
-# Moved verbatim from section 1 of the former physics/QFT_tk.jl (get_spect_k from
-# physics/rpa/dyson.jl); the overview and file map of physics/qft/ are at the
-# top of bands.jl.
+# Split from the former physics/QFT_tk.jl (get_spect_k from the former
+# physics/RPA_tk.jl); the overview and file map of physics/qft/ are at the top
+# of bands.jl.
+#
+# Entry points: conjugate_by_qft, conjugate_by_qft_exciton, get_spect_k.
+# Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl.
 
 # ============================================================
-# 1. QFT conjugation
+# 1. Single-particle QFT conjugation
 # ============================================================
-
-# ------------------------------------------------------------
-# 1a. Single-particle QFT conjugation
-# ------------------------------------------------------------
 
 """
     conjugate_by_qft(W; tol=1e-9, maxdim=100) -> MPO
@@ -40,7 +39,7 @@ end
 
 
 """
-    conjugate_by_qft(H::TBHamiltonian, W::MPO; tol, maxdim) -> MPO
+    conjugate_by_qft(H::TBHamiltonian, W::MPO; tol=1e-9, maxdim=100) -> MPO
 
 TBHamiltonian-aware version of `conjugate_by_qft`.  Applies `U·W·U†` where
 `U` is the QFT acting **only on the position (Qubit) sites** of `H`, with
@@ -117,9 +116,9 @@ function _embed_displacement_in_full_sites(H::TBHamiltonian, mpo_pos::MPO)
 end
 
 
-# ------------------------------------------------------------
-# 1b. Exciton QFT conjugation
-# ------------------------------------------------------------
+# ============================================================
+# 2. Exciton QFT conjugation
+# ============================================================
 
 """
     conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim=100) -> MPO
@@ -195,12 +194,12 @@ function conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim::Int=100
 end
 
 
-# ------------------------------------------------------------
-# 1c. k-space diagonal of an MPO
-# ------------------------------------------------------------
+# ============================================================
+# 3. k-space diagonal of an MPO
+# ============================================================
 
 """
-    get_spect_k(W; tol, maxdim) -> Vector{ComplexF64}
+    get_spect_k(W; tol=1e-9, maxdim=100) -> Vector{ComplexF64}
 
 Extract the k-space diagonal of MPO `W` as a dense vector of 2^L values.
 

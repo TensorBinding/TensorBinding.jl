@@ -3,9 +3,16 @@
 # k-space diagonal bubbles get_bubble_diag_cheb2d(_svd, _tucker), and their helpers
 # (_cheb2d_out_sites, _cheb2d_require_position_sites, _jackson_kernel, _weighted_mpo_sum).
 # Split verbatim from the former physics/RPA_tk.jl.
+#
+# Entry points: get_bubble_mpo_cheb2d, get_bubble_mpo_cheb2d_tucker,
+#   get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker,
+#   chebyshev2d_gf_coeffs.
+# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
+#   physics/rpa/bubble.jl, physics/qft/conjugation.jl* (* = included later; see the
+#   source map in src/TensorBinding.jl).
 
 # ============================================================
-# Double Chebyshev decomposition for the polarization bubble
+# 1. Chebyshev coefficients and site helpers
 # ============================================================
 
 """
@@ -68,11 +75,15 @@ function _cheb2d_require_position_sites(H1::TBHamiltonian, H2::TBHamiltonian,
 end
 
 
-
+# ============================================================
+# 2. Full-MPO bubbles
+# ============================================================
 
 """
-    get_bubble_mpo_cheb2d(H1, H2, ωlist; Ncheb, maxdim, cutoff,
-                           ϵF, P_method, purify_*, η, verbose) -> Vector{MPO}
+    get_bubble_mpo_cheb2d(H1, H2, ωlist; Ncheb=50, maxdim=200, cutoff=1e-8,
+                           ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                           purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                           η=1e-3, coeff_tol=1e-12, verbose=false) -> Vector{MPO}
 
 Compute the non-interacting polarization bubble Π₀(ω) for each ω in `ωlist`
 using the **double Chebyshev decomposition**.
@@ -236,10 +247,12 @@ end
 
 
 """
-    get_bubble_mpo_cheb2d_tucker(H1, H2, ωlist; Ncheb, maxdim, cutoff,
-                                  ϵF, P_method, purify_*, η, coeff_tol,
-                                  tucker_tol, tucker_maxrank, kernel,
-                                  hooi_iters, verbose) -> Vector{MPO}
+    get_bubble_mpo_cheb2d_tucker(H1, H2, ωlist; Ncheb=50, maxdim=200, cutoff=1e-8,
+                                  ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                                  purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                                  η=1e-3, coeff_tol=1e-12, tucker_tol=1e-3,
+                                  tucker_maxrank=20, kernel=:jackson, hooi_iters=3,
+                                  verbose=false) -> Vector{MPO}
 
 Tucker-accelerated variant of `get_bubble_mpo_cheb2d`.
 
@@ -406,10 +419,16 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
 end
 
 
+# ============================================================
+# 3. k-space diagonal bubble
+# ============================================================
+
 """
-    get_bubble_diag_cheb2d(H1, H2, ωlist; Ncheb, maxdim, cutoff,
-                            ϵF, P_method, purify_*, η, coeff_tol,
-                            qft_tol, qft_maxdim, verbose) -> Vector{MPS}
+    get_bubble_diag_cheb2d(H1, H2, ωlist; Ncheb=50, maxdim=200, cutoff=1e-8,
+                            ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                            purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                            η=1e-3, coeff_tol=1e-12, qft_tol=1e-9, qft_maxdim=100,
+                            verbose=false) -> Vector{MPS}
 
 Diagonal-only variant of `get_bubble_mpo_cheb2d`.
 
@@ -564,8 +583,11 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
 end
 
 
+# ============================================================
+# 4. Shared helpers: Jackson kernel, weighted MPO sum
+# ============================================================
 
-# ── Jackson kernel weights for Chebyshev order N ──────────────────────────────
+# Jackson kernel weights for Chebyshev order N:
 # g[m+1] = ((N-m)cos(πm/(N+1)) + sin(πm/(N+1))/tan(π/(N+1))) / (N+1)
 # Suppresses Gibbs oscillations from truncation; broadening ≈ π·scale/N.
 function _jackson_kernel(N::Int)
@@ -574,7 +596,7 @@ function _jackson_kernel(N::Int)
                sin(π * m / (N+1)) / tan(π / (N+1))) / (N+1)
 end
 
-# ── Helper: weighted MPO sum  Σ_i w_i · mpos[i]  with online truncation ──────
+# Weighted MPO sum  Σ_i w_i · mpos[i]  with online truncation.
 # Accepts real or complex weights; complex weights produce complex-tensor MPOs.
 function _weighted_mpo_sum(weights::AbstractVector{<:Number}, mpos::Vector{MPO};
                            maxdim::Int, cutoff::Real, weight_tol::Real = 1e-14)
@@ -591,11 +613,21 @@ function _weighted_mpo_sum(weights::AbstractVector{<:Number}, mpos::Vector{MPO};
 end
 
 
+# ============================================================
+# 5. Low-rank k-space diagonal bubbles (per-ω SVD, Tucker)
+# ============================================================
+
 """
-    get_bubble_diag_cheb2d_svd(H1, H2, ωlist; ..., svd_tol, svd_maxrank) -> Vector{MPS}
+    get_bubble_diag_cheb2d_svd(H1, H2, ωlist; Ncheb=50, maxdim=200, cutoff=1e-8,
+                                ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                                purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                                η=1e-3, qft_tol=1e-9, qft_maxdim=100, svd_tol=1e-6,
+                                svd_maxrank=20, kernel=:jackson,
+                                verbose=false) -> Vector{MPS}
 
 Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`, with the same
-requirement that `H.sites` be the `H.L` position qubits.
+requirement that `H.sites` be the `H.L` position qubits.  It takes the keywords of
+`get_bubble_diag_cheb2d` except `coeff_tol`.
 
 For each frequency ω the coefficient matrix `C[m,n](ω)` is rank-truncated via its own SVD:
 
@@ -741,7 +773,12 @@ end
 
 
 """
-    get_bubble_diag_cheb2d_tucker(H1, H2, ωlist; ..., tucker_tol, tucker_maxrank, kernel) -> Vector{MPS}
+    get_bubble_diag_cheb2d_tucker(H1, H2, ωlist; Ncheb=50, maxdim=200, cutoff=1e-8,
+                                   ϵF=0.0, P_method=:purification, purify_method=:mcweeny,
+                                   purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5,
+                                   η=1e-3, coeff_tol=1e-12, qft_tol=1e-9, qft_maxdim=100,
+                                   tucker_tol=1e-3, tucker_maxrank=20, kernel=:jackson,
+                                   hooi_iters=3, verbose=false) -> Vector{MPS}
 
 Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`, with the same requirement
 that `H.sites` be the `H.L` position qubits.

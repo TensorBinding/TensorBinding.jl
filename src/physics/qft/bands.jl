@@ -1,14 +1,18 @@
 # bands.jl — Momentum-space band structure via online Chebyshev KPM
 #
-# Contains get_bands (low-level MPO method and the TBHamiltonian overloads)
-# (its helpers _eval_diag_mps and _kpm_weight_matrix now live in core/Utils.jl and
-# solvers/kpm/kernels.jl).  Moved verbatim from sections 3, 4 and 5 of
-# the former physics/QFT_tk.jl, together with that file's overview, which now
-# describes the whole physics/qft/ folder.
+# Contains get_bands (low-level MPO method and the TBHamiltonian overloads); its
+# helpers _eval_diag_mps, ilinspace and kspace_sampling_plan live in core/Utils.jl
+# and _kpm_weight_matrix in solvers/kpm/kernels.jl.  Split from the former
+# physics/QFT_tk.jl, together with that file's overview, which below describes the
+# whole physics/qft/ folder.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# Overview
-# ─────────────────────────────────────────────────────────────────────────────
+# Entry point: get_bands.
+# Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl, lattice/masks2d.jl,
+#   solvers/DMRG.jl, solvers/kpm/kernels.jl, physics/qft/conjugation.jl,
+#   physics/qft/kpath.jl* (* = included later; see the source map in
+#   src/TensorBinding.jl).
+#
+# == Overview of physics/qft/ ==
 # The quantics representation encodes a 1D or 2D real-space position index as
 # a binary string across L qubit sites. Conjugating any real-space MPO W by the
 # Quantum Fourier Transform gives its momentum-space counterpart:
@@ -24,9 +28,7 @@
 # already-QFT-conjugated MPO; they do not use the single-particle MPO-KPM
 # `get_bands` pipeline.
 #
-# -----------------------------------------------------------------------------
-# Online Chebyshev accumulation
-# ─────────────────────────────────────────────────────────────────────────────
+# == Online Chebyshev accumulation ==
 # Single-particle `get_bands` runs a Chebyshev recurrence over the full MPO
 # space. At each step n the current T_n passes through five composable
 # projection stages before the QFT is applied:
@@ -41,9 +43,7 @@
 # All steps are independent and optional; any combination is valid.
 # Peak memory: O(3 MPOs) regardless of Ncheb.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# Auxiliary DOF projection  (section 5b, core/AuxDOF.jl)
-# ─────────────────────────────────────────────────────────────────────────────
+# == Auxiliary DOF projection (core/AuxDOF.jl) ==
 # Models with auxiliary DOFs (spin, Nambu, layer, sublattice) have an extra
 # site at the front (`:pre`) or back (`:post`) of the MPO.  `project_aux`
 # removes it by contracting |σ⟩⟨σ| onto the auxiliary tensor, returning an
@@ -53,9 +53,7 @@
 # auto-detected from the struct fields (H.spin_s, H.nambu_s, H.layer_s,
 # H.sublattice_s) and never need to be passed manually.
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# High-symmetry k-path shortcut  (section 3b, kpath.jl)
-# ─────────────────────────────────────────────────────────────────────────────
+# == High-symmetry k-path shortcut (kpath.jl) ==
 # The `kpath` kwarg in the `TBHamiltonian` overload of `get_bands` eliminates
 # the manual kpath setup:
 #
@@ -63,16 +61,12 @@
 #                   kpath=[:G, :M, :Kp, :G], kpath_lattice=:honeycomb, num_x=30)
 #   # res.Ak, res.ticks, res.labels  ← all path metadata included
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# Encoding conventions
-# ─────────────────────────────────────────────────────────────────────────────
+# == Encoding conventions ==
 # 1D  — sites 1…L hold x bits, LSB at site 1 (quantics QFT convention).
 # 2D  — sites 1…Ly hold iy bits (MSB first), sites Ly+1…L hold ix bits
 #        (MSB first); linear index n = ix + iy·2^Lx (row-major).
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# Dependencies outside physics/qft/
-# ─────────────────────────────────────────────────────────────────────────────
+# == Dependencies of physics/qft/ outside the folder ==
 # fix_sites, extract_diagonal_to_mps,
 #   _eval_diag_mps, kspace_sampling_plan,
 #   spatial_sampling_plan              → core/Utils.jl
@@ -86,53 +80,40 @@
 # _run_kpm_mps!                        → solvers/kpm/recursion.jl
 # mpsexcitonQ, mpsexcitonQTrace, mpsexcitonKQ → physics/TwoParticle.jl
 #
-# ─────────────────────────────────────────────────────────────────────────────
-# File structure  (src/physics/qft/, in include order)
-# ─────────────────────────────────────────────────────────────────────────────
+# == File structure (src/physics/qft/, in include order) ==
 # conjugation.jl
-#   1.  QFT conjugation
-#       1a. Single-particle QFT    conjugate_by_qft, _embed_in_full_sites,
-#                                  _embed_displacement_in_full_sites
-#       1b. Exciton QFT            conjugate_by_qft_exciton
-#       1c. k-space diagonal       get_spect_k
-# bands.jl  (this file)
-#   3.  Internal utilities         (none left here: _eval_diag_mps, ilinspace and
-#                                  kspace_sampling_plan are in core/Utils.jl,
-#                                  _kpm_weight_matrix in solvers/kpm/kernels.jl)
-#   4.  Online band structure      get_bands (low-level MPO method)
-#   5.  High-level overloads       get_bands (TBHamiltonian, single-particle)
+#   1. Single-particle QFT conjugation   conjugate_by_qft (MPO and TBHamiltonian
+#                                        methods), _embed_in_full_sites,
+#                                        _embed_displacement_in_full_sites
+#   2. Exciton QFT conjugation           conjugate_by_qft_exciton
+#   3. k-space diagonal of an MPO        get_spect_k
+# bands.jl (this file)
+#   1. Online band structure             get_bands (low-level MPO method)
+#   2. High-level overloads              get_bands(H, Ncheb, D, ω), get_bands(H, Ncheb, ω)
 # kpath.jl
-#   3b. High-symmetry k-path       kpath_2d, hsk_honeycomb/square/triangular,
-#                                  kpath_setup, _hs_label, _hsk
+#   1. High-symmetry k-points and paths  kpath_2d, hsk_honeycomb/square/triangular
+#   2. Symbol-based path setup           _hs_label, _hsk, kpath_setup
 # exciton_spectra.jl
-#       Exciton spectra (MPS-KPM)  get_exciton_bands, get_exciton_continuum
-#       (exciton MPS probes mpsexcitonQ/QTrace/KQ now live in physics/TwoParticle.jl,
-#        mpsexciton in core/Utils.jl)
-# (5b. Aux index projection — project_aux, _autoenable_proj, aux_site — is in
-#  core/AuxDOF.jl.)
-
-
-
-# ============================================================
-# 3. Internal utilities
+#   1. Exciton spectra (MPS-KPM)         get_exciton_bands, get_exciton_continuum
 #
-# ilinspace       — evenly-spaced integer grid for k-center placement
-# _kpm_weight_matrix — Chebyshev-KPM weights W[n, iω] (in solvers/kpm/kernels.jl)
+# Elsewhere: the aux-index projection (project_aux, aux_site, _autoenable_proj) is in
+# core/AuxDOF.jl; _eval_diag_mps (LSB-first diagonal readout, beside eval_mps),
+# ilinspace and kspace_sampling_plan (k-point centres and groups, shared with
+# get_bands_gpu) in core/Utils.jl; _kpm_weight_matrix in solvers/kpm/kernels.jl; the
+# exciton MPS probes mpsexcitonQ/QTrace/KQ in physics/TwoParticle.jl and mpsexciton
+# in core/Utils.jl.
+
+
+
 # ============================================================
-
-# `ilinspace` and `kspace_sampling_plan` (k-point centre placement and grouping
-# shared with get_bands_gpu) live in core/Utils.jl with the other sampling plans;
-# `_eval_diag_mps` (LSB-first diagonal readout) lives there beside `eval_mps`.
-
-
+# 1. Online band structure — get_bands (low-level MPO method)
 # ============================================================
-# 4. Online band structure  —  get_bands
 #
-# ── Chebyshev recurrence ────────────────────────────────────────────────────
+# == Chebyshev recurrence ==
 # Runs on the FULL MPO space (all auxiliary sites included):
 #   T_0 = I,  T_1 = H̃,  T_n = 2 H̃ T_{n-1} − T_{n-2}    (H̃ = (H−center)/scale)
 #
-# ── Projection pipeline (five composable steps) ─────────────────────────────
+# == Projection pipeline (five composable steps) ==
 # At each step n, T_n is passed through the following stages.  Each stage
 # builds a list of position-only MPOs; every MPO in the final list is QFT'd,
 # sampled, and its contribution added to Ak_w.
@@ -167,7 +148,7 @@
 #       for each k-group:  s = mean(_eval_diag_mps(A_mps, x) for x in group)
 #       ak_accum[iω, ik] += W[n, iω] * s
 #
-# ── k-point groups ───────────────────────────────────────────────────────────
+# == k-point groups ==
 # Default (grid) mode: num_x centres placed with ilinspace in [xmin,xmax];
 #   each centre is averaged over num_avg offset points (±half_step).
 #   2D: offsets zipped diagonally, combined as (iy << Lx) | ix.
@@ -175,17 +156,16 @@
 # Path mode: pass k_groups_override (from kpath_2d) or use the kpath kwarg
 #   in the TBHamiltonian overload; this bypasses all grid parameters.
 #
-# ── Projection count per Chebyshev step ──────────────────────────────────────
+# == Projection count per Chebyshev step ==
 #   nambu(×2) × spin(×2) × layer(×n) × sublat_aux(×dim) × sublat_mask(×2)
 #   All contributions are summed unless a specific sector is selected via the
 #   corresponding proj_* kwarg.
-# ============================================================
 
 """
     get_bands(H_mpo, scale, center, sites, Ncheb, D, ω_vals; kwargs...) -> Matrix{Float64}
 
 Memory-efficient band structure via online Chebyshev KPM accumulation.
-See the section 4 block comment above for the full four-step projection pipeline.
+See the block comment of section 1 above for the projection pipeline (Steps 0–3).
 
 # Arguments
 - `H_mpo`        : unscaled Hamiltonian MPO on all sites (position + any aux).
@@ -235,9 +215,12 @@ Each projection flag is independent; any combination is valid.
 - `xmin, xmax, num_x` : grid in x (1D) or kx (2D).  Default: full range, 10 pts.
 - `ymin, ymax, num_y` : grid in ky (2D only).
 - `num_avg`      : number of offset points averaged around each center (default 1).
+- `k_groups_override` : explicit k-point groups (e.g. from `kpath_2d`); bypasses
+                   the grid parameters above (default `nothing`).
 
 # Truncation and performance
-- `kernel`       : KPM broadening kernel (`:jackson` or `:lorentz`).
+- `kernel`       : KPM broadening kernel (`:jackson`, `:lorentz`, `:fejer` or
+                   `:dirichlet`; default `:jackson`).
 - `lambda`       : Lorentz kernel width (ignored for Jackson).
 - `tol, maxdim, cutoff` : MPO truncation parameters passed to `apply` and `truncate!`.
 - `printinfo`    : print `maxlinkdim` every 10 Chebyshev steps (default `false`).
@@ -437,7 +420,7 @@ end
 
 
 # ============================================================
-# 5. High-level overloads  —  get_bands
+# 2. High-level overloads — get_bands(H::TBHamiltonian, …)
 # ============================================================
 
 """
@@ -454,7 +437,14 @@ from position k-space automatically — no manual index passing required.
 
 **Projection kwargs** (forwarded verbatim to the low-level MPO method):
 `spin_proj`, `proj_s`, `nambu_proj`, `proj_nambu`, `layer_proj`, `proj_layer`,
-`sublat_proj`, `proj_sl`, `sublattice`.
+`sublat_proj`, `proj_sl`, `sublattice`.  The projection flag of every aux index
+present on `H` is switched on automatically (`_autoenable_proj`, one `@info`
+record per flag it enables).
+
+The k-point sampling and truncation keywords (`k_groups_override`, `xmin`, `xmax`,
+`num_x`, `num_avg`, `ymin`, `ymax`, `num_y`, `kernel`, `lambda`, `tol`, `maxdim`,
+`cutoff`, `printinfo`) are those of the low-level method, with the same defaults
+except `num_x = 60`.
 
 **High-symmetry k-path shortcut** — replaces the manual `hsk_*` + `kpath_2d`
 + `k_groups_override` boilerplate with a single call:
