@@ -162,39 +162,43 @@ end
     N   = size(D, 1)
     # ⟨i|H|j⟩ convention: htb_dense agrees with matrix_checker (inner(e_i, apply(H, e_j)), as
     # in get_matrix) on the row and column of an interior site, i.e. its NN and NNN both ways
+    # H2DChernhex builds its hopping MPOs by QTCI with tol_quantics = 1e-8, so its entries are exact
+    # only to ~1e-9 (on Julia 1.13 some are off by that much; on 1.12 they come out exact):
+    # every check below uses a tolerance of 1e-6, far above that and far below t2 = 0.1.
+    tolq = 1e-6
     s, i0 = htb_sites(mpo), 14
     @test D[i0, :] ≈ [matrix_checker(mpo, s, i0 - 1, j - 1) for j in 1:N]
     @test D[:, i0] ≈ [matrix_checker(mpo, s, j - 1, i0 - 1) for j in 1:N]
-    @test D ≈ D'
+    @test isapprox(D, D'; atol=tolq)
 
     # Index map from the nearest-neighbour structure: the entries of modulus t form exactly the
     # unit-distance graph of honeycomb_positions with row i ↔ index i. A planar honeycomb patch
     # has one embedding up to rotations and reflections, which change ν at most by a global sign.
     rs   = honeycomb_positions(Lx + Ly; Lx=Lx)
     nbrs = htb_nbrs(rs)
-    nnD  = Set((i, j) for i in 1:N, j in 1:N if i != j && isapprox(abs(D[i, j]), t; atol=1e-8))
+    nnD  = Set((i, j) for i in 1:N, j in 1:N if i != j && isapprox(abs(D[i, j]), t; atol=tolq))
     @test nnD == Set((i, j) for i in 1:N for j in nbrs[i])
-    @test all(D[i, j] ≈ t for (i, j) in nnD)
+    @test all(isapprox(D[i, j], t; atol=tolq) for (i, j) in nnD)
     ν = htb_nu(rs, nbrs)
     # the next-nearest entries sit exactly on the pairs with a common neighbour ...
-    @test Set((i, j) for i in 1:N, j in 1:N if i != j && abs(D[i, j]) > 1e-8 && (i, j) ∉ nnD) ==
+    @test Set((i, j) for i in 1:N, j in 1:N if i != j && abs(D[i, j]) > tolq && (i, j) ∉ nnD) ==
           Set(keys(ν))
     # ... with the textbook ν on every bond, times the builder's global convention -1 (φ = -π/2)
     vertical(i, j) = isapprox(rs[i, 1], rs[j, 1]; atol=1e-8)
-    @test all(D[i, j] ≈ -im * t2 * v for ((i, j), v) in ν if vertical(i, j))
-    @test all(D[i, j] ≈ -im * t2 * v for ((i, j), v) in ν if !vertical(i, j))
-    @test all(D[i, i] ≈ (htb_sub(rs[i, :]) == 1 ? -ms : ms) for i in 1:N)
+    @test all(isapprox(D[i, j], -im * t2 * v; atol=tolq) for ((i, j), v) in ν if vertical(i, j))
+    @test all(isapprox(D[i, j], -im * t2 * v; atol=tolq) for ((i, j), v) in ν if !vertical(i, j))
+    @test all(isapprox(D[i, i], htb_sub(rs[i, :]) == 1 ? -ms : ms; atol=tolq) for i in 1:N)
 
     # the "haldane" preset at φ = -π/2, M = ms, up to the gauge c → -c on sublattice B (t = 1)
     A = ComplexF64[haldane_hoppingf(rs[i, :], rs[j, :], i, j; t2=t2, phi=-π/2, M=ms)
                    for i in 1:N, j in 1:N]
     G = Diagonal([htb_sub(rs[i, :]) == 1 ? 1.0 : -1.0 for i in 1:N])
-    @test D ≈ G * A * G
+    @test isapprox(D, G * A * G; atol=tolq)
 
     # Dirac masses -ms ± 3√3 t2 and the transition at |ms| = 3√3 |t2| (was √3 |t2|)
     rows = htb_rows(rs, nbrs)
     @test htb_masses(htb_bloch((i, j) -> D[i, j], rs, rows)) ≈
-          sort([-ms + 3√3 * t2, -ms - 3√3 * t2])
+          sort([-ms + 3√3 * t2, -ms - 3√3 * t2]) atol=tolq
     Mc = 3√3 * t2
     C(m) = (Dm = htb_dense(H2DChernhex(Lx, Ly, t, t2, m; uniformhaldane=true, uniformsemenoff=true));
             htb_chern(htb_bloch((i, j) -> Dm[i, j], rs, rows)))
