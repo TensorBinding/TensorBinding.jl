@@ -1477,8 +1477,11 @@ function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
                               kernel=:jackson, lambda=4.0)
     jackson_kernel = _kpm_kernel(N, kernel; lambda=lambda)
 
+    # Chebyshev coefficients of the occupied-state projector θ(fermi − x), x = rescaled energy:
+    # c₀ = 1 − acos(μ)/π and cₙ = −2 sin(n acos μ)/(nπ). (Until v0.1.1 the signs gave
+    # θ(x − fermi), the projector onto the empty states.)
     function G_n(n)
-        n == 1 ? acos(fermi) : sin((n-1) * acos(fermi)) / (n-1)
+        n == 1 ? π - acos(fermi) : -sin((n-1) * acos(fermi)) / (n-1)
     end
 
     A = Tn_list[1] * G_n(1) * jackson_kernel[1]
