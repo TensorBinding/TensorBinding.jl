@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1550" height="960" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="arr" markerWidth="9" markerHeight="6" refX="9" refY="3" orient="auto">
+    <polygon points="0 0,9 3,0 6" fill="#555"/>
+  </marker>
+  <marker id="arr_ext" markerWidth="9" markerHeight="6" refX="9" refY="3" orient="auto">
+    <polygon points="0 0,9 3,0 6" fill="#999"/>
+  </marker>
+</defs>
+<rect width="1550" height="960" fill="#fafafa"/>
+
+<text x="18" y="90.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#999" font-style="italic">External</text>
+<text x="18" y="205.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#2060b0" font-style="italic">Foundation</text>
+<text x="18" y="330.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#007030" font-style="italic">Geometry / System</text>
+<text x="18" y="460.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#b06000" font-style="italic">Computation</text>
+<text x="18" y="590.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#5030a0" font-style="italic">Observables</text>
+<text x="18" y="720.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#b02050" font-style="italic">Extensions</text>
+<text x="18" y="855.0" text-anchor="start" font-family="Arial,sans-serif" font-size="11" fill="#0090a0" font-style="italic">GPU Acceleration</text>
+<line x1="145" y1="110.0" x2="1520" y2="110.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="225.0" x2="1520" y2="225.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="350.0" x2="1520" y2="350.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="480.0" x2="1520" y2="480.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="610.0" x2="1520" y2="610.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="740.0" x2="1520" y2="740.0" stroke="#ddd" stroke-width="1"/>
+<line x1="145" y1="820.0" x2="1330" y2="820.0" stroke="#ddd" stroke-width="1"/>
+<rect x="160.0" y="67.0" width="240" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
+<text x="280" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">ITensors · ITensorMPS · NDTensors</text>
+<rect x="565.0" y="67.0" width="330" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
+<text x="730" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">QuanticsTCI · TCI · Quantics · QuanticsGrids</text>
+<rect x="1140.0" y="67.0" width="140" height="36" rx="7" fill="#f0f0f0" stroke="#aaa" stroke-width="2"/>
+<text x="1210" y="90.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="11" font-weight="bold"  fill="#111">LinearAlgebra</text>
+<rect x="245.0" y="181.0" width="130" height="38" rx="7" fill="#cce4ff" stroke="#2060b0" stroke-width="2"/>
+<text x="310" y="205.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">utils.jl</text>
+<rect x="762.5" y="181.0" width="155" height="38" rx="7" fill="#cce4ff" stroke="#2060b0" stroke-width="2"/>
+<text x="840" y="205.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Hamiltonian.jl</text>
+<rect x="145.0" y="306.0" width="150" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="220" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">2D_lattice.jl</text>
+<rect x="690.0" y="306.0" width="140" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="760" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">TBSystem.jl</text>
+<rect x="885.0" y="306.0" width="170" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="970" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="12" font-weight="bold"  fill="#111">NNNeighbor_tk.jl</text>
+<rect x="1115.0" y="306.0" width="150" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="1190" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Flake_tk.jl</text>
+<rect x="1340.0" y="306.0" width="140" height="38" rx="7" fill="#c8ffd8" stroke="#007030" stroke-width="2"/>
+<text x="1410" y="330.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="12" font-weight="bold"  fill="#111">TJunction_tk.jl</text>
+<rect x="300.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="360" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">KPM_tk.jl</text>
+<rect x="580.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="640" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">QFT_tk.jl</text>
+<rect x="845.0" y="436.0" width="130" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="910" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Timeev_tk.jl</text>
+<rect x="1110.0" y="436.0" width="120" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="1170" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">DMRG_tk.jl</text>
+<rect x="1315.0" y="436.0" width="150" height="38" rx="7" fill="#ffd8a0" stroke="#b06000" stroke-width="2"/>
+<text x="1390" y="460.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Krylov_tk.jl</text>
+<rect x="52.5" y="566.0" width="155" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="130" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Topology_tk.jl</text>
+<rect x="305.0" y="566.0" width="170" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="390" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Purification_tk.jl</text>
+<rect x="610.0" y="566.0" width="140" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="680" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">SCF_tk.jl</text>
+<rect x="885.0" y="566.0" width="110" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="940" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">RPA_tk.jl</text>
+<rect x="1122.5" y="566.0" width="185" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="1215" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">TwoParticle_tk.jl</text>
+<rect x="1355.0" y="566.0" width="130" height="38" rx="7" fill="#e0ccff" stroke="#5030a0" stroke-width="2"/>
+<text x="1420" y="590.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">QPI_tk.jl</text>
+<rect x="100.0" y="696.0" width="160" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
+<text x="180" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">Supercond_tk.jl</text>
+<rect x="510.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
+<text x="580" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">twisted_tk.jl</text>
+<rect x="970.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
+<text x="1040" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">bilayer_tk.jl</text>
+<rect x="1140.0" y="696.0" width="140" height="38" rx="7" fill="#ffc8d8" stroke="#b02050" stroke-width="2"/>
+<text x="1210" y="720.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="13" font-weight="bold"  fill="#111">NH_tk.jl</text>
+<rect x="250.0" y="831.0" width="900" height="38" rx="7" fill="#c0f5f5" stroke="#0090a0" stroke-width="2"/>
+<text x="700" y="855.0" text-anchor="middle" dominant-baseline="middle" font-family="'Courier New',monospace" font-size="14" font-weight="bold"  fill="#111">GPU_tk.jl  (src/gpu/)</text>
+<text x="700" y="882.0" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" fill="#0090a0" font-style="italic">GPU-accelerated mirrors of KPM / QFT / Topology / SCF / TwoParticle, plus core/Utils sampling</text>
+<path d="M 730.0 103.0 Q 825.0 142.0 840.0 181.0" fill="none" stroke="#aaa" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 730.0 103.0 C 730.0 163.0 640.0 376.0 640.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 280.0 103.0 C 280.0 183.0 910.0 356.0 910.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 280.0 103.0 C 480.0 253.0 970.0 286.0 1170.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1130.0 170.0 850.0 250.0 760.0 306.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1080.0 220.0 740.0 360.0 640.0 436.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 820.0 260.0 320.0 430.0 130.0 566.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<path d="M 1210.0 103.0 C 1260.0 400.0 950.0 700.0 700.0 831.0" fill="none" stroke="#bbb" stroke-width="1.6" marker-end="url(#arr_ext)" stroke-dasharray="5,3" />
+<line x1="375.0" y1="200.0" x2="762.5" y2="200.0" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 310.0 219.0 Q 270.0 262.5 220.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 310.0 219.0 Q 535.0 262.5 760.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 245.0 200.0 C 165.0 300.0 120.0 596.0 180.0 696.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 245.0 200.0 C 185.0 350.0 100.0 486.0 130.0 566.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 740.0 259.0 280.0 266.0 220.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 Q 820.0 262.5 760.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 Q 895.0 327.5 910.0 436.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 840.0 339.0 580.0 576.0 580.0 696.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 220.0 344.0 C 280.0 444.0 500.0 596.0 580.0 696.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 295.0 325.0 C 495.0 375.0 1070.0 596.0 1040.0 696.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 C 680.0 384.0 420.0 396.0 360.0 436.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 Q 690.0 390.0 640.0 436.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 Q 710.0 540.0 580.0 696.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 C 700.0 404.0 430.0 506.0 390.0 566.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 Q 720.0 455.0 680.0 566.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 360.0 474.0 C 320.0 514.0 160.0 526.0 130.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 360.0 474.0 Q 365.0 520.0 390.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 360.0 474.0 C 440.0 514.0 600.0 526.0 680.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 420.0 455.0 C 580.0 465.0 950.0 486.0 940.0 566.0" fill="none" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<line x1="420.0" y1="455.0" x2="580.0" y2="455.0" stroke="#b06000" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 1010 360 1020 560 1122.5 585.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 830.0 325.0 C 1085 345 1090 555 1122.5 585.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<line x1="650.0" y1="715.0" x2="970.0" y2="715.0" stroke="#b02050" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 917.5 200.0 C 1037.5 280.0 1100.0 576.0 1040.0 696.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 Q 925.0 262.5 970.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<line x1="830.0" y1="325.0" x2="885.0" y2="325.0" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 840.0 219.0 C 840.0 259.0 1410.0 260.0 1410.0 306.0" fill="none" stroke="#2060b0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 1190.0 344.0 C 1190.0 420.0 1300.0 520.0 1420.0 566.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 940.0 566.0 C 1000.0 500.0 1300.0 478.0 1390.0 474.0" fill="none" stroke="#5030a0" stroke-width="1.6" marker-end="url(#arr)" />
+<path d="M 760.0 344.0 C 880.0 490.0 1210.0 660.0 1210.0 696.0" fill="none" stroke="#007030" stroke-width="1.6" marker-end="url(#arr)" />
+<text x="775" y="35" text-anchor="middle" font-family="Arial,sans-serif" font-size="21" font-weight="bold" fill="#222">TensorBinding.jl — Module Dependency Map</text>
+<rect x="1350" y="830" width="170" height="110" rx="6" fill="white" stroke="#ccc" stroke-width="1"/>
+<text x="1435" y="848" text-anchor="middle" font-family="Arial,sans-serif" font-size="11" font-weight="bold" fill="#333">Legend</text>
+<rect x="1358" y="854" width="14" height="12" rx="2" fill="#cce4ff" stroke="#2060b0" stroke-width="1.5"/>
+<text x="1377" y="864" font-family="Arial,sans-serif" font-size="10" fill="#333">Foundation</text>
+<rect x="1358" y="870" width="14" height="12" rx="2" fill="#c8ffd8" stroke="#007030" stroke-width="1.5"/>
+<text x="1377" y="880" font-family="Arial,sans-serif" font-size="10" fill="#333">Geometry / System</text>
+<rect x="1358" y="886" width="14" height="12" rx="2" fill="#ffd8a0" stroke="#b06000" stroke-width="1.5"/>
+<text x="1377" y="896" font-family="Arial,sans-serif" font-size="10" fill="#333">Computation</text>
+<rect x="1358" y="902" width="14" height="12" rx="2" fill="#e0ccff" stroke="#5030a0" stroke-width="1.5"/>
+<text x="1377" y="912" font-family="Arial,sans-serif" font-size="10" fill="#333">Observables</text>
+<rect x="1358" y="918" width="14" height="12" rx="2" fill="#ffc8d8" stroke="#b02050" stroke-width="1.5"/>
+<text x="1377" y="928" font-family="Arial,sans-serif" font-size="10" fill="#333">Extensions</text>
+<line x1="1358" y1="936" x2="1372" y2="936" stroke="#999" stroke-width="1.5" stroke-dasharray="4,2"/>
+<text x="1377" y="940" font-family="Arial,sans-serif" font-size="10" fill="#666">External dependency</text>
+</svg>
