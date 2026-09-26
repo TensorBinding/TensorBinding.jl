@@ -1,18 +1,21 @@
 # solvers/Timeev.jl — time evolution: TDVP, propagator MPOs, density-matrix RK4
 #
-# Contents: the short-time propagator U(dt) = e^{-iH dt} as an MPO, sampled column
-# by column with TDVP and compressed by TCI (build_tdvp_propagator_mpo); state
-# evolution by TDVP or by repeated application of U (tdvp_evolve, apply_mpo_to_mps,
-# evolve_with_propagator, evolve_with_tdvp, evolve_with_tdvp_timedep); basis-overlap
-# diagnostics (compute_basis_overlaps, basis_amplitude, phase_aligned_distance,
-# check_tdvp_vs_U_mpo); RK4 for a density-matrix MPO under dρ/dt = −i[H(t), ρ] and
-# under the non-Hermitian −i(Hρ − ρH†) (rk4_step_dm_timedep, evolve_rk4_dm_timedep,
-# rk4_step_dm_nh, evolve_rk4_dm_nh); and observables along a density-matrix
-# trajectory (dm_expect, observables_trajectory, timedep_observable_trajectory,
-# purity, bond_current_x, central_x_bond, …).
+# Contents: the kernels every routine below is built on, shared with
+# gpu/timeev.jl (one TDVP step _tdvp_step, the trajectory loop _trajectory, one
+# RK4 step _rk4_step); the short-time propagator U(dt) = e^{-iH dt} as an MPO,
+# sampled column by column with TDVP and compressed by TCI
+# (build_tdvp_propagator_mpo); state evolution by TDVP or by repeated application
+# of U (tdvp_evolve, apply_mpo_to_mps, evolve_with_propagator, evolve_with_tdvp,
+# evolve_with_tdvp_timedep); basis-overlap diagnostics (compute_basis_overlaps,
+# basis_amplitude, phase_aligned_distance, check_tdvp_vs_U_mpo); RK4 for a
+# density-matrix MPO under dρ/dt = −i[H(t), ρ] and under the non-Hermitian
+# −i(Hρ − ρH†) (rk4_step_dm_timedep, evolve_rk4_dm_timedep, rk4_step_dm_nh,
+# evolve_rk4_dm_nh); and observables along a density-matrix trajectory
+# (dm_expect, observables_trajectory, timedep_observable_trajectory, purity,
+# bond_current_x, central_x_bond, …).
 #
 # build_tdvp_propagator_mpo, tdvp_evolve, evolve_with_tdvp and check_tdvp_vs_U_mpo
-# take an MPO already multiplied by −im; their TBHamiltonian methods (section 7)
+# take an MPO already multiplied by −im; their TBHamiltonian methods (section 8)
 # apply it. evolve_with_tdvp_timedep and the RK4 functions take the physical H(t).
 #
 # Entry points: build_tdvp_propagator_mpo, tdvp_evolve, evolve_with_tdvp,
@@ -25,7 +28,86 @@ using ITensors
 using ITensorMPS
 
 # ============================================================
-# 1. TDVP propagator MPO
+# 1. Shared kernels: TDVP step, trajectory loop, RK4 step
+# ============================================================
+
+# One TDVP step of size `dt` under the generator `H` (−im·H for Schrödinger
+# evolution): every tdvp call in this file and in gpu/timeev.jl goes through here.
+# Extra keywords (`updater_kwargs`) go to tdvp.
+function _tdvp_step(H, psi, dt; nsite, maxdim, cutoff, normalize, reverse_step,
+                    outputlevel, kwargs...)
+    return tdvp(
+        H,
+        dt,
+        psi;
+        time_step = dt,
+        nsite = nsite,
+        maxdim = maxdim,
+        cutoff = cutoff,
+        normalize = normalize,
+        reverse_step = reverse_step,
+        outputlevel = outputlevel,
+        kwargs...,
+    )
+end
+
+# The trajectory loop of every evolve_* function: returns [x0, x1, …, x_nsteps]
+# as a Vector{T}, with x_step = advance(step, x_{step-1}). `snapshot` makes the
+# stored copies and the working copy of x0: `copy` for the MPS loops, `deepcopy`
+# for the density-matrix loops.
+function _trajectory(advance, x0, nsteps::Integer, ::Type{T}; snapshot = copy) where {T}
+    states = Vector{T}(undef, nsteps + 1)
+    states[1] = snapshot(x0)
+
+    x = snapshot(x0)
+    for step in 1:nsteps
+        x = advance(step, x)
+        states[step + 1] = snapshot(x)
+    end
+
+    return states
+end
+
+# One classical RK4 step of dρ/dt = f(ρ) for an MPO ρ, shared by
+# rk4_step_dm_timedep, rk4_step_dm_nh and rk4_step_dm_nh_gpu (gpu/timeev.jl).
+# `rhs(stage, ρ)` returns f at stage 1–4 (stages 2 and 3 are the midpoint).
+# `coeffs = (dt/2, dt, dt/6, 2)` are the tableau factors, passed in so that the GPU
+# step keeps its ComplexF32 constants. Every MPO sum truncates with `add_kwargs`
+# (the CPU steps pass `cutoff` only, the GPU step `cutoff` and `maxdim`); the
+# intermediate states (if `truncate_intermediates`), the k-sum and the result are
+# then truncated to `maxdim`, `cutoff`.
+function _rk4_step(rhs, ρ::MPO, coeffs; maxdim, cutoff, truncate_intermediates,
+                   add_kwargs = (; cutoff = cutoff))
+    halfdt, fulldt, sixthdt, two = coeffs
+
+    k1 = rhs(1, ρ)
+
+    ρ2 = +(ρ, halfdt * k1; add_kwargs...)
+    truncate_intermediates && ITensorMPS.truncate!(ρ2; maxdim=maxdim, cutoff=cutoff)
+    k2 = rhs(2, ρ2)
+
+    ρ3 = +(ρ, halfdt * k2; add_kwargs...)
+    truncate_intermediates && ITensorMPS.truncate!(ρ3; maxdim=maxdim, cutoff=cutoff)
+    k3 = rhs(3, ρ3)
+
+    ρ4 = +(ρ, fulldt * k3; add_kwargs...)
+    truncate_intermediates && ITensorMPS.truncate!(ρ4; maxdim=maxdim, cutoff=cutoff)
+    k4 = rhs(4, ρ4)
+
+    k_sum = +(k1, two * k2; add_kwargs...)
+    k_sum = +(k_sum, two * k3; add_kwargs...)
+    k_sum = +(k_sum, k4; add_kwargs...)
+    ITensorMPS.truncate!(k_sum; maxdim=maxdim, cutoff=cutoff)
+
+    ρ_new = +(ρ, sixthdt * k_sum; add_kwargs...)
+    ITensorMPS.truncate!(ρ_new; maxdim=maxdim, cutoff=cutoff)
+
+    return ρ_new
+end
+
+
+# ============================================================
+# 2. TDVP propagator MPO
 # ============================================================
 
 """
@@ -130,11 +212,10 @@ function build_tdvp_propagator_mpo(
             psi_j = ITensorMPS.expand(psi_j, H; alg = "global_krylov")
         end
 
-        return tdvp(
+        return _tdvp_step(
             H,
-            dt,
-            psi_j;
-            time_step = dt,
+            psi_j,
+            dt;
             nsite = nsite,
             maxdim = maxdim,
             cutoff = cutoff,
@@ -167,7 +248,7 @@ end
 
 
 # ============================================================
-# 2. State evolution: TDVP and propagator MPO
+# 3. State evolution: TDVP and propagator MPO
 # ============================================================
 
 """
@@ -193,11 +274,10 @@ function tdvp_evolve(
     outputlevel = 0,
     nsite = 2,
 )
-    psi_out = tdvp(
+    psi_out = _tdvp_step(
         H,
-        dt,
-        psi;
-        time_step = dt,
+        psi,
+        dt;
         nsite = nsite,
         maxdim = maxdim,
         cutoff = cutoff,
@@ -248,20 +328,14 @@ function evolve_with_propagator(U_mpo, psi0, nsteps;
     cutoff = 1e-8,
     maxdim = 10_000,
 )
-    states = Vector{MPS}(undef, nsteps + 1)
-    states[1] = copy(psi0)
-
-    psi = copy(psi0)
-    for step in 1:nsteps
+    return _trajectory(psi0, nsteps, MPS) do _, psi
         psi = apply(U_mpo, psi; cutoff = cutoff, maxdim = maxdim)
         ITensorMPS.truncate!(psi; cutoff = cutoff, maxdim = maxdim)
         if normalize_each_step
             normalize!(psi)
         end
-        states[step + 1] = copy(psi)
+        return psi
     end
-
-    return states
 end
 
 
@@ -286,16 +360,11 @@ function evolve_with_tdvp(H, psi0, nsteps, dt;
     outputlevel = 0,
     nsite = 2,
 )
-    states = Vector{MPS}(undef, nsteps + 1)
-    states[1] = copy(psi0)
-
-    psi = copy(psi0)
-    for step in 1:nsteps
-        psi = tdvp(
+    return _trajectory(psi0, nsteps, MPS) do _, psi
+        psi = _tdvp_step(
             H,
-            dt,
-            psi;
-            time_step = dt,
+            psi,
+            dt;
             nsite = nsite,
             maxdim = maxdim,
             cutoff = cutoff,
@@ -306,10 +375,8 @@ function evolve_with_tdvp(H, psi0, nsteps, dt;
         if normalize_each_step
             normalize!(psi)
         end
-        states[step + 1] = copy(psi)
+        return psi
     end
-
-    return states
 end
 
 
@@ -339,19 +406,14 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
     krylovdim = 20,
     tol = 1e-10,
 )
-    states = Vector{MPS}(undef, nsteps + 1)
-    states[1] = copy(psi0)
-
-    psi = copy(psi0)
-    for step in 1:nsteps
+    return _trajectory(psi0, nsteps, MPS) do step, psi
         t_mid = (step - 1) * dt + dt / 2
         Hmid = Hoft(t_mid)
 
-        psi = tdvp(
+        psi = _tdvp_step(
             -im * Hmid,
-            dt,
-            psi;
-            time_step = dt,
+            psi,
+            dt;
             nsite = nsite,
             maxdim = maxdim,
             cutoff = cutoff,
@@ -363,15 +425,13 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
         if normalize_each_step
             normalize!(psi)
         end
-        states[step + 1] = copy(psi)
+        return psi
     end
-
-    return states
 end
 
 
 # ============================================================
-# 3. Basis overlaps and TDVP-vs-propagator checks
+# 4. Basis overlaps and TDVP-vs-propagator checks
 # ============================================================
 
 """
@@ -565,16 +625,54 @@ end
 
 
 # ============================================================
-# 4. Density-matrix RK4 (Hermitian H(t))
+# 5. Density-matrix RK4 (Hermitian H(t))
 # ============================================================
 
-# dρ/dt = -i[H, ρ] RHS for Hermitian H
-function _von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
+# dρ/dt = -i(Hρ - ρ H_right): H_right = H gives the commutator of a Hermitian H,
+# H_right = H† the non-Hermitian right-hand side (section 6).
+function _von_neumann_rhs(H::MPO, H_right::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
     Hρ   = apply(H, ρ; maxdim=maxdim, cutoff=cutoff)
-    ρH   = apply(ρ, H; maxdim=maxdim, cutoff=cutoff)
+    ρH   = apply(ρ, H_right; maxdim=maxdim, cutoff=cutoff)
     comm = +(Hρ, -1.0 * ρH; cutoff=cutoff)
     ITensorMPS.truncate!(comm; maxdim=maxdim, cutoff=cutoff)
     return -1.0im * comm
+end
+
+# dρ/dt = -i[H, ρ] RHS for Hermitian H
+_von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64) =
+    _von_neumann_rhs(H, H, ρ; maxdim=maxdim, cutoff=cutoff)
+
+# One RK4 step of dρ/dt = rhs(H(t), ρ), shared by rk4_step_dm_timedep and
+# rk4_step_dm_nh: `Hoft` is evaluated once each at t, t + dt/2 and t + dt, in that
+# order, and the midpoint H serves stages 2 and 3.
+function _rk4_step_dm(rhs, Hoft, ρ::MPO, t::Float64, dt::Float64;
+    maxdim::Int, cutoff::Float64, truncate_intermediates::Bool,
+)
+    H0   = Hoft(t)
+    Hmid = Hoft(t + dt / 2)
+    H1   = Hoft(t + dt)
+    Hstage = (H0, Hmid, Hmid, H1)
+
+    return _rk4_step((stage, x) -> rhs(Hstage[stage], x; maxdim=maxdim, cutoff=cutoff),
+                     ρ, (dt / 2, dt, dt / 6, 2.0);
+                     maxdim=maxdim, cutoff=cutoff,
+                     truncate_intermediates=truncate_intermediates)
+end
+
+# The trajectory loop of evolve_rk4_dm_timedep and evolve_rk4_dm_nh: step k
+# advances ρ from t = (k - 1)·dt with `rk4_step`; `label` opens the verbose line.
+function _evolve_rk4_dm(rk4_step, label, Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
+    maxdim::Int, cutoff::Float64, truncate_intermediates::Bool, verbose::Bool,
+)
+    return _trajectory(ρ0, nsteps, MPO; snapshot = deepcopy) do step, ρ
+        t = (step - 1) * dt
+        verbose && println("$label step $step / $nsteps,  t = $t,  maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+        return rk4_step(Hoft, ρ, t, dt;
+            maxdim=maxdim,
+            cutoff=cutoff,
+            truncate_intermediates=truncate_intermediates,
+        )
+    end
 end
 
 
@@ -590,33 +688,11 @@ function rk4_step_dm_timedep(Hoft, ρ::MPO, t::Float64, dt::Float64;
     cutoff::Float64 = 1e-10,
     truncate_intermediates::Bool = true,
 )
-    H0   = Hoft(t)
-    Hmid = Hoft(t + dt / 2)
-    H1   = Hoft(t + dt)
-
-    k1 = _von_neumann_rhs(H0,   ρ;  maxdim=maxdim, cutoff=cutoff)
-
-    ρ2 = +(ρ, (dt / 2) * k1; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ2; maxdim=maxdim, cutoff=cutoff)
-    k2 = _von_neumann_rhs(Hmid, ρ2; maxdim=maxdim, cutoff=cutoff)
-
-    ρ3 = +(ρ, (dt / 2) * k2; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ3; maxdim=maxdim, cutoff=cutoff)
-    k3 = _von_neumann_rhs(Hmid, ρ3; maxdim=maxdim, cutoff=cutoff)
-
-    ρ4 = +(ρ, dt * k3; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ4; maxdim=maxdim, cutoff=cutoff)
-    k4 = _von_neumann_rhs(H1,   ρ4; maxdim=maxdim, cutoff=cutoff)
-
-    k_sum = +(k1, 2.0 * k2; cutoff=cutoff)
-    k_sum = +(k_sum, 2.0 * k3; cutoff=cutoff)
-    k_sum = +(k_sum, k4; cutoff=cutoff)
-    ITensorMPS.truncate!(k_sum; maxdim=maxdim, cutoff=cutoff)
-
-    ρ_new = +(ρ, (dt / 6) * k_sum; cutoff=cutoff)
-    ITensorMPS.truncate!(ρ_new; maxdim=maxdim, cutoff=cutoff)
-
-    return ρ_new
+    return _rk4_step_dm(_von_neumann_rhs, Hoft, ρ, t, dt;
+        maxdim=maxdim,
+        cutoff=cutoff,
+        truncate_intermediates=truncate_intermediates,
+    )
 end
 
 
@@ -644,39 +720,23 @@ function evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
     truncate_intermediates::Bool = true,
     verbose::Bool   = false,
 )
-    states = Vector{MPO}(undef, nsteps + 1)
-    states[1] = deepcopy(ρ0)
-
-    ρ = deepcopy(ρ0)
-    for step in 1:nsteps
-        t = (step - 1) * dt
-        verbose && println("RK4 step $step / $nsteps,  t = $t,  maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
-        ρ = rk4_step_dm_timedep(Hoft, ρ, t, dt;
-            maxdim=maxdim,
-            cutoff=cutoff,
-            truncate_intermediates=truncate_intermediates,
-        )
-        states[step + 1] = deepcopy(ρ)
-    end
-
-    return states
+    return _evolve_rk4_dm(rk4_step_dm_timedep, "RK4", Hoft, ρ0, nsteps, dt;
+        maxdim=maxdim,
+        cutoff=cutoff,
+        truncate_intermediates=truncate_intermediates,
+        verbose=verbose,
+    )
 end
 
 
 # ============================================================
-# 5. Density-matrix RK4 (non-Hermitian H(t))
+# 6. Density-matrix RK4 (non-Hermitian H(t))
 # ============================================================
 
 # dρ/dt = -i(Hρ - ρH†) RHS for non-Hermitian H.
 # H† is formed by swapping prime levels and conjugating: conj(swapprime(H, 0, 1)).
-function _nh_von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
-    Hdag  = conj(swapprime(H, 0, 1))
-    Hρ    = apply(H,    ρ; maxdim=maxdim, cutoff=cutoff)
-    ρHdag = apply(ρ, Hdag; maxdim=maxdim, cutoff=cutoff)
-    diff  = +(Hρ, -1.0 * ρHdag; cutoff=cutoff)
-    ITensorMPS.truncate!(diff; maxdim=maxdim, cutoff=cutoff)
-    return -1.0im * diff
-end
+_nh_von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64) =
+    _von_neumann_rhs(H, conj(swapprime(H, 0, 1)), ρ; maxdim=maxdim, cutoff=cutoff)
 
 
 """
@@ -694,33 +754,11 @@ function rk4_step_dm_nh(Hoft, ρ::MPO, t::Float64, dt::Float64;
     cutoff::Float64 = 1e-10,
     truncate_intermediates::Bool = true,
 )
-    H0   = Hoft(t)
-    Hmid = Hoft(t + dt / 2)
-    H1   = Hoft(t + dt)
-
-    k1 = _nh_von_neumann_rhs(H0,   ρ;  maxdim=maxdim, cutoff=cutoff)
-
-    ρ2 = +(ρ, (dt / 2) * k1; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ2; maxdim=maxdim, cutoff=cutoff)
-    k2 = _nh_von_neumann_rhs(Hmid, ρ2; maxdim=maxdim, cutoff=cutoff)
-
-    ρ3 = +(ρ, (dt / 2) * k2; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ3; maxdim=maxdim, cutoff=cutoff)
-    k3 = _nh_von_neumann_rhs(Hmid, ρ3; maxdim=maxdim, cutoff=cutoff)
-
-    ρ4 = +(ρ, dt * k3; cutoff=cutoff)
-    truncate_intermediates && ITensorMPS.truncate!(ρ4; maxdim=maxdim, cutoff=cutoff)
-    k4 = _nh_von_neumann_rhs(H1,   ρ4; maxdim=maxdim, cutoff=cutoff)
-
-    k_sum = +(k1, 2.0 * k2; cutoff=cutoff)
-    k_sum = +(k_sum, 2.0 * k3; cutoff=cutoff)
-    k_sum = +(k_sum, k4; cutoff=cutoff)
-    ITensorMPS.truncate!(k_sum; maxdim=maxdim, cutoff=cutoff)
-
-    ρ_new = +(ρ, (dt / 6) * k_sum; cutoff=cutoff)
-    ITensorMPS.truncate!(ρ_new; maxdim=maxdim, cutoff=cutoff)
-
-    return ρ_new
+    return _rk4_step_dm(_nh_von_neumann_rhs, Hoft, ρ, t, dt;
+        maxdim=maxdim,
+        cutoff=cutoff,
+        truncate_intermediates=truncate_intermediates,
+    )
 end
 
 
@@ -745,27 +783,17 @@ function evolve_rk4_dm_nh(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
     truncate_intermediates::Bool = true,
     verbose::Bool   = false,
 )
-    states = Vector{MPO}(undef, nsteps + 1)
-    states[1] = deepcopy(ρ0)
-
-    ρ = deepcopy(ρ0)
-    for step in 1:nsteps
-        t = (step - 1) * dt
-        verbose && println("RK4-NH step $step / $nsteps,  t = $t,  maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
-        ρ = rk4_step_dm_nh(Hoft, ρ, t, dt;
-            maxdim=maxdim,
-            cutoff=cutoff,
-            truncate_intermediates=truncate_intermediates,
-        )
-        states[step + 1] = deepcopy(ρ)
-    end
-
-    return states
+    return _evolve_rk4_dm(rk4_step_dm_nh, "RK4-NH", Hoft, ρ0, nsteps, dt;
+        maxdim=maxdim,
+        cutoff=cutoff,
+        truncate_intermediates=truncate_intermediates,
+        verbose=verbose,
+    )
 end
 
 
 # ============================================================
-# 6. Density-matrix observables
+# 7. Density-matrix observables
 # ============================================================
 
 """
@@ -884,7 +912,7 @@ end
 
 
 # ============================================================
-# 7. TBHamiltonian overloads (apply -im internally)
+# 8. TBHamiltonian overloads (apply -im internally)
 # ============================================================
 
 function build_tdvp_propagator_mpo(H::TBHamiltonian, dt; kwargs...)

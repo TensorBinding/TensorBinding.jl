@@ -7,7 +7,8 @@
 # Main entry points: get_nh_density_trajectory_gpu,
 # get_state_amplitude_trajectory_gpu, rk4_step_dm_nh_gpu.
 # Depends on: core/Utils.jl (spatial_sampling_plan), core/TBSystem.jl
-# (TBHamiltonian), gpu/device.jl, gpu/primitives.jl.
+# (TBHamiltonian), solvers/Timeev.jl (the RK4 and TDVP steps _rk4_step,
+# _tdvp_step), gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
@@ -24,40 +25,22 @@ function _nh_von_neumann_rhs_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO;
     return ComplexF32(0, -1) * diff
 end
 
-# One RK4 step of dρ/dt = -i(Hρ − ρH†) on GPU MPOs (H, H† and ρ already on GPU).
-# The step coefficients dt/2, dt, dt/6 and the right-hand-side constants are
-# ComplexF32 whatever the element type of the MPOs.
+# One RK4 step of dρ/dt = -i(Hρ − ρH†) on GPU MPOs (H, H† and ρ already on GPU),
+# through the CPU kernel _rk4_step (solvers/Timeev.jl). The step coefficients
+# dt/2, dt, dt/6, 2 and the right-hand-side constants are ComplexF32 whatever the
+# element type of the MPOs, and every MPO sum truncates with maxdim as well as
+# cutoff (the CPU steps pass only cutoff).
 function rk4_step_dm_nh_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO, dt::Real;
                             maxdim::Int = 200,
                             cutoff::Real = 1e-8,
                             truncate_intermediates::Bool = true)
-    ak = (cutoff=Float64(cutoff), maxdim=maxdim)
-    halfdt = ComplexF32(Float32(dt / 2))
-    dt_gpu = ComplexF32(Float32(dt))
-    dt6    = ComplexF32(Float32(dt / 6))
-    two    = ComplexF32(2)
-
-    k1 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho_gpu; maxdim=maxdim, cutoff=cutoff)
-
-    rho2 = +(rho_gpu, halfdt * k1; ak...)
-    truncate_intermediates && ITensorMPS.truncate!(rho2; cutoff=Float64(cutoff), maxdim=maxdim)
-    k2 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho2; maxdim=maxdim, cutoff=cutoff)
-
-    rho3 = +(rho_gpu, halfdt * k2; ak...)
-    truncate_intermediates && ITensorMPS.truncate!(rho3; cutoff=Float64(cutoff), maxdim=maxdim)
-    k3 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho3; maxdim=maxdim, cutoff=cutoff)
-
-    rho4 = +(rho_gpu, dt_gpu * k3; ak...)
-    truncate_intermediates && ITensorMPS.truncate!(rho4; cutoff=Float64(cutoff), maxdim=maxdim)
-    k4 = _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho4; maxdim=maxdim, cutoff=cutoff)
-
-    ksum = +(k1, two * k2; ak...)
-    ksum = +(ksum, two * k3; ak...)
-    ksum = +(ksum, k4; ak...)
-    ITensorMPS.truncate!(ksum; cutoff=Float64(cutoff), maxdim=maxdim)
-
-    rho_new = +(rho_gpu, dt6 * ksum; ak...)
-    ITensorMPS.truncate!(rho_new; cutoff=Float64(cutoff), maxdim=maxdim)
+    coeffs = (ComplexF32(Float32(dt / 2)), ComplexF32(Float32(dt)),
+              ComplexF32(Float32(dt / 6)), ComplexF32(2))
+    rhs = (_, rho) -> _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho; maxdim=maxdim, cutoff=cutoff)
+    rho_new = _rk4_step(rhs, rho_gpu, coeffs;
+                        maxdim=maxdim, cutoff=Float64(cutoff),
+                        truncate_intermediates=truncate_intermediates,
+                        add_kwargs=(cutoff=Float64(cutoff), maxdim=maxdim))
     _gpu_gc!()
     return rho_new
 end
@@ -345,11 +328,10 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
     printinfo && println("  [gpu] state sample step 0/$nsteps  t=0.0  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
 
     for step in 1:nsteps
-        ψ_gpu = tdvp(
+        ψ_gpu = _tdvp_step(
             generator_gpu,
-            dt,
-            ψ_gpu;
-            time_step=dt,
+            ψ_gpu,
+            dt;
             nsite=nsite,
             maxdim=maxdim,
             cutoff=Float64(cutoff),

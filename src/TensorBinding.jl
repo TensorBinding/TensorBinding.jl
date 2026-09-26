@@ -98,7 +98,8 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion
 # solvers/Krylov.jl          get_green_krylov, Haydock recursion (haydock_cf & co.)
 #                            → Utils, MPOTools, TBSystem
-# solvers/Timeev.jl          TDVP, propagator MPO, density-matrix RK4 and observables
+# solvers/Timeev.jl          TDVP/RK4 step and trajectory kernels, propagator MPO,
+#                            density-matrix RK4 and observables
 #                            → Utils, Hamiltonian, TBSystem
 # physics/Purification.jl    McWeeny, SP2, get_density
 #                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached
@@ -155,7 +156,7 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # gpu/nh.jl                  NH KPM density of states
 #                            → TBSystem, nh/model, nh/kpm, gpu/device, gpu/primitives
 # gpu/timeev.jl              NH density and TDVP amplitude trajectories
-#                            → Utils, TBSystem, gpu/device, gpu/primitives
+#                            → Utils, TBSystem, Timeev, gpu/device, gpu/primitives
 # gpu/conductivity.jl        conductivity-only Tucker/QFT/Hadamard helpers
 #                            → Utils, TBSystem, rpa/bubble, qft/conjugation, gpu/device,
 #                              gpu/primitives
