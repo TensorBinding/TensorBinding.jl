@@ -159,26 +159,32 @@ the affected golden cases in the same commit.
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
-- [ ] `solvers/KPM_tk.jl` (2067 lines) → `solvers/kpm/kernels.jl` (`_kpm_kernel`,
+- [x] `solvers/KPM_tk.jl` (2067 lines) → `solvers/kpm/kernels.jl` (`_kpm_kernel`,
       `_dos_weight_matrix`, HODC helpers, `_kpm_weight_matrix` from QFT), `recursion.jl`
       (`KPM_Tn`, `KPM_Tn_mps`, `_run_kpm_mps!`), `cached.jl` (`get_ldos`, `get_ldos_spectrum`,
       `*_from_Tn`, `*_from_mun`, Green's functions), `ldos.jl` (`get_ldos_online`,
       `get_ldos_spatial`, split into `_ldos_spatial_mps`/`_ldos_spatial_mpo`), `dos.jl`
       (`get_dos_stochastic`, `get_dos_trace`), `exciton.jl` (l.1648–1984).
-- [ ] `physics/RPA_tk.jl` (2148 lines) → `physics/rpa/Bubble.jl`, `Cheb2D.jl`, `Dyson.jl`;
+      *Split into `solvers/kpm/` (2acd149); `_kpm_weight_matrix` and `_reconstruct_ldos_moment_columns` moved into `kpm/kernels.jl` (c630c9c). `get_ldos_spatial` is not split into `_ldos_spatial_mps`/`_mpo` (not a pure move; Tier 2).*
+- [x] `physics/RPA_tk.jl` (2148 lines) → `physics/rpa/Bubble.jl`, `Cheb2D.jl`, `Dyson.jl`;
       MPO kron/interleave plumbing (l.10–287) → `core/Utils.jl`; Haydock recursion →
       `solvers/Krylov_tk.jl`; `get_spect_k` → QFT conjugation file; delete l.288–377.
-- [ ] `physics/QFT_tk.jl` (1643 lines) → `Conjugation.jl` (l.96–205), `Bands.jl`
+      *Split into `physics/rpa/` (a9bacc0); plumbing → `core/MPOTools.jl` (6ccf897), Haydock → `solvers/Krylov.jl` and `get_spect_k` → `qft/conjugation.jl` (c630c9c).*
+- [x] `physics/QFT_tk.jl` (1643 lines) → `Conjugation.jl` (l.96–205), `Bands.jl`
       (l.638–948, 1223–1370), `KPath.jl` (l.426–635); exciton spectra (l.206–281, 949–1220)
       → exciton folder; aux projection (l.1373–1505) → `core/AuxDOF.jl`.
-- [ ] `physics/NH_tk.jl` → `NH_model.jl` (struct, `hermitize`, `add_nh_*`) and `NH_KPM.jl`.
-- [ ] `lattice/2Dlattice_tk.jl` (1615 lines) → `Masks2D.jl`, `Hopping2D.jl`, `Presets.jl`
+      *Split into `physics/qft/` (c5b4353); aux projection → `core/AuxDOF.jl` (e36e505).*
+- [x] `physics/NH_tk.jl` → `NH_model.jl` (struct, `hermitize`, `add_nh_*`) and `NH_KPM.jl`.
+      *Split into `physics/nh/model.jl` and `nh/kpm.jl` (9407bf0).*
+- [x] `lattice/2Dlattice_tk.jl` (1615 lines) → `Masks2D.jl`, `Hopping2D.jl`, `Presets.jl`
       (QTCI `H*` builders incl. the 1D `HUniform`/`HSSH`/`HAAH`), `Sublattice.jl`
       (kagome/lieb/dice/honeycomb), `Geometry.jl`; `MODEL_REGISTRY`/`build_hamiltonian` →
       `core/ModelRegistry.jl`.
-- [ ] `gpu/GPU_tk.jl` (3647 lines) → `device.jl`, `primitives.jl`, `kpm.jl`, `bands.jl`,
+      *Split into `lattice/{masks2d,hopping2d,presets,sublattice}.jl` (a4dabbd); geometry → `lattice/geometry.jl`, registry → `core/ModelRegistry.jl` (a853263).*
+- [x] `gpu/GPU_tk.jl` (3647 lines) → `device.jl`, `primitives.jl`, `kpm.jl`, `bands.jl`,
       `topology.jl`, `purification.jl`, `scf.jl`, `exciton.jl`, `nh.jl`, `timeev.jl`;
       the conductivity-only Tucker/QFT/Hadamard block (~300 lines) → its example.
+      *Split into eleven `gpu/*.jl` files (8ba22a5); the conductivity block stays as `gpu/conductivity.jl` (an untracked script uses it).*
 
 ### Move misplaced helpers next to their callers
 - [x] One `core/AuxDOF.jl` owning spin/Nambu indices and op tables, `prepend_spin`/`prepend_nambu`,
@@ -192,7 +198,8 @@ the affected golden cases in the same commit.
 - [x] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
       `_site_projector_mpo`, `sigma_d/sigma_u` ops, layer prepend helpers → `core/Utils.jl`
       (or `lattice/Masks2D.jl` for the masks). (moved in tier1/move-utils)
-- [ ] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
+- [x] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
+      *Reviewed (e36e505): only the generic `_project_aux_block` moved to AuxDOF; the BdG/pairing builders use SCF state (µ, Hartree terms, `_split_spin_channels`) and stay in `physics/SCF.jl`.*
 - [x] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
       (moved in tier1/move-auxdof; name kept: the rename is left to Tier 2's `_project_aux_sectors`)
 - [x] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
@@ -246,7 +253,7 @@ the affected golden cases in the same commit.
       *Removed in 3291292.*
 - [ ] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
       190–214) once Tier 2 keyword constructor exists.
-- [ ] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
+- [x] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
       `KPM_tk.jl` 14/30/31, `QFT_tk.jl` 1453–1470, `Topology_tk.jl` 499–539,
       `TBSystem.jl` 1175, RPA legacy pipeline; switch to `@info … maxlog=1` or `verbose` gates.
       *Done except QFT: f6a29c4 made the progress chatter in Hamiltonian.jl and
@@ -259,11 +266,13 @@ the affected golden cases in the same commit.
       Still open: the `QFT_tk.jl` `_autoenable_proj` "Info: … auto-enabling …" lines go to
       stdout, and test/golden_qft.jl pins them in the captured `stdout` of 20 cases, so
       switching them to `@info` means regenerating those fields in the same commit.*
+      *Progress prints → `@debug` (f6a29c4), DMRG scale report → `@info` (56b3787), `_autoenable_proj` → `@info` (4cf039f).*
 
 ### Make the structure legible
 - [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
-- [ ] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
+- [x] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
       (2Dlattice runs 8, 8b, 8c, 8d, 8f; SCF header lists 8 sections, file has 9).
+      *One `# ====` banner style with matching section numbers (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f).*
 - [x] Rewrite the load-order comment in `TensorBinding.jl` as a real dependency graph.
       (done in tier1/rename) One entry per included file: what it holds and the files it calls
       into, derived from the code (every package-defined name each file uses, plus ITensors op
@@ -287,15 +296,18 @@ the affected golden cases in the same commit.
       Notes that record where code came from now say "the former …_tk.jl". Left as they are: the
       `"NH_tk model-building helpers …"` error message in `physics/nh/model.jl` (a string that
       test/data/nh_golden.jl pins, not a comment) and the old file names elsewhere in this checklist.
-- [ ] Re-save `2Dlattice_tk.jl` as UTF-8 and restore the mojibake symbols (√, ·, ≠ appear as
+- [x] Re-save `2Dlattice_tk.jl` as UTF-8 and restore the mojibake symbols (√, ·, ≠ appear as
       `-`/`_`, e.g. `b=(1+-)/2` for the golden ratio).
-- [ ] Docstrings vs signatures: `get_ldos_spatial` omits 9 kwargs; `get_ldos_from_mun` omits
+      *Done in the lattice split (a4dabbd).*
+- [x] Docstrings vs signatures: `get_ldos_spatial` omits 9 kwargs; `get_ldos_from_mun` omits
       `eta`/`m_order`; Bilayer/Twisted claim `(MPO, sites)` returns but return `TBHamiltonian`;
       Flake/TBSystem examples pass `Lx=16`/`32` where `Lx` is a qubit count; `get_Hamiltonian`
       table lists 8 of 21 names; QFT table of contents (l.76–92) wrong in five places;
       Topology header lists `berry_curvature_integrand`, which does not exist.
-- [ ] Tests: lattice builders, RPA, SCF, NH, Topology have no tests; add smoke tests before
+      *Docstring signatures checked against the code in every area (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f, 20c085c).*
+- [x] Tests: lattice builders, RPA, SCF, NH, Topology have no tests; add smoke tests before
       splitting so the moves are guarded.
+      *Golden characterization tests for eight areas (12acc5a..78a15a8, f3ebab3; gaps closed in d7bff9d, ac73a8e, e4a5682).*
 
 ## Tier 2 — shared kernels (internal behaviour only)
 
