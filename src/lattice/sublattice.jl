@@ -1,15 +1,27 @@
 # sublattice.jl — lattices with an explicit sublattice index (kagome, Lieb,
 # honeycomb, honeycomb NNN, dice/T3, SSH chain): the *_hamiltonian builders,
-# each returning a TBHamiltonian with the sublattice site postpended; the
-# matching *_positions tables live in lattice/geometry.jl. Split from
-# the former lattice/2Dlattice_tk.jl.
+# each returning a TBHamiltonian with the sublattice site postpended
+# (H.sublattice_s, H.aux_side = :post). get_Hamiltonian("kagome", ...) and the
+# other sublattice geometry names call them; the matching *_positions tables
+# live in lattice/geometry.jl.
+#
+# Entry points: kagome_hamiltonian, lieb_hamiltonian,
+#   honeycomb_sublattice_hamiltonian, honeycomb_nnn_hamiltonian,
+#   dice_hamiltonian, ssh_sublattice_hamiltonian.
+#
+# Depends on: core/Utils.jl (shift_mpo, shift_adjoint_mpo, postpend_op),
+# core/TBSystem.jl (TBHamiltonian), lattice/masks2d.jl (_row_break_mpo) and
+# lattice/hopping2d.jl (generate_kin_u/d).
+#
+# Split from the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Kagome lattice
 # ============================================================
 
 """
-    kagome_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, t_BC, cutoff, maxdim) -> TBHamiltonian
+    kagome_hamiltonian(Lx, Ly, t=1.0; t_AB=t, t_AC=t, t_BC=t,
+                       cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build a kagomé tight-binding Hamiltonian as a `TBHamiltonian`.
 
@@ -98,7 +110,7 @@ end
 # ============================================================
 
 """
-    lieb_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian
+    lieb_hamiltonian(Lx, Ly, t=1.0; t_AB=t, t_AC=t, cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build a Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
 
@@ -168,11 +180,11 @@ end
 
 
 # ============================================================
-# 3. Honeycomb sublattice lattice
+# 3. Honeycomb lattice (NN, and NN + NNN)
 # ============================================================
 
 """
-    honeycomb_sublattice_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
+    honeycomb_sublattice_hamiltonian(Lx, Ly, t=1.0; cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build a uniform honeycomb tight-binding Hamiltonian with an explicit 2-component
 sublattice index, as a `TBHamiltonian`.
@@ -240,7 +252,7 @@ end
 
 
 """
-    honeycomb_nnn_hamiltonian(Lx, Ly[, t[, t2]]; cutoff, maxdim) -> TBHamiltonian
+    honeycomb_nnn_hamiltonian(Lx, Ly, t=1.0, t2=0.0; cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build a honeycomb tight-binding Hamiltonian with both nearest-neighbor (NN)
 and next-nearest-neighbor (NNN) hopping, as a `TBHamiltonian`.
@@ -334,7 +346,7 @@ end
 # ============================================================
 
 """
-    dice_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian
+    dice_hamiltonian(Lx, Ly, t=1.0; t_AB=t, t_AC=t, cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build a dice (T3) tight-binding Hamiltonian as a `TBHamiltonian`.
 
@@ -424,7 +436,7 @@ end
 # ============================================================
 
 """
-    ssh_sublattice_hamiltonian(L[, t[, d]]; cutoff, maxdim) -> TBHamiltonian
+    ssh_sublattice_hamiltonian(L, t=1.0, d=0.0; cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Build an SSH (Su-Schrieffer-Heeger) tight-binding Hamiltonian with an explicit
 2-component sublattice index, as a `TBHamiltonian`.

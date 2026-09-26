@@ -8,7 +8,7 @@ using TensorBinding: get_Hamiltonian, build_hamiltonian, MODEL_REGISTRY, lattice
 # Characterization ("golden") tests for the lattice builders.
 #
 # These tests pin what the lattice code computes *today*, bugs included, so that
-# the Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split
+# the Tier 1 reorganisation (docs/dev/REORGANISATION_TODO.md: split the former
 # lattice/2Dlattice_tk.jl, move the geometry helpers and MODEL_REGISTRY, delete
 # dead code, rename files) cannot silently change a Hamiltonian, a position
 # table or a registry entry. The expected values live in
@@ -17,11 +17,12 @@ using TensorBinding: get_Hamiltonian, build_hamiltonian, MODEL_REGISTRY, lattice
 #
 # Covered: every builder in src/lattice/ (masks, legacy and NNN kinetic MPOs,
 # H* presets, kagome/lieb/honeycomb/honeycomb_nnn/dice/ssh sublattice
-# Hamiltonians and positions, MODEL_REGISTRY and build_hamiltonian, bilayer,
-# multilayer and twisted stacks, flake SDFs and mask_hamiltonian, T-junctions,
-# add_hopping_2D! with every amplitude form) and, from core/TBSystem.jl, every
-# get_Hamiltonian geometry name plus the geometry closures, *_positions,
-# _preset_geometry, _estimate_scale and central_index. Left out on purpose
+# Hamiltonians and positions, bilayer, multilayer and twisted stacks, flake
+# SDFs and mask_hamiltonian, T-junctions, add_hopping_2D! with every amplitude
+# form, and the geometry closures, *_positions and _preset_geometry of
+# lattice/geometry.jl), MODEL_REGISTRY and build_hamiltonian
+# (core/ModelRegistry.jl) and, from core/TBSystem.jl, every get_Hamiltonian
+# geometry name plus _estimate_scale and central_index. Left out on purpose
 # (other work is changing them): get_Hamiltonian("haldane"), "chernhex"
 # (H2DChernhex), haldane_hoppingf/chirality and the default scale of "chern8"
 # and "qc2dsquare" (those cases pass an explicit `scale=`).
@@ -137,7 +138,7 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
 # behaviour change. Change this set only together with that checklist section.
 # All of them were deleted in fb8b2d8 except `sdf_interval`, which QPI.jl uses.
 const DELETABLE_FUNCTIONS = Set{Symbol}([
-    # 2Dlattice_tk.jl: `interchain_hopping_*` (2nd_plus/minus, triangle,
+    # the former lattice/2Dlattice_tk.jl: `interchain_hopping_*` (2nd_plus/minus, triangle,
     # honeycomb) "with their skeleton/template helpers", `_geom_n_sub`, `_nsublat`
     :interchain_hopping_square_2nd_plus, :interchain_hopping_square_2nd_minus,
     :interchain_hopping_triangle, :interchain_hopping_honeycomb,

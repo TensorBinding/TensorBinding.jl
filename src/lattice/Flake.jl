@@ -1,7 +1,13 @@
-# Flake.jl — smooth flake masking for TBHamiltonian
+# Flake.jl — smooth flake masking for TBHamiltonian: signed-distance functions
+# (SDFs) for 1D and 2D shapes, their CSG combinations, and mask_hamiltonian, which
+# restricts a Hamiltonian to the region where an SDF is positive.
 #
-# Restricts a Hamiltonian to an irregular domain by applying a smooth
-# diagonal mask M learned via QTCI:
+# Entry points: mask_hamiltonian; sdf_interval, sdf_disk, sdf_rect, sdf_halfplane,
+#   sdf_annulus, sdf_convex_polygon; sdf_union, sdf_intersect, sdf_subtract.
+#
+# Depends on: core/TBSystem.jl (TBHamiltonian, _invalidate_cache!).
+#
+# mask_hamiltonian applies a smooth diagonal mask M learned via QTCI:
 #
 #     M_i = σ( sdf(rᵢ) / sigma ),   H_flake = M · H · M
 #
@@ -12,14 +18,14 @@
 #
 # Typical workflow
 # ---------------
-#   H = get_Hamiltonian("square_2d", 1.0; L=8, Lx=16)
+#   H = get_Hamiltonian("square_2d", 1.0; L=8, Lx=4)   # 16 × 16 sites (Lx, L are qubit counts)
 #   H_disk = mask_hamiltonian(H, sdf_disk(8.0, 8.0, 6.0); sigma=0.3)
 #
 # SDFs compose via CSG helpers (sdf_union / sdf_intersect / sdf_subtract).
 # Call mask_hamiltonian *before* add_spin! / add_superconductivity!.
 
 # ============================================================
-# 1-D SDF primitives
+# 1. 1-D SDF primitives
 # ============================================================
 
 """
@@ -32,7 +38,7 @@ sdf_interval(x_lo, x_hi) = (x) -> min(x - x_lo, x_hi - x)
 
 
 # ============================================================
-# 2-D SDF primitives
+# 2. 2-D SDF primitives
 # ============================================================
 
 """
@@ -105,7 +111,7 @@ end
 
 
 # ============================================================
-# CSG operations
+# 3. CSG operations
 # ============================================================
 
 """
@@ -131,7 +137,7 @@ sdf_subtract(f, g) = (args...) -> min(f(args...), -g(args...))
 
 
 # ============================================================
-# Mask application
+# 4. Mask application
 # ============================================================
 
 """
@@ -163,7 +169,7 @@ The mask MPS is learned via QTCI, so even sub-lattice-spacing smoothing
 
 **Examples**
 ```julia
-H = get_Hamiltonian("square_2d", 1.0; L=8, Lx=16)
+H = get_Hamiltonian("square_2d", 1.0; L=8, Lx=4)   # 16 × 16 sites
 
 # Disk flake
 H_disk = mask_hamiltonian(H, sdf_disk(8.0, 8.0, 6.0); sigma=0.3)

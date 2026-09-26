@@ -44,8 +44,9 @@
 # Error messages are pinned by their first 60 characters. One of them,
 # build_hamiltonian's "Model 'uniform' is 1D; call build_hamiltonian(model, L; -",
 # ends in the mojibake that the Tier 1 item "re-save 2Dlattice_tk.jl as UTF-8"
-# restores; when that lands, regenerate and check that the data diff touches only
-# that message_prefix.
+# restores (the message came with MODEL_REGISTRY from the former 2Dlattice_tk.jl
+# and is in core/ModelRegistry.jl now); when that lands, regenerate and check
+# that the data diff touches only that message_prefix.
 
 using TensorBinding
 const TB = TensorBinding
@@ -65,15 +66,16 @@ const GENERATOR_BUGS = (UndefVarError, MethodError, KeyError,
                         (isdefined(Base, :FieldError) ? (getfield(Base, :FieldError),) : ())...)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# lattice/2Dlattice_tk.jl
+# the former lattice/2Dlattice_tk.jl, now lattice/{hopping2d,masks2d,presets,
+# sublattice,geometry}.jl and core/ModelRegistry.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
-# ── 1. binary shift MPOs ──────────────────────────────────────────────────────
+# ── binary shift MPOs (lattice/hopping2d.jl) ──────────────────────────────────
 add!("generate_kin_u_L3", :shift_primitive, (fn = :generate_kin_u, L = 3, num_site = 8))
 add!("generate_kin_d_L3", :shift_primitive, (fn = :generate_kin_d, L = 3, num_site = 8))
 add!("generate_kin_u_L3_num_site_mismatch", :shift_primitive, (fn = :generate_kin_u, L = 3, num_site = 16))
 
-# ── 5. row / column / checkerboard masks ──────────────────────────────────────
+# ── row / column / checkerboard masks (lattice/masks2d.jl) ────────────────────
 for (Lx, Ly) in ((2, 1), (1, 2)), which in (:xplus, :xplain)
     add!("row_break_Lx$(Lx)_Ly$(Ly)_$which", :mask, (fn = :_row_break_mpo, Lx, Ly, kw = (; which)))
 end
@@ -87,7 +89,9 @@ add!("col_select_Lx2_Ly1_bad_keep", :mask, (fn = :_col_select_mpo, Lx = 2, Ly = 
 add!("row_checker_Lx2_Ly1", :mask, (fn = :_row_checker_mpo, Lx = 2, Ly = 1, kw = none))
 add!("row_checker_Lx1_Ly2", :mask, (fn = :_row_checker_mpo, Lx = 1, Ly = 2, kw = none))
 
-# ── 2-4. legacy square / triangle / honeycomb hopping builders ─────────────────
+# ── legacy square / triangle / honeycomb hopping builders ─────────────────────
+# (intrachain_hopping and interchain_hopping_square are in lattice/hopping2d.jl;
+# the others were deleted, see DELETABLE_FUNCTIONS in test/golden_lattice.jl)
 add!("intrachain_hopping_Lx2_Ly1_default", :legacy_hopping, (fn = :intrachain_hopping, Lx = 2, Ly = 1, kw = none))
 add!("intrachain_hopping_Lx2_Ly1_testhop_tcomplex", :legacy_hopping,
      (fn = :intrachain_hopping, Lx = 2, Ly = 1, hopping = :test, kw = (t = 0.5 + 0.2im,)))
@@ -106,7 +110,8 @@ for fn in (:skeleton, :odd_template, :even_template, :odd_skeleton, :even_skelet
     add!("$(fn)_Lx2_Ly1", :legacy_mask, (; fn, Lx = 2, Ly = 1, kw = none))
 end
 
-# ── 6. NNN 2D kinetic builders (complex, position-dependent hopping profile) ──
+# ── NNN 2D kinetic builders (lattice/hopping2d.jl) ────────────────────────────
+# (complex, position-dependent hopping profile)
 add!("kineticintra2DNNN_Lx2_Ly1_nn1", :kinetic2d, (fn = :kineticintra2DNNN, Lx = 2, Ly = 1, hopping = :test, nn = 1, kw = none))
 add!("kineticintra2DNNN_Lx2_Ly1_nn2", :kinetic2d, (fn = :kineticintra2DNNN, Lx = 2, Ly = 1, hopping = :test, nn = 2, kw = none))
 add!("kineticintra2DNNN_Lx2_Ly1_nn1_apply_kwargs", :kinetic2d,
@@ -127,7 +132,7 @@ add!("kineticinterNNNtri_bravais_diag_Lx2_Ly1", :kinetic2d,
 add!("kineticintra2DNNhex_Lx2_Ly1_nn1", :kinetic2d, (fn = :kineticintra2DNNhex, Lx = 2, Ly = 1, hopping = :test, nn = 1, kw = none))
 add!("kineticintra2DNNhex_Lx2_Ly1_nn1_realhop", :kinetic2d, (fn = :kineticintra2DNNhex, Lx = 2, Ly = 1, hopping = :testre, nn = 1, kw = none))
 
-# ── 7. preset model Hamiltonians (QTCI hopping profiles) ─────────────────────
+# ── preset model Hamiltonians, QTCI hopping profiles (lattice/presets.jl) ─────
 add!("HUniform_L3_default", :preset1d, (fn = :HUniform, args = (3, 1.0), kw = none))
 add!("HUniform_L3_v0.3_nn2", :preset1d, (fn = :HUniform, args = (3, 0.8), kw = (v = 0.3, nn = 2)))
 add!("HUniform_L3_v0", :preset1d, (fn = :HUniform, args = (3, 1.0), kw = (v = 0.0,)))
@@ -144,7 +149,8 @@ add!("HChern8_Lx2_Ly1_a1.5_t2", :preset2d, (fn = :HChern8, args = (2, 1, 0.5, 1.
 add!("HQC2Dsquare_Lx2_Ly2_default", :preset2d, (fn = :HQC2Dsquare, args = (2, 2), kw = none))
 add!("HQC2Dsquare_Lx2_Ly1_t0.8", :preset2d, (fn = :HQC2Dsquare, args = (2, 1, 0.8), kw = none))
 
-# ── 8. sublattice lattices: positions and Hamiltonians ────────────────────────
+# ── sublattice lattices: positions (lattice/geometry.jl) and Hamiltonians ─────
+# (lattice/sublattice.jl)
 for fn in (:kagome_positions, :lieb_positions, :honeycomb_sublattice_positions, :dice_positions),
     (Lx, Ly) in ((2, 1), (1, 2))
     add!("$(fn)_Lx$(Lx)_Ly$(Ly)", :sublattice_positions, (; fn, Lx, Ly))
@@ -176,7 +182,7 @@ add!("ssh_sublattice_hamiltonian_L3_default", :sublattice_hamiltonian,
 add!("ssh_sublattice_hamiltonian_L3_t0.8_d-0.3", :sublattice_hamiltonian,
      (fn = :ssh_sublattice_hamiltonian, args = (3, 0.8, -0.3), kw = none))
 
-# ── 9. registry and build_hamiltonian ─────────────────────────────────────────
+# ── registry and build_hamiltonian (core/ModelRegistry.jl) ────────────────────
 for (tag, s) in (("empty", ""), ("two_floats", "t=1.0, d=0.5"),
                  ("all_types", "a=true b=FALSE n=-3 x=.5 y=1e-3 z=+2 s=abc"),
                  ("separators", "t=1.0,,  v=2\tw=1.5e+2"), ("value_with_equals", "k=v=w"),
@@ -207,7 +213,7 @@ add!("build_hamiltonian_chern8_Lx2_Ly1", :build_hamiltonian, (model = "chern8", 
 add!("build_hamiltonian_1d_model_2d_call", :build_hamiltonian, (model = "uniform", dims = (2, 1), kw = (mparams = "t=1.0",)))
 add!("build_hamiltonian_chern8_missing_t", :build_hamiltonian, (model = "chern8", dims = (2, 1), kw = (mparams = "V=1.0",)))
 
-# ── 10. geometry helpers for spatial LDOS plots ───────────────────────────────
+# ── position tables by lattice name, for spatial LDOS plots (lattice/geometry.jl)
 for lattice in (:honeycomb, :kagome, :lieb, :dice)
     add!("geom_positions_$(lattice)_Lx2_Ly1", :geom_positions, (fn = :_geom_positions, lattice, Lx = 2, Ly = 1))
     for fn in (:_nsublat, :_geom_n_sub)
@@ -216,7 +222,8 @@ for lattice in (:honeycomb, :kagome, :lieb, :dice)
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# core/TBSystem.jl: get_Hamiltonian and the geometry helpers
+# core/TBSystem.jl: get_Hamiltonian, and the geometry helpers it used to hold
+# (now in lattice/geometry.jl)
 # ═════════════════════════════════════════════════════════════════════════════
 
 gh(name, geometry, params, kw; extra...) =
@@ -270,7 +277,8 @@ gh("kbonacci_L4_k3", "kbonacci", (A = 0.64, B = 0.8, C = 1.0), (L = 4, k = 3))
 gh("fibonacci_ref_sites_rejected", "fibonacci", (A = 1.0, B = 2.0), (L = 4,); ref_sites = true)
 gh("unknown_geometry", "no_such_geometry_used_as_a_golden_probe", 1.0, (L = 3,))   # prefix stops before the list
 
-# ── geometry closures, _preset_geometry, _estimate_scale, *_positions ─────────
+# ── geometry closures, _preset_geometry, *_positions (lattice/geometry.jl) and
+# _estimate_scale (core/TBSystem.jl) ──────────────────────────────────────────
 add!("chain_geometry_n4", :geometry_closure, (fn = :_chain_geometry, Nx = nothing, n = 4))
 for fn in (:_square_geometry, :_tri_geometry, :_tri_bravais_geometry, :_hex_geometry), (Nx, n) in ((4, 16), (2, 8))
     add!("$(fn)_Nx$(Nx)_n$n", :geometry_closure, (; fn, Nx, n))

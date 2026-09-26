@@ -1,15 +1,20 @@
-# presets.jl — preset QTCI model Hamiltonians, all returning an MPO: the 1D
-# HUniform/HSSH/HAAH chains and the 2D HUniform2D*, HChern8, H2DChernhex and
-# HQC2Dsquare lattices. Split from the former lattice/2Dlattice_tk.jl;
-# core/ModelRegistry.jl builds them by name.
+# presets.jl — preset QTCI model Hamiltonians: the 1D HUniform/HSSH/HAAH chains and
+# the 2D HUniform2D*, HChern8, H2DChernhex and HQC2Dsquare lattices. Each returns a
+# bare MPO on Qubit sites it creates itself; core/ModelRegistry.jl builds them by
+# name (build_hamiltonian("model_name", ...)) and get_Hamiltonian wraps the result
+# in a TBHamiltonian.
+#
+# Entry points: HUniform, HSSH, HAAH, HUniform2Dsquare, HUniform2Dhex,
+#   HUniform2Dtri, HUniform2Dtri_bravais, HChern8, H2DChernhex, HQC2Dsquare.
+#
+# Depends on: core/Utils.jl (qtt_mpo), core/Hamiltonian.jl (kineticNNN) and
+# lattice/hopping2d.jl (the 2D kinetic builders).
+#
+# Split from the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
-# 1. Preset model Hamiltonians
-#    All return an MPO.  Sites are created internally (Qubit sites).
-#    Use build_hamiltonian("model_name", ...) for the registry interface.
+# 1. 1D preset chains
 # ============================================================
-
-# ---- 1D models ----
 
 """
     HUniform(L, t; v=1e-6, tol_quantics=1e-8, maxbonddim_quantics=10, nn=1) -> MPO
@@ -70,7 +75,9 @@ function HAAH(L::Integer, V, phi, t;
 end
 
 
-# ---- 2D models ----
+# ============================================================
+# 2. 2D preset lattices
+# ============================================================
 
 """
     HUniform2Dsquare(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
@@ -174,7 +181,8 @@ end
 
 
 """
-    HChern8(Lx, Ly, V, t; a=5/64*2^Lx, t2=0.2t, tol_quantics=1e-8, ...) -> MPO
+    HChern8(Lx, Ly, V, t; a=5/64*2^Lx, t2=0.2t, tol_quantics=1e-8,
+            maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
 8-fold "Chern mosaic" Hamiltonian: uniform intra/inter-row hoppings modulated by
 a spatially varying 8-fold pattern using 4 rotated k-vectors.
@@ -224,7 +232,8 @@ end
 
 
 """
-    H2DChernhex(Lx, Ly, t, t2, ms; uniformhaldane=false, uniformsemenoff=false, ...) -> MPO
+    H2DChernhex(Lx, Ly, t, t2, ms; uniformhaldane=false, uniformsemenoff=false,
+                tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
 Haldane Chern insulator on the brick-wall honeycomb of a `2^Lx × 2^Ly` grid: basis index
 `x + 2^Lx y`, bonds `(x, y)–(x, y±1)` and `(x, y)–(x+1, y)` for even `x + y`, drawn as in
@@ -291,7 +300,7 @@ end
 
 
 """
-    HQC2Dsquare(Lx, Ly, t; tol_quantics=1e-8, maxbonddim_quantics=100, cutoff=1e-10) -> MPO
+    HQC2Dsquare(Lx, Ly, t=1.0; tol_quantics=1e-8, maxbonddim_quantics=100, cutoff=1e-10) -> MPO
 
 Quasicrystal-modulated square lattice.  The hopping amplitude at each bond is evaluated
 at the bond midpoint using an 8-fold modulation with two competing wavevectors

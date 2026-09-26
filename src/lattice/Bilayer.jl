@@ -1,27 +1,32 @@
-# Bilayer.jl — Bilayer / multilayer tight-binding Hamiltonians via MPO
+# Bilayer.jl — commensurate bilayer and multilayer tight-binding Hamiltonians,
+# returned as a TBHamiltonian with a layer index. The interlayer coupling is built
+# exactly (without TCI) for the lattice-commensurate stackings :AA and :Bernal, as
+# products of shift operators (generate_kin_u/d) and a sublattice mask MPO
+# (get_diagonal_mpo). For general (e.g. twisted) interlayer couplings use
+# lattice/Twisted.jl.
 #
-# Constructs the interlayer coupling exactly (without TCI) for lattice-
-# commensurate stackings by expressing the coupling as products of shift
-# operators (generate_kin_u/d) and sublattice mask MPOs (get_diagonal_mpo).
-# For general (e.g. twisted) interlayer potentials use Twisted.jl.
+# Entry points: bilayer_hamiltonian, multilayer_hamiltonian, interlayer_mpo.
 #
-# Site encoding identical to Twisted.jl:
-#   Site 1      : Layer index (dim = n_layers)
+# Depends on: core/Utils.jl (get_diagonal_mpo, fix_sites, postpend_op,
+# prepend_layer_projector, prepend_layer_hopping), core/TBSystem.jl (TBHamiltonian),
+# lattice/geometry.jl (honeycomb_sublattice_positions), lattice/hopping2d.jl
+# (generate_kin_u/d), lattice/sublattice.jl (honeycomb_sublattice_hamiltonian) and
+# lattice/Twisted.jl (monolayer_hamiltonian, included after this file).
+#
+# Site encoding, as in Twisted.jl:
+#   Site 1      : Layer index (a Qubit for bilayer_hamiltonian, dim = n_layers
+#                 for multilayer_hamiltonian)
 #   Sites 2…L+1 : L position qubits (quantics binary, row-major)
 #
-# With sublattice=true the site order is:
-#   Site 1        : Layer index (dim = n_layers)
+# With sublattice=true (:honeycomb only) the site order is:
+#   Site 1        : Layer index
 #   Sites 2...L+1 : L unit-cell position qubits
-#   Site L+2      : Sublattice index
-#
-# Depends on: core/Utils.jl, core/TBSystem.jl, lattice/geometry.jl,
-# lattice/hopping2d.jl, lattice/sublattice.jl and lattice/Twisted.jl
-# (monolayer_hamiltonian, included after this file).
+#   Site L+2      : Sublattice index (dim 2)
 
 
-# ─────────────────────────────────────────────────────────────────
-# 1.  Exact interlayer coupling builders
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. Exact interlayer couplings and the sublattice=true helpers
+# ============================================================
 
 """
     _bernal_interlayer_mpo(L, sites; t_inter=1.0, cutoff=1e-8) -> MPO
@@ -127,9 +132,9 @@ end
                    t_inter=1.0, cutoff=1e-8) -> MPO
 
 Build the position-space interlayer coupling MPO for the given `stacking`.
-The returned operator V satisfies
+The returned operator V already carries `t_inter`; the layered builders add
 
-    H_inter = t_inter · (|k⟩⟨l| ⊗ V + |l⟩⟨k| ⊗ V)
+    H_inter = |k⟩⟨l| ⊗ V + |l⟩⟨k| ⊗ V
 
 for each pair of adjacent layers k, l.
 
@@ -162,31 +167,34 @@ function interlayer_mpo(lattice::Symbol, stacking::Symbol,
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2.  Bilayer Hamiltonian
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Bilayer Hamiltonian
+# ============================================================
 
 """
     bilayer_hamiltonian(lattice, Lx, Ly;
-        stacking=:AA, t_intra=1.0, t_inter=0.3,
-        cutoff=1e-8, maxdim=200) -> (MPO, Vector{<:Index})
+        stacking=:AA, t_intra=1.0, t_inter=0.3, sublattice=false,
+        cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
-Build a bilayer tight-binding Hamiltonian as an MPO.
+Build a bilayer tight-binding Hamiltonian as a `TBHamiltonian`.
 
 **Site encoding** (`L+1` sites total, `L = Lx + Ly`):
-  - Site 1      : layer index (dim = 2)
+  - Site 1      : layer index (a `Qubit` site, dim = 2)
   - Sites 2…L+1 : `L` position qubits (quantics binary, row-major)
+  - Site L+2    : with `sublattice=true` only, the dim-2 honeycomb sublattice index
 
 **Arguments**
 - `lattice`  : `:square`, `:triangular`, or `:honeycomb`
-- `Lx`, `Ly` : each layer has `2^Lx × 2^Ly` sites
+- `Lx`, `Ly` : each layer has `2^Lx × 2^Ly` sites (unit cells with `sublattice=true`)
 
 **Keyword arguments**
-- `stacking` : `:AA` (on-site) or `:Bernal` (A₁↔B₂, honeycomb only)
-- `t_intra`  : intra-layer NN hopping amplitude
-- `t_inter`  : interlayer hopping amplitude
-- `cutoff`   : MPO truncation cutoff
-- `maxdim`   : maximum bond dimension of the final MPO
+- `stacking`   : `:AA` (on-site) or `:Bernal` (A₁↔B₂, honeycomb only)
+- `t_intra`    : intra-layer NN hopping amplitude
+- `t_inter`    : interlayer hopping amplitude
+- `sublattice` : `true` builds each layer with an explicit sublattice index
+                 (`honeycomb_sublattice_hamiltonian`); `:honeycomb` only
+- `cutoff`     : MPO truncation cutoff
+- `maxdim`     : maximum bond dimension of the final MPO
 
 The assembled Hamiltonian is
 
@@ -194,8 +202,11 @@ The assembled Hamiltonian is
 
 where V is the exact interlayer MPO for the chosen stacking.
 
-Returns `(H_total, ext_sites)` where `ext_sites[1]` is the layer index
-and `ext_sites[2:end]` are the `L` position qubits.
+Returns a `TBHamiltonian` with `H.sites = [layer_s; pos_sites]`, the layer index in
+`H.layer_s` (`H.aux_side = :pre`), `H.Lx = Lx` and `H.scale = 0.0`, so the spectral
+bounds are estimated on first use; no geometry is set. With `sublattice=true`,
+`H.sites = [layer_s; pos_sites; sub_s]`, `H.sublattice_s = sub_s`, and `H.geometry`
+and `H.geometry_uc` follow `honeycomb_sublattice_positions`.
 """
 function bilayer_hamiltonian(
     lattice::Symbol, Lx::Int, Ly::Int;
@@ -263,20 +274,21 @@ function bilayer_hamiltonian(
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 3.  Multilayer Hamiltonian (nearest-neighbour layers only)
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 3. Multilayer Hamiltonian (nearest-neighbour layers only)
+# ============================================================
 
 """
     multilayer_hamiltonian(lattice, Lx, Ly, n_layers;
-        stacking=:AA, t_intra=1.0, t_inter=0.3,
-        cutoff=1e-8, maxdim=200) -> (MPO, Vector{<:Index})
+        stacking=:AA, t_intra=1.0, t_inter=0.3, sublattice=false,
+        cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Generalisation of `bilayer_hamiltonian` to `n_layers` layers.
 The same `stacking` and `t_inter` are used for every adjacent pair.
 
-Returns `(H_total, ext_sites)` with the same site encoding as
-`bilayer_hamiltonian`, extended to a `dim = n_layers` layer index.
+Returns a `TBHamiltonian` with the same site encoding and fields as
+`bilayer_hamiltonian`, except that the layer index is a dim-`n_layers`
+`"Layer"` index instead of a qubit.
 """
 function multilayer_hamiltonian(
     lattice::Symbol, Lx::Int, Ly::Int, n_layers::Int;

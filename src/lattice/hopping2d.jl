@@ -1,17 +1,22 @@
-# hopping2d.jl — kinetic/hopping MPO builders for 2D lattice geometries: binary
-# shift MPOs, square-lattice NN hoppings and the NNN kinetic builders.
-# Split from the former lattice/2Dlattice_tk.jl; the masks they apply live in masks2d.jl.
+# hopping2d.jl — kinetic (hopping) MPO builders for 2D lattice geometries, built from
+# the quantics binary representation: the binary shift MPOs, the square-lattice NN
+# hoppings and the long-range (NNN) kinetic builders for the square, triangular and
+# honeycomb lattices.
 #
-# Provides hopping MPOs for square, triangular, and honeycomb lattices
-# built from the quantics binary representation.
+# Entry points: generate_kin_u, generate_kin_d, intrachain_hopping,
+#   interchain_hopping_square, kineticintra2DNNN, kineticinterNNNSWNE,
+#   kineticinterNNNSENW, kineticinterNNNtriSWNE, kineticinterNNNtriSENW,
+#   kineticinterNNNtri_bravais_diag, kineticintra2DNNhex.
+#
+# Depends on: core/Utils.jl (shift_mpo, shift_pair_mpos, shift_adjoint_mpo) and
+# lattice/masks2d.jl (the row-break, row-select and checkerboard masks).
 #
 # Encoding convention (row-major):
 #   linear index  n = ix + iy * 2^Lx
 #   site ordering: sites 1..Ly hold iy bits (MSB first),
 #                  sites Ly+1..L hold ix bits (MSB first).
 #
-# compose_power lives in core/MPOTools.jl; low-level utilities
-# (to_binary_vector, binary_to_MPS) live in core/Utils.jl.
+# Split from the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Binary shift MPOs
@@ -48,7 +53,7 @@ end
 # ============================================================
 
 """
-    intrachain_hopping(L_chain, num_site, sites; hopping=Id, t=1) -> MPO
+    intrachain_hopping(L_chain, num_site, sites; hopping=MPO(sites, "Id"), t=1) -> MPO
 
 NN hopping along rows (x-direction) of a 2D lattice with `L_chain` sites per
 row.  Hops that would wrap ix = Nx-1 → 0 are suppressed by `_row_break_mpo`.
@@ -67,7 +72,7 @@ end
 
 
 """
-    interchain_hopping_square(L_chain, num_site, sites; hopping=Id, t=1) -> MPO
+    interchain_hopping_square(L_chain, num_site, sites; hopping=MPO(sites, "Id"), t=1) -> MPO
 
 NN hopping along columns (y-direction) of a square lattice.
 One column step = linear shift by L_chain sites = ku composed L_chain times.
@@ -84,14 +89,15 @@ end
 
 # ============================================================
 # 3. NNN 2D kinetic builders
-#    Pattern for every function:
-#      1. Build K, Kdag = shift_pair_mpos(sites, nn) (or one shift_mpo)
-#      2. Apply hopping weights: hop_fwd = h * K,  hop_bwd = Kdag * dag(h)
-#      3. Mask with _row_break_mpo and optionally _row_select/_checker
 # ============================================================
 
+# Pattern for every builder:
+#   1. Build K, Kdag = shift_pair_mpos(sites, nn) (or one shift_mpo)
+#   2. Apply hopping weights: hop_fwd = h * K,  hop_bwd = Kdag * dag(h)
+#   3. Mask with _row_break_mpo and optionally _row_select/_checker
+
 """
-    kineticintra2DNNN(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticintra2DNNN(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 Long-range intra-row hopping on a `2^Lx × 2^Ly` square lattice (nn bonds
 along x).  Row wrap-around at ix = Nx-1 is suppressed by `_row_break_mpo(:xplus)`.
@@ -108,7 +114,7 @@ end
 
 
 """
-    kineticinterNNNSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticinterNNNSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 Long-range inter-row hopping along the SW↗NE diagonal of a `2^Lx × 2^Ly`
 square lattice.  Row end-wrap suppressed by `_row_break_mpo(:xplus)`.
@@ -125,7 +131,7 @@ end
 
 
 """
-    kineticinterNNNSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticinterNNNSENW(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 Long-range inter-row hopping along the SE↖NW diagonal.
 Row start-wrap suppressed by `_row_break_mpo(:xplain)`.
@@ -142,7 +148,7 @@ end
 
 
 """
-    kineticinterNNNtriSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticinterNNNtriSWNE(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 SW↗NE diagonal inter-row hopping for a triangular lattice.
 Applies `_row_break_mpo(:xplus)` and `_row_select_mpo(:even)` to restrict
@@ -162,7 +168,7 @@ end
 
 
 """
-    kineticinterNNNtriSENW(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticinterNNNtriSENW(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 SE↖NW diagonal inter-row hopping for a triangular lattice.
 Applies `_row_break_mpo(:xplain)` and `_row_select_mpo(:odd)`.
@@ -181,7 +187,7 @@ end
 
 
 """
-    kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping; apply_kwargs) -> MPO
+    kineticinterNNNtri_bravais_diag(Lx, Ly, sites, hopping; apply_kwargs=NamedTuple()) -> MPO
 
 Bravais triangular-lattice third-bond hopping: (Δix=+1, Δiy=−1), linear shift 1−Nx.
 Mirrors `kineticinterNNNSWNE` with kd/ku swapped.  Row x-wrap at ix=Nx−1 is
@@ -202,7 +208,7 @@ end
 
 
 """
-    kineticintra2DNNhex(Lx, Ly, sites, hopping, nn; apply_kwargs) -> MPO
+    kineticintra2DNNhex(Lx, Ly, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
 
 Intra-row hopping for a honeycomb lattice.  Applies `_row_break_mpo(:xplus)`
 and `_row_checker_mpo` to implement the alternating A/B sublattice pattern.

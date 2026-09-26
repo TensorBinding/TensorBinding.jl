@@ -1,4 +1,15 @@
-# TJunction.jl — T/Y-junction Hamiltonians via a spin-1 (dim-3) chain-label index
+# TJunction.jl — T/Y-junction Hamiltonians via a spin-1 (dim-3) chain-label index:
+# three 1D chains meeting at a common site, and a triangular lattice of such
+# junctions, each returned as a TBHamiltonian with the index in H.sublattice_s.
+#
+# Entry points: add_tjunction!, tjunction_hamiltonian,
+#   tjunction_lattice_hamiltonian, tjunction_index.
+#
+# Depends on: core/Utils.jl (postpend_op, prepend_op), core/MPOTools.jl
+# (_site_projector_mpo), core/Hamiltonian.jl (kinetic_1d_nn), core/TBSystem.jl
+# (TBHamiltonian, get_Hamiltonian, _pos_sites, _invalidate_cache!),
+# lattice/geometry.jl (tjunction_positions), lattice/masks2d.jl (_row_break_mpo)
+# and lattice/NNNeighbor.jl (_shift_mpo).
 #
 # A T-junction (Y-junction) connects three 1D chains at a common site.
 # The spin-1 index (dim-3) postpended to the MPO labels the branch:
@@ -12,19 +23,17 @@
 # Site ordering after add_tjunction!:
 #   [pos_qubits..., tj_s]    (tj_s = Index(3, "TJunction"))
 #
-# Atom index convention for H.geometry (matches kagome — branch-fast):
+# Atom index convention for H.geometry after add_tjunction! (matches kagome —
+# branch-fast; tjunction_lattice_hamiltonian has its own, in its geometry step):
 #   combined 1-indexed atom i:
 #     n = (i-1) ÷ 3   (0-indexed chain position, 0…N-1)
 #     s = (i-1) % 3 + 1   (branch: 1=|-1⟩, 2=|0⟩, 3=|+1⟩)
 #   Total atoms: 3*N where N = 2^L.
-#
-# Depends on: core/Utils.jl, core/MPOTools.jl, core/Hamiltonian.jl, core/TBSystem.jl,
-# lattice/geometry.jl, lattice/masks2d.jl and lattice/NNNeighbor.jl (_shift_mpo).
 
 
-# ─────────────────────────────────────────────────────────────────
-# 1.  TJunction site index
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. TJunction site index
+# ============================================================
 
 """
     tjunction_index() -> Index
@@ -35,14 +44,9 @@ States: 1 = branch |-1⟩, 2 = branch |0⟩, 3 = branch |+1⟩.
 tjunction_index() = Index(3, "TJunction")
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2.  Real-space positions: tjunction_positions lives in lattice/geometry.jl
-# ─────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────
-# 3.  add_tjunction! — in-place extension of an existing TBHamiltonian
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. add_tjunction! — in-place extension of an existing TBHamiltonian
+# ============================================================
 
 """
     add_tjunction!(H, t_j; junction_site=0, coupling=nothing,
@@ -134,9 +138,9 @@ function add_tjunction!(H::TBHamiltonian, t_j;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 4.  tjunction_hamiltonian — standalone constructor
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 3. tjunction_hamiltonian — standalone constructor
+# ============================================================
 
 """
     tjunction_hamiltonian(L, t, t_j; junction_site=0, coupling=nothing,
@@ -201,9 +205,9 @@ function tjunction_hamiltonian(L::Int, t::Number, t_j::Number;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 5.  tjunction_lattice_hamiltonian — triangular lattice of T-junctions
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 4. tjunction_lattice_hamiltonian — triangular lattice of T-junctions
+# ============================================================
 
 """
     tjunction_lattice_hamiltonian(Lx, Ly, L, t, t_j, t_inter;

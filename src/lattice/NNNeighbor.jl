@@ -1,22 +1,29 @@
-﻿# NNNeighbor.jl - nth-nearest-neighbor hopping for 2D TBHamiltonians
+﻿# NNNeighbor.jl — nth-nearest-neighbor hopping for 2D TBHamiltonians: finds the
+# nn-th neighbor shell from H.geometry and adds its bonds as exact shift MPOs, with
+# uniform, direction-dependent or position-dependent amplitudes.
 #
-# Public API:
+# Entry points:
 #   add_hopping_2D!(H, f; Lx, Ly, nn=1, ...)  - f: scalar, f(dx,dy,fs,ts),
 #                                                f(n), f(ix,iy),
 #                                                f(n,dx,dy,fs,ts),
 #                                                f(ix,iy,dx,dy,fs,ts)
 #   get_shell_disps(H, nn; Lx, Ly)             - inspect canonical displacements
-#
 # Internals:
-#   _shift_mpo       - kinetic MPO for displacement (dx, dy)
-#   _nth_shell_disps - canonical displacement vectors for the nn-th shell
+#   _shift_mpo               - kinetic MPO for displacement (dx, dy); TJunction.jl uses it too
+#   _nth_shell_disps         - canonical displacement vectors for the nn-th shell
+#   _resolve_layer_selection - the `layer` keyword of add_hopping_2D! as a list of layers
+#
+# Depends on: core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
+# prepend_layer_projector), core/TBSystem.jl (TBHamiltonian, _pos_sites,
+# _invalidate_cache!), lattice/geometry.jl (_resolve_2d_geometry),
+# lattice/masks2d.jl (_row_break_mpo) and lattice/hopping2d.jl (generate_kin_u/d).
 
 # ============================================================
-# 1.  Low-level shift MPO
+# 1. Low-level shift MPO
 # ============================================================
 
 """
-    _shift_mpo(dx, dy, ku, kd, Id, brk_xp, Nx; apkw) -> MPO
+    _shift_mpo(dx, dy, ku, kd, Id, brk_xp, Nx; apkw=(; cutoff=1e-8, maxdim=100)) -> MPO
 
 Kinetic MPO that shifts the quantics unit-cell index by `dx + dy*Nx`.
 
@@ -63,7 +70,7 @@ end
 
 
 # ============================================================
-# 2.  Shell detection on a small reference patch
+# 2. Shell detection on a small reference patch
 # ============================================================
 
 """
@@ -143,7 +150,7 @@ end
 
 
 # ============================================================
-# 3.  Public API
+# 3. Public API: add_hopping_2D!
 # ============================================================
 
 """
@@ -362,7 +369,7 @@ end
 
 
 # ============================================================
-# 4.  Displacement inspector
+# 4. Displacement inspector: get_shell_disps
 # ============================================================
 
 """

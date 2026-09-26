@@ -1,19 +1,28 @@
 # geometry.jl — real-space geometry of the lattice models: the i -> position
-# closures that preset Hamiltonians store in H.geometry (and _preset_geometry,
-# which picks one by model name), the *_positions tables of the preset Bravais
-# lattices, the explicit-sublattice lattices (kagome, Lieb, honeycomb, dice) and
-# the T/Y junction, the _geom_positions and lattice_positions dispatchers, and
-# _resolve_2d_geometry for add_hopping_2D!. Gathered, unchanged, from
-# core/TBSystem.jl, lattice/sublattice.jl, the interim lattice/model_registry.jl
-# (now core/ModelRegistry.jl), lattice/Twisted.jl, lattice/TJunction.jl and
-# lattice/NNNeighbor.jl.
-# The geometry_uc closures stay inline in the builders that set them.
+# closures that preset Hamiltonians store in H.geometry, the *_positions tables of
+# the preset Bravais lattices, of the explicit-sublattice lattices (kagome, Lieb,
+# honeycomb, dice) and of the T/Y junction, and the dispatchers that pick one.
+#
+# Entry points: lattice_positions, square_positions, triangular_positions,
+#   triangular_bravais_positions, honeycomb_positions, kagome_positions,
+#   lieb_positions, honeycomb_sublattice_positions, dice_positions,
+#   tjunction_positions.
+# Internals: the _*_geometry closures and _preset_geometry, which picks one by
+#   model name for get_Hamiltonian (core/TBSystem.jl); _geom_positions;
+#   _resolve_2d_geometry, for add_hopping_2D! (lattice/NNNeighbor.jl).
+#
+# Depends on: core/TBSystem.jl (TBHamiltonian).
+#
+# Gathered, unchanged, from core/TBSystem.jl, lattice/sublattice.jl, the interim
+# lattice/model_registry.jl (now core/ModelRegistry.jl), lattice/Twisted.jl,
+# lattice/TJunction.jl and lattice/NNNeighbor.jl. The geometry_uc closures stay
+# inline in the builders that set them.
 
 # ============================================================
 # 1. Geometry closures for the preset lattices
 # ============================================================
 
-# ---- Geometry functions (i -> position, 1-indexed) ----
+# Each closure maps a 1-indexed site i to its position vector.
 
 _chain_geometry() = i -> Float64[i]
 
@@ -284,7 +293,7 @@ end
 
 
 # ============================================================
-# 4. Geometry helpers for spatial LDOS plots
+# 4. Position tables by lattice name (for spatial LDOS plots)
 # ============================================================
 
 _geom_positions(::Val{:honeycomb}, Lx, Ly) = honeycomb_sublattice_positions(Lx, Ly)

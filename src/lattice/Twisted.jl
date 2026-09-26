@@ -1,19 +1,23 @@
-# Twisted.jl — Twisted multilayer tight-binding Hamiltonians via MPO
+# Twisted.jl — twisted multilayer tight-binding Hamiltonians, returned as a
+# TBHamiltonian with a layer index: each layer is rigidly rotated, and the layers
+# are coupled by an exponentially decaying interlayer hopping learned with QTCI
+# (hopping2MPO). Also holds monolayer_hamiltonian, the NN single-layer MPO that
+# lattice/Bilayer.jl stacks as well.
+#
+# Entry points: twisted_multilayer_hamiltonian, twisted_bilayer_hamiltonian,
+#   monolayer_hamiltonian.
+#
+# Depends on: core/Utils.jl (fix_sites, prepend_layer_projector,
+# prepend_layer_hopping), core/Hamiltonian.jl (hopping2MPO), core/TBSystem.jl
+# (TBHamiltonian), lattice/geometry.jl (lattice_positions) and
+# core/ModelRegistry.jl (build_hamiltonian).
 #
 # Encoding: the first site is a dim-n_layers "Layer" index; the remaining
 # L = Lx+Ly sites are position qubits (quantics binary, row-major).
-#
-# Depends on: core/Utils.jl, core/Hamiltonian.jl, core/TBSystem.jl,
-# lattice/geometry.jl and core/ModelRegistry.jl.
 
-# ─────────────────────────────────────────────────────────────────
-# 1.  Real-space lattice positions: lattice_positions lives in lattice/geometry.jl
-# ─────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────
-# 2.  Single-layer MPO builder
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. Single-layer MPO builder
+# ============================================================
 
 """
     monolayer_hamiltonian(lattice, Lx, Ly, sites; t=1.0, cutoff=1e-8) -> MPO
@@ -34,16 +38,16 @@ function monolayer_hamiltonian(lattice::Symbol, Lx::Int, Ly::Int, sites;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 3.  Twisted multilayer Hamiltonian
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Twisted multilayer Hamiltonian
+# ============================================================
 
 """
     twisted_multilayer_hamiltonian(lattice, Lx, Ly, angles_deg;
         t_intra=1.0, t_inter=0.3, α_decay=1/16.0,
-        tol=1e-6, cutoff=1e-8, maxdim=200) -> (MPO, Vector{<:Index})
+        tol=1e-6, cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
-Build a twisted multilayer tight-binding Hamiltonian as an MPO.
+Build a twisted multilayer tight-binding Hamiltonian as a `TBHamiltonian`.
 
 **Site encoding** (`L+1` sites, `L = Lx+Ly`):
   - Site 1      : layer index (dim = `n_layers`)  ← replaces the bilayer qubit
@@ -71,8 +75,9 @@ which is Hermitian for real V_{kl} since V_{lk}(i,j) = V_{kl}(j,i) = V_{kl}^T.
 - `cutoff`   : MPO truncation cutoff used throughout assembly
 - `maxdim`   : maximum bond dimension of the final MPO
 
-Returns `(H_total, ext_sites)` where `ext_sites[1]` is the layer index
-and `ext_sites[2:end]` are the `L` position qubits.
+Returns a `TBHamiltonian` with `H.sites = [layer_s; pos_sites]`, the layer index in
+`H.layer_s` (`H.aux_side = :pre`), `H.Lx = Lx` and `H.scale = 0.0`, so the spectral
+bounds are estimated on first use; no geometry is set.
 """
 function twisted_multilayer_hamiltonian(
     lattice::Symbol, Lx::Int, Ly::Int,
@@ -135,7 +140,7 @@ end
 """
     twisted_bilayer_hamiltonian(lattice, Lx, Ly, θ_deg;
         t_intra=1.0, t_inter=0.3, α_decay=1/16.0,
-        tol=1e-6, cutoff=1e-8, maxdim=200) -> (MPO, Vector{<:Index})
+        tol=1e-6, cutoff=1e-8, maxdim=200) -> TBHamiltonian
 
 Convenience wrapper: two layers, layer 1 at 0° and layer 2 at `θ_deg`.
 Equivalent to `twisted_multilayer_hamiltonian(lattice, Lx, Ly, [0.0, θ_deg]; …)`.

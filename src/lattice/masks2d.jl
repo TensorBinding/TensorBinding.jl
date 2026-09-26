@@ -1,13 +1,20 @@
 # masks2d.jl — diagonal mask MPOs for 2D lattice geometries: the row-break,
-# row/column-select and checkerboard masks used by the hopping builders
-# (hopping2d.jl) and the sublattice presets (sublattice.jl), built from the
-# single-qubit projectors sigma_d/sigma_u (core/Utils.jl). Split from
-# the former lattice/2Dlattice_tk.jl.
+# row/column-select and checkerboard masks that the 2D kinetic builders
+# (lattice/hopping2d.jl, lattice/sublattice.jl, lattice/NNNeighbor.jl,
+# lattice/TJunction.jl) and the band-structure code apply.
+#
+# Entry points (internal): _row_break_mpo, _row_select_mpo, _col_select_mpo,
+#   _row_checker_mpo.
+#
+# Depends on: core/Utils.jl (the single-qubit projector ops "sigma_d"/"sigma_u").
+#
+# Split from the former lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Row/column/checkerboard mask MPOs (diagonal, exact)
-#    Bit layout: sites 1..Ly → iy (MSB first), sites Ly+1..L → ix (MSB first)
 # ============================================================
+
+# Bit layout: sites 1..Ly → iy (MSB first), sites Ly+1..L → ix (MSB first).
 
 """
     _row_break_mpo(Lx, Ly, sites; which) -> MPO
