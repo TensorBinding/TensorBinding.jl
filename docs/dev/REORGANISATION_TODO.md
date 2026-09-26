@@ -160,8 +160,8 @@ the affected golden cases in the same commit.
       several geometries.
 - [ ] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
 - [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
-      *Gone with the single GPU warning threshold (tier2/gpuwrap): its extra `cutoff < 1e-5`
-      warning is deleted; like every GPU entry point it warns for a 32-bit type below 1e-6.*
+      *Fixed with the shared GPU warning (tier2/gpuwrap): its extra `cutoff < 1e-5` warning for
+      every type is deleted; it now warns for a 32-bit type below 1e-5, its old 32-bit range.*
 - [ ] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
 - [ ] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
 - [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
@@ -578,7 +578,7 @@ the affected golden cases in the same commit.
 - [x] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
-      `_resolve_gpu_type` with a single warning threshold; `_gpu_log`.
+      `_resolve_gpu_type` with a single warning helper; `_gpu_log`.
       *tier2/gpuwrap. The hook is `to_device(x, T)`: a shared kernel moves every tensor it
       builds itself (one-hot and summing vectors, deltas, identities, probe states, position
       operators) with it; the CPU default `_on_host` (core/Utils.jl) returns `x`, the GPU
@@ -601,10 +601,13 @@ the affected golden cases in the same commit.
       `_contract_nh_block_gpu`); `_nh_product_probe` (the ket/bra MPS of both stochastic NH
       traces). `_to_gpu(x, T)` (ITensor, MPO, MPS) replaces `_to_gpu_mpo`/`_to_gpu_mps`
       (six methods; the one-argument ones meant ComplexF32), `_mpo_to_f32`, `_onehot_gpu`
-      and every `cu` call (the evaluators' and `_project_aux_gpu`'s 0/1 vectors now keep the
-      tensor's element type instead of `cu`'s 32-bit cast); `_ensure_gpu(x, T; caller)` the
-      four `_ensure_gpu_mp*`. `_resolve_gpu_type` = `_gpu_type` + `_warn_gpu_cutoff` (32-bit
-      type with cutoff < 1e-6, `_resolve_gpu_type`'s old text), now also behind
+      and every `cu` call (`_project_aux_gpu`'s one-hot projector now keeps the tensor's
+      element type, which is exact; the block evaluators' 0/1 vectors keep `cu`'s 32-bit cast
+      through `_to_gpu_vec`, so a mixed-precision MPS sums as before); `_ensure_gpu(x, T;
+      caller)` the four `_ensure_gpu_mp*`. `_resolve_gpu_type` = `_gpu_type` +
+      `_warn_gpu_cutoff` (32-bit type with cutoff < `below`, `_resolve_gpu_type`'s old text;
+      `below` = 1e-6, or each entry point's old threshold: 1e-4 for the two stochastic NH
+      entry points, 1e-5 for `scf_magnetic_hubbard_gpu`), now also behind
       `get_bands_gpu`, `get_ldos_spatial_gpu` (which still warns just before its recursion),
       `get_exciton_ldos_spatial_gpu` and the two stochastic NH entry points (changelog).
       `_gpu_log(msg; indent)` prints the "[gpu] " progress lines, text unchanged.
@@ -624,9 +627,11 @@ the affected golden cases in the same commit.
       it accepts a one-site MPO, where `_project_end_site` has no neighbour to absorb into);
       the LDOS/bands accumulations, trajectories, the exciton LDOS and convergence check and
       the conductivity helpers (GPU code with no CPU kernel of the same operations). The
-      NH diagonal-trace entry points still have no precision warning (none was added). An
-      invalid `block_row`/`block_col` on the GPU NH path now throws ITensors' `onehot`
-      BoundsError instead of `_onehot_gpu`'s ErrorException.*
+      NH diagonal-trace entry points still have no precision warning (none was added).
+      `_contract_nh_block_gpu` keeps `_onehot_gpu`'s range check and ErrorException for an
+      invalid `block_row`/`block_col`. After review: the per-caller thresholds, the 32-bit
+      evaluator vectors and the range check restore the old warnings, mixed-precision sums
+      and error.*
 - [x] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
       changing its output (decided 2026-09-25); a balanced tiler may come later as an opt-in
       keyword with today's behaviour as the default.

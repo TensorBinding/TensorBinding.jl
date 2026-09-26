@@ -69,26 +69,35 @@ end
 #   _eval_fullsum_mps_1d_gpu       the sum of all elements (no bit pinned), the
 #                                  trace of the NH diagonal-trace DOS (gpu/nh.jl)
 # The `_complex` variants return the ComplexF64 amplitude instead of its real part.
+# The local vectors go up in the 32-bit counterpart of the MPS element type
+# (`_to_gpu_vec`), as the `cu` uploads of these evaluators did before they shared the
+# CPU kernel: a mixed-precision MPS (a 64-bit first site on a 32-bit MPS, as
+# `2.0 * ψ` gives) keeps summing its 32-bit sites in 32 bits.
+_cu_eltype(::Type{Float64})    = Float32
+_cu_eltype(::Type{ComplexF64}) = ComplexF32
+_cu_eltype(::Type{T}) where {T} = T
+_to_gpu_vec(x, ::Type{T}) where {T} = _to_gpu(x, _cu_eltype(T))
+
 _eval_block_mps_gpu(A::MPS, ixp::Int, iyp::Int, a::Int, b::Int, Lx::Int, Ly::Int) =
-    _eval_block_mps(A, ixp, iyp, a, b, Lx, Ly; to_device=_to_gpu)
+    _eval_block_mps(A, ixp, iyp, a, b, Lx, Ly; to_device=_to_gpu_vec)
 
 function _eval_block_mps_1d_gpu(A::MPS, ixp::Int, a::Int, L::Int)
     length(A) == L || error("_eval_block_mps_1d_gpu: MPS has $(length(A)) sites but L=$L.")
-    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu)
+    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu_vec)
 end
 
 function _eval_block_mps_1d_complex_gpu(A::MPS, ixp::Int, a::Int, L::Int)
     length(A) == L || error("_eval_block_mps_1d_complex_gpu: MPS has $(length(A)) sites but L=$L.")
-    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu, value=ComplexF64)
+    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu_vec, value=ComplexF64)
 end
 
 _eval_mps_bigendian_gpu(A::MPS, idx::Int) =
-    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu)
+    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu_vec)
 
 _eval_mps_bigendian_complex_gpu(A::MPS, idx::Int) =
-    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu, value=ComplexF64)
+    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu_vec, value=ComplexF64)
 
-_eval_fullsum_mps_1d_gpu(A::MPS) = _eval_block_mps(A, 0, 0, 0, 0, length(A), 0; to_device=_to_gpu)
+_eval_fullsum_mps_1d_gpu(A::MPS) = _eval_block_mps(A, 0, 0, 0, 0, length(A), 0; to_device=_to_gpu_vec)
 
 
 # ============================================================

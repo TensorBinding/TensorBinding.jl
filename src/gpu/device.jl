@@ -195,10 +195,12 @@ function _gpu_type(caller::String, type, dtype)
 end
 
 # The one precision warning of the GPU entry points: a 32-bit element type
-# (ComplexF32 or Float32) with `cutoff < 1e-6`, where ComplexF32 eigendecompositions
-# can produce NaN on large systems. The cutoff is used as given.
-function _warn_gpu_cutoff(caller::String, gpu_type, cutoff)
-    (gpu_type == ComplexF32 || gpu_type == Float32) && cutoff < 1e-6 &&
+# (ComplexF32 or Float32) with `cutoff < below`, where ComplexF32 eigendecompositions
+# can produce NaN on large systems. `below` is 1e-6, except for the entry points that
+# warned from a looser cutoff before (1e-4 for get_nh_dos_grid_gpu and
+# get_nh_dos_points_gpu, 1e-5 for scf_magnetic_hubbard_gpu). The cutoff is used as given.
+function _warn_gpu_cutoff(caller::String, gpu_type, cutoff; below::Real = 1e-6)
+    (gpu_type == ComplexF32 || gpu_type == Float32) && cutoff < below &&
         @warn "$caller: cutoff=$cutoff with 32-bit $gpu_type may produce NaN on large systems; use a 64-bit dtype or cutoff ≥ 1e-4."
     return nothing
 end
@@ -207,9 +209,9 @@ end
 # keyword here (get_bands_gpu checks the type is complex in between,
 # get_ldos_spatial_gpu warns just before its recursion, as they did; the NH
 # diagonal-trace entry points take `dtype` as given and never warned).
-function _resolve_gpu_type(caller::String, type, dtype, cutoff)
+function _resolve_gpu_type(caller::String, type, dtype, cutoff; below::Real = 1e-6)
     gpu_type = _gpu_type(caller, type, dtype)
-    _warn_gpu_cutoff(caller, gpu_type, cutoff)
+    _warn_gpu_cutoff(caller, gpu_type, cutoff; below = below)
     return gpu_type
 end
 

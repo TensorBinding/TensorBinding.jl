@@ -84,12 +84,14 @@ constructor that takes all 21 fields in order, caches included, remains.
   The spinless s-wave → p-wave notice of `add_superconductivity!` is an `@info` message.
 - `get_Hamiltonian` looks every geometry up in one model registry (`MODELS` in
   `core/ModelRegistry.jl`); `MODEL_REGISTRY` and `build_hamiltonian` are unchanged.
-- **GPU precision warning**: the GPU entry points that warn about a tight `cutoff` now
-  follow one rule, a 32-bit element type (`ComplexF32`, `Float32`) with `cutoff < 1e-6`,
-  in one wording. Before, `get_bands_gpu`, `get_ldos_spatial_gpu` and
-  `get_exciton_ldos_spatial_gpu` warned for `ComplexF32` only, `get_nh_dos_grid_gpu` and
-  `get_nh_dos_points_gpu` below `cutoff = 1e-4` (and once more for every point), and
-  `scf_magnetic_hubbard_gpu` also for any type below `1e-5`. No value changes.
+- **GPU precision warning**: the GPU entry points that warn about a tight `cutoff` share
+  one helper and one wording, and warn only for a 32-bit element type (`ComplexF32`,
+  `Float32`). Each keeps its threshold: `cutoff < 1e-6`, or `1e-4` for
+  `get_nh_dos_grid_gpu` and `get_nh_dos_points_gpu`, `1e-5` for
+  `scf_magnetic_hubbard_gpu`. What changes: `get_ldos_spatial_gpu` and
+  `get_exciton_ldos_spatial_gpu` also warn for `Float32`; the non-Hermitian DOS no longer
+  repeat the warning for every point; `scf_magnetic_hubbard_gpu` no longer warns for a
+  64-bit type. No value changes.
 - The GPU functions now run the CPU kernels on GPU tensors wherever those kernels apply
   unchanged (stochastic DOS, McWeeny/SP2 purification, Chern-marker assembly, diagonal
   extraction and embedding, block evaluation, the non-Hermitian block contraction and

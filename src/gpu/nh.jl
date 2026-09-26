@@ -34,6 +34,12 @@ function _contract_nh_block_gpu(W::MPO, block_s::Index;
     side = siteind(W, M) == block_s ? :post :
            siteind(W, 1) == block_s ? :pre  :
            error("NH block index must be the first or last MPO site for _contract_nh_block_gpu.")
+    # The range check and message of the former _onehot_gpu, `col` then `row` as before
+    # (onehot alone would throw a BoundsError).
+    for v in (col, row)
+        1 <= v <= dim(block_s) ||
+            error("_onehot_gpu: state $v is outside index dimension $(dim(block_s)).")
+    end
     return _project_end_site(W, block_s, row, col, side; to_device=_to_gpu, device_type=dtype)
 end
 
@@ -314,7 +320,7 @@ One universal scale from `nh_kpm_scale` (`scale`, `nh_scale_padding`, `dmrg_*`)
 is used for every point; one random-number generator (`seed`, or the global RNG
 for `seed=nothing`) is shared by the whole grid. `dtype` is the GPU element type,
 complex only: `ComplexF64` (default) or `ComplexF32` (warned below
-`cutoff = 1e-6`).
+`cutoff = 1e-4`).
 
 The integer `n` follows the existing NH convention: the partial recurrence runs
 to order `2n`.
@@ -335,7 +341,7 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
                              verbose::Bool           = false,
                              printinfo::Bool         = false)
     _check_gpu("get_nh_dos_grid_gpu")
-    _resolve_gpu_type("get_nh_dos_grid_gpu", dtype, nothing, cutoff)
+    _resolve_gpu_type("get_nh_dos_grid_gpu", dtype, nothing, cutoff; below = 1e-4)
     n > 0 || error("get_nh_dos_grid_gpu: n must be positive.")
     n_random > 0 || error("get_nh_dos_grid_gpu: n_random must be positive.")
 
@@ -418,7 +424,7 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
                                verbose::Bool            = false,
                                printinfo::Bool          = false)
     _check_gpu("get_nh_dos_points_gpu")
-    _resolve_gpu_type("get_nh_dos_points_gpu", dtype, nothing, cutoff)
+    _resolve_gpu_type("get_nh_dos_points_gpu", dtype, nothing, cutoff; below = 1e-4)
     n > 0 || error("get_nh_dos_points_gpu: n must be positive.")
     n_random > 0 || error("get_nh_dos_points_gpu: n_random must be positive.")
 

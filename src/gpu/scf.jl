@@ -75,7 +75,7 @@ Hamiltonians, densities and background profile are uploaded with; `ComplexF64`
 is safer at tight cutoffs. A real `type` is accepted for a real `H0`, but the
 ComplexF32 deltas of the Hartree MPOs then promote the loop to the matching
 complex type. ComplexF32 eigen-decompositions can NaN at very tight
-cutoffs: a warning is emitted for a 32-bit `type` with `cutoff < 1e-6`; the
+cutoffs: a warning is emitted for a 32-bit `type` with `cutoff < 1e-5`; the
 requested `cutoff` is used as-is.
 
 The result carries `converged`, `iterations`, `rms_error`, `history`, the CPU
@@ -107,7 +107,7 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
                                   dtype::Union{Nothing,Type{<:Number}} = nothing,
                                   verbose::Bool = true)
     _check_gpu("scf_magnetic_hubbard_gpu")
-    gpu_type = _resolve_gpu_type("scf_magnetic_hubbard_gpu", type, dtype, cutoff)
+    gpu_type = _resolve_gpu_type("scf_magnetic_hubbard_gpu", type, dtype, cutoff; below = 1e-5)
 
     H0_up, H0_dn = _split_spin_channels(H0)
     sites = H0_up.sites
