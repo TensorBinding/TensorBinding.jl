@@ -785,12 +785,26 @@ end
 """
     H2DChernhex(Lx, Ly, t, t2, ms; uniformhaldane=false, uniformsemenoff=false, ...) -> MPO
 
-Haldane-type Chern insulator on a hexagonal lattice.
-- NN hopping `t` (intra-row hex + vertical inter-row)
-- Complex NNN hopping `+/-i*T2(x,y)` (checkerboard alternation) for next-nearest
-- Semenoff mass `Ms(x,y)` on-site term
-- Domain wall in t2 and Ms along x = Nx/2 by default
-  (`uniformhaldane=true` and `uniformsemenoff=true` override to uniform fields)
+Haldane Chern insulator on the brick-wall honeycomb of a `2^Lx × 2^Ly` grid: basis index
+`x + 2^Lx y`, bonds `(x, y)–(x, y±1)` and `(x, y)–(x+1, y)` for even `x + y`, drawn as in
+[`honeycomb_positions`](@ref).
+- NN hopping `t`.
+- NNN hopping `⟨i|H|j⟩ = -i T2(x, y) ν_ij`: the textbook, C3-symmetric Haldane term
+  `T2 exp(i φ ν_ij)` at `φ = -π/2`, with `ν_ij = sign((d1 × d2)_z)` for the path `i → k → j`
+  through the common neighbour `k`. In grid steps, `(0, +2)`, `(+1, -1)` and `(-1, -1)`
+  share one sign and the opposite three the other.
+- Semenoff mass: `-Ms(x, y)` on even `x + y`, `+Ms(x, y)` on odd `x + y`.
+- By default `T2 = t2`, `Ms = ms` for `x < Nx/2` and `T2 = -t2`, `Ms = ms + 3.3√3 t2`
+  for `x ≥ Nx/2`, a domain wall at `x = Nx/2` (the right half is trivial for small `ms`,
+  since the critical mass is `3√3 |t2|`). `uniformhaldane=true` and `uniformsemenoff=true`
+  make the fields uniform.
+
+With uniform fields and `t = 1` this is `get_Hamiltonian("haldane", (t2=t2, phi=-π/2,
+M=ms))` on `honeycomb_positions(Lx + Ly; Lx=Lx)`, up to the gauge `c → -c` on odd `x + y`.
+Its Dirac masses are `-ms ± 3√3 t2`, so it is a Chern insulator for `|ms| < 3√3 |t2|`.
+At `t2 > 0` its Chern number is opposite to that of the `"haldane"` preset, and of the
+manuscript's `build_APSOS_hamiltonian`, at `phi = π/2`. Earlier versions gave the vertical
+NNN bonds `(0, ±2)` the wrong sign, which made the Dirac masses `-ms ± √3 t2`.
 """
 function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
                      uniformhaldane::Bool     = false,
@@ -821,7 +835,9 @@ function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
 
     Hintra    = kineticintra2DNNhex( Lx, Ly, sites, hops_MPO,      1)
     Hinter    = kineticNNN(          L,       sites, hops_MPO,      Nx)
-    HNNinter1 = kineticNNN(          L,       sites, hops_MPOalter, 2*Nx)
+    # The vertical second neighbour (x, y+2) forms a C3 triple with (x±1, y-1), so it takes
+    # the opposite sign to the diagonal ones (x±1, y+1) built from the same amplitudes.
+    HNNinter1 = -1 * kineticNNN(     L,       sites, hops_MPOalter, 2*Nx)
     HNNinter2 = kineticinterNNNSWNE( Lx, Ly, sites, hops_MPOalter, Nx+1)
     HNNinter3 = kineticinterNNNSENW( Lx, Ly, sites, hops_MPOalter, Nx-1)
 

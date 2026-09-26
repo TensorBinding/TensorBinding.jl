@@ -80,8 +80,8 @@
 #     1a. Single-particle QFT    conjugate_by_qft
 #     1b. Exciton QFT            conjugate_by_qft_exciton
 # 2.  Legacy sublattice projectors projop_2DSL, projop_1DSL
-# 3.  Internal utilities         ilinspace, _eval_diag_mps, sample_diag,
-#                                _kpm_weight_matrix
+# 3.  Internal utilities         _eval_diag_mps, sample_diag, _kpm_weight_matrix
+#                                (ilinspace / kspace_sampling_plan: core/Utils.jl)
 #     (exciton MPS probes mpsexciton/Q/QTrace/KQ now live in TwoParticle_tk.jl)
 # 3b. High-symmetry k-path       kpath_2d, hsk_honeycomb/square/triangular,
 #                                kpath_setup, _hs_label, _hsk
@@ -351,21 +351,8 @@ end
 # _kpm_weight_matrix — precomputed Chebyshev-KPM weights W[n, iω]
 # ============================================================
 
-"""
-    ilinspace(xmin, xmax, num_x) -> Vector{Int}
-
-Return `num_x` as almost evenly spaced integers in `[xmin, xmax]`, inclusive,
-with a preference for the endpoints.  Used to build the k-point center
-grid for band-structure sampling.
-"""
-function ilinspace(xmin, xmax, num_x::Int)
-    xvals = xmin:xmax
-    _N = length(xvals)
-    @assert 1 ≤ num_x ≤ _N
-    num_x == 1 && return [0]
-    step = (_N - 1) ÷ (num_x - 1)
-    return collect(xmin:step:(xmin+step*(num_x-1)))
-end
+# `ilinspace` and `kspace_sampling_plan` (k-point centre placement and grouping
+# shared with get_bands_gpu) live in core/Utils.jl with the other sampling plans.
 
 
 """
@@ -822,41 +809,12 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     # compute it unconditionally so it is always in scope when D==2.
     Lx = D == 2 ? div(L_pos, 2) : 0
 
-    # ── Build k-point groups ──────────────────────────────────────────────────
+    # ── Build k-point groups (shared planner in core/Utils.jl) ────────────────
     # k_groups_override (from kpath_2d) bypasses the grid sampling entirely.
-    if !isnothing(k_groups_override)
-        k_groups = k_groups_override
-        num_x    = length(k_groups)
-    elseif D == 1
-        _xmax     = xmax === nothing ? N - 1 : Int(xmax)
-        xcenters  = ilinspace(xmin, _xmax, num_x)
-        half_step = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
-        offsets   = num_avg > 1 ? round.(Int, range(-half_step, half_step; length=num_avg)) : Int[0]
-        k_groups  = [clamp.(xcenters[i] .+ offsets, 0, N - 1) for i in 1:num_x]
-    elseif D == 2
-        Lx     = div(L_pos, 2)   # also computed above; repeated here keeps the branch self-contained
-        Nx_loc = 2^Lx
-        Ny_loc = 2^(L_pos - Lx)
-        num_x  = min(num_x, Nx_loc)   # can't have more output pts than grid positions
-        _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
-        _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
-        xcenters    = ilinspace(xmin, _xmax, Nx_loc)
-        ycenters    = ilinspace(ymin, _ymax, Ny_loc)
-        half_step_x = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
-        half_step_y = num_y > 1 ? (_ymax - ymin) / (2 * num_y) : 0
-        x_offs = num_avg > 1 ? round.(Int, range(-half_step_x, half_step_x; length=num_avg)) : Int[0]
-        y_offs = num_avg > 1 ? round.(Int, range(-half_step_y, half_step_y; length=num_avg)) : Int[0]
-        k_groups = [
-            begin
-                xs = clamp.(xcenters[i] .+ x_offs, 0, Nx_loc - 1)
-                ys = clamp.(ycenters[i] .+ y_offs, 0, Ny_loc - 1)
-                [(y << Lx) | x for (x, y) in zip(xs, ys)]  # diagonal zip in 2D k-space
-            end
-            for i in 1:num_x
-        ]
-    else
-        error("D must be 1 or 2")
-    end
+    kplan    = kspace_sampling_plan(L_pos, D; num_x, num_y, num_avg,
+                                    xmin, xmax, ymin, ymax, k_groups_override)
+    k_groups = kplan.k_groups
+    num_x    = kplan.num_x
 
     Ak_w = zeros(Float64, Nω, num_x)
 
@@ -1036,6 +994,7 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
                            cutoff::Real     = 1e-8,
                            verbose::Bool    = false,
                            printinfo::Bool  = false)
+    _require_binary_position_space(H, "get_exciton_bands")
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_bands: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1060,9 +1019,7 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
     q_end_eff = q_end === nothing ? k_end : Int(q_end)
 
     groups = if group_arg !== nothing
-        group_arg isa AbstractVector{<:AbstractVector} ?
-            [collect(Int, grp) for grp in group_arg] :
-            [[Int(q)] for q in group_arg]
+        spatial_sampling_plan(H.L; x_groups=group_arg).groups
     elseif list_arg !== nothing
         [[Int(q)] for q in list_arg]
     else
@@ -1073,12 +1030,10 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
         window = q_end_eff - q_start_eff + 1
         num_q_eff <= window ||
             error("get_exciton_bands: num_q=$num_q_eff exceeds sampling window length $window.")
-        dq     = div(window, num_q_eff)
-        dq_sub = max(1, div(dq, num_avg))
-        [[q_start_eff + (i - 1) * dq + k * dq_sub
-          for k in 0:num_avg-1
-          if q_start_eff + (i - 1) * dq + k * dq_sub <= q_end_eff]
-         for i in 1:num_q_eff]
+        # 1D point layout of the shared planner (core/Utils.jl): stride
+        # window ÷ num_q with num_avg sub-probes per coarse cell.
+        spatial_sampling_plan(H.L; num_x=num_q_eff, num_avg,
+                              x_start=q_start_eff, x_end=q_end_eff).groups
     end
 
     isempty(groups) && error("get_exciton_bands: no momentum groups were selected.")
@@ -1173,6 +1128,7 @@ function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_p
                                cutoff::Real     = 1e-8,
                                verbose::Bool    = false,
                                printinfo::Bool  = false)
+    _require_binary_position_space(H, "get_exciton_continuum")
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_continuum: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1336,6 +1292,7 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           cutoff::Real    = 1e-10,
                           printinfo::Bool = false)
 
+    _require_binary_position_space(H, "get_bands")
     _ensure_scale!(H)
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
@@ -1624,6 +1581,7 @@ end
 
 function get_bands(H::TBHamiltonian, ω_phys_vals;
                    aux_proj = nothing, tol=1e-9, maxdim::Int=100)
+    _require_binary_position_space(H, "get_bands")
     H._tn_cache === nothing &&
         error("No Chebyshev cache found.  Call KPM_Tn(H, Ncheb; ...) first.")
     pos_sites = _pos_sites(H)

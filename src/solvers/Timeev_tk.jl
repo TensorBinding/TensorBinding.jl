@@ -4,20 +4,61 @@ using ITensorMPS
 """
     build_tdvp_propagator_mpo(H, dt, L, sites; maxdim, cutoff, reverse_step,
                               outputlevel, nsite, cross_tol, initial_positions,
-                              use_diagonal_pivots, interpolation_type) -> MPO
+                              use_diagonal_pivots, expand_basis, cache_columns,
+                              interpolation_type) -> MPO
 
 Build an MPO approximation of the short-time propagator `U(dt) = e^{-iH dt}` by
 sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
 
 `H` must already be multiplied by `-im` for Schrödinger evolution.
-The diagonal is dominant for small `dt`; by default TCI is seeded with all diagonal
-pivots (`use_diagonal_pivots=true`) so the near-identity structure is captured first.
+TDVP runs once per column `j` that TCI samples: `U|j⟩` is kept, and every other element
+of that column is an overlap with it (`cache_columns`).  The diagonal is dominant for
+small `dt`; TCI starts from `(1, 1)` and QuanticsTCI moves its random initial pivots to
+large elements, so it lands on the diagonal without seeding.
+
+Each sample evolves a basis state `|j⟩`, an MPS of bond dimension 1.  TDVP cannot leave
+the tangent space of that state, so on its own it drops every hop that flips three or
+more qubits (the carry chains `0111 → 1000` of the quantics encoding, such as the middle
+bond of a chain).  By default `|j⟩` first gets the Krylov basis of `H|j⟩, H²|j⟩`
+(`ITensorMPS.expand(...; alg="global_krylov")`).  The samples then match the dense
+`exp(-iH dt)` to TDVP accuracy (chain_1d, `dt = 0.05`: Frobenius error 7e-5 at L = 3 and
+1.3e-4 at L = 6, limited by `cutoff`; 0.07 and 0.27 without the expansion).  The
+expansion makes each TDVP run about 4x more expensive (L = 8-10: 15-16 ms against 3.5-5 ms).
+
+!!! warning
+    From about L = 5, the QTCI fit in `hopping2MPO` can miss those isolated carry-chain
+    elements even though they are sampled correctly.  In 1D-chain tests it missed them
+    (max error ≈ `dt`) for most random seeds at L = 6 and for every seed at L = 8.  It does
+    the same on a plain hopping matrix.  For a chain, seeding `initial_positions` with the
+    elements near the middle boundary,
+    `[(N÷2+a, N÷2+b) for a in -3:4 for b in -3:4 if abs(a-b) <= 4]`, fixed L = 6.  From
+    L = 8, the final `truncate!(cutoff=1e-8)` in `hopping2MPO` also drops the second-order
+    elements (error ≈ `dt²/2`), because that cutoff is relative to ‖U‖² = N.  Check the
+    result against a dense `exp(-iH dt)` at small L.
 
 ## Keyword arguments
 - `maxdim`, `cutoff`    : TDVP truncation parameters.
+- `reverse_step`        : Evolve the bond tensor backwards between two-site updates, as the
+                          TDVP projector splitting requires. Default `true` (the ITensorMPS
+                          default). `false` counts terms of `H` twice, so sampled elements are
+                          off at O(dt) (some hops come out 1.5x too large); it warns.
 - `cross_tol`           : TCI interpolation tolerance.
-- `use_diagonal_pivots` : Seed TCI with the N diagonal positions. Default `true`.
+- `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
+                          seeding makes TCI sample every column, so it costs N TDVP runs
+                          (L = 8: 256 against 182-238 unseeded; L = 10: 1024 against 334),
+                          and it does not make TCI find the off-diagonal structure more
+                          reliably.
+- `expand_basis`        : Expand each basis state with its Krylov vectors before TDVP (see
+                          above; needs `H::MPO`). Default `true`.
+- `cache_columns`       : Keep each evolved column `U|j⟩` (one MPS of a few kB per sampled
+                          `j`), so TDVP runs once per column instead of once per sampled
+                          element (L = 8: about 200 runs against 1500-2300).  The samples, and
+                          so the MPO, are the same either way; `false` saves the memory.
+                          Default `true`.
 - `interpolation_type`  : Element type for TCI sampling. Default `ComplexF64`.
+
+To reproduce the samples and seeding used before these defaults changed, pass
+`reverse_step=false, expand_basis=false, use_diagonal_pivots=true`.
 
 A `TBHamiltonian` overload applies `-im` internally:
 `build_tdvp_propagator_mpo(H::TBHamiltonian, dt; ...)`.
@@ -26,27 +67,37 @@ function build_tdvp_propagator_mpo(
     H, dt, L, sites;
     maxdim = 50,
     cutoff = 1e-8,
-    reverse_step = false,
+    reverse_step = true,
     outputlevel = 0,
     nsite = 2,
     cross_tol = 1e-8,
     initial_positions = [],
-    use_diagonal_pivots = true,   # seed TCI with diagonal to capture near-identity structure
+    use_diagonal_pivots = false,  # true seeds all N diagonal positions: TDVP on all N columns
+    expand_basis = true,
+    cache_columns = true,
     interpolation_type = ComplexF64,
 )
     N = 2^L
+    reverse_step || @warn "build_tdvp_propagator_mpo: reverse_step=false skips TDVP's backward bond evolution and counts terms of H twice; the propagator is wrong at O(dt)."
 
-    # For a short-time propagator the diagonal is dominant.  Seeding TCI with all
-    # diagonal positions ensures it captures that structure before exploring off-diagonal.
+    # Opt-in: the N diagonal pivots cost O(N) TDVP runs and are not needed for TCI to
+    # find the near-identity structure (see the docstring).
     if use_diagonal_pivots && isempty(initial_positions)
         initial_positions = [(i, i) for i in 1:N]
     end
 
-    function func(i, j)
-        psi_i = TensorBinding.binary_to_MPS(Int(i - 1), L, sites)
-        psi_j = TensorBinding.binary_to_MPS(Int(j - 1), L, sites)
+    # TCI samples many rows i of each column j: evolve each |j> once and keep U|j>.
+    evolved_columns = Dict{Int,MPS}()
 
-        psi_j_evolved = tdvp(
+    function evolve_column(j::Int)
+        psi_j = TensorBinding.binary_to_MPS(j - 1, L, sites)
+        if expand_basis
+            # |j> has bond dimension 1: without the Krylov basis of H|j>, H^2|j> TDVP
+            # cannot reach hops that flip three or more qubits (carry chains 0111 -> 1000).
+            psi_j = ITensorMPS.expand(psi_j, H; alg = "global_krylov")
+        end
+
+        return tdvp(
             H,
             dt,
             psi_j;
@@ -58,6 +109,13 @@ function build_tdvp_propagator_mpo(
             reverse_step = reverse_step,
             outputlevel = outputlevel,
         )
+    end
+
+    function func(i, j)
+        psi_i = TensorBinding.binary_to_MPS(Int(i - 1), L, sites)
+        psi_j_evolved = cache_columns ?
+            get!(() -> evolve_column(Int(j)), evolved_columns, Int(j)) :
+            evolve_column(Int(j))
 
         return inner(psi_i, psi_j_evolved)
     end
@@ -159,7 +217,7 @@ function evolve_with_propagator(U_mpo, psi0, nsteps;
     psi = copy(psi0)
     for step in 1:nsteps
         psi = apply(U_mpo, psi; cutoff = cutoff, maxdim = maxdim)
-        truncate!(psi; cutoff = cutoff, maxdim = maxdim)
+        ITensorMPS.truncate!(psi; cutoff = cutoff, maxdim = maxdim)
         if normalize_each_step
             normalize!(psi)
         end
@@ -350,6 +408,13 @@ end
 
 Validate that `U_mpo` agrees with direct TDVP on a set of computational basis states.
 Prints per-state overlap errors and phase-aligned distances, then returns the maxima.
+
+The reference is one TDVP step from the bare basis state, so it has the errors described
+in `build_tdvp_propagator_mpo`: it drops the hops that flip three or more qubits, and
+with the default `tdvp_reverse_step=false` it also counts terms of `H` twice.  An error
+of order `dt` therefore does not mean `U_mpo` is wrong (chain_1d, L = 4, `dt = 0.05`: a
+phase error of 0.056 for a `U_mpo` within 8e-5 of `exp(-iH dt)`).  At small L, compare
+with a dense `exp(-iH dt)` instead.
 
 A `TBHamiltonian` overload is available.
 """
@@ -683,131 +748,6 @@ end
 
 
 """
-    compare_propagator_and_tdvp_heatmaps(U_mpo, H, psi0, L, sites, nsteps; ...)
-
-Full comparison of MPO-propagator and TDVP trajectories: evolves `psi0` with both
-methods for `nsteps` steps, renders heatmaps of `|⟨x|ψ(t)⟩|` and `|⟨x|ψ(t)⟩|²`,
-and returns all trajectory data and agreement metrics as a named tuple.
-
-A `TBHamiltonian` overload is available.
-"""
-function compare_propagator_and_tdvp_heatmaps(U_mpo, H, psi0, L, sites, nsteps;
-    normalize_each_step = true,
-    dt = 0.1,
-    plot_initial_overlap = true,
-    mpo_cutoff = 1e-8,
-    mpo_maxdim = 10_000,
-    tdvp_maxdim = 200,
-    tdvp_cutoff = 1e-10,
-    tdvp_reverse_step = false,
-    tdvp_outputlevel = 0,
-    tdvp_nsite = 2,
-)
-    mpo_states = evolve_with_propagator(
-        U_mpo, psi0, nsteps;
-        normalize_each_step = normalize_each_step,
-        cutoff = mpo_cutoff,
-        maxdim = mpo_maxdim,
-    )
-
-    tdvp_states = evolve_with_tdvp(
-        H, psi0, nsteps, dt;
-        normalize_each_step = normalize_each_step,
-        maxdim = tdvp_maxdim,
-        cutoff = tdvp_cutoff,
-        reverse_step = tdvp_reverse_step,
-        outputlevel = tdvp_outputlevel,
-        nsite = tdvp_nsite,
-    )
-
-    mpo_data  = compute_basis_overlaps(mpo_states,  L, sites)
-    tdvp_data = compute_basis_overlaps(tdvp_states, L, sites)
-
-    nbasis     = 2^L
-    steps_axis = 0:nsteps
-    basis_axis = 0:(nbasis - 1)
-
-    abs_diff  = abs.(mpo_data.abs_overlaps  .- tdvp_data.abs_overlaps)
-    prob_diff = abs.(mpo_data.probabilities .- tdvp_data.probabilities)
-
-    state_overlaps      = Vector{ComplexF64}(undef, nsteps + 1)
-    state_overlap_abs   = zeros(Float64, nsteps + 1)
-    state_phase_distance = zeros(Float64, nsteps + 1)
-
-    for step in 1:(nsteps + 1)
-        psi_mpo  = mpo_states[step]
-        psi_tdvp = tdvp_states[step]
-
-        n_mpo  = sqrt(real(inner(psi_mpo,  psi_mpo)))
-        n_tdvp = sqrt(real(inner(psi_tdvp, psi_tdvp)))
-
-        ov = inner(psi_tdvp, psi_mpo) / (n_tdvp * n_mpo)
-        state_overlaps[step]       = ov
-        state_overlap_abs[step]    = abs(ov)
-        state_phase_distance[step] = phase_aligned_distance(psi_tdvp, psi_mpo)
-    end
-
-    p1 = heatmap(basis_axis, steps_axis, mpo_data.abs_overlaps;
-        xlabel="x", ylabel="step", title="MPO: |<x|ψ(step)>|", colorbar_title="magnitude")
-    p2 = heatmap(basis_axis, steps_axis, tdvp_data.abs_overlaps;
-        xlabel="x", ylabel="step", title="TDVP: |<x|ψ(step)>|", colorbar_title="magnitude")
-    p3 = heatmap(basis_axis, steps_axis, mpo_data.probabilities;
-        xlabel="x", ylabel="step", title="MPO: |<x|ψ(step)>|²", colorbar_title="probability")
-    p4 = heatmap(basis_axis, steps_axis, tdvp_data.probabilities;
-        xlabel="x", ylabel="step", title="TDVP: |<x|ψ(step)>|²", colorbar_title="probability")
-    p5 = heatmap(basis_axis, steps_axis, abs_diff;
-        xlabel="x", ylabel="step", title="Difference in |<x|ψ>|", colorbar_title="abs diff")
-    p6 = heatmap(basis_axis, steps_axis, prob_diff;
-        xlabel="x", ylabel="step", title="Difference in |<x|ψ>|²", colorbar_title="abs diff")
-
-    display(plot(p1, p2; layout=(1, 2), size=(1200, 400)))
-    display(plot(p3, p4; layout=(1, 2), size=(1200, 400)))
-    display(plot(p5, p6; layout=(1, 2), size=(1200, 400)))
-
-    if plot_initial_overlap
-        initial_index = argmax(tdvp_data.probabilities[1, :])
-        p7 = plot(steps_axis, mpo_data.abs_overlaps[:, initial_index];
-            xlabel="step", ylabel="|<x₀|ψ(step)>|", label="MPO",
-            title="Overlap with dominant initial basis state")
-        plot!(p7, steps_axis, tdvp_data.abs_overlaps[:, initial_index]; label="TDVP")
-        display(p7)
-    end
-
-    p8 = plot(steps_axis, mpo_data.norms;
-        xlabel="step", ylabel="<ψ|ψ>", label="MPO", title="Norm comparison")
-    plot!(p8, steps_axis, tdvp_data.norms; label="TDVP")
-    display(p8)
-
-    p9 = plot(steps_axis, state_overlap_abs;
-        xlabel="step", ylabel="|<ψ_TDVP|ψ_MPO>|", label="|overlap|", title="State agreement")
-    display(p9)
-
-    p10 = plot(steps_axis, state_phase_distance;
-        xlabel="step", ylabel="phase-aligned distance", label="distance",
-        title="Phase-aligned state distance")
-    display(p10)
-
-    return (
-        mpo_states             = mpo_states,
-        tdvp_states            = tdvp_states,
-        mpo_overlaps           = mpo_data.overlaps,
-        tdvp_overlaps          = tdvp_data.overlaps,
-        mpo_abs_overlaps       = mpo_data.abs_overlaps,
-        tdvp_abs_overlaps      = tdvp_data.abs_overlaps,
-        mpo_probabilities      = mpo_data.probabilities,
-        tdvp_probabilities     = tdvp_data.probabilities,
-        abs_overlap_difference = abs_diff,
-        probability_difference = prob_diff,
-        mpo_norms              = mpo_data.norms,
-        tdvp_norms             = tdvp_data.norms,
-        state_overlaps         = state_overlaps,
-        state_overlap_abs      = state_overlap_abs,
-        state_phase_distance   = state_phase_distance,
-    )
-end
-
-
-"""
     bond_current_x(ρ, j, tx, L, sites) -> ComplexF64
 
 Compute the x-direction bond current
@@ -881,10 +821,4 @@ end
 
 function check_tdvp_vs_U_mpo(H::TBHamiltonian, U_mpo::MPO, dt; kwargs...)
     return check_tdvp_vs_U_mpo(-im * H.mpo, U_mpo, dt, H.L, H.sites; kwargs...)
-end
-
-function compare_propagator_and_tdvp_heatmaps(U_mpo::MPO, H::TBHamiltonian,
-                                               psi0::MPS, nsteps::Int; kwargs...)
-    return compare_propagator_and_tdvp_heatmaps(U_mpo, -im * H.mpo, psi0,
-                                                  H.L, H.sites, nsteps; kwargs...)
 end

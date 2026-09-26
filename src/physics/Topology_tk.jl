@@ -164,6 +164,7 @@ function get_W(H::TBHamiltonian, xfunc=nothing;
                quenched::Bool   = true,
                l                = nothing,
                Λ::Real          = 10)
+    _require_binary_position_space(H, "get_W")
     H.sublattice_s === nothing || dim(H.sublattice_s) == 2 ||
         error("get_W requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
     H.sublattice_s !== nothing ||
@@ -593,9 +594,9 @@ end
 
 """
     get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
-          method=:KPM, fermi=0.0, l=nothing, Λ=10,
+          method=:KPM, fermi=0.0, l=nothing, Λ=10, Lambda=nothing,
           Nchebychev=300, maxdim=500, cutoff=1e-8,
-          Nel=nothing, quenched=true) -> Function
+          Nel=nothing, quenched=true, sequential=false) -> Function
 
 High-level wrapper: compute the ground-state projector via `method` and
 return the Chern marker closure from `get_C_op_MPO_from_P`.
@@ -616,6 +617,13 @@ Reuses `H._tn_cache` or `H._density_cache` when available.  `maxdim` and
 `cutoff` are forwarded uniformly to the projector computation and to all
 MPO multiplications in the Chern marker assembly.
 
+`Lambda` is an ASCII alias for `Λ`; when given, it takes precedence over `Λ`
+(as in `get_C_gpu`).
+
+`sequential=true` (quenched mode only) skips the C1–C4 MPO×MPO products and
+instead applies `P` and the position operators to each basis state inside the
+closure: cheaper setup, more MPO–MPS applies per evaluated unit cell.
+
 See `get_C_op_MPO_from_P` for full documentation of the remaining arguments.
 
 # Returns
@@ -635,6 +643,8 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                Nel              = nothing,
                quenched::Bool   = true,
                sequential::Bool = false)
+    _require_binary_position_space(H, "get_C")
+    Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -645,7 +655,7 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
     P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
-                                l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
+                                l=l, Λ=Λ_val, maxdim=maxdim, cutoff=cutoff,
                                 quenched=quenched, sequential=sequential)
 end
 
@@ -673,6 +683,7 @@ index.  The returned MPO shares the same site indices as `H.mpo`.
 function get_valley_operator(H::TBHamiltonian;
                              maxdim::Int     = 500,
                              cutoff::Float64 = 1e-8)
+    _require_binary_position_space(H, "get_valley_operator")
     H.Lx !== nothing ||
         error("get_valley_operator requires a 2D Hamiltonian (H.Lx must be set).")
     H.sublattice_s !== nothing ||
@@ -769,6 +780,7 @@ function get_valley_C(H::TBHamiltonian,
                       Nel             = nothing,
                       quenched::Bool  = true,
                       sequential::Bool = false)
+    _require_binary_position_space(H, "get_valley_C")
     valley in (:K, :K_prime) ||
         error("valley must be :K or :K_prime, got :$valley")
 

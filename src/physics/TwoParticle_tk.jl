@@ -79,6 +79,8 @@ function exciton_hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                               tol                  = 1e-8,
                               cutoff               = 1e-8,
                               maxdim               = 200)
+    _require_binary_position_space(H_c, "exciton_hamiltonian")
+    _require_binary_position_space(H_v, "exciton_hamiltonian")
     H_exc_mpo = Exciton_Hamiltonian(H_c, H_v, Ufunc;
                                      on_site             = on_site,
                                      tol_quantics        = tol_quantics,
@@ -86,10 +88,12 @@ function exciton_hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                                      tol=tol, cutoff=cutoff, maxdim=maxdim)
     sites_eh = collect(Iterators.flatten(zip(H_c.sites, H_v.sites)))
     sc       = something(scale, 0.0)   # 0.0 → lazy DMRG estimation on first KPM call
-    # Inherit single-sector geometry from H_c (physical positions are the same).
+    # Inherit single-sector geometry and Lx from H_c (physical positions are the same).
     # L = position qubits per sector; N = physical positions; sites = 2L interleaved
-    return TBHamiltonian(H_c.L, H_c.N, sites_eh, H_exc_mpo, H_c.geometry, sc, 0.0,
-                         nothing, nothing, nothing, nothing, 0, nothing)
+    # H_c's aux indices and one-body kernels do not describe the e-h register (U is in H_exc_mpo).
+    return TBHamiltonian(H_c; sites=sites_eh, mpo=H_exc_mpo, scale=sc, center=0.0,
+                         spin_s=nothing, nambu_s=nothing, layer_s=nothing,
+                         sublattice_s=nothing, interaction_mpo=nothing, fock_mpo=nothing)
 end
 
 

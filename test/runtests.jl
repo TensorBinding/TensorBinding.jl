@@ -99,3 +99,32 @@ using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
     end
 
 end
+
+include("fibonacci.jl")
+include("fibonacci_sampling.jl")
+include("metallic_mean.jl")
+include("kbonacci.jl")
+include("gpu_mps_ldos.jl")
+
+# Regression tests for the bugs found in the 2026-09 code audit
+# (docs/dev/REORGANISATION_TODO.md, "Bugs").
+include("bugfix_tbsystem.jl")
+include("bugfix_rpa.jl")
+include("bugfix_scfnh.jl")
+include("bugfix_topology.jl")
+include("bugfix_gpu.jl")
+include("bugfix_pivots.jl")
+include("bugfix_truncate.jl")
+include("bugfix_rpamag.jl")
+include("bugfix_haldanescale.jl")
+include("bugfix_layeredlx.jl")
+include("bugfix_tbsystem3.jl")
+include("bugfix_rpacheb2d.jl")
+include("bugfix_gpu3.jl")
+include("bugfix_tdvp.jl")
+include("bugfix_haldane_textbook.jl")
+include("bugfix_density.jl")
+
+# Characterization tests: the sampling planners' current output, pinned before
+# the code-organisation refactor (data in test/data/sampling_golden.jl).
+include("sampling_golden.jl")

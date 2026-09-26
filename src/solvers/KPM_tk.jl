@@ -78,6 +78,7 @@ Returns `(Tn_list, scale, center)`.  To convert a physical energy ω:
 function KPM_Tn(H_mpo::MPO, N::Int, sites;
                 scale::Union{Real, Nothing} = nothing,
                 center::Real       = 0.0,
+                identity_mpo::Union{MPO,Nothing} = nothing,
                 maxdim::Int        = 40,
                 dmrg_nsweeps::Int  = 5,
                 dmrg_maxdim        = [10, 20, 40],
@@ -94,7 +95,7 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
     end
 
     # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
-    I_mpo   = MPO(sites, "Id")
+    I_mpo   = isnothing(identity_mpo) ? MPO(sites, "Id") : copy(identity_mpo)
     Ham_n   = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
 
     # ── Chebyshev recursion T_0 = I,  T_1 = H_scaled,  T_k = 2H·T_{k-1} − T_{k-2}
@@ -205,6 +206,7 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
         Tn, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
                            scale    = H.scale,
                            center   = H.center,
+                           identity_mpo = physical_projector(H),
                            maxdim   = maxdim,
                            cutoff   = cutoff,
                            verbose  = verbose)
@@ -214,6 +216,7 @@ function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
         Tn, _, _ = KPM_Tn_mps(H.mpo, Ncheb, psi0, H.sites;
                                scale    = H.scale,
                                center   = H.center,
+                               identity_mpo = physical_projector(H),
                                maxdim   = maxdim,
                                cutoff   = cutoff,
                                verbose  = verbose)
@@ -251,6 +254,7 @@ Returns `(Tn_mps_list, scale, center)` where `Tn_mps_list[n+1]` = |φ_n⟩.
 function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
                     scale::Union{Real, Nothing} = nothing,
                     center::Real       = 0.0,
+                    identity_mpo::Union{MPO,Nothing} = nothing,
                     maxdim::Int        = 40,
                     dmrg_nsweeps::Int  = 5,
                     dmrg_maxdim        = [10, 20, 40],
@@ -267,7 +271,7 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
     end
 
     # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
-    I_mpo = MPO(sites, "Id")
+    I_mpo = isnothing(identity_mpo) ? MPO(sites, "Id") : copy(identity_mpo)
     Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
 
     # ── Chebyshev recursion T_0 = |ψ₀⟩,  |T_1⟩ = H_scaled|ψ₀⟩,  |T_k⟩ = 2H_scaled|ψ_{k-1}⟩ − |ψ_{k-2}⟩
@@ -305,6 +309,7 @@ function KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS;
     Tn_mps, _, _ = KPM_Tn_mps(H.mpo, N, psi0, H.sites;
                                 scale     = H.scale,
                                 center    = H.center,
+                                identity_mpo = physical_projector(H),
                                 maxdim    = maxdim,
                                 cutoff    = cutoff,
                                 verbose   = verbose)
@@ -574,7 +579,7 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    I_mpo = MPO(H.sites, "Id")
+    I_mpo = physical_projector(H)
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
@@ -592,7 +597,7 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     for σ_n in nambu_range, σ_s in spin_range, σ_l in layer_range, σ_sl in sl_range
         psi0 = any_aux_proj ?
                _ldos_make_psi0(H, X, σ_n, σ_s, σ_l, σ_sl) :
-               (L_tot == H.L ? binary_to_MPS(X - 1, H.L, H.sites) :
+               (L_tot == H.L ? physical_site_state(H, X) :
                                mpsexciton(X, H.sites))
         _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum;
                       cutoff=cutoff, maxdim=maxdim,
@@ -715,6 +720,12 @@ With no sublattice DOF the shape is always `(Nω × ng)`, `ng = num_x`.
 **Other auxiliary DOF projections** (same interface as `get_bands`):
 `nambu_proj`/`proj_nambu`, `spin_proj`/`proj_s`, `layer_proj`/`proj_layer`.
 
+For a Fibonacci position space, `ordering=:conumber` requires full-resolution
+point sampling. `conumber_alignment=:atomic` (default) places the `AA` sites in
+one central block; `:raw` exposes the unshifted modular residues. A recursive
+atomic zoom should slice the interval returned by `fibonacci_rg_partition`
+rather than re-conumbering its sites with a reduced `L`.
+
 Examples
 --------
 ```julia
@@ -755,6 +766,11 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            maxdim::Int    = 100,
                            cutoff::Real   = 1e-8,
                            verbose::Bool  = false,
+                           ordering::Symbol = :physical,
+                           conumber_orientation::Symbol = :standard,
+                           conumber_centered::Bool = true,
+                           conumber_origin::Integer = 0,
+                           conumber_alignment::Symbol = :atomic,
                            nambu_proj::Bool  = false,
                            proj_nambu        = nothing,
                            spin_proj::Bool   = false,
@@ -763,6 +779,29 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            proj_layer        = nothing,
                            sublat_proj::Bool = false,   # kept for backward compat; auto-on when H.sublattice_s is set
                            proj_sl           = nothing)
+
+    ordering in (:physical, :conumber) ||
+        throw(ArgumentError("ordering must be :physical or :conumber"))
+    x_groups_effective = x_groups
+    if ordering === :conumber
+        full_resolution = num_x == H.N && num_y === nothing && num_avg == 1 &&
+            x_start == 1 && x_end == H.N && x_groups === nothing && !grid &&
+            xwin === nothing && ywin === nothing && box_half == 0 && reduce === :point &&
+            H.spin_s === nothing && H.nambu_s === nothing && H.layer_s === nothing &&
+            H.sublattice_s === nothing
+        full_resolution || throw(ArgumentError(
+            "ordering=:conumber currently requires full-resolution 1D point sampling " *
+            "without averaging, grids, blocks, custom groups, or auxiliary degrees of freedom"
+        ))
+        permutation = site_permutation(
+            H; ordering=:conumber,
+            orientation=conumber_orientation,
+            centered=conumber_centered,
+            origin=conumber_origin,
+            alignment=conumber_alignment,
+        )
+        x_groups_effective = [[x] for x in permutation]
+    end
 
     # ── Geometry-aware sampling plan (unit-cell groups + sublattice decision) ──
     if box_half > 0 || grid || xwin !== nothing || ywin !== nothing || reduce === :block
@@ -784,7 +823,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         num_x    = num_x, num_y = num_y, num_avg = num_avg,
         x_start  = x_start, x_end = x_end,
         xwin     = xwin, ywin = ywin,
-        x_groups = x_groups, box_half = box_half,
+        x_groups = x_groups_effective, box_half = box_half,
         sublattice = sublattice)
     groups   = plan.groups
     is_block = plan.reduce === :block
@@ -834,7 +873,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         (isnothing(proj_sl) ? (1:n_sub) : (proj_sl:proj_sl)) :
         (1:1)
 
-    I_mpo = MPO(H.sites, "Id")
+    I_mpo = physical_projector(H)
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
     ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
@@ -861,7 +900,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                         σ_sl in sl_fill
                     psi0 = any_aux_proj ?
                            _ldos_make_psi0(H, x, σ_n, σ_s, σ_l, σ_sl) :
-                           (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
+                           (L_tot == H.L ? physical_site_state(H, x) :
                                            mpsexciton(x, H.sites))
                     accum_loc = zeros(Float64, Nω)
                     _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_loc;
@@ -901,7 +940,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         pos_sites = filter(s -> s ∉ aux_to_drop, H.sites)
 
         psi_dict = if isempty(aux_to_drop)
-            Dict(x => (L_tot == H.L ? binary_to_MPS(x - 1, H.L, H.sites) :
+            Dict(x => (L_tot == H.L ? physical_site_state(H, x) :
                                       mpsexciton(x, H.sites)) for x in all_xs)
         else
             @assert length(pos_sites) == H.L "get_ldos_spatial: $(length(pos_sites)) position sites after dropping aux but expected H.L=$(H.L)."
@@ -1102,10 +1141,11 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     dos_weighting in (:trace, :sample) ||
         error("get_dos_stochastic: dos_weighting must be :trace or :sample.")
 
-    I_mpo = MPO(H.sites, "Id")
+    I_mpo = physical_projector(H)
     Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
 
-    D      = prod(ITensors.dim(s) for s in H.sites)
+    projected_position_space = !_is_binary_position_space(H)
+    D      = projected_position_space ? H.N : prod(ITensors.dim(s) for s in H.sites)
     N_phys = H.N
     is_exc = length(H.sites) == 2 * H.L
 
@@ -1158,9 +1198,11 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────────
-    samples = rand(rng, 0:(D - 1), N_sample)
-    for (i, k) in enumerate(samples)
-        psi0 = _basis_state_mps(k, H.sites)
+    samples = projected_position_space ?
+        rand(rng, 1:H.N, N_sample) : rand(rng, 0:(D - 1), N_sample)
+    for (i, sample) in enumerate(samples)
+        psi0 = projected_position_space ?
+            physical_site_state(H, sample) : _basis_state_mps(sample, H.sites)
         χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_full;
                            weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
         verbose && i % 15 == 0 && println("Full sample $i/$N_sample  maxlinkdim=$χ")
@@ -1193,6 +1235,70 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         end
     end
     normalize && dos_weighting == :trace && (result ./= D)
+    return result
+end
+
+
+"""
+    get_dos_trace(H, Ncheb, ω_phys_vals; normalize=false, kernel=:jackson,
+                  lambda=4.0, eta=0.0, m_order=4,
+                  maxdim=100, cutoff=1e-8, verbose=false) -> Vector{Float64}
+
+Deterministic total DOS from the exact tensor-network trace of each online
+Chebyshev MPO. Only three MPOs are retained. At every order the diagonal MPO is
+converted to an MPS and contracted with the product MPS `|1,1,...>`, giving
+`Tr[T_n(H_tilde)]` without summing LDOS curves or integrating a spectrum.
+
+For projected position spaces, `T_0` is `physical_projector(H)` and the trace is
+therefore over physical states only. `normalize=true` divides by `Tr(T_0)`;
+otherwise the spectral weight corresponds to the total traced state count.
+"""
+function get_dos_trace(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
+                       normalize::Bool=false,
+                       kernel::Symbol=:jackson,
+                       lambda::Real=4.0,
+                       eta::Real=0.0,
+                       m_order::Int=4,
+                       maxdim::Int=100,
+                       cutoff::Real=1e-8,
+                       verbose::Bool=false)
+    Ncheb >= 2 || throw(ArgumentError("Ncheb must be at least 2"))
+    _ensure_scale!(H)
+    P = physical_projector(H)
+    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * P; cutoff=cutoff)
+
+    function trace_diagonal(Tn::MPO)
+        diagonal = extract_diagonal_to_mps(Tn)
+        ITensorMPS.truncate!(diagonal; cutoff=cutoff, maxdim=maxdim)
+        ones_state = MPS([ITensor(ones(Float64, dim(s)), s)
+                          for s in siteinds(diagonal)])
+        return real(inner(ones_state, diagonal))
+    end
+
+    moments = zeros(Float64, Ncheb)
+    Tkm2 = P
+    Tkm1 = Ham_n
+    moments[1] = trace_diagonal(Tkm2)
+    moments[2] = trace_diagonal(Tkm1)
+    for k in 3:Ncheb
+        Tk = +(2 * apply(Ham_n, Tkm1; cutoff=cutoff), -Tkm2;
+               cutoff=cutoff, maxdim=maxdim)
+        ITensorMPS.truncate!(Tk; cutoff=cutoff, maxdim=maxdim)
+        moments[k] = trace_diagonal(Tk)
+        Tkm2, Tkm1 = Tkm1, Tk
+        verbose && (k % 10 == 0 || k == Ncheb) &&
+            println("get_dos_trace step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
+    end
+
+    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
+                                  kernel, lambda, eta, m_order)
+    result = zeros(Float64, length(ω_vals))
+    for iω in eachindex(ω_vals)
+        abs(ω_vals[iω]) < 1 || continue
+        result[iω] = dot(moments, view(W, :, iω)) / denom[iω]
+    end
+    normalize && (result ./= moments[1])
     return result
 end
 
@@ -1371,8 +1477,11 @@ function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
                               kernel=:jackson, lambda=4.0)
     jackson_kernel = _kpm_kernel(N, kernel; lambda=lambda)
 
+    # Chebyshev coefficients of the occupied-state projector θ(fermi − x), x = rescaled energy:
+    # c₀ = 1 − acos(μ)/π and cₙ = −2 sin(n acos μ)/(nπ). (Until v0.1.1 the signs gave
+    # θ(x − fermi), the projector onto the empty states.)
     function G_n(n)
-        n == 1 ? acos(fermi) : sin((n-1) * acos(fermi)) / (n-1)
+        n == 1 ? π - acos(fermi) : -sin((n-1) * acos(fermi)) / (n-1)
     end
 
     A = Tn_list[1] * G_n(1) * jackson_kernel[1]
@@ -1518,27 +1627,6 @@ function get_ldos_diag_from_Tn(Tn_list, N::Int, ω_vals;
 end
 
 
-#for getting electron densities
-function get_density_quantics(A,L)
-    
-    xvals = range(0, (2^L - 1); length=2^L)
-    f(x) =  1 -  inner(random_mps(sites,to_binary_vector(Int(x),L))',A, random_mps(sites,to_binary_vector(Int(x),L)))
-    qtt, ranks, errors = quanticscrossinterpolate(Float64, f,  xvals ; tolerance=1e-8)
-
-    tt = TCI.tensortrain(qtt.tci)
-    density_mps = MPS(tt;sites)
-  
-    density_mpo = outer(density_mps',density_mps)
-    for i in 1:L
-        density_mpo.data[i] =  Quantics._asdiagonal(density_mps.data[i],sites[i])
-    end
-    
-    return qtt,density_mpo,density_mps
-end
-
-
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Exciton LDOS  (MPS-based only — no MPO Chebyshev for the 2L-site chain)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1633,6 +1721,11 @@ are generated over `x_start:x_end`, with `num_avg` subpositions per group.
 `kernel=:hodc` uses the HODC reconstruction (`eta`, `m_order`); otherwise the
 standard KPM kernels are available (`:jackson`, `:lorentz`, `:fejer`,
 `:dirichlet`).
+
+`return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`,
+where `linkdims::Vector{Int}` is the reached MPS bond dimension per output column
+(the χ the Chebyshev recursion hit under the given `maxdim`/`cutoff`). Mirrors the
+GPU entry point; useful for cutoff/tolerance studies where χ is the observable.
 """
 function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   X_list           = nothing,
@@ -1649,7 +1742,8 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   maxdim::Int      = 100,
                                   cutoff::Real     = 1e-8,
                                   verbose::Bool    = false,
-                                  printinfo::Bool  = false)
+                                  printinfo::Bool  = false,
+                                  return_maxlinkdim::Bool = false)
     _ensure_scale!(H)
     length(H.sites) == 2 * H.L ||
         error("get_exciton_ldos_spatial: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
@@ -1661,9 +1755,7 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
 
     group_arg = X_groups !== nothing ? X_groups : x_groups
     groups = if group_arg !== nothing
-        group_arg isa AbstractVector{<:AbstractVector} ?
-            [collect(Int, grp) for grp in group_arg] :
-            [[Int(x)] for x in group_arg]
+        spatial_sampling_plan(H.L; x_groups=group_arg).groups
     elseif X_list !== nothing
         [[Int(x)] for x in X_list]
     else
@@ -1674,12 +1766,9 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
         window = x_end - x_start + 1
         num_x <= window ||
             error("get_exciton_ldos_spatial: num_x=$num_x exceeds sampling window length $window.")
-        dx     = div(window, num_x)
-        dx_sub = max(1, div(dx, num_avg))
-        [[x_start + (i - 1) * dx + k * dx_sub
-          for k in 0:num_avg-1
-          if x_start + (i - 1) * dx + k * dx_sub <= x_end]
-         for i in 1:num_x]
+        # 1D point layout of the shared planner (core/Utils.jl): stride
+        # window ÷ num_x with num_avg sub-probes per coarse cell.
+        spatial_sampling_plan(H.L; num_x, num_avg, x_start, x_end).groups
     end
 
     isempty(groups) && error("get_exciton_ldos_spatial: no spatial groups were selected.")
@@ -1702,6 +1791,7 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
     nX     = length(groups)
     Xs     = first.(groups)
     result = zeros(Float64, Nomega, nX)
+    linkdims = zeros(Int, nX)   # reached MPS bond dim per output column (see return_maxlinkdim)
 
     for (j, group) in enumerate(groups)
         last_linkdim = 0
@@ -1718,12 +1808,13 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
             valid[iomega] || continue
             result[iomega, j] = accum_group[iomega] / denom[iomega]
         end
+        linkdims[j] = last_linkdim
 
         (verbose || printinfo) && (j % 5 == 0 || j == nX) &&
             println("  exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
-    return result
+    return return_maxlinkdim ? (result, linkdims) : result
 end
 
 function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real;

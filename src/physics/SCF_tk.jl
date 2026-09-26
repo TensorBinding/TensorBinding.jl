@@ -361,15 +361,12 @@ function _bdg_from_pairing(H0::TBHamiltonian, delta_mps::MPS;
                                     cutoff=cutoff)
     ITensorMPS.truncate!(Hbdg_mpo; maxdim=maxdim, cutoff=cutoff)
 
-    return TBHamiltonian(
-        H_up.L, H_up.N, [nambu_s; spin_s; sites], Hbdg_mpo,
-        H_up.geometry, H_up.geometry_uc,
-        Float64(something(scale, H0.scale == 0.0 ? 0.0 : H0.scale)),
-        Float64(center),
-        spin_s, nambu_s, H0_work.layer_s, H0_work.sublattice_s,
-        :pre,
-        nothing, nothing, 0, nothing
-    )
+    # Copy the spinful H0_work, not H_up: it carries spin_s, Lx and the interaction kernels.
+    return TBHamiltonian(H0_work;
+        sites=[nambu_s; spin_s; sites], mpo=Hbdg_mpo,
+        scale=Float64(something(scale, H0.scale == 0.0 ? 0.0 : H0.scale)),
+        center=Float64(center),
+        nambu_s=nambu_s, aux_side=:pre)
 end
 
 """
@@ -482,15 +479,12 @@ function _triplet_equalspin_bdg(H0::TBHamiltonian, delta_up::MPS, delta_dn::MPS;
             prepend_nambu(H_tm, nambu_s, :tm); cutoff=cutoff)
     ITensorMPS.truncate!(H; maxdim=maxdim, cutoff=cutoff)
 
-    return TBHamiltonian(
-        H_up.L, H_up.N, [nambu_s; spin_s; sites], H,
-        H_up.geometry, H_up.geometry_uc,
-        Float64(something(scale, H0.scale == 0.0 ? 0.0 : H0.scale)),
-        Float64(center),
-        spin_s, nambu_s, H0_work.layer_s, H0_work.sublattice_s,
-        :pre,
-        nothing, nothing, 0, nothing
-    )
+    # Copy the spinful H0_work, not H_up: it carries spin_s, Lx and the interaction kernels.
+    return TBHamiltonian(H0_work;
+        sites=[nambu_s; spin_s; sites], mpo=H,
+        scale=Float64(something(scale, H0.scale == 0.0 ? 0.0 : H0.scale)),
+        center=Float64(center),
+        nambu_s=nambu_s, aux_side=:pre)
 end
 
 function _pwave_bond_profile(anom_mpo::MPO, sites, distance::Integer;
@@ -1133,12 +1127,7 @@ function _set_purification_scale!(H::TBHamiltonian, method::Symbol;
 end
 
 function _copy_with_mpo(H0::TBHamiltonian, mpo::MPO; scale=0.0, center=0.0)
-    return TBHamiltonian(H0.L, H0.N, H0.sites, mpo,
-                         H0.geometry, H0.geometry_uc,
-                         Float64(scale), Float64(center),
-                         H0.spin_s, H0.nambu_s, H0.layer_s, H0.sublattice_s,
-                         H0.aux_side,
-                          nothing, nothing, 0, nothing)
+    return TBHamiltonian(H0; mpo=mpo, scale=Float64(scale), center=Float64(center))
 end
 
 function _split_spin_channels(H0::TBHamiltonian)
@@ -1205,6 +1194,7 @@ require an explicit coupling constant.
 function get_scf(H0::TBHamiltonian, channel::Symbol;
                  interaction::Symbol = :dense,
                  kwargs...)
+    _require_binary_position_space(H0, "get_scf")
     ch = _canonical_channel(channel)
     ch === :swave &&
         error("get_scf(H0, :swave) requires an explicit coupling: use get_scf(H0, g, :swave).")
@@ -1256,6 +1246,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                  stop_on_increase::Bool = false,
                  verbose::Bool = true,
                  builder_kwargs...)
+    _require_binary_position_space(H0, "get_scf")
     ch = _canonical_channel(channel)
     dmethod = _canonical_density_method(method === nothing ? density_method : method)
 

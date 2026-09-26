@@ -201,7 +201,7 @@ function mask_hamiltonian(H::TBHamiltonian, sdf;
     # Mask value for 1-indexed site i (geometry(i) splatted into sdf)
     mask_site(i) = _sig(sdf(H.geometry(i)...) / sigma)
 
-    # QTCI over the 0-indexed float domain (matches get_density_quantics convention)
+    # QTCI over the 0-indexed float domain x = 0, …, N-1 (x maps to site x + 1)
     mask_raw(x) = mask_site(round(Int, x) + 1)
     xvals       = range(0, N - 1; length=N)
     qtt, _, _   = quanticscrossinterpolate(Float64, mask_raw, xvals; tolerance=tol)

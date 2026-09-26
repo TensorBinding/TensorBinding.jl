@@ -195,34 +195,6 @@ function interleave_mpo(target_mpo, phys_sites, n)
 end
 
 # ============================================================
-# Diagonal extraction
-# ============================================================
-
-"""
-    extract_diagonal_to_mps(M) -> MPS
-
-Extract the diagonal of an MPO `M` as an MPS by projecting each site
-tensor onto the subspace where bra and ket indices are equal.
-"""
-function extract_diagonal_to_mps(M::MPO)::MPS
-    N            = length(M)
-    new_tensors  = Vector{ITensor}(undef, N)
-    for i in 1:N
-        t      = M[i]
-        s2, s1 = siteinds(M, i)   # s2 = bra, s1 = ket
-        dim_s  = dim(s1)
-        v_inds = uniqueinds(t, s1, s2)
-        res    = ITensor(v_inds..., s1)
-        for v in 1:dim_s
-            slice = t * onehot(s1 => v) * onehot(s2 => v)
-            res  += slice * onehot(s1 => v)
-        end
-        new_tensors[i] = res
-    end
-    return MPS(new_tensors)
-end
-
-# ============================================================
 # MPO/MPS merging utilities
 # ============================================================
 
@@ -439,6 +411,21 @@ function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
 end
 
+
+"""
+    _rpa_pair_sites(out_sites) -> Vector{Index}
+
+The `2L`-site `finalsites` for `rpa_from_bubble_diag` when Π₀ lives on the `L`
+indices `out_sites`: sites `2n-1` and `2n` both take `dim(out_sites[n])`, so
+`interleave_mpo` meets no dimension mismatch on a Kagome/Lieb sublattice or a
+Layer index. Dim-2 sites are the `"Qubit"` sites `siteinds("Qubit", 2L)` gives.
+"""
+function _rpa_pair_sites(out_sites)
+    return [dim(out_sites[cld(n, 2)]) == 2 ? siteind("Qubit", n) :
+                Index(dim(out_sites[cld(n, 2)]), "Site,n=$n")
+            for n in 1:2 * length(out_sites)]
+end
+
 # ============================================================
 # Internal helpers for TBHamiltonian API
 # ============================================================
@@ -538,7 +525,11 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L      = L1
     sites1 = H1.sites
-    sites2 = H2.sites
+    # H1 and H2 usually share site indices (H1 === H2 for the charge bubble, the two
+    # spin sectors of one H for the magnon bubble). Interleaved as they are, the same
+    # Index would sit on two neighbouring tensors, so H2's operators are moved onto
+    # fresh copies of its sites.
+    sites2 = sim.(H2.sites)
 
     # Interleaved combined sites: [s1[1], s2[1], s1[2], s2[2], …]
     # This ensures each (A, B) pair has matching dimensions regardless of site type
@@ -558,6 +549,7 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
                                   purify_method, purify_maxdim, purify_maxiters,
                                   purify_tol, verbose)
     end
+    P2 = replace_sites(P2, sites2)
 
     # ---- Numerator: I₁⊗P₂ − P₁⊗I₂ ----
     id1  = MPO(sites1, "Id")
@@ -572,7 +564,7 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     verbose && println("Polarization bubble: computed numerator")
 
     # ---- GF of Heff = I⊗H₂ − H₁⊗I ----
-    Heff = _build_heff(H1.mpo, H2.mpo, sites1, sites2)
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
     verbose && println("Polarization bubble: Heff maxlinkdim = ", maxlinkdim(Heff))
     if GF_method == :kpm
         # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
@@ -616,7 +608,9 @@ interaction MPO `MPOV`.  Returns a 2L-site MPS encoding the diagonal
   `get_bubble_mpo(H, H, ω)`.
 - `:magnetic` — transverse spin bubble χ^{+−}: projects H onto its
   spin-↑ and spin-↓ blocks and calls `get_magnon_bubble`.
-  Requires `H.spin_s !== nothing`.
+  Requires `H.spin_s !== nothing`. `MPOV` and the result then live on the
+  spin-projected sites (`H.sites` without the spin index), as in
+  `get_magnon_susceptibility`.
 
 Internally solves the Dyson equation (I − Π₀V) χ = Π₀.
 All `get_bubble_mpo` keyword arguments are accepted and forwarded.
@@ -665,8 +659,10 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
         error("get_rpa_susceptibility: unknown mode=$mode. Choose :charge or :magnetic")
     end
 
-    finalsites = siteinds("Qubit", 2 * length(H.sites))
-    return rpa_from_bubble_diag(Π, MPOV, finalsites, H.sites;
+    # Π lives on out_sites: for :magnetic these are the spin-projected H_up.sites,
+    # one fewer than the spinful H.sites.
+    finalsites = _rpa_pair_sites(out_sites)
+    return rpa_from_bubble_diag(Π, MPOV, finalsites, out_sites;
                                  nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
 end
 
@@ -938,7 +934,11 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L              = L1
-    sites_combined = vcat(H1.sites, H2.sites)
+    # Same 2L-site layout as get_bubble_mpo (and _build_heff): interleaved
+    # [s1[1], s2[1], …] with a fresh copy of H2's sites as the second register.
+    sites1         = H1.sites
+    sites2         = sim.(H2.sites)
+    sites_combined = reduce(vcat, [[s1, s2] for (s1, s2) in zip(sites1, sites2)])
 
     # ---- Density matrices ----
     verbose && println("Haydock bubble: computing P1 (P_method=$P_method)...")
@@ -947,20 +947,21 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     verbose && println("Haydock bubble: computing P2...")
     P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
                               purify_method, purify_maxdim, purify_maxiters, purify_tol, verbose)
+    P2 = replace_sites(P2, sites2)
 
     # ---- Seed: I⊗P₂ − P₁⊗I on 2L-site combined space ----
-    id1  = MPO(H1.sites, "Id"); id2 = MPO(H2.sites, "Id")
-    P1op = interleave_mpo(P1,  sites_combined, 0)
-    Iop2 = interleave_mpo(id2, sites_combined, 1)
-    Iop1 = interleave_mpo(id1, sites_combined, 0)
-    P2op = interleave_mpo(P2,  sites_combined, 1)
+    id1  = MPO(sites1, "Id"); id2 = MPO(sites2, "Id")
+    P1op = interleave_mpo_tb(P1,  sites1, sites2, :A)
+    Iop2 = interleave_mpo_tb(id2, sites1, sites2, :B)
+    Iop1 = interleave_mpo_tb(id1, sites1, sites2, :A)
+    P2op = interleave_mpo_tb(P2,  sites1, sites2, :B)
     seed = ITensorMPS.truncate!(
         apply(Iop1, P2op; maxdim=maxdim, cutoff=cutoff) -
         apply(P1op, Iop2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
     verbose && println("Haydock bubble: seed built, chi=$(maxlinkdim(seed))")
 
     # ---- H_eff = I⊗H₂ − H₁⊗I ----
-    Heff = _build_heff(H1.mpo, H2.mpo, sites_combined)
+    Heff = _build_heff(H1.mpo, replace_sites(H2.mpo, sites2), sites1, sites2)
     verbose && println("Haydock bubble: H_eff built, chi=$(maxlinkdim(Heff))")
 
     # ---- Haydock recursion (once, independent of ω) ----
@@ -970,7 +971,7 @@ function get_bubble_mpo_haydock(H1::TBHamiltonian, H2::TBHamiltonian,
     verbose && println("Haydock bubble: $(length(a)) steps completed, norm0=$(round(norm0;digits=4))")
 
     # ---- Assemble Π₀(ω) for each frequency ----
-    finalsites = siteinds("Qubit", 2L)
+    finalsites = [Index(dim(s), "Bubble,n=$i") for (i, s) in enumerate(sites_combined)]
     bubbles    = Vector{MPO}(undef, length(ωlist))
     for (i, ω) in enumerate(ωlist)
         verbose && println("Haydock bubble: assembling Pi0 at omega=$ω ($i/$(length(ωlist)))...")
@@ -1088,9 +1089,9 @@ function get_rpa_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
 
         term = deepcopy(Π0)
         s0   = -imag.(get_spect_k(term))
+        nq   = length(s0)
 
         if chi_partial === nothing
-            nq          = length(s0)
             chi_partial = zeros(Float64, K_max+1, nω, nq)
             chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
         end
@@ -1139,7 +1140,8 @@ absorbed into its neighbour, leaving a valid L-qubit MPO.
 
 Returns a new `TBHamiltonian` with `spin_s = nothing` and fresh (empty)
 caches; `scale` and `center` are reset to 0.0 so `_ensure_scale!` will
-re-estimate them on the first KPM call.
+re-estimate them on the first KPM call. All other fields (`Lx`,
+`interaction_mpo`, `fock_mpo`, `position_space`, …) are copied from `H`.
 """
 function _project_spin_sector(H::TBHamiltonian, sector::Int)
     H.spin_s === nothing &&
@@ -1166,14 +1168,10 @@ function _project_spin_sector(H::TBHamiltonian, sector::Int)
 
     new_sites = filter(i -> !hastags(i, "Spin"), H.sites)
 
-    return TBHamiltonian(
-        H.L, H.N, new_sites, MPO(new_tensors),
-        H.geometry, H.geometry_uc,
-        0.0, 0.0,
-        nothing, H.nambu_s, H.layer_s, H.sublattice_s,
-        H.aux_side,
-        nothing, nothing, 0, nothing
-    )
+    # interaction_mpo / fock_mpo live on the position sites (add_interaction!), which
+    # the projection leaves untouched, so they are kept along with Lx and position_space.
+    return TBHamiltonian(H; sites=new_sites, mpo=MPO(new_tensors),
+                         scale=0.0, center=0.0, spin_s=nothing)
 end
 
 
@@ -1226,7 +1224,8 @@ function get_magnon_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
     H_up = _project_spin_sector(H, 1)
     H_dn = _project_spin_sector(H, 2)
     Π = get_bubble_mpo(H_up, H_dn, ω; kwargs...)
-    finalsites = siteinds("Qubit", 2 * H.L)
+    # H.L counts position qubits only; H_up.sites also keeps any sublattice/layer index.
+    finalsites = _rpa_pair_sites(H_up.sites)
     return rpa_from_bubble_diag(Π, MPOV, finalsites, H_up.sites;
                                 nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
 end
@@ -1272,9 +1271,9 @@ function get_magnon_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
         Π0   = get_bubble_mpo(H_up, H_dn, ω; verbose, kwargs...)
         term = deepcopy(Π0)
         s0   = -imag.(get_spect_k(term))
+        nq   = length(s0)
 
         if chi_partial === nothing
-            nq          = length(s0)
             chi_partial = zeros(Float64, K_max + 1, nω, nq)
             chi_wynn    = zeros(Float64, n_wynn,    nω, nq)
         end
@@ -1338,6 +1337,36 @@ function chebyshev2d_gf_coeffs(ω::Real, scale1::Real, center1::Real,
 end
 
 
+# Output indices for the Hadamard products of the cheb2d MPO bubbles: one fresh index per
+# site of H1.sites, of the same dimension, so Π₀ lives on all of H1.sites (spin, Nambu,
+# layer and sublattice indices included), like the result of get_bubble_mpo.
+function _cheb2d_out_sites(H1::TBHamiltonian, H2::TBHamiltonian, fname::AbstractString)
+    dim.(H1.sites) == dim.(H2.sites) ||
+        throw(ArgumentError("$fname: H1 and H2 must have the same site structure " *
+                            "(site dimensions $(dim.(H1.sites)) vs $(dim.(H2.sites)))"))
+    return [sim(s) for s in H1.sites]
+end
+
+
+# The cheb2d diagonal bubbles Fourier-transform every site of D_mn as a position qubit
+# (conjugate_by_qft(W)), so H.sites must be exactly the H.L position qubits.
+function _cheb2d_require_position_sites(H1::TBHamiltonian, H2::TBHamiltonian,
+                                        fname::AbstractString)
+    for (name, H) in (("H1", H1), ("H2", H2))
+        length(H.sites) == H.L && continue
+        throw(ArgumentError(
+            "$fname: $name has $(length(H.sites)) site indices for $name.L = $(H.L) " *
+            "position qubits. This k-space diagonal Fourier-transforms every site, so " *
+            "spin, Nambu, layer and sublattice indices are not supported. For a " *
+            "spin-conserving spinful H, pass each spin sector " *
+            "TensorBinding._project_spin_sector(H, σ), σ = 1, 2, and add the two " *
+            "results to get the charge bubble. Otherwise use get_bubble_mpo_cheb2d, " *
+            "which keeps all of H.sites, with conjugate_by_qft(H, Π)."))
+    end
+    return nothing
+end
+
+
 
 
 """
@@ -1346,6 +1375,10 @@ end
 
 Compute the non-interacting polarization bubble Π₀(ω) for each ω in `ωlist`
 using the **double Chebyshev decomposition**.
+
+Π₀ lives on `H1.sites`, including any spin, Nambu, layer or sublattice index, and
+is resolved in those indices, as the result of `get_bubble_mpo` is. `H1` and `H2`
+must have the same site structure.
 
 Instead of building the 2L-site effective Hamiltonian Heff = I⊗H₂ − H₁⊗I and
 running KPM on it (where bond dimension grows at each Chebyshev step due to
@@ -1401,6 +1434,8 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_mpo_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L = L1
+    # Fresh physical indices shared by all Hadamard product calls
+    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d")
 
     _ensure_scale!(H1)
     _ensure_scale!(H2)
@@ -1442,8 +1477,6 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                apply(Tn2[n], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
            for n in 1:N]
 
-    # Fresh physical indices shared by all Hadamard product calls
-    out_sites = siteinds("Qubit", L)
     nω        = length(ωlist)
 
     # --- Online multi-ω: precompute all coefficient matrices at once, ---
@@ -1524,6 +1557,9 @@ r_m × r_n cheap scalar-weighted MPO additions.
 
 Speedup over `get_bubble_mpo_cheb2d`: N²→r_m·r_n Hadamard products.
 
+As in `get_bubble_mpo_cheb2d`, Π₀ lives on `H1.sites`, including any spin, Nambu,
+layer or sublattice index.
+
 **Additional keyword arguments** (beyond `get_bubble_mpo_cheb2d`):
 - `tucker_tol`    : relative singular-value cutoff for both mode SVDs. Default `1e-3`.
 - `tucker_maxrank`: hard cap on r_m and r_n. Default `20`.
@@ -1552,6 +1588,7 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     @assert L1 == L2 "get_bubble_mpo_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
     L  = L1
     nω = length(ωlist)
+    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d_tucker")
 
     _ensure_scale!(H1); _ensure_scale!(H2)
     scale1 = H1.scale; center1 = H1.center
@@ -1577,8 +1614,6 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     P2 = H1 === H2 ? P1 : _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
                                                purify_method, purify_maxdim, purify_maxiters,
                                                purify_tol, verbose)
-
-    out_sites = siteinds("Qubit", L)
 
     verbose && println("cheb2d_mpo_tucker: computing coefficient matrices for $nω frequencies...")
     C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
@@ -1695,6 +1730,12 @@ across all frequencies; per-ω cost is a cheap scalar-weighted MPS addition.
 Use `get_bubble_mpo_cheb2d` when you need the full off-diagonal MPO (e.g. for
 RPA resummation).  Use this function when only χ₀(k,ω) is needed.
 
+`H1.sites` and `H2.sites` must be exactly the `H.L` position qubits: the QFT
+here treats every site as one, so a spin, Nambu, layer or sublattice index
+raises an `ArgumentError`. For a spin-conserving spinful `H`, the charge bubble
+is the sum of the results for the two spin sectors
+`TensorBinding._project_spin_sector(H, σ)`, `σ = 1, 2`.
+
 **Keyword arguments** — identical to `get_bubble_mpo_cheb2d`, plus:
 - `qft_tol`     : truncation tolerance inside `conjugate_by_qft`. Default `1e-9`.
 - `qft_maxdim`  : max bond dimension inside `conjugate_by_qft`. Default `100`.
@@ -1717,6 +1758,7 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                                  verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d")
     L = L1
     nω = length(ωlist)
 
@@ -1851,7 +1893,8 @@ end
 """
     get_bubble_diag_cheb2d_svd(H1, H2, ωlist; ..., svd_tol, svd_maxrank) -> Vector{MPS}
 
-Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`.
+Per-ω SVD-accelerated variant of `get_bubble_diag_cheb2d`, with the same
+requirement that `H.sites` be the `H.L` position qubits.
 
 For each frequency ω the coefficient matrix `C[m,n](ω)` is rank-truncated via its own SVD:
 
@@ -1896,6 +1939,7 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
                                      verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d_svd: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_svd")
     L  = L1
     nω = length(ωlist)
 
@@ -1998,7 +2042,8 @@ end
 """
     get_bubble_diag_cheb2d_tucker(H1, H2, ωlist; ..., tucker_tol, tucker_maxrank, kernel) -> Vector{MPS}
 
-Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`.
+Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`, with the same requirement
+that `H.sites` be the `H.L` position qubits.
 
 Finds a global low-rank basis in the (m, n) indices shared across all frequencies by
 stacking the coefficient matrices and performing two mode-SVDs:
@@ -2051,6 +2096,7 @@ function get_bubble_diag_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
                                         verbose::Bool         = false)
     L1 = H1.L; L2 = H2.L
     @assert L1 == L2 "get_bubble_diag_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_tucker")
     L  = L1
     nω = length(ωlist)
 

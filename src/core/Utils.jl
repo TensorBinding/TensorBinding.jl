@@ -521,8 +521,35 @@ function spatial_sampling_plan(L::Int;
         ycenters = ny <= 1 ? [iy0] : round.(Int, range(iy0, iy1; length=ny))
         centers = Int[ix + iy * Nx + 1 for iy in ycenters for ix in xcenters]
         groups  = [[c] for c in centers]
+        if num_avg > 1
+            # Spread `num_avg × num_avg` sub-samples ACROSS each coarse block
+            # (spacing stride÷num_avg), then average. On a coarse grid this is the
+            # correct block-average: it washes out fast on-site modulation (period ≪
+            # stride) while preserving the slow structure. Contrast `box_half`, a
+            # *contiguous* neighbourhood that spans only ±box_half cells — far less
+            # than one coarse stride — so it cannot average out sub-stride modulation
+            # and leaves per-pixel aliasing/speckle on a coarse grid.
+            sx = max(1, stride_x ÷ num_avg)
+            sy = max(1, stride_y ÷ num_avg)
+            groups = [
+                let uc0 = c - 1, ix_c = uc0 % Nx, iy_c = uc0 ÷ Nx
+                    unique([mod(ix_c + a * sx, Nx) + mod(iy_c + b * sy, Ny) * Nx + 1
+                            for b in 0:num_avg-1 for a in 0:num_avg-1])
+                end
+                for c in centers
+            ]
+        end
     else
         window = x_end - x_start + 1
+        # Reject requests the 1D layout cannot fill: they used to return empty
+        # groups (NaN or crashing LDOS columns) or divide by zero.
+        window >= 1 ||
+            error("spatial_sampling_plan: empty sampling window (x_start=$x_start > x_end=$x_end).")
+        num_x <= window ||
+            error("spatial_sampling_plan: num_x=$num_x exceeds the sampling window length $window " *
+                  "(x_start=$x_start, x_end=$x_end); pass num_x=0 to sample every site in the window.")
+        num_avg >= 1 ||
+            error("spatial_sampling_plan: num_avg must be at least 1 (got $num_avg).")
         nx     = num_x <= 0 ? window : num_x
         dx     = max(window ÷ nx, 1)
         stride_x = dx
@@ -535,7 +562,9 @@ function spatial_sampling_plan(L::Int;
     end
 
     # ── 2D box averaging (periodic wrap) ───────────────────────────────────────
-    if box_half > 0 && Lx !== nothing
+    # Skipped when num_avg>1 on a grid already spread each pixel into a sub-grid
+    # (the two averaging modes are mutually exclusive; num_avg takes precedence).
+    if box_half > 0 && num_avg <= 1 && Lx !== nothing
         Nx = 2^Lx
         Ny = 2^(L - Lx)
         groups = [
@@ -626,6 +655,308 @@ function eval_mps_spatial(A::MPS;
 end
 
 """
+    fibonacci_ldos_sampling_plan(L; depth=0, num_x=100, num_avg=1,
+                                 orientation=:standard, alignment=:atomic,
+                                 centered=true, origin=0)
+    fibonacci_ldos_sampling_plan(H::TBHamiltonian; kwargs...)
+
+Build a deterministic, bounded-size LDOS sampling plan for an `L`-qubit
+Fibonacci approximant, the projected-space counterpart of
+[`spatial_sampling_plan`](@ref). At `depth == 0` the plan covers the complete
+`F_(L+2)` conumber interval. Each additional depth selects the nested atomic
+renormalization window from [`fibonacci_rg_partition`](@ref), with
+`effective_L == L - 3depth`.
+
+The selected inherited interval is split into `min(num_x, window_count)`
+contiguous integer intervals whose widths differ by at most one. Up to
+`num_avg` equidistant conumbers (including both interval endpoints when there
+is more than one sample) are chosen in each interval and mapped directly to
+physical sites with [`fibonacci_site_from_conumber`](@ref). No full conumber
+permutation or other `F_(L+2)`-element array is constructed; storage is
+proportional to the requested output and sample counts.
+
+Returned fields useful to an LDOS/Slurm/HDF5 workflow include:
+
+- `groups`: physical-site vectors to pass as `x_groups` with
+  `ordering=:physical`;
+- `centers`: physical sites at the representative interval conumbers;
+- `conumber_axis`: those representative conumbers in the original `L`
+  coordinate system;
+- `intervals`, `interval_first`, and `interval_last`: represented inherited
+  conumber intervals;
+- `sample_conumbers`: the inherited conumbers corresponding to `groups`;
+- `sample_sites_flat`, `sample_conumbers_flat`, one-based `group_offsets`, and
+  zero-based `group_offsets_zero`: flat representations convenient for Julia
+  and Python/HDF5 consumers respectively (`flat[group_offsets[i]:
+  group_offsets[i+1]-1]` reconstructs group `i` in Julia);
+- `column_indices`: stable one-based output-column identifiers;
+- `depth`, `effective_L`, the original `L` and `N`, requested/actual sampling
+  counts, and all conumber conventions.
+
+`intervals` and every field containing `conumber` use the requested `centered`
+label convention. The corresponding `*_rank*` fields are always uncentered
+ranks in `0:N-1`. Thus a zoom always retains its original-`L` coordinates;
+the selected sites are never re-conumbered as an independent shorter chain.
+
+When `num_avg` is larger than an interval, that interval is sampled at every
+integer conumber and its `group_sizes` entry is smaller than `num_avg`.
+`num_x` in the result is the actual number of output columns, while
+`num_x_requested` records the input value.
+
+Nested (`depth > 0`) windows are defined only for the canonical atomic phase,
+so they require `alignment=:atomic` and `origin=0`. Reversing the orientation
+is supported because it maps the canonical atomic interval onto itself.
+
+The `TBHamiltonian` convenience method is defined in `position_spaces/Fibonacci.jl`.
+"""
+function fibonacci_ldos_sampling_plan(
+    L::Integer;
+    depth::Integer=0,
+    num_x::Integer=100,
+    num_avg::Integer=1,
+    orientation::Symbol=:standard,
+    alignment::Symbol=:atomic,
+    centered::Bool=true,
+    origin::Integer=0,
+)
+    num_x > 0 || throw(ArgumentError("num_x must be positive"))
+    num_avg > 0 || throw(ArgumentError("num_avg must be positive"))
+    orientation in (:standard, :reversed) ||
+        throw(ArgumentError("orientation must be :standard or :reversed"))
+    alignment in (:atomic, :raw) ||
+        throw(ArgumentError("alignment must be :atomic or :raw"))
+    if depth > 0 && (alignment !== :atomic || !iszero(origin))
+        throw(ArgumentError(
+            "depth > 0 requires alignment=:atomic and origin=0 so the selected " *
+            "window remains the canonical nested atomic renormalization window",
+        ))
+    end
+
+    # Work in uncentered ranks while partitioning. This keeps the RG embedding
+    # independent of how callers choose to label the inherited conumber axis.
+    partition = fibonacci_rg_partition(L; depth, centered=false)
+    N = fibonacci_site_count(L)
+    window_rank_first = first(partition.window_ranks)
+    window_rank_last = last(partition.window_ranks)
+    window_count = partition.window_count
+    ncolumns = min(Int(num_x), window_count)
+
+    # Tile the window exactly. Putting the remainder in the first intervals is
+    # deterministic and makes every width either floor(W/n) or ceil(W/n).
+    base_width, remainder = divrem(window_count, ncolumns)
+    rank_intervals = Vector{UnitRange{Int}}(undef, ncolumns)
+    cursor = window_rank_first
+    for column in 1:ncolumns
+        width = base_width + Int(column <= remainder)
+        rank_intervals[column] = cursor:(cursor + width - 1)
+        cursor += width
+    end
+    @assert cursor == window_rank_last + 1
+
+    shift = centered ? fld(N, 2) : 0
+    rank_to_conumber(rank::Int) = rank - shift
+    to_axis_interval(interval::UnitRange{Int}) =
+        rank_to_conumber(first(interval)):rank_to_conumber(last(interval))
+
+    intervals = [to_axis_interval(interval) for interval in rank_intervals]
+    interval_first = first.(intervals)
+    interval_last = last.(intervals)
+    interval_rank_first = first.(rank_intervals)
+    interval_rank_last = last.(rank_intervals)
+
+    # Integer samples are as uniformly spaced as possible. With one requested
+    # sample use the lower integer midpoint; with two or more include endpoints.
+    function equidistant_ranks(interval::UnitRange{Int})
+        width = length(interval)
+        count = min(Int(num_avg), width)
+        lo = first(interval)
+        count == 1 && return Int[lo + fld(width - 1, 2)]
+        return Int[lo + fld(k * (width - 1), count - 1)
+                   for k in 0:(count - 1)]
+    end
+
+    sample_ranks = [equidistant_ranks(interval) for interval in rank_intervals]
+    sample_conumbers = [[rank_to_conumber(rank) for rank in ranks]
+                         for ranks in sample_ranks]
+    center_ranks = Int[first(interval) + fld(length(interval) - 1, 2)
+                       for interval in rank_intervals]
+    conumber_axis = rank_to_conumber.(center_ranks)
+
+    site_from_rank(rank::Int) = fibonacci_site_from_conumber(
+        L, rank_to_conumber(rank);
+        orientation, alignment, centered, origin,
+    )
+    groups = [[site_from_rank(rank) for rank in ranks] for ranks in sample_ranks]
+    centers = site_from_rank.(center_ranks)
+
+    group_sizes = length.(groups)
+    group_offsets = Vector{Int}(undef, ncolumns + 1)
+    group_offsets[1] = 1
+    for column in 1:ncolumns
+        group_offsets[column + 1] = group_offsets[column] + group_sizes[column]
+    end
+    group_offsets_zero = group_offsets .- 1
+    group_offsets_base = 1
+    total_samples = group_offsets[end] - 1
+    sample_sites_flat = Vector{Int}(undef, total_samples)
+    sample_conumbers_flat = Vector{Int}(undef, total_samples)
+    sample_ranks_flat = Vector{Int}(undef, total_samples)
+    for column in 1:ncolumns
+        destination = group_offsets[column]:(group_offsets[column + 1] - 1)
+        sample_sites_flat[destination] = groups[column]
+        sample_conumbers_flat[destination] = sample_conumbers[column]
+        sample_ranks_flat[destination] = sample_ranks[column]
+    end
+
+    window_first = rank_to_conumber(window_rank_first)
+    window_last = rank_to_conumber(window_rank_last)
+    metadata = (;
+        format="TensorBinding.fibonacci_ldos_sampling_plan",
+        format_version=1,
+        L=Int(L),
+        N,
+        depth=Int(depth),
+        effective_L=partition.effective_L,
+        window_count,
+        window_first,
+        window_last,
+        window_rank_first,
+        window_rank_last,
+        num_x=ncolumns,
+        num_x_requested=Int(num_x),
+        num_avg=Int(num_avg),
+        total_samples,
+        group_offsets_base,
+        orientation=String(orientation),
+        alignment=String(alignment),
+        centered,
+        origin=Int(origin),
+    )
+
+    return (;
+        groups,
+        centers,
+        conumber_axis,
+        intervals,
+        interval_first,
+        interval_last,
+        interval_rank_first,
+        interval_rank_last,
+        sample_conumbers,
+        sample_ranks,
+        sample_sites_flat,
+        sample_conumbers_flat,
+        sample_ranks_flat,
+        group_offsets,
+        group_offsets_zero,
+        group_offsets_base,
+        group_sizes,
+        column_indices=collect(1:ncolumns),
+        L=Int(L),
+        N,
+        depth=Int(depth),
+        effective_L=partition.effective_L,
+        window_count,
+        window_first,
+        window_last,
+        window_rank_first,
+        window_rank_last,
+        num_x=ncolumns,
+        num_x_requested=Int(num_x),
+        num_avg=Int(num_avg),
+        total_samples,
+        orientation,
+        alignment,
+        centered,
+        origin=Int(origin),
+        metadata,
+    )
+end
+
+"""
+    ilinspace(xmin, xmax, num_x) -> Vector{Int}
+
+Return `num_x` as almost evenly spaced integers in `[xmin, xmax]`, inclusive,
+with a preference for the endpoints.  Used to build the k-point center
+grid for band-structure sampling.
+"""
+function ilinspace(xmin, xmax, num_x::Int)
+    xvals = xmin:xmax
+    _N = length(xvals)
+    @assert 1 ≤ num_x ≤ _N
+    num_x == 1 && return [0]
+    step = (_N - 1) ÷ (num_x - 1)
+    return collect(xmin:step:(xmin+step*(num_x-1)))
+end
+
+"""
+    kspace_sampling_plan(L_pos, D; num_x, num_y=10, num_avg=1,
+                         xmin=0, xmax=nothing, ymin=0, ymax=nothing,
+                         k_groups_override=nothing) -> (; k_groups, num_x)
+
+Momentum-space sampling plan shared by `get_bands` and `get_bands_gpu`, the
+k-space counterpart of [`spatial_sampling_plan`](@ref). Momenta are 0-indexed
+QFT register labels `k in 0:2^L_pos-1`.
+
+- `k_groups_override` (for example from `kpath_2d`) is passed through untouched
+  and sets `num_x = length(k_groups)`.
+- `D == 1`: `num_x` centres from [`ilinspace`](@ref) over `[xmin, xmax]`
+  (`xmax` defaults to `2^L_pos - 1`); with `num_avg > 1` each centre is widened
+  to `num_avg` equidistant offsets within half a step on either side, clamped
+  to the register.
+- `D == 2`: `Lx = L_pos ÷ 2`; the first `min(num_x, 2^Lx)` points of the
+  `ilinspace` grids in `x` and `y` are zipped diagonally into row-major labels
+  `(y << Lx) | x`, again with optional `num_avg` widening. This is the legacy
+  diagonal cut through the 2D zone; for high-symmetry paths use `kpath_2d`.
+"""
+function kspace_sampling_plan(L_pos::Int, D::Int;
+                              num_x::Int,
+                              num_y::Int = 10,
+                              num_avg::Int = 1,
+                              xmin::Int = 0,
+                              xmax = nothing,
+                              ymin::Int = 0,
+                              ymax = nothing,
+                              k_groups_override = nothing)
+    if !isnothing(k_groups_override)
+        return (; k_groups = k_groups_override, num_x = length(k_groups_override))
+    end
+    N = 2^L_pos
+    if D == 1
+        _xmax     = xmax === nothing ? N - 1 : Int(xmax)
+        xcenters  = ilinspace(xmin, _xmax, num_x)
+        half_step = num_x > 1 ? (_xmax - xmin) / (2 * num_x) : 0
+        offsets   = num_avg > 1 ? round.(Int, range(-half_step, half_step; length=num_avg)) : Int[0]
+        k_groups  = [clamp.(xcenters[i] .+ offsets, 0, N - 1) for i in 1:num_x]
+        return (; k_groups, num_x)
+    elseif D == 2
+        Lx     = div(L_pos, 2)
+        Nx_loc = 2^Lx
+        Ny_loc = 2^(L_pos - Lx)
+        nx     = min(num_x, Nx_loc)   # can't have more output pts than grid positions
+        _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
+        _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
+        xcenters    = ilinspace(xmin, _xmax, Nx_loc)
+        ycenters    = ilinspace(ymin, _ymax, Ny_loc)
+        half_step_x = nx > 1 ? (_xmax - xmin) / (2 * nx) : 0
+        half_step_y = num_y > 1 ? (_ymax - ymin) / (2 * num_y) : 0
+        x_offs = num_avg > 1 ? round.(Int, range(-half_step_x, half_step_x; length=num_avg)) : Int[0]
+        y_offs = num_avg > 1 ? round.(Int, range(-half_step_y, half_step_y; length=num_avg)) : Int[0]
+        k_groups = [
+            begin
+                xs = clamp.(xcenters[i] .+ x_offs, 0, Nx_loc - 1)
+                ys = clamp.(ycenters[i] .+ y_offs, 0, Ny_loc - 1)
+                [(y << Lx) | x for (x, y) in zip(xs, ys)]  # diagonal zip in 2D k-space
+            end
+            for i in 1:nx
+        ]
+        return (; k_groups, num_x = nx)
+    else
+        error("kspace_sampling_plan: D must be 1 or 2")
+    end
+end
+
+"""
     rms_error(a, b) -> Float64
 
 RMS distance between two MPS objects over all computational-basis states.
@@ -702,6 +1033,31 @@ pot = get_diagonal_mpo(L, sites, x -> 0.01 * x)
 """
 function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
     return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol)
+end
+
+
+"""
+    extract_diagonal_to_mps(M) -> MPS
+
+Extract the diagonal of an MPO `M` as an MPS by projecting each local bra/ket
+pair onto equal physical values. This is shared by KPM trace/LDOS, SCF, RPA,
+QFT, and purification routines.
+"""
+function extract_diagonal_to_mps(M::MPO)::MPS
+    N = length(M)
+    new_tensors = Vector{ITensor}(undef, N)
+    for i in 1:N
+        tensor = M[i]
+        bra, ket = siteinds(M, i)
+        diagonal_inds = uniqueinds(tensor, ket, bra)
+        result = ITensor(diagonal_inds..., ket)
+        for value in 1:dim(ket)
+            slice = tensor * onehot(ket => value) * onehot(bra => value)
+            result += slice * onehot(ket => value)
+        end
+        new_tensors[i] = result
+    end
+    return MPS(new_tensors)
 end
 
 

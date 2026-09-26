@@ -6,6 +6,24 @@
 # get_Chern, get_bands …) dispatch on this struct.
 
 # ============================================================
+# Position-space policy types
+# ============================================================
+
+"""
+    AbstractPositionSpace
+
+Policy object describing how physical positions are embedded in the tensor-product
+register. `BinaryPositionSpace` is the ordinary `N = 2^L` quantics basis. Other
+position spaces (see `position_spaces/`) specialize `physical_projector`,
+`physical_site_state`, `site_axis`, and `site_permutation` after `TBHamiltonian`
+is defined below.
+"""
+abstract type AbstractPositionSpace end
+
+"""Ordinary binary position register containing all `2^L` basis states."""
+struct BinaryPositionSpace <: AbstractPositionSpace end
+
+# ============================================================
 # TBHamiltonian struct
 # ============================================================
 
@@ -18,10 +36,11 @@ Fields
 ------
 **Core**
 - `L`        : number of position qubit sites (log₂ of the physical system size)
-- `N`        : number of physical sites / unit cells (2^L)
+- `N`        : number of physical sites / unit cells (`2^L` for the binary basis)
 - `sites`    : ITensor site indices (position qubits + any auxiliary DOF indices)
 - `mpo`      : accumulated Hamiltonian as an ITensor MPO
 - `geometry` : function `i -> position_vector` (1-indexed); `nothing` for implicit 1D
+- `position_space`: policy describing the physical basis inside the tensor register
 
 **KPM spectral bounds**
 - `scale`    : energy half-bandwidth; `H/scale` has spectrum in `[-1, 1]`.
@@ -73,7 +92,18 @@ mutable struct TBHamiltonian
     interaction_mpo :: Union{Nothing, MPO}
     fock_mpo        :: Union{Nothing, MPO}
     Lx             :: Union{Nothing, Int}           # x-qubit count for 2D (Ly = L - Lx); nothing for 1D
+    position_space :: AbstractPositionSpace
 end
+
+# Backward-compatible full constructor (pre-position_space callers).
+TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+              spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+              _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+              interaction_mpo, fock_mpo, Lx) =
+    TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
+                  spin_s, nambu_s, layer_s, sublattice_s, aux_side,
+                  _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
+                  interaction_mpo, fock_mpo, Lx, BinaryPositionSpace())
 
 # Backward-compatible 17-arg constructor (pre-interaction_mpo/pre-fock_mpo/pre-Lx callers);
 # appends nothing, nothing, nothing.
@@ -84,6 +114,106 @@ TBHamiltonian(L, N, sites, mpo, geometry, geometry_uc, scale, center,
                   spin_s, nambu_s, layer_s, sublattice_s, aux_side,
                   _tn_cache, _tn_mps_cache, _tn_Ncheb, _density_cache,
                   nothing, nothing, nothing)
+
+"""
+    TBHamiltonian(H::TBHamiltonian; field=value, ...) -> TBHamiltonian
+
+Copy `H` field by field, replacing the fields named as keywords. Every other field,
+including `Lx`, `interaction_mpo`, `fock_mpo` and `position_space`, keeps the value
+from `H`; MPOs and index vectors are shared, not deep-copied. The lazy caches
+(`_tn_cache`, `_tn_mps_cache`, `_tn_Ncheb`, `_density_cache`) start empty unless
+passed explicitly, since a copy usually carries a different operator.
+
+```julia
+Hbdg = TBHamiltonian(H; sites=[nambu_s; spin_s; H.sites], mpo=bdg_mpo,
+                     spin_s=spin_s, nambu_s=nambu_s, aux_side=:pre)
+```
+"""
+function TBHamiltonian(H::TBHamiltonian; kwargs...)
+    names = fieldnames(TBHamiltonian)
+    for k in keys(kwargs)
+        k in names || throw(ArgumentError("TBHamiltonian has no field `$k`"))
+    end
+    empty_caches = (_tn_cache=nothing, _tn_mps_cache=nothing, _tn_Ncheb=0,
+                    _density_cache=nothing)
+    vals = map(names) do f
+        haskey(kwargs, f)       ? kwargs[f] :
+        haskey(empty_caches, f) ? empty_caches[f] : getfield(H, f)
+    end
+    return TBHamiltonian(vals...)
+end
+
+# ============================================================
+# Position-space interface
+# ============================================================
+
+"""
+    ambient_dimension(H) -> Integer
+
+Dimension of the position tensor register before any physical-subspace projection.
+This is `2^H.L` for the quantics encodings supported by TensorBinding. Projected
+position spaces may return a `BigInt` when the ambient register exceeds `Int`.
+"""
+ambient_dimension(H::TBHamiltonian) = ambient_dimension(H.position_space, H)
+ambient_dimension(::BinaryPositionSpace, H::TBHamiltonian) = 2^H.L
+
+"""
+    physical_projector(H) -> MPO
+
+Identity operator on the physical position space. For ordinary binary systems this
+is the full identity; projected encodings specialize this method and return their
+valid-state projector.
+"""
+physical_projector(H::TBHamiltonian) = physical_projector(H.position_space, H)
+physical_projector(::BinaryPositionSpace, H::TBHamiltonian) = MPO(H.sites, "Id")
+
+"""
+    physical_site_state(H, x) -> MPS
+
+Product-state probe for 1-indexed physical position `x`. Auxiliary and two-particle
+spaces use their dedicated probe constructors.
+"""
+physical_site_state(H::TBHamiltonian, x::Integer) =
+    physical_site_state(H.position_space, H, x)
+
+function physical_site_state(::BinaryPositionSpace, H::TBHamiltonian, x::Integer)
+    1 <= x <= H.N || throw(BoundsError(1:H.N, x))
+    length(H.sites) == H.L ||
+        error("physical_site_state currently requires a position-only TBHamiltonian.")
+    return binary_to_MPS(x - 1, H.L, H.sites)
+end
+
+"""Return the plotting axis for physical positions or an encoding-defined ordering."""
+function site_axis(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
+    return site_axis(H.position_space, H; ordering, kwargs...)
+end
+
+function site_axis(::BinaryPositionSpace, H::TBHamiltonian;
+                   ordering::Symbol=:physical, kwargs...)
+    ordering === :physical ||
+        throw(ArgumentError("ordering=:$ordering is not available for BinaryPositionSpace"))
+    return collect(0:(H.N - 1))
+end
+
+"""Return the 1-based physical-site permutation associated with a plotting ordering."""
+function site_permutation(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
+    return site_permutation(H.position_space, H; ordering, kwargs...)
+end
+
+function site_permutation(::BinaryPositionSpace, H::TBHamiltonian;
+                          ordering::Symbol=:physical, kwargs...)
+    ordering === :physical ||
+        throw(ArgumentError("ordering=:$ordering is not available for BinaryPositionSpace"))
+    return collect(1:H.N)
+end
+
+_is_binary_position_space(H::TBHamiltonian) = H.position_space isa BinaryPositionSpace
+
+function _require_binary_position_space(H::TBHamiltonian, api::AbstractString)
+    _is_binary_position_space(H) && return nothing
+    throw(ArgumentError("$api is not yet supported for $(typeof(H.position_space)); " *
+                        "the first projected-space release supports CPU KPM DOS/LDOS only."))
+end
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -146,9 +276,13 @@ Useful after a series of `add_hopping!` / `add_onsite!` calls that may
 have inflated the bond dimension.
 """
 function truncate!(H::TBHamiltonian; cutoff::Real = 1e-10, maxdim = nothing)
+    old_scale, old_center = H.scale, H.center
     kwargs = maxdim === nothing ? (cutoff=cutoff,) : (cutoff=cutoff, maxdim=maxdim)
     ITensorMPS.truncate!(H.mpo; kwargs...)
     _invalidate_cache!(H)
+    if !_is_binary_position_space(H)
+        H.scale, H.center = old_scale, old_center
+    end
     return H
 end
 
@@ -168,10 +302,17 @@ Supported geometry strings
 |---------------|--------------------------------|-------------------------------|
 | `"chain_1d"`  | hopping amplitude `t::Number`  | direct MPO, no QTCI; use `add_onsite!` for potentials |
 | `"square_2d"` | hopping amplitude `t::Number`  | `Lx`, `Ly` (default `L÷2` each) |
-| `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 Float64 position matrix, required) |
+| `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 positions from `honeycomb_positions`, required) |
 | `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
+| `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
+| `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple | `m` (required; `m=2` silver mean), `model`, `boundary` |
+| `"kbonacci"` | `(A, B, C, ...[, t, onsite])` or `(values=(a_1, ..., a_k)[, t, onsite])` NamedTuple | `k` (required; `k=3` Tribonacci), `model`, `boundary` |
 | `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
 | `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
+
+`"haldane"` is the textbook, C3-symmetric Haldane model `⟨i|H|j⟩ = t2 exp(i phi ν_ij)`
+(Dirac masses `-M ± 3√3 t2 sin(phi)`, see [`haldane_hoppingf`](@ref)); it refuses an `rs`
+whose sites are not on the `honeycomb_positions` lattice.
 
 For `"kagome"` and `"lieb"`, `L = Lx + Ly` counts only the position qubits;
 the total atom count is `3 × 2^L`.  The sublattice index is stored in
@@ -195,6 +336,9 @@ rs = honeycomb_positions(10)
 H  = get_Hamiltonian("haldane", (t2=0.2, phi=π/2, M=0.0); L=10, rs=rs)
 
 H  = get_Hamiltonian("custom", (i,j) -> ...; L=10, scale=5.0, geometry=rs)
+Hf = get_Hamiltonian("fibonacci", (A=1.0, B=2.0); L=8, model=:hopping)
+Hs = get_Hamiltonian("metallic_mean", (A=1.0, B=2.0); L=8, m=2)   # silver mean
+Ht = get_Hamiltonian("kbonacci", (A=0.64, B=0.8, C=1.0); L=8, k=3)   # Tribonacci
 ```
 
 After construction, add further interaction terms with
@@ -207,6 +351,22 @@ function get_Hamiltonian(geometry::String, params;
                          maxdim=15,
                          ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                          kwargs...)
+    if geometry == "fibonacci"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for FibonacciPositionSpace"))
+        return _build_fibonacci(params, L; scale, tol, maxdim, kwargs...)
+    end
+    if geometry == "metallic_mean"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for MetallicMeanPositionSpace"))
+        return _build_metallic_mean(params, L; scale, tol, maxdim, kwargs...)
+    end
+    if geometry == "kbonacci"
+        ref_sites === nothing ||
+            throw(ArgumentError("ref_sites is not supported for KBonacciPositionSpace"))
+        return _build_kbonacci(params, L; scale, tol, maxdim, kwargs...)
+    end
+
     sites = siteinds("Qubit", L)
     N     = 2^L
 
@@ -241,7 +401,7 @@ function get_Hamiltonian(geometry::String, params;
         return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
 
     else
-        known = ("chain_1d", "haldane", "custom",
+        known = ("chain_1d", "haldane", "custom", "fibonacci", "metallic_mean", "kbonacci",
                  "uniform", "ssh", "ssh_sublattice", "aah",
                  "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
                  "chern8", "chernhex", "qc2dsquare",
@@ -309,19 +469,164 @@ function _build_chain_1d(t, L, N, sites;
 end
 
 
+# Sublattice sign of a honeycomb_positions site, read from the position: -1 on sublattice A
+# (the one of site 1, at x ∈ 1.5ℤ), +1 on B (x ∈ 1.5ℤ + 1), i.e. σ = (-1)^(ix+iy+1). The index
+# parity (-1)^i only tracks ix in that row-major layout (2^Lx is even).
+_haldane_sigma(r) = isapprox(mod(r[1], 1.5), 1.0; atol=1e-6) ? 1 : -1
+
+"""
+    chirality(r1, r2) -> Int
+
+Textbook Haldane sign `ν = ±1` of the next-nearest-neighbour hop between the sites at `r1`
+and `r2` of the [`honeycomb_positions`](@ref) lattice: `ν = sign((d1 × d2)_z)` for the path
+`r1 → k → r2` through their common nearest neighbour `k` (`d1 = r_k - r1`, `d2 = r2 - r_k`),
+so `+1` when the path turns left at `k`.
+
+On that lattice the bonds of an A site (x ∈ 1.5ℤ) point at 0° and ±120° and those of a B
+site at 180° and ±60°, so `ν = -σ sign(sin 3θ)`, with `θ` the angle of `r2 - r1` and `σ` the
+sublattice sign of `r1` (-1 on A, +1 on B). The three hops of a C3-related triple share one
+sign, and `chirality(r2, r1) == -chirality(r1, r2)`. The result is meaningless for pairs
+that are not next-nearest neighbours of that lattice.
+"""
+function chirality(r1, r2)
+    δ = r2 .- r1
+    # the six next-nearest directions sit at θ = ±30°, ±90°, ±150°, where sin 3θ = ±1
+    s = sin(3 * atan(δ[2], δ[1])) > 0 ? 1 : -1
+    return -_haldane_sigma(r1) * s
+end
+
+"""
+    haldane_hoppingf(r1, r2, i, j; t2=0.2, phi=π/2, M=0.0) -> Number
+
+Matrix element `⟨r1|H|r2⟩` of the textbook, C3-symmetric Haldane model
+`H = Σ_ij H_ij c†_i c_j` on the honeycomb with bond length 1 laid out as in
+[`honeycomb_positions`](@ref):
+
+- on site: `M σ`, with `σ = -1` on the sublattice of site 1 (x ∈ 1.5ℤ) and `+1` on the other;
+- nearest neighbours: `-1`;
+- next-nearest neighbours: `t2 exp(i phi ν)`, with `ν = chirality(r1, r2) = sign((d1 × d2)_z)`
+  for the path `r1 → k → r2` through the common nearest neighbour `k`.
+
+The Dirac masses are `-M ± 3√3 t2 sin(phi)`, so the model is a Chern insulator for
+`|M| < 3√3 |t2 sin(phi)|`. `i`, `j` are the site indices of the `f(i, j)` call pattern
+(unused).
+
+This is the convention of the manuscript's `build_APSOS_hamiltonian`: its `haldane_phases`
+table, added with [`add_hopping_2D!`](@ref) on the `"honeycomb"` preset, gives
+`⟨i|H|j⟩ = t2 exp(i phi ν_ij)` with the same `ν_ij`, so the same Chern number at the same
+`t2` and `phi`. It puts `+M` rather than `-M` on its sublattice 1, which leaves the Chern
+number unchanged. Earlier versions gave the four vertical next-nearest bonds `-ν`, which
+made the Dirac masses `-M ± √3 t2 sin(phi)`.
+"""
+function haldane_hoppingf(r1, r2, i, j; t2 = 0.2, phi=pi/2, M=0.0)
+    d = norm(r2 .- r1)
+    if isapprox(d, 0.0; atol=1e-3)
+        return M * _haldane_sigma(r1)
+    elseif isapprox(d, 1.0; atol=1e-8)
+        return -1.0 #t1
+    elseif isapprox(d, √3; atol=1e-3)
+        return t2 * cis(phi * chirality(r1, r2))
+    else
+        return 0.0
+    end
+end
+
+# haldane_hoppingf reads the sublattice from x and the chirality from the bond angle, which is
+# right only for sites of the honeycomb_positions lattice: rows at y ∈ (√3/2)ℤ and, once the
+# 1.5 shift of odd rows is undone, A at x ∈ 3ℤ and B at x ∈ 3ℤ + 1. One O(N) pass, no search.
+function _check_haldane_layout(rs, N; atol=1e-6)
+    size(rs, 1) >= N && size(rs, 2) == 2 ||
+        throw(ArgumentError("get_Hamiltonian(\"haldane\"): `rs` must be an N×2 position matrix " *
+                            "with at least N = $N rows, got size $(size(rs)). Generate it with " *
+                            "honeycomb_positions."))
+    h = √3 / 2
+    for i in 1:N
+        x, y = rs[i, 1], rs[i, 2]
+        ok = isfinite(x) && isfinite(y)
+        if ok
+            r  = round(Int, y / h)
+            u  = mod(x - (isodd(r) ? 1.5 : 0.0), 3.0)
+            ok = abs(y - r * h) <= atol && min(u, 3.0 - u, abs(u - 1.0)) <= atol
+        end
+        ok || throw(ArgumentError(
+            "get_Hamiltonian(\"haldane\"): site $i of `rs`, $((x, y)), is not on the " *
+            "honeycomb_positions lattice (bond length 1, one bond along x, sublattice A at " *
+            "x ∈ 1.5ℤ). haldane_hoppingf reads the sublattice and the Haldane chirality from " *
+            "the positions, which is only right there. Pass rs from honeycomb_positions (a " *
+            "translate by a lattice vector also works), or build the model with hopping2MPO."))
+    end
+    return nothing
+end
+
+# Structural QTCI pivots for the Haldane matrix: every pair within R (√3 < R < 2, so
+# on-site, NN and NNN) of the site nearest the centre of `rs` or of one of its neighbours.
+# Around that site honeycomb_positions layouts show every sublattice / bond-direction class.
+function _haldane_pivots(rs; R=1.8)
+    c0   = vec(sum(rs; dims=1)) ./ size(rs, 1)
+    c    = argmin([norm(rs[i, :] .- c0) for i in axes(rs, 1)])
+    near = [i for i in axes(rs, 1) if norm(rs[i, :] .- rs[c, :]) <= 2R]
+    rows = [i for i in near if norm(rs[i, :] .- rs[c, :]) <= R]
+    return [(i, j) for i in rows for j in near if norm(rs[j, :] .- rs[i, :]) <= R]
+end
+
+# Entry (i, j) (1-based) of a Qubit MPO, site 1 = most significant bit.
+function _mpo_entry(mpo::MPO, sites, i::Integer, j::Integer)
+    L = length(sites)
+    v = ITensor(1.0)
+    for k in 1:L
+        b = L - k
+        v *= mpo[k] * onehot(sites[k]' => (((i - 1) >> b) & 1) + 1) *
+                      onehot(sites[k]  => (((j - 1) >> b) & 1) + 1)
+    end
+    return scalar(v)
+end
+
+# Spot-check the compressed Haldane MPO against f at every pivot offset of a spread of
+# rows (lattice extremes plus an odd golden-ratio stride through the bulk), so a QTCI
+# that misses a bond class or an edge errors instead of returning a wrong Hamiltonian.
+function _check_haldane_mpo(mpo, sites, f, rs, piv; tol=1e-8, nbulk=16)
+    N    = size(rs, 1)
+    x, y = rs[:, 1], rs[:, 2]
+    s    = 2 * round(Int, 0.30901699437494745 * N) + 1
+    rows = unique([argmin(x), argmax(x), argmin(y), argmax(y),
+                   argmin(x .+ y), argmax(x .+ y), argmin(x .- y), argmax(x .- y),
+                   (1 + mod(k * s, N) for k in 0:nbulk-1)...])
+    offs = unique(j - i for (i, j) in piv)
+    atol = max(1e-6, 10 * tol) * maximum(abs(f(i, j)) for (i, j) in piv)
+    for i in rows, d in offs
+        j = i + d
+        1 <= j <= N || continue
+        got, want = _mpo_entry(mpo, sites, i, j), f(i, j)
+        abs(got - want) <= atol ||
+            error("get_Hamiltonian(\"haldane\"): the QTCI-compressed MPO is wrong at entry " *
+                  "($i, $j): $got instead of $want. Pass `rs` from honeycomb_positions, or " *
+                  "build the MPO with hopping2MPO and initial_positions suited to this layout.")
+    end
+    return nothing
+end
+
 function _build_haldane(params, L, N, sites;
                         rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
-                           "Generate it with `honeycomb_positions($L)` or from `get_G()`."
+                           "Generate it with `honeycomb_positions($L)`."
+    _check_haldane_layout(rs, N)
     t2  = params.t2
     phi = params.phi
     M   = params.M
     f(i, j) = haldane_hoppingf(rs[Int(i), :], rs[Int(j), :],
                                 Int(i), Int(j); t2=t2, phi=phi, M=M)
-    mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64)
+    # QTCI from structural pivots only. The default all-ones pivot plus 5 random ones made
+    # the build depend on the global RNG, threw "maxsamplevalue is zero!" for M = 0 and
+    # often missed a bond class (a wrong MPO with a small TCI error estimate).
+    rsN = view(rs, 1:N, :)   # f only reads the first N rows
+    piv = _haldane_pivots(rsN)
+    mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64, initial_positions=piv,
+                      nrandominitpivot=0, nsearchglobalpivot=0)
+    _check_haldane_mpo(mpo, sites, f, rsN, piv; tol=tol)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    # bandwidth ≈ 2*(3*t1 + 6*t2) + 2*M where t1=1; conservative upper bound
-    sc  = something(scale, (1.0 + abs(t2) + abs(M)) * 4.0)
+    # Gershgorin bound (t1 = 1): a site has |M| on site, ≤ 3 NN and ≤ 6 NNN hops, so the
+    # spectral radius is ≤ 3 + 6|t2| + |M| (nearly reached at phi = 0, π); pad by 10%.
+    sc  = something(scale, 1.1 * (3.0 + 6.0 * abs(t2) + abs(M)))
     rs_f = let m = Float64.(rs); i -> m[i, :]; end
     return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
@@ -386,7 +691,7 @@ function _build_preset(geometry, params, L, N, sites;
         fix_sites(mpo, ref_sites)
         mpo_sites = ref_sites
     end
-    sc   = something(scale, _estimate_scale(geometry, params))
+    sc   = something(scale, _estimate_scale(geometry, params; mparams=get(kwargs, :mparams, "")))
     lx_2d = dim == 2 ? get(kwargs, :Lx, L ÷ 2) : nothing
     geom = _preset_geometry(geometry, isnothing(lx_2d) ? nothing : 2^lx_2d)
     H = TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
@@ -445,8 +750,10 @@ function _preset_geometry(geometry, Nx)
     return nothing
 end
 
-# Rough scale estimates for known geometries (used when scale=nothing)
-function _estimate_scale(geometry, params)
+# Rough scale estimates for known geometries (used when scale=nothing). `mparams` is the
+# parameter string _build_preset forwards to build_hamiltonian, if any.
+function _estimate_scale(geometry, params; mparams::AbstractString="")
+    geometry == "chernhex" && return _chernhex_scale(params, mparams)
     t = params isa Number ? abs(params) :
         params isa NamedTuple && hasfield(typeof(params), :t) ? abs(params.t) :
         params isa AbstractDict && haskey(params, :t) ? abs(params[:t]) : 1.0
@@ -458,8 +765,23 @@ function _estimate_scale(geometry, params)
     geometry == "hex_2d"       && return 4.0 * t
     geometry == "triangular_2d"     && return 7.0 * t
     geometry == "triangular_bravais" && return 7.0 * t
-    geometry in ("chern8","chernhex","qc2dsquare") && return 6.0 * t
+    geometry in ("chern8","qc2dsquare") && return 6.0 * t
     return 5.0 * t   # conservative fallback
+end
+
+# Default "chernhex" scale: the Gershgorin bound of H2DChernhex's terms (3 NN bonds of |t|,
+# 6 NNN bonds of |t2|, on-site |Ms| with Ms = ms, or ms + 3.3√3 t2 on the right half unless
+# uniformsemenoff), padded by 10% and never below the former default 6|t|. The parameters
+# are merged the way _build_preset and build_hamiltonian merge them: the `mparams` string,
+# then `params` on top, then the registry defaults.
+function _chernhex_scale(params, mparams::AbstractString)
+    p = _parse_param_string(mparams)
+    q = params isa AbstractDict || params isa NamedTuple ? pairs(params) : (:t => params,)
+    for (k, v) in q; p[k] = v; end
+    t, t2, ms = abs(p[:t]), p[:t2], p[:ms]
+    uniform   = get(p, :uniformsemenoff, MODEL_REGISTRY["chernhex"][4].uniformsemenoff)
+    Mmax      = uniform ? abs(ms) : max(abs(ms), abs(ms + 3.3 * sqrt(3) * t2))
+    return max(6.0 * t, 1.1 * (3.0 * t + 6.0 * abs(t2) + Mmax))
 end
 
 
@@ -609,9 +931,17 @@ function add_hopping!(H::TBHamiltonian, f;
                       sublat           = nothing,
                       sublat_from      = nothing,
                       sublat_to        = nothing)
+    _require_binary_position_space(H, "add_hopping!")
     if !isnothing(H.Lx)
         (!isnothing(sublat) || !isnothing(sublat_from) || !isnothing(sublat_to)) &&
             error("add_hopping! sublat keywords are not supported for 2D Hamiltonians; use add_hopping_2D! directly.")
+        # add_hopping_2D! would ask for lattice=/geometry= keywords that add_hopping! lacks
+        (H.layer_s !== nothing && H.geometry === nothing &&
+         H.spin_s === nothing && H.nambu_s === nothing) &&
+            error("add_hopping! cannot be used on a layered Hamiltonian without a geometry " *
+                  "(the plain and twisted layered builders leave H.geometry unset). Call " *
+                  "add_hopping_2D!(H, f; Lx=H.Lx, Ly=H.L - H.Lx, nn, layer, " *
+                  "lattice=:square/:triangular/:honeycomb or geometry=...) instead.")
         return add_hopping_2D!(H, f; Lx=H.Lx, Ly=H.L - H.Lx, nn=Int(nn), maxdim=maxdim, tol=tol)
     end
 
@@ -734,6 +1064,7 @@ Invalidates all caches.
 """
 function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                      Lx=nothing, tol=1e-8, maxdim=nothing)
+    _require_binary_position_space(H, "add_onsite!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_onsite! currently supports layer/position/sublattice Hamiltonians only.")
@@ -748,10 +1079,10 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
         layers = _resolve_layer_selection(H.layer_s, layer)
         H_layered_term = nothing
         for ell in layers
-            H_pos = TBHamiltonian(H.L, H.N, term_sites, copy(zero_mpo),
-                                  H.geometry, H.geometry_uc, 0.0, 0.0,
-                                  nothing, nothing, nothing, H.sublattice_s, :post,
-                                  nothing, nothing, 0, nothing)
+            H_pos = TBHamiltonian(H; sites=term_sites, mpo=copy(zero_mpo),
+                                  scale=0.0, center=0.0,
+                                  spin_s=nothing, nambu_s=nothing, layer_s=nothing,
+                                  sublattice_s=H.sublattice_s, aux_side=:post)
             add_onsite!(H_pos, f; layer=nothing, sublat=sublat,
                         Lx=Lx, tol=tol, maxdim=maxdim)
             term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
@@ -873,6 +1204,7 @@ function add_interaction!(H::TBHamiltonian, V;
                           type::Type = Float64,
                           tol::Real = 1e-8,
                           kwargs...)
+    _require_binary_position_space(H, "add_interaction!")
     pos_s = _pos_sites(H)
     mpo = if V isa MPO
         V
@@ -911,6 +1243,7 @@ Invalidates all caches.
 """
 function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200,
                    position::Symbol=:pre)
+    _require_binary_position_space(H, "add_spin!")
     H.spin_s === nothing || return H
     spin_s = spin_index()
     if position === :pre
@@ -960,6 +1293,7 @@ function add_zeeman!(H::TBHamiltonian, h;
                      tol::Real  = 1e-8,
                      maxdim::Int = 200,
                      position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_zeeman!")
     direction in (:x, :y, :z) ||
         error("direction must be :x, :y, or :z; got :$direction")
     pos = something(position, H.aux_side)
@@ -1036,6 +1370,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
                                 tol::Real    = 1e-8,
                                 maxdim::Int  = 200,
                                 position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_superconductivity!")
     H.nambu_s === nothing ||
         error("BdG already applied (H.nambu_s is set). Cannot apply twice.")
 
@@ -1151,6 +1486,7 @@ function add_soc!(H::TBHamiltonian, λ;
                   tol::Real         = 1e-8,
                   maxdim::Int       = 200,
                   position::Union{Nothing,Symbol} = nothing)
+    _require_binary_position_space(H, "add_soc!")
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)

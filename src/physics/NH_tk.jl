@@ -74,6 +74,7 @@ function hermitized_hamiltonian(H::TBHamiltonian;
                                 scale::Real = 0.0,
                                 convention::Symbol = :z_minus_H,
                                 block_placement::Symbol = :post)
+    _require_binary_position_space(H, "hermitized_hamiltonian")
     convention in (:H_minus_z, :z_minus_H) ||
         error("convention must be :H_minus_z or :z_minus_H; got :$convention")
     I_H     = MPO(H.sites, "Id")
@@ -95,11 +96,9 @@ function hermitized_hamiltonian(H::TBHamiltonian;
     end
     ITensorMPS.truncate!(H_block; cutoff=cutoff, maxdim=maxdim)
 
-    return TBHamiltonian(H.L, H.N, sites, H_block,
-                         H.geometry, H.geometry_uc,
-                         Float64(scale), 0.0,
-                         H.spin_s, H.nambu_s, H.layer_s, H.sublattice_s, :pre,
-                         nothing, nothing, 0, nothing)
+    # The block operator is not a physical Hamiltonian: interactions stay on the parent.
+    return TBHamiltonian(H; sites=sites, mpo=H_block, scale=Float64(scale), center=0.0,
+                         aux_side=:pre, interaction_mpo=nothing, fock_mpo=nothing)
 end
 
 """
@@ -323,6 +322,7 @@ function add_nh_onsite!(H::TBHamiltonian, v;
                         tol::Real = 1e-8,
                         maxdim::Int = 200,
                         type = ComplexF64)
+    _require_binary_position_space(H, "add_nh_onsite!")
     pos_s = _nh_position_sites_only(H)
     term = _nh_diagonal_mpo(H.L, pos_s, v; Lx=Lx, type=type)
     H.mpo = +(H.mpo, term; cutoff=tol, maxdim=maxdim)
@@ -385,6 +385,7 @@ function add_loss!(H::TBHamiltonian, f;
                    maxdim::Int = 200,
                    type = Float64,
                    space::Symbol = :full)
+    _require_binary_position_space(H, "add_loss!")
     term = ComplexF64(coefficient) * loss_profile_mpo(H, f; Lx=Lx, type=type, space=space)
     H.mpo = +(H.mpo, term; cutoff=tol, maxdim=maxdim)
     ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
@@ -455,6 +456,7 @@ function nh_nonreciprocal_hopping_mpo(H::TBHamiltonian, t_forward, t_backward;
                                       tol::Real = 1e-8,
                                       maxdim::Int = 200,
                                       type = ComplexF64)
+    _require_binary_position_space(H, "nh_nonreciprocal_hopping_mpo")
     pos_s = _nh_position_sites_only(H)
     Hf = _nh_directional_hop(pos_s, H.N, t_forward, nn, :forward;
                              L=H.L, tol=tol, maxdim=maxdim, type=type)
