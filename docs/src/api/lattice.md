@@ -8,7 +8,7 @@ CurrentModule = TensorBinding
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/2Dlattice_tk.jl"]
+Pages   = ["lattice/masks2d.jl", "lattice/hopping2d.jl", "lattice/presets.jl", "lattice/sublattice.jl", "lattice/model_registry.jl"]
 ```
 
 ## Nearest-Neighbor Hopping

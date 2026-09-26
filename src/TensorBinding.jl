@@ -39,13 +39,23 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   position_spaces/KBonacci.jl — projected k-bonacci spaces (Tribonacci,
 #                                   Tetranacci, …) on the binary register with
 #                                   no k consecutive ones (uses TBSystem, Fibonacci)
-#   lattice/2Dlattice_tk.jl    — 2D shift operators, lattice hoppings, geometry
-#                                 positions (uses Utils, Hamiltonian, TBSystem)
+#   lattice/masks2d.jl         — sigma_d/sigma_u projectors and diagonal row/column/
+#                                 checkerboard mask MPOs (no deps)
+#   lattice/hopping2d.jl       — binary shift MPOs and 2D kinetic/hopping MPO
+#                                 builders (uses Utils, masks2d)
+#   lattice/presets.jl         — preset QTCI model Hamiltonians H* (uses
+#                                 Hamiltonian, hopping2d)
+#   lattice/sublattice.jl      — kagome/Lieb/honeycomb/dice/SSH sublattice
+#                                 Hamiltonians and positions (uses Utils,
+#                                 TBSystem, masks2d, hopping2d)
+#   lattice/model_registry.jl  — MODEL_REGISTRY, build_hamiltonian and
+#                                 _geom_positions (uses presets, sublattice)
 #   lattice/NNNeighbor_tk.jl   — generic nth-neighbor hopping accumulator
-#                                 add_hopping_2D! (uses TBSystem, 2Dlattice_tk)
+#                                 add_hopping_2D! (uses TBSystem, masks2d,
+#                                 hopping2d, sublattice)
 #   lattice/Flake_tk.jl        — smooth flake masking via QTCI SDFs (uses TBSystem)
 #   lattice/Bilayer_tk.jl      — bilayer/multilayer commensurate-stacking
-#                                 Hamiltonians (uses TBSystem, 2Dlattice_tk)
+#                                 Hamiltonians (uses TBSystem, hopping2d, sublattice)
 #   lattice/Twisted_tk.jl      — twisted multilayer Hamiltonians (uses TBSystem,
 #                                 Bilayer_tk)
 #   lattice/TJunction_tk.jl    — T/Y-junction geometries (uses TBSystem, Hamiltonian)
@@ -97,7 +107,11 @@ include("core/TBSystem.jl")
 include("position_spaces/Fibonacci.jl")
 include("position_spaces/MetallicMean.jl")
 include("position_spaces/KBonacci.jl")
-include("lattice/2Dlattice_tk.jl")
+include("lattice/masks2d.jl")
+include("lattice/hopping2d.jl")
+include("lattice/presets.jl")
+include("lattice/sublattice.jl")
+include("lattice/model_registry.jl")
 include("lattice/NNNeighbor_tk.jl")
 include("lattice/Flake_tk.jl")
 include("lattice/Bilayer_tk.jl")
