@@ -22,33 +22,33 @@ Pages   = ["lattice/geometry.jl"]
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/NNNeighbor_tk.jl"]
+Pages   = ["lattice/NNNeighbor.jl"]
 ```
 
 ## Bilayer Systems
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/Bilayer_tk.jl"]
+Pages   = ["lattice/Bilayer.jl"]
 ```
 
 ## Twisted Multilayers
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/Twisted_tk.jl"]
+Pages   = ["lattice/Twisted.jl"]
 ```
 
 ## Flake Geometries
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/Flake_tk.jl"]
+Pages   = ["lattice/Flake.jl"]
 ```
 
 ## T/Y Junctions
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["lattice/TJunction_tk.jl"]
+Pages   = ["lattice/TJunction.jl"]
 ```

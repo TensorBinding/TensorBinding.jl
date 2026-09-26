@@ -135,7 +135,7 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
 # case whose function is missing and is NOT listed here fails (check_case):
 # deleting a function the checklist does not name, e.g. one still in use, is a
 # behaviour change. Change this set only together with that checklist section.
-# All of them were deleted in fb8b2d8 except `sdf_interval`, which QPI_tk.jl uses.
+# All of them were deleted in fb8b2d8 except `sdf_interval`, which QPI.jl uses.
 const DELETABLE_FUNCTIONS = Set{Symbol}([
     # 2Dlattice_tk.jl: `interchain_hopping_*` (2nd_plus/minus, triangle,
     # honeycomb) "with their skeleton/template helpers", `_geom_n_sub`, `_nsublat`
@@ -143,9 +143,9 @@ const DELETABLE_FUNCTIONS = Set{Symbol}([
     :interchain_hopping_triangle, :interchain_hopping_honeycomb,
     :skeleton, :odd_template, :even_template, :odd_skeleton, :even_skeleton,
     :_geom_n_sub, :_nsublat,
-    # Twisted_tk.jl: `postpend_layer_projector/hopping`
+    # Twisted.jl: `postpend_layer_projector/hopping`
     :postpend_layer_projector, :postpend_layer_hopping,
-    # Flake_tk.jl: `sdf_interval`
+    # Flake.jl: `sdf_interval`
     :sdf_interval,
 ])
 

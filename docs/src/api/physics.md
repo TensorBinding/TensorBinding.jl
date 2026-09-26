@@ -8,7 +8,7 @@ CurrentModule = TensorBinding
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/SCF_tk.jl"]
+Pages   = ["physics/SCF.jl"]
 ```
 
 ## Random Phase Approximation (RPA)
@@ -22,21 +22,21 @@ Pages   = ["physics/rpa/bubble.jl", "physics/rpa/cheb2d.jl", "physics/rpa/dyson.
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/Topology_tk.jl"]
+Pages   = ["physics/Topology.jl"]
 ```
 
 ## Density Matrix Purification
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/Purification_tk.jl"]
+Pages   = ["physics/Purification.jl"]
 ```
 
 ## Two-Particle / Exciton
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/TwoParticle_tk.jl"]
+Pages   = ["physics/TwoParticle.jl"]
 ```
 
 ## Non-Hermitian Extensions
@@ -50,7 +50,7 @@ Pages   = ["physics/nh/model.jl", "physics/nh/kpm.jl"]
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/QPI_tk.jl"]
+Pages   = ["physics/QPI.jl"]
 ```
 
 ## Quantum Fourier Transform & Band Structure
@@ -65,5 +65,5 @@ Pages   = ["physics/qft/conjugation.jl", "physics/qft/bands.jl",
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/Supercond_tk.jl"]
+Pages   = ["physics/Supercond.jl"]
 ```

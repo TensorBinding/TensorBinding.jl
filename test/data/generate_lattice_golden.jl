@@ -306,7 +306,7 @@ add!("central_index_H_without_geometry", :central_index,
      (kind = :H, base = (via = :bilayer, lattice = :square, Lx = 1, Ly = 1, kw = none)))
 
 # ═════════════════════════════════════════════════════════════════════════════
-# lattice/Twisted_tk.jl and lattice/Bilayer_tk.jl
+# lattice/Twisted.jl and lattice/Bilayer.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 add!("lattice_positions_square_Lx2_Ly1", :lattice_positions, (lattice = :square, Lx = 2, Ly = 1, kw = none))
@@ -361,7 +361,7 @@ add!("multilayer_triangular_Lx1_Ly2_3layers", :multilayer,   # SW->NE bonds pres
      (lattice = :triangular, Lx = 1, Ly = 2, n_layers = 3, kw = none))
 
 # ═════════════════════════════════════════════════════════════════════════════
-# lattice/Flake_tk.jl
+# lattice/Flake.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 const XS = [-0.5, 0.25, 1.0, 1.75, 2.5]
@@ -395,7 +395,7 @@ add!("mask_hamiltonian_no_geometry_rejected", :mask_hamiltonian,
      (base = (via = :no_geometry, of = sq4), sdf = (:disk, 0.5, 0.5, 1.0), kw = none))
 
 # ═════════════════════════════════════════════════════════════════════════════
-# lattice/TJunction_tk.jl
+# lattice/TJunction.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 chain3 = (via = :get_hamiltonian, geometry = "chain_1d", params = 1.0, kw = (L = 3,))
@@ -425,7 +425,7 @@ add!("tjunction_lattice_Lx2_Ly1_L1_coupling", :tjunction_lattice,
      (args = (2, 1, 1, 1.0, 0.5, 0.8), kw = (coupling = [0.0 0.9 0.2; 0.9 0.0 0.5; 0.2 0.5 0.0],)))
 
 # ═════════════════════════════════════════════════════════════════════════════
-# lattice/NNNeighbor_tk.jl
+# lattice/NNNeighbor.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 for (dx, dy) in ((0, 0), (1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1), (4, 0), (0, 2))

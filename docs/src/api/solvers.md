@@ -16,19 +16,19 @@ Pages   = ["solvers/kpm/kernels.jl", "solvers/kpm/recursion.jl", "solvers/kpm/ca
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["solvers/Krylov_tk.jl"]
+Pages   = ["solvers/Krylov.jl"]
 ```
 
 ## DMRG
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["solvers/DMRG_tk.jl"]
+Pages   = ["solvers/DMRG.jl"]
 ```
 
 ## Time Evolution
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["solvers/Timeev_tk.jl"]
+Pages   = ["solvers/Timeev.jl"]
 ```

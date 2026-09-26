@@ -6,13 +6,13 @@ using TensorBinding: get_Hamiltonian, add_onsite!, add_hopping!, add_spin!, add_
 # Characterization ("golden") tests for the SCF, superconductivity, purification and
 # topology code and for the TBSystem mutators:
 #
-#   src/physics/SCF_tk.jl         get_scf (every channel), the SCF drivers, BdG
+#   src/physics/SCF.jl            get_scf (every channel), the SCF drivers, BdG
 #                                 builders, mean-field and profile helpers
-#   src/physics/Supercond_tk.jl   spin/Nambu indices and operator tables, prepend/
+#   src/physics/Supercond.jl      spin/Nambu indices and operator tables, prepend/
 #                                 postpend wrappers, pairing and BdG assemblers
-#   src/physics/Purification_tk.jl McWeeny/SP2, get_density (:mcweeny/:sp2/:kpm),
+#   src/physics/Purification.jl   McWeeny/SP2, get_density (:mcweeny/:sp2/:kpm),
 #                                 sign_mpo, finite-difference DOS/LDOS
-#   src/physics/Topology_tk.jl    projector, winding and Chern markers, valley
+#   src/physics/Topology.jl       projector, winding and Chern markers, valley
 #                                 operator/projectors/Chern, Thouless pump
 #   src/core/TBSystem.jl          add_onsite!, add_hopping!, add_spin!, add_zeeman!,
 #                                 add_soc!, add_interaction!, add_superconductivity!
@@ -490,7 +490,7 @@ case!("tbsystem/add_superconductivity!/errors") do
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Supercond_tk.jl
+# Supercond.jl
 # ─────────────────────────────────────────────────────────────────────────────
 
 case!("supercond/indices_and_op_tables") do
@@ -566,7 +566,7 @@ case!("supercond/bdg_spin_hamiltonian") do
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Purification_tk.jl
+# Purification.jl
 # ─────────────────────────────────────────────────────────────────────────────
 
 rho0(H = chain()) = TB.purification_initial_guess(H.mpo, 2.5, H.sites)
@@ -669,7 +669,7 @@ case!("purification/dos_drho") do
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Topology_tk.jl
+# Topology.jl
 # ─────────────────────────────────────────────────────────────────────────────
 
 gapped_chain() = (H = chain(); add_onsite!(H, n -> 0.4 * (-1)^n); H.scale = 2.8; H)
@@ -837,7 +837,7 @@ case!("topology/pump/get_thouless_pump") do
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCF_tk.jl — helpers
+# SCF.jl — helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 profile(H = chain()) = TB.extract_diagonal_to_mps(rho0(H))       # diag of (I - H/2.5)/2 + a tilt
@@ -1013,7 +1013,7 @@ case!("scf/initial_guesses") do
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SCF_tk.jl — drivers through get_scf and directly (1–3 iterations each)
+# SCF.jl — drivers through get_scf and directly (1–3 iterations each)
 # ─────────────────────────────────────────────────────────────────────────────
 
 const SCFKW = (maxiters = 2, purif_maxiter = 15, purif_tol = 1e-6, maxdim = 30, cutoff = 1e-10,

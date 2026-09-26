@@ -17,11 +17,11 @@ using TensorBinding: tdvp_evolve, apply_mpo_to_mps, evolve_with_propagator, evol
                      prepend_op, postpend_op, matrix_checker, get_matrix
 
 # Characterization ("golden") tests for the dynamics area: time evolution
-# (solvers/Timeev_tk.jl, without build_tdvp_propagator_mpo / check_tdvp_vs_U_mpo),
-# DMRG (solvers/DMRG_tk.jl), the Krylov Green's function (solvers/Krylov_tk.jl)
+# (solvers/Timeev.jl, without build_tdvp_propagator_mpo / check_tdvp_vs_U_mpo),
+# DMRG (solvers/DMRG.jl), the Krylov Green's function (solvers/Krylov.jl)
 # and the Haydock recursion that Tier 1 moves there from physics/RPA_tk.jl, the
-# exciton Hamiltonian and probes (physics/TwoParticle_tk.jl), QPI
-# (physics/QPI_tk.jl), and the core/Utils.jl helpers that
+# exciton Hamiltonian and probes (physics/TwoParticle.jl), QPI
+# (physics/QPI.jl), and the core/Utils.jl helpers that
 # test/sampling_golden.jl does not cover.
 #
 # The tests pin what the code computes *today*, bugs included, so that moving,
@@ -497,7 +497,7 @@ case!("Utils", "utils_sigma_ops", 135) do
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# solvers/DMRG_tk.jl (+ _estimate_spectral_bounds, which Tier 1 moves there)
+# solvers/DMRG.jl (+ _estimate_spectral_bounds, which Tier 1 moves there)
 # ═════════════════════════════════════════════════════════════════════════════
 
 case!("DMRG", "dmrg_gs_defaults", 201) do
@@ -546,7 +546,7 @@ case!("DMRG", "dmrg_estimate_spectral_bounds", 207) do
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# solvers/Krylov_tk.jl
+# solvers/Krylov.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 case!("Krylov", "krylov_vec_mps_from_mpo", 301) do
@@ -632,7 +632,7 @@ case!("Haydock", "haydock_single_step", 313) do
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# solvers/Timeev_tk.jl (not build_tdvp_propagator_mpo / check_tdvp_vs_U_mpo)
+# solvers/Timeev.jl (not build_tdvp_propagator_mpo / check_tdvp_vs_U_mpo)
 # ═════════════════════════════════════════════════════════════════════════════
 
 nh_mpo(H) = +(H.mpo, (-0.3im) * linpot(H.sites, 0.1); cutoff=1e-12)   # H − iΓ(x)
@@ -804,7 +804,7 @@ case!("Timeev", "central_x_bond", 420) do
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# physics/TwoParticle_tk.jl
+# physics/TwoParticle.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 exciton_fields(Hx) = (; dense = dense(Hx.mpo), L = Hx.L, N = Hx.N, nsites = length(Hx.sites),
@@ -910,7 +910,7 @@ case!(() -> TB.mpsexcitonKQ(5, 1, siteinds("Qubit", 4)), "TwoParticle", "exciton
 case!(() -> TB.mpsexcitonKQ(0, 1, siteinds("Qubit", 4)), "TwoParticle", "exciton_mpsexcitonKQ_k_low_throws", 525)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# physics/QPI_tk.jl
+# physics/QPI.jl
 # ═════════════════════════════════════════════════════════════════════════════
 
 case!("QPI", "qpi_impurity_mpo", 601) do
