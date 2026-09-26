@@ -26,8 +26,9 @@
 #                         # or after TensorBinding, but before the first *_gpu
 #                         # call — without it, *_gpu calls raise an error
 #                         # explaining how to load it
-#   The *_gpu functions are not exported; call them qualified, e.g.
-#   TensorBinding.get_bands_gpu(...).
+#   The main *_gpu entry points are exported (see the export list in
+#   TensorBinding.jl); the others are called qualified, e.g.
+#   TensorBinding.get_nh_dos_grid_diag_trace_gpu(...).
 #
 # ENTRY POINTS (each documented in its own docstring; defining file in brackets)
 #   Chebyshev moments
