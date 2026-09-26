@@ -1,21 +1,36 @@
-# ============================================================
-# kpm.jl — GPU Chebyshev recurrence, spatial LDOS and stochastic DOS
-# ============================================================
-# Moved from the former gpu/GPU_tk.jl: KPM_Tn_gpu, get_ldos_spatial_gpu,
-# get_ldos_spatial_mps_gpu and get_dos_stochastic_gpu. The CPU helper
-# _reconstruct_ldos_moment_columns lives in solvers/kpm/kernels.jl.
+# gpu/kpm.jl — GPU Chebyshev KPM: the MPO recurrence KPM_Tn_gpu, the spatial LDOS
+# from the MPO recurrence (get_ldos_spatial_gpu) or from independent MPS recursions
+# per probe (get_ldos_spatial_mps_gpu), and the stochastic DOS
+# (get_dos_stochastic_gpu). Moved from the former gpu/GPU_tk.jl; the CPU helper
+# _reconstruct_ldos_moment_columns it uses lives in solvers/kpm/kernels.jl.
+#
+# Main entry points: KPM_Tn_gpu, get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu,
+# get_dos_stochastic_gpu.
+# Depends on: core/Utils.jl (spatial_sampling_plan, basis-state and exciton MPS
+# builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (aux-site
+# detection, projected probes), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
+# solvers/kpm/kernels.jl (KPM weights), gpu/device.jl, gpu/primitives.jl.
+
 
 # ============================================================
-# GPU Chebyshev recurrence
+# 1. Chebyshev recurrence
 # ============================================================
 
 """
-    KPM_Tn_gpu(H_mpo, N, sites; scale, center, maxdim, cutoff, keep_indices, verbose)
+    KPM_Tn_gpu(H_mpo, N, sites; scale=nothing, center=0.0, maxdim=40,
+               dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+               cutoff=1e-8, keep_indices=nothing, type=ComplexF32, dtype=nothing,
+               verbose=true)
         -> (Tn_list, scale, center)
 
 GPU version of `KPM_Tn`.  Moves the identity and scaled Hamiltonian MPOs to
-GPU (ComplexF32) before the recurrence so all Tn tensors stay on GPU.
-Requires `using CUDA`.
+GPU before the recurrence so all Tn tensors stay on GPU; `Tn_list` holds
+T_0 … T_N. Requires `using CUDA`.
+
+`type` (alias `dtype`) is the GPU element type: `ComplexF32` (default),
+`ComplexF64`, or `Float32`/`Float64` for a real `H_mpo`. With `scale=nothing`,
+`scale` and `center` are estimated by DMRG (`dmrg_nsweeps`, `dmrg_maxdim`,
+`dmrg_linkdim`) and the estimated `center` replaces the one passed.
 
 If `keep_indices` is provided (a `Set{Int}`, 1-based into the returned vector
 where index 1 = T_0, 2 = T_1, …), only those Tns are retained in memory.
@@ -76,11 +91,21 @@ end
 
 
 # ============================================================
-# GPU entry points: spatial LDOS and stochastic DOS
+# 2. Spatial LDOS from the MPO recurrence
 # ============================================================
 
 """
-    get_ldos_spatial_gpu(H, Ncheb, ω_phys_vals; kwargs...)
+    get_ldos_spatial_gpu(H, Ncheb, ω_phys_vals;
+                         x_groups=nothing, num_x=H.N, num_y=nothing, num_avg=1,
+                         x_start=1, x_end=H.N, grid=false, xwin=nothing, ywin=nothing,
+                         box_half=0, reduce=:point, sublattice=:auto,
+                         kernel=:jackson, lambda=4.0, maxdim=100, cutoff=1e-8,
+                         verbose=false, printinfo=false,
+                         nambu_proj=false, proj_nambu=nothing,
+                         spin_proj=false, proj_s=nothing,
+                         layer_proj=false, proj_layer=nothing,
+                         sublat_proj=false, proj_sl=nothing,
+                         type=ComplexF32, dtype=nothing)
         -> Matrix{Float64}   shape (Nω × n_spatial_cols)
 
 GPU-accelerated version of `get_ldos_spatial` (MPO mode only).
@@ -107,10 +132,14 @@ GPU: entire Chebyshev MPO recurrence, aux projections, diagonal extraction,
      real-space scalar sampling (point eval or block integration).
 CPU: KPM weight matrix, output accumulation (scalars only).
 
-Keyword arguments are identical to `get_ldos_spatial` (`:mps` mode is not
-available on GPU; only the single-pass MPO mode is implemented here). Pass
-`type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype
-consistently throughout the MPO recurrence, projections, and diagonal extraction.
+The keywords shared with `get_ldos_spatial` mean the same. There is no `mode`
+(only the single-pass MPO mode is implemented here; the MPS path is
+[`get_ldos_spatial_mps_gpu`](@ref)) and no `ordering`/`conumber_*` keywords
+(binary position spaces only); `printinfo` prints progress like `verbose`.
+`type` (alias `dtype`) is the GPU tensor datatype used consistently throughout
+the MPO recurrence, projections, and diagonal extraction: `ComplexF32`
+(default), `ComplexF64`, or `Float32`/`Float64` for a real `H`. A warning is
+emitted for `ComplexF32` with `cutoff < 1e-6`.
 
 Usage
 -----
@@ -334,6 +363,10 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 end
 
 
+# ============================================================
+# 3. Spatial LDOS from independent MPS recursions
+# ============================================================
+
 """
     get_ldos_spatial_mps_gpu(H, Ncheb, ω_phys_vals;
                              x_groups=nothing,
@@ -344,7 +377,15 @@ end
                              type=ComplexF32, dtype=nothing,
                              verbose=false, printinfo=false,
                              return_maxlinkdim=false,
-                             return_moments=false)
+                             return_moments=false,
+                             # accepted only to reject a non-default value:
+                             num_y=nothing, grid=false, xwin=nothing, ywin=nothing,
+                             box_half=0, reduce=:point, ordering=:physical,
+                             sublattice=:auto,
+                             nambu_proj=false, proj_nambu=nothing,
+                             spin_proj=false, proj_s=nothing,
+                             layer_proj=false, proj_layer=nothing,
+                             sublat_proj=false, proj_sl=nothing)
         -> Matrix{Float64}
 
 GPU spatial LDOS from one independent MPS Chebyshev recursion per physical-site
@@ -370,10 +411,11 @@ The default is at most 100 output columns.
 `1/(Ncheb+1)`). Other supported kernels are `:jackson`, `:lorentz` (`lambda`),
 `:fejer`, and `:dirichlet`.
 
-Use `type=ComplexF32` (default) or a supported real/complex GPU tensor type;
-`dtype` is an alias. With `return_moments=true`, the group-averaged raw
-Chebyshev moments are also returned as a `Matrix{Float64}` of size
-`(Ncheb, length(x_groups))` (or `(Ncheb, num_x)` for automatic groups):
+`type` (alias `dtype`) is the GPU tensor type: `ComplexF32` (default),
+`ComplexF64`, or `Float32`/`Float64` for a real `H`. With
+`return_moments=true`, the group-averaged raw Chebyshev moments are also
+returned as a `Matrix{Float64}` of size `(Ncheb, length(x_groups))` (or
+`(Ncheb, num_x)` for automatic groups):
 
 `moments[n, j] = mean(x -> real(<x|T_(n-1)(Htilde)|x>), group[j])`,
 
@@ -392,8 +434,9 @@ combinations:
 
 This entry point intentionally supports position-only, one-dimensional point or
 explicit-group sampling. Grid/window/box/block sampling, non-physical ordering,
-and auxiliary degrees of freedom are rejected with targeted errors. For those
-features use the MPO GPU path or the CPU `get_ldos_spatial` implementation.
+and auxiliary degrees of freedom (on `H` or requested through the projection
+keywords) are rejected with targeted errors. For those features use the MPO GPU
+path or the CPU `get_ldos_spatial` implementation.
 """
 function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                    x_groups         = nothing,
@@ -592,8 +635,21 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 end
 
 
+# ============================================================
+# 4. Stochastic DOS
+# ============================================================
+
 """
-    get_dos_stochastic_gpu(H, Ncheb, ω_phys_vals; kwargs...)
+    get_dos_stochastic_gpu(H, Ncheb, ω_phys_vals;
+                           N_sample=50, N_bound=0, seed=42, normalize=false,
+                           dos_weighting=:trace, kernel=:jackson, lambda=4.0,
+                           eta=0.0, m_order=4, maxdim=100, cutoff=1e-8,
+                           verbose=false, printinfo=false, continuum_only=false,
+                           nambu_proj=false, proj_nambu=nothing,
+                           spin_proj=false, proj_s=nothing,
+                           layer_proj=false, proj_layer=nothing,
+                           sublat_proj=false, proj_sl=nothing,
+                           type=ComplexF32, dtype=nothing)
         -> Vector{Float64}   length Nω
 
 GPU-accelerated stochastic density of states via MPS Chebyshev KPM.
@@ -602,7 +658,10 @@ For each random sample the scaled Hamiltonian MPO lives on GPU and the product-
 state MPS is transferred to GPU once before the recursion starts.
 The Chebyshev moments ⟨ψ₀|T_n(H̃)|ψ₀⟩ are scalars pulled to CPU at each step.
 
-Signature and optional kwargs are identical to `get_dos_stochastic` (CPU).
+The keywords shared with `get_dos_stochastic` (CPU) mean the same;
+`continuum_only`, `printinfo` and `type`/`dtype` are GPU-only, and only binary
+position spaces are supported. `type` (alias `dtype`) is the GPU tensor type:
+`ComplexF32` (default), `ComplexF64`, or `Float32`/`Float64` for a real `H`.
 `N_bound` (exciton bound-sector enrichment) is supported. Use
 `dos_weighting=:sample` to return the unweighted sampled signal
 `avg_full + avg_bound`, which is useful when visualising exciton peaks that are

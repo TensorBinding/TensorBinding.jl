@@ -1,9 +1,19 @@
+# gpu/scf.jl — GPU collinear magnetic Hubbard SCF: the RMS and Hartree helpers, the
+# loop scf_magnetic_hubbard_gpu and its post-convergence observables
+# (get_scf_magnetization_gpu with its planner _tb_spatial_plan_gpu, and
+# get_scf_bands_gpu). Moved from the former gpu/GPU_tk.jl.
+#
+# Main entry points: scf_magnetic_hubbard_gpu, get_scf_magnetization_gpu,
+# get_scf_bands_gpu.
+# Depends on: core/Utils.jl (spatial_sampling_plan, constant_mps), core/TBSystem.jl,
+# physics/SCF.jl (spin-channel split, staggered initial densities, _copy_with_mpo),
+# gpu/device.jl, gpu/primitives.jl, gpu/bands.jl (get_bands_gpu),
+# gpu/purification.jl (_mcweeny_purify_mpo_gpu).
+
+
 # ============================================================
-# scf.jl — GPU magnetic Hubbard SCF
+# 1. RMS and Hartree helpers
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: the RMS/Hartree helpers, scf_magnetic_hubbard_gpu
-# and its post-convergence observables (get_scf_magnetization_gpu with
-# _tb_spatial_plan_gpu, get_scf_bands_gpu).
 
 function _rms_error_gpu(a::MPS, b::MPS; cutoff::Real = 1e-12)
     diff = +(a, -1.0 * b; cutoff=Float64(cutoff))
@@ -25,8 +35,19 @@ function _hartree_mpo_from_density_gpu(rho::MPS, interaction_op::MPO, sites, bg:
 end
 
 
+# ============================================================
+# 2. SCF loop
+# ============================================================
+
 """
-    scf_magnetic_hubbard_gpu(H0, U; kwargs...) -> NamedTuple
+    scf_magnetic_hubbard_gpu(H0, U; initial_up=nothing, initial_dn=nothing,
+                             background=0.5, Nel_up=H0.N ÷ 2, Nel_dn=H0.N ÷ 2,
+                             fermi=0.0, scale=(H0.scale == 0.0 ? nothing : H0.scale),
+                             purification_scale_padding=1.05, max_scf_iter=30,
+                             scf_tol=1e-6, mix=0.4, maxdim=100, cutoff=1e-8,
+                             purif_maxiter=40, purif_tol=1e-6,
+                             type=ComplexF32, dtype=nothing, verbose=true)
+        -> NamedTuple
 
 GPU-accelerated two-channel collinear magnetic mean-field loop for the on-site
 Hubbard model. The SCF iteration keeps the density profiles, Hartree MPOs,
@@ -39,13 +60,28 @@ H_up = H0_up + U·diag(n_dn − background)
 H_dn = H0_dn + U·diag(n_up   − background)
 ```
 
-Only `density_method=:mcweeny` is supported here (grand-canonical at `fermi`);
-for particle-number-fixed SP2 use the CPU `scf_magnetic_hubbard`. A concrete
-purification `scale` is required so the GPU initial guess can be formed without
-estimating spectral bounds on CPU during the loop.
+`U` is a number (on-site) or an interaction MPO, which is then applied to
+`n − background` before the diagonal is formed.
 
-ComplexF32 eigen-decompositions can NaN at very tight cutoffs; a warning is
-emitted if `cutoff < 1e-5`, but the requested `cutoff` is used as-is.
+There is no `density_method` keyword: the densities always come from McWeeny
+purification (grand-canonical at `fermi`); for particle-number-fixed SP2 use the
+CPU `scf_magnetic_hubbard`. `Nel_up`/`Nel_dn` only enter the `particle_error`
+recorded in `history`. A concrete purification `scale` is required so the GPU
+initial guess can be formed without estimating spectral bounds on CPU during
+the loop; it is multiplied by `purification_scale_padding`.
+
+`type` (alias `dtype`; default `ComplexF32`) is the element type the
+Hamiltonians, densities and background profile are uploaded with; `ComplexF64`
+is safer at tight cutoffs. A real `type` is accepted for a real `H0`, but the
+ComplexF32 deltas of the Hartree MPOs then promote the loop to the matching
+complex type. ComplexF32 eigen-decompositions can NaN at very tight
+cutoffs: a warning is emitted whenever `cutoff < 1e-5` (whatever the `type`) and,
+for a 32-bit `type`, also below 1e-6; the requested `cutoff` is used as-is.
+
+The result carries `converged`, `iterations`, `rms_error`, `history`, the CPU
+fields `rho_up`, `rho_dn`, `density_up_mpo`, `density_dn_mpo`, `H_up`, `H_dn`,
+and their GPU counterparts `rho_up_gpu`, `rho_dn_gpu`, `density_up_mpo_gpu`,
+`density_dn_mpo_gpu`, `H_up_mpo_gpu`, `H_dn_mpo_gpu`.
 
 Post-convergence observables are intentionally separate. Use
 [`get_scf_magnetization_gpu`](@ref) or [`get_scf_bands_gpu`](@ref) on the
@@ -181,10 +217,15 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
     return _result(false, max_scf_iter)
 end
 
-# Thin 2D-grid wrapper around the shared geometry-aware planner (Utils.jl).
-# Used by get_scf_magnetization_gpu. In :point mode, `groups` lists the
-# sampled cells explicitly. In :block mode, the groups are nominal centers and
-# the caller should use plan.a/plan.b with _eval_block_mps_gpu.
+# ============================================================
+# 3. Post-convergence observables
+# ============================================================
+
+# Thin 2D-grid wrapper around the shared geometry-aware planner
+# spatial_sampling_plan (core/Utils.jl). Used by get_scf_magnetization_gpu. In
+# :point mode, `groups` lists the sampled cells explicitly. In :block mode, the
+# groups are nominal centers and the caller should use plan.a/plan.b with
+# _eval_block_mps_gpu.
 function _tb_spatial_plan_gpu(sites;
                               num_x::Int = 0,
                               num_y::Union{Nothing,Int} = nothing,
@@ -206,17 +247,23 @@ function _tb_spatial_plan_gpu(sites;
 end
 
 """
-    get_scf_magnetization_gpu(res; kwargs...) -> (values, centers, groups, n_up, n_dn)
+    get_scf_magnetization_gpu(res; num_x=0, num_y=nothing, num_avg=1, x_start=1,
+                              x_end=prod(dim(s) for s in res.H_up.sites),
+                              x_groups=nothing, box_half=0, reduce=:point,
+                              Lx=nothing)
+        -> (values, centers, groups, n_up, n_dn, reduce, stride_x, stride_y)
 
 Sample the converged magnetic SCF density matrices on GPU and extract only the
 final scalar values. If `res` carries GPU density MPOs from
 `scf_magnetic_hubbard_gpu`, they are reused directly; otherwise the CPU density
 MPOs are uploaded once. Each sampled point is evaluated in the same big-endian
-real-space convention as `binary_to_MPS`.
+real-space convention as `binary_to_MPS`. `values = (n_up .- n_dn) ./ 2`, and
+the sampling plan is the 2D grid of `spatial_sampling_plan` (`Lx` position
+qubits along x, default half of them) unless `x_groups` is given.
 
 Set `reduce=:block` to average over every unit cell in each coarse block by
 tracing the within-block position bits on GPU. In block mode, `num_x` and
-`num_y` must be powers of two.
+`num_y` must be powers of two, `x_groups` is rejected and `box_half` is ignored.
 """
 function get_scf_magnetization_gpu(res;
                                    num_x::Int = 0,
@@ -292,7 +339,9 @@ end
 Compute spin-summed mean-field bands from a converged magnetic SCF result. This
 is deliberately separate from `scf_magnetic_hubbard_gpu`: it initializes from
 the CPU `res.H_up`/`res.H_dn`, then each `get_bands_gpu` call uploads once and
-keeps the Chebyshev/QFT accumulation on GPU, extracting only scalars.
+keeps the Chebyshev/QFT accumulation on GPU, extracting only scalars. `kwargs`
+are passed unchanged to both [`get_bands_gpu`](@ref) calls (including
+`type`/`dtype`, complex only).
 """
 function get_scf_bands_gpu(res, Ncheb::Int, omega; kwargs...)
     rb_up = get_bands_gpu(res.H_up, Ncheb, omega; kwargs...)

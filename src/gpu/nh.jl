@@ -1,9 +1,20 @@
+# gpu/nh.jl — GPU non-Hermitian KPM density of states on the hermitized block
+# Hamiltonian: the NH block contraction/trace helpers, the online deterministic
+# diagonal-trace recurrences, the stochastic dual-chain recurrence, and the entry
+# points get_nh_dos_{grid,points}_gpu (stochastic) and
+# get_nh_dos_{grid,points}_diag_trace_gpu (deterministic). Moved from the former
+# gpu/GPU_tk.jl.
+#
+# Main entry points: get_nh_dos_grid_gpu, get_nh_dos_points_gpu,
+# get_nh_dos_points_diag_trace_gpu, get_nh_dos_grid_diag_trace_gpu.
+# Depends on: core/TBSystem.jl, physics/nh/model.jl (NonHermitianHamiltonian,
+# hermitize), physics/nh/kpm.jl (nh_kpm_scale, nh_block_source,
+# nh_jackson_weights), gpu/device.jl, gpu/primitives.jl.
+
+
 # ============================================================
-# nh.jl — GPU non-Hermitian KPM density of states
+# 1. NH block contraction and trace
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: the NH block contraction/trace helpers, the online
-# diagonal-trace and stochastic recurrences, and the
-# get_nh_dos_{grid,points}[_diag_trace]_gpu entry points.
 
 function _contract_nh_block_gpu(W::MPO, block_s::Index;
                                 row::Int = 2,
@@ -46,6 +57,11 @@ function _trace_nh_block_diagonal_gpu(P_gpu::MPO, block_s::Index;
         cutoff=Float64(cutoff), maxdim=maxdim)
     return _eval_fullsum_mps_1d_gpu(A_mps_gpu)
 end
+
+
+# ============================================================
+# 2. Deterministic diagonal-trace recurrences
+# ============================================================
 
 function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
                                           scale::Union{Nothing,Real} = nothing,
@@ -119,6 +135,8 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     return real(trace_acc * 2.0 / (pi^2 * (N + 1)))
 end
 
+# Same recurrence, but accumulates the diagonal MPS and returns it with the DOS.
+# No caller in the package (the entry points use the scalar variant above).
 function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
                                    scale::Union{Nothing,Real} = nothing,
                                    maxdim::Int  = 100,
@@ -188,6 +206,11 @@ function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     _gpu_gc!()
     return A_mps, dos
 end
+
+
+# ============================================================
+# 3. Stochastic dual-chain recurrence
+# ============================================================
 
 function _nh_random_probes_gpu_seed(sites::Vector{<:Index}, block_s::Index,
                                     ket_block::Int, bra_block::Int, rng,
@@ -306,16 +329,31 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     return real(dos_acc * D * 2.0 / (π^2 * (N + 1) * n_random))
 end
 
+
+# ============================================================
+# 4. Stochastic DOS entry points
+# ============================================================
+
 """
-    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; scale=nothing,
-                        nh_scale_padding=1.05, n_random, ...)
+    get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n;
+                        scale=nothing, nh_scale_padding=1.05,
+                        convention=:z_minus_H, block_placement=:post,
+                        n_random=10, seed=42, maxdim=100, cutoff=1e-8,
+                        dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+                        dtype=ComplexF64, verbose=false, printinfo=false)
         -> (xgrid, ygrid, Z)
 
 GPU stochastic non-Hermitian KPM spectral-weight grid. This mirrors
 `nh_spectrum_grid(...; mode=:stochastic)`: for each complex point
 `z = x + im*y`, the non-Hermitian Hamiltonian is hermitized on CPU, then the
 dual-chain stochastic MPS recurrence runs on GPU. Only scalar moments are
-copied back to CPU.
+copied back to CPU. `Z[iy, ix]` is the value at `xgrid[ix] + im*ygrid[iy]`.
+
+One universal scale from `nh_kpm_scale` (`scale`, `nh_scale_padding`, `dmrg_*`)
+is used for every point; one random-number generator (`seed`, or the global RNG
+for `seed=nothing`) is shared by the whole grid. `dtype` is the GPU element type,
+complex only: `ComplexF64` (default) or `ComplexF32` (warned below
+`cutoff = 1e-4`).
 
 The integer `n` follows the existing NH convention: the partial recurrence runs
 to order `2n`.
@@ -382,14 +420,20 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
 end
 
 """
-    get_nh_dos_points_gpu(H, z_points, n; scale=nothing,
-                          nh_scale_padding=1.05, n_random, point_ids, ...)
+    get_nh_dos_points_gpu(H, z_points, n;
+                          scale=nothing, nh_scale_padding=1.05,
+                          convention=:z_minus_H, block_placement=:post,
+                          n_random=10, seed=42, seed_stride=1_000_003,
+                          point_ids=nothing, maxdim=100, cutoff=1e-8,
+                          dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+                          dtype=ComplexF64, verbose=false, printinfo=false)
         -> Vector{Float64}
 
 GPU stochastic NH KPM at an explicit list of complex energies. This is the
 array-job companion to `get_nh_dos_grid_gpu`: each `z_points[j]` is independent,
 so production scripts can split a large grid over many GPUs and concatenate the
-long-form CSV outputs afterward.
+long-form CSV outputs afterward. The scale and `dtype` keywords are those of
+[`get_nh_dos_grid_gpu`](@ref).
 
 When `seed` is an integer, each point uses a deterministic seed
 `seed + seed_stride * point_id`, where `point_id` defaults to the local point
@@ -467,9 +511,21 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
     return values
 end
 
+
+# ============================================================
+# 5. Deterministic diagonal-trace DOS entry points
+# ============================================================
+
 """
-    get_nh_dos_points_diag_trace_gpu(H, z_points, n; scale=nothing,
-                                     nh_scale_padding=1.05, point_ids, ...)
+    get_nh_dos_points_diag_trace_gpu(H, z_points, n;
+                                     scale=nothing, nh_scale_padding=1.05,
+                                     convention=:z_minus_H, block_placement=:post,
+                                     point_ids=nothing, maxdim=100, cutoff=1e-8,
+                                     dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+                                     dmrg_linkdim=4, dtype=ComplexF64,
+                                     source_row=2, source_col=1,
+                                     block_row=2, block_col=1,
+                                     verbose=false, printinfo=false)
         -> Vector{Float64}
 
 Deterministic GPU NH KPM at an explicit list of complex energies. For each
@@ -478,7 +534,11 @@ recurrence runs on GPU and evaluates the total trace through diagonal
 extraction plus a GPU-resident all-sites sum. This avoids stochastic probes.
 
 The integer `n` follows the NH convention used elsewhere in this file: the
-partial recurrence runs to order `2n`.
+partial recurrence runs to order `2n`. The scale keywords are those of
+[`get_nh_dos_grid_gpu`](@ref); `dtype` is complex only (`ComplexF64` default,
+or `ComplexF32`). `source_row`/`source_col` select the block of the NH source
+term and `block_row`/`block_col` the block whose diagonal is traced;
+`point_ids` only labels the progress output.
 """
 function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
                                           scale::Union{Nothing,Real} = nothing,
@@ -548,11 +608,18 @@ function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
 end
 
 """
-    get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; scale=nothing,
-                                   nh_scale_padding=1.05, ...)
+    get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n;
+                                   scale=nothing, nh_scale_padding=1.05,
+                                   convention=:z_minus_H, block_placement=:post,
+                                   maxdim=100, cutoff=1e-8, dmrg_nsweeps=5,
+                                   dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+                                   dtype=ComplexF64, verbose=false, printinfo=false)
         -> (xgrid, ygrid, Z)
 
-Grid companion to `get_nh_dos_points_diag_trace_gpu`.
+Grid companion to [`get_nh_dos_points_diag_trace_gpu`](@ref): evaluates it on the
+`nx × ny` grid over `xlims × ylims` and returns `Z[iy, ix]` at
+`xgrid[ix] + im*ygrid[iy]`. The source and block rows/columns keep their
+defaults.
 """
 function get_nh_dos_grid_diag_trace_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::Int;
                                         scale::Union{Nothing,Real} = nothing,

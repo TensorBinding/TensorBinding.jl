@@ -1,15 +1,28 @@
+# gpu/exciton.jl — GPU exciton spectroscopy on the interleaved electron-hole
+# register: the spatial exciton LDOS get_exciton_ldos_spatial_gpu and the
+# truncation diagnostic get_exciton_cheb_convergence_gpu. Moved from the former
+# gpu/GPU_tk.jl.
+#
+# Main entry points: get_exciton_ldos_spatial_gpu, get_exciton_cheb_convergence_gpu.
+# Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl,
+# solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl (_dos_weight_matrix),
+# gpu/device.jl.
+
+
 # ============================================================
-# exciton.jl — GPU exciton LDOS and Chebyshev convergence
+# 1. Exciton LDOS
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: get_exciton_ldos_spatial_gpu and
-# get_exciton_cheb_convergence_gpu.
 
 """
     get_exciton_ldos_spatial_gpu(H, Ncheb, ω_phys_vals;
-                                 Lx, num_y, reduce,
-                                 X_list, X_groups, num_x, num_avg, x_start, x_end,
-                                 kernel, lambda, eta, m_order, maxdim, cutoff,
-                                 verbose, printinfo)
+                                 Lx=nothing, num_y=nothing, reduce=:point,
+                                 X_list=nothing, X_groups=nothing, x_groups=nothing,
+                                 num_x=0, num_avg=1, x_start=1, x_end=H.N,
+                                 kernel=:jackson, lambda=4.0, eta=0.0, m_order=4,
+                                 maxdim=100, cutoff=1e-8,
+                                 type=ComplexF32, dtype=nothing,
+                                 verbose=false, printinfo=false,
+                                 return_maxlinkdim=false)
         -> Matrix{Float64}   (Nω × n_cols)
 
 GPU-accelerated spatial exciton LDOS A(X,ω) = ⟨X,X|δ(ω−H)|X,X⟩ via MPS Chebyshev KPM.
@@ -17,26 +30,30 @@ One GPU Chebyshev recursion runs per probe position X (electron = hole = X, 1-in
 in 1:H.N) from |X,X⟩ = mpsexciton(X, H.sites); moments are scalars pulled to CPU.
 
 **1D sampling** (default, `Lx=nothing`): `num_x` coarse positions over `[x_start, x_end]`
-with `num_avg` sub-positions per coarse cell averaged per output pixel.
+with `num_avg` sub-positions per coarse cell averaged per output pixel. `num_x ≤ 0`
+(the default) means every position (`H.N` columns) in 1D, and `num_x = 8` on the
+2D grid.
 
 **2D grid** (`Lx` provided): positions are 1-indexed on the (Lx+Ly)-qubit quantics grid,
 encoded as X = ix + iy·2^Lx + 1 (row-major, 0-indexed). `num_x × num_y` coarse cells
 are sampled via `spatial_sampling_plan` with `num_avg` sub-positions per cell.
 Output columns are row-major over coarse cells (iy outer, ix inner).
 
-`X_list` / `X_groups` / `x_groups` bypass the automatic plan and pass positions directly.
+`X_list` / `X_groups` / `x_groups` bypass the automatic plan and pass positions
+directly (`X_groups` and `x_groups` are aliases; pass at most one of the three).
 
 `kernel=:hodc` selects HODC reconstruction (`eta`, `m_order`; `eta=0` → `1/(Ncheb+1)`).
 Other kernels: `:jackson` (default), `:lorentz` (`lambda`), `:fejer`, `:dirichlet`.
 
 Use `type=ComplexF32` (default, faster) or `type=ComplexF64` (safer at tight cutoffs
-or on large systems where F32 eigendecomposition can produce NaN). `dtype` is accepted
-as an alias for `type` for consistency with other GPU entry points.
+or on large systems where F32 eigendecomposition can produce NaN; a warning is
+emitted for ComplexF32 with `cutoff < 1e-6`), or `Float32`/`Float64` for a real `H`.
+`dtype` is accepted as an alias for `type` for consistency with other GPU entry points.
 
 `return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`, where
-`linkdims::Vector{Int}` is the reached MPS bond dimension per output column (the χ the
-Chebyshev recursion hit under the given `maxdim`/`cutoff`). Useful for cutoff/tolerance
-studies where χ is the observable.
+`linkdims[j]` is the `maxlinkdim` of the last Chebyshev vector of the last probe
+in column `j` (the χ the recursion hit under the given `maxdim`/`cutoff`). Useful
+for cutoff/tolerance studies where χ is the observable.
 
 !!! note "Block averaging not supported"
     `reduce=:block` is **not available** for the exciton LDOS. In the MPO-based LDOS
@@ -187,10 +204,19 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
 end
 
 
+# ============================================================
+# 2. Chebyshev convergence diagnostics
+# ============================================================
+
 """
     get_exciton_cheb_convergence_gpu(H, X, Ncheb_max;
-                                      maxdim_test, maxdim_ref, cutoff, printinfo)
+                                      maxdim_test=100, maxdim_ref=500, cutoff=1e-4,
+                                      type=ComplexF32, dtype=nothing,
+                                      printinfo=false)
         -> NamedTuple
+    get_exciton_cheb_convergence_gpu(H, X_probes::AbstractVector{<:Integer},
+                                      Ncheb_max; kwargs...)
+        -> Vector{NamedTuple}
 
 Run two parallel GPU Chebyshev KPM recursions starting from |X,X⟩ = mpsexciton(X, H.sites):
 a *reference* recursion at `maxdim_ref` and a *test* recursion at `maxdim_test`.
@@ -212,7 +238,10 @@ Returns a NamedTuple with Float64 / Int vectors of length Ncheb_max:
   norm_test    — ‖φ_test^n‖
 
 The Hamiltonian is rescaled internally: H̃ = (H − center·I) / scale, same as in
-get_exciton_ldos_spatial_gpu. All MPS live on GPU in ComplexF32 throughout.
+get_exciton_ldos_spatial_gpu. All MPS live on GPU throughout, with element type
+`type` (alias `dtype`): `ComplexF32` (default), `ComplexF64`, or
+`Float32`/`Float64` for a real `H`. The vector method runs the single-probe
+method once per entry of `X_probes`, with the same keywords.
 
 Use this to find the critical Ncheb beyond which `maxdim_test` is too small for a
 given system size — the threshold is where err_fidelity departs significantly from 0
@@ -303,7 +332,8 @@ end
 
 # Multi-probe overload: run convergence for each X in X_probes and return a
 # Vector of per-probe NamedTuples (same structure as the single-X version).
-# The Hamiltonian rescaling and GPU MPO conversion happen once per call.
+# Each probe is a full call of the single-X method, so the Hamiltonian rescaling
+# and GPU MPO conversion are repeated once per probe.
 function get_exciton_cheb_convergence_gpu(H::TBHamiltonian,
                                            X_probes::AbstractVector{<:Integer},
                                            Ncheb_max::Int; kwargs...)

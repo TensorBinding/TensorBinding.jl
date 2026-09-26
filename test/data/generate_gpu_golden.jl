@@ -1,5 +1,5 @@
 # Generator for test/data/gpu_golden.jl, the pinned ("golden") outputs of the
-# GPU entry points in src/gpu/GPU_tk.jl, checked by test/golden_gpu.jl.
+# GPU entry points in src/gpu/*.jl, checked by test/golden_gpu.jl.
 #
 # Reference: first generated from commit 1a5548b ("Run the third-round audit
 # regression tests from runtests.jl") on branch Anouar, before the Tier 1 code

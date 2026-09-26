@@ -1,14 +1,25 @@
+# gpu/purification.jl — GPU McWeeny purification: _mcweeny_purify_gpu (from a
+# TBHamiltonian, initial guess built on CPU) and the fully GPU-resident
+# _mcweeny_purify_mpo_gpu with its initial guess _purification_initial_guess_gpu.
+# Moved from the former gpu/GPU_tk.jl. The GPU SP2 loop is inline in get_C_gpu
+# (gpu/topology.jl).
+#
+# Main entry points (internal): _mcweeny_purify_mpo_gpu (used by
+# scf_magnetic_hubbard_gpu in gpu/scf.jl) and _mcweeny_purify_gpu (called by
+# examples/manuscript_files/scripts/nonequilibrium/manuscript_nhdens_gpu.jl).
+# Depends on: core/TBSystem.jl (TBHamiltonian), physics/Purification.jl
+# (purification_initial_guess), gpu/device.jl.
+
+
 # ============================================================
-# purification.jl — GPU McWeeny purification
+# 1. McWeeny from a TBHamiltonian (CPU initial guess)
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: _mcweeny_purify_gpu and the GPU-resident
-# _mcweeny_purify_mpo_gpu with its initial guess. The GPU SP2 loop is inline
-# in get_C_gpu (topology.jl).
 
 # GPU McWeeny purification of a (rescaled) single-channel Hamiltonian.
 # Builds the initial guess on CPU, moves it to GPU, iterates the McWeeny map
 # on GPU (F32), and returns the purified density matrix back on CPU
-# (ComplexF64). Mirrors the purification loop in `get_C_gpu`.
+# (ComplexF64), or on GPU with `return_gpu=true`. Mirrors the purification loop
+# in `get_C_gpu`.
 function _mcweeny_purify_gpu(H::TBHamiltonian; ϵF::Real = 0.0,
                               fermi::Union{Nothing,Real} = nothing,
                               maxdim::Int, cutoff::Real,
@@ -33,6 +44,13 @@ function _mcweeny_purify_gpu(H::TBHamiltonian; ϵF::Real = 0.0,
     return return_gpu ? P : _to_cpu_mpo(P)
 end
 
+
+# ============================================================
+# 2. GPU-resident McWeeny on an uploaded Hamiltonian MPO
+# ============================================================
+
+# Linear initial guess ρ₀ = (1/2 + (ϵF + center)/(2 scale))·I − H/(2 scale), formed
+# on GPU (the GPU analogue of purification_initial_guess).
 function _purification_initial_guess_gpu(H_mpo_gpu::MPO, sites;
                                          ϵF::Real,
                                          scale::Real,

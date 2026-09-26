@@ -1,9 +1,19 @@
+# gpu/conductivity.jl — conductivity-only GPU helpers: the QFT operator pair, the
+# GPU Hadamard product, weighted MPO sums, the GPU density matrix and the Tucker
+# component builder. Moved from the former gpu/GPU_tk.jl. No other code in src/,
+# test/ or examples/ calls these helpers; kept in the package for now (the Tier 1
+# checklist in docs/dev/REORGANISATION_TODO.md plans to move them out of src/).
+#
+# Main entry points (internal): _build_qft_ops_gpu, _hadamard_mpo_gpu,
+# _weighted_mpo_sum_gpu, _get_density_matrix_gpu, _build_tucker_components_gpu.
+# Depends on: core/Utils.jl (fix_sites, _bra_ket), core/TBSystem.jl (_pos_sites),
+# physics/rpa/bubble.jl (_get_density_matrix), physics/qft/conjugation.jl
+# (_embed_in_full_sites), gpu/device.jl, gpu/primitives.jl (_make_delta_gpu).
+
+
 # ============================================================
-# conductivity.jl — conductivity-only Tucker/QFT/Hadamard block
+# 1. Building blocks (QFT pair, Hadamard, weighted sums, density)
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl. No other code in src/, test/ or examples/ calls
-# these helpers (QFT operator build, GPU Hadamard product, weighted MPO sum,
-# GPU density matrix, Tucker components); kept in the package for now.
 
 # Build the two QFT operators for the given Hamiltonian and move them to GPU F32.
 # Call once before the Tucker pairs loop so the build cost is amortised across
@@ -18,8 +28,11 @@ function _build_qft_ops_gpu(H::TBHamiltonian)
     return _to_gpu_mpo(FTirev_cpu), _to_gpu_mpo(FTrev_cpu)
 end
 
-# GPU-safe Hadamard product: identical logic to _hadamard_mpo but uses
-# _make_delta_gpu so all contractions stay within ComplexF32 on GPU.
+# GPU-safe Hadamard product: the site-wise product of hadamard_mpo (core/Utils.jl),
+# but built with _make_delta_gpu so all contractions stay within ComplexF32 on
+# GPU. Unlike hadamard_mpo it contracts the deltas into A before B (see below),
+# writes the result directly onto `out_sites` (no fresh-index remap), and
+# truncates only when `maxdim` or `cutoff` is given.
 function _hadamard_mpo_gpu(A::MPO, B::MPO, out_sites::Vector{<:Index};
                            maxdim::Int = typemax(Int), cutoff::Real = 0.0)
     L      = length(A)
@@ -116,7 +129,7 @@ end
 
 
 # ============================================================
-# Shared Tucker component builder
+# 2. Shared Tucker component builder
 # ============================================================
 
 # Computes C_tuck, B_tuck, A_tuck, E_tuck fully on GPU.

@@ -1,9 +1,18 @@
+# gpu/timeev.jl — GPU time-evolution trajectories: RK4 evolution of a density
+# matrix under a non-Hermitian Hamiltonian (rk4_step_dm_nh_gpu,
+# get_nh_density_trajectory_gpu) and TDVP evolution of a state
+# (get_state_amplitude_trajectory_gpu), each with its GPU sampler. Moved from the
+# former gpu/GPU_tk.jl.
+#
+# Main entry points: get_nh_density_trajectory_gpu,
+# get_state_amplitude_trajectory_gpu, rk4_step_dm_nh_gpu.
+# Depends on: core/Utils.jl (spatial_sampling_plan), core/TBSystem.jl
+# (TBHamiltonian), gpu/device.jl, gpu/primitives.jl.
+
+
 # ============================================================
-# timeev.jl — GPU time-evolution trajectories
+# 1. Density-matrix RK4 under a non-Hermitian Hamiltonian
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: RK4 density-matrix evolution under a non-Hermitian
-# Hamiltonian (get_nh_density_trajectory_gpu) and TDVP state amplitudes
-# (get_state_amplitude_trajectory_gpu), with their samplers.
 
 function _nh_von_neumann_rhs_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO;
                                  maxdim::Int, cutoff::Real)
@@ -15,6 +24,9 @@ function _nh_von_neumann_rhs_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO;
     return ComplexF32(0, -1) * diff
 end
 
+# One RK4 step of dρ/dt = -i(Hρ − ρH†) on GPU MPOs (H, H† and ρ already on GPU).
+# The step coefficients dt/2, dt, dt/6 and the right-hand-side constants are
+# ComplexF32 whatever the element type of the MPOs.
 function rk4_step_dm_nh_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO, dt::Real;
                             maxdim::Int = 200,
                             cutoff::Real = 1e-8,
@@ -81,7 +93,12 @@ function _mpo_ket_siteinds(W::MPO)
 end
 
 """
-    get_nh_density_trajectory_gpu(H, rho0; nsteps, dt, sample_every, ...)
+    get_nh_density_trajectory_gpu(H, rho0; nsteps, dt, sample_every=1,
+                                  num_x=0, num_avg=1, reduce=:point,
+                                  x_start=1, x_end=nothing, x_groups=nothing,
+                                  maxdim=200, cutoff=1e-8,
+                                  truncate_intermediates=true, dtype=ComplexF32,
+                                  printinfo=false, verbose=false)
         -> (density, times, centers, groups, maxlinkdims)
 
 GPU RK4 evolution of a density matrix under a static non-Hermitian Hamiltonian
@@ -89,14 +106,20 @@ using `d rho/dt = -i(H rho - rho Hdagger)`. `H` may be a `TBHamiltonian` or an
 MPO; `rho0` may be a CPU or GPU MPO. The Hamiltonian and density matrix are
 uploaded once and the RK4 loop stays on GPU. At every sampled time, the diagonal
 of `rho(t)` is extracted on GPU and only scalar values at the requested groups
-are copied back to CPU.
+are copied back to CPU. `nsteps` and `dt` are required; samples are taken every
+`sample_every` steps and at the last step.
+
+`dtype` is the GPU element type, complex only: `ComplexF32` (default) or
+`ComplexF64`; an MPO that is already on GPU keeps the type it was uploaded with.
+The RK4 step (`rk4_step_dm_nh_gpu`) uses ComplexF32 step coefficients whatever
+the `dtype`.
 
 Sampling follows the 1D `spatial_sampling_plan` convention: use `num_x=0` to
 sample all sites, or set `num_x` to a smaller number for coarse production
 output. `num_avg > 1` averages a few sub-points per sampled spatial bin in
 `:point` mode. With `reduce=:block`, `num_x` must be a power of two and each
 output value is the GPU block average over a contiguous interval of size
-`2^L / num_x`.
+`2^L / num_x`. `x_end=nothing` means the last site.
 """
 function get_nh_density_trajectory_gpu(H, rho0::MPO;
                                        nsteps::Int,
@@ -168,6 +191,11 @@ function get_nh_density_trajectory_gpu(H, rho0::MPO;
             maxlinkdims=maxlinks)
 end
 
+
+# ============================================================
+# 2. TDVP state amplitudes
+# ============================================================
+
 function _state_amplitude_component(z::Complex, component::Symbol)
     component === :real && return real(z)
     component === :imag && return imag(z)
@@ -216,7 +244,15 @@ function _state_norm_gpu(ψ_gpu::MPS)
 end
 
 """
-    get_state_amplitude_trajectory_gpu(H, psi0; nsteps, dt, sample_every, ...)
+    get_state_amplitude_trajectory_gpu(H, psi0; nsteps, dt, sample_every=1,
+                                       num_x=0, num_avg=1, reduce=:point,
+                                       x_start=1, x_end=nothing, x_groups=nothing,
+                                       component=:real, pointavg=:complex,
+                                       normalize_each_step=false,
+                                       maxdim=200, cutoff=1e-8,
+                                       reverse_step=false, outputlevel=0, nsite=2,
+                                       dtype=ComplexF32, printinfo=false,
+                                       verbose=false)
         -> (amplitude, times, centers, groups, norms, maxlinkdims)
 
 GPU TDVP evolution of a single-particle MPS state under the physical
@@ -227,15 +263,24 @@ therefore a loss term `-im * Γ` (Γ >= 0) damps the norm, matching
 `evolve_with_tdvp(H::TBHamiltonian,...)` on CPU and the NH RK4 convention
 `dρ/dt = -i(Hρ - ρH†)`. `H` may be a `TBHamiltonian` or an MPO. The Hamiltonian
 and initial state are uploaded once, the TDVP loop stays on GPU, and only
-sampled scalar amplitudes are copied back to CPU.
+sampled scalar amplitudes are copied back to CPU. `nsteps` and `dt` are
+required; `nsite`, `reverse_step`, `outputlevel` and `normalize_each_step` are
+passed to `tdvp` (the last also renormalizes the state after every step).
 
 The returned `amplitude` matrix has rows = sampled positions and columns =
-sampled times. By default it stores `real(<x|psi(t)>)`, matching panel (d) of
-`APSOS_NH_testing`. Set `component=:imag`, `:abs`, or `:probability` if needed.
+sampled times. By default it stores `real(<x|psi(t)>)`; `component` may be
+`:real`, `:imag`, `:abs`, `:abs2` or `:probability` (the same as `:abs2`).
 
 Sampling follows `spatial_sampling_plan` in 1D. `reduce=:point` samples
-representative positions or explicit groups. `reduce=:block` returns the
-block-averaged complex amplitude over contiguous intervals.
+representative positions or explicit groups; `pointavg` sets how a group is
+averaged: `:complex` (default) averages the complex amplitudes and then takes
+`component`, while `:abs`/`:abs2` average `|ψ|`/`|ψ|²` site by site (then
+`component` is not applied). `reduce=:block` returns the block-averaged complex
+amplitude over contiguous intervals, then takes `component`.
+
+`dtype` is the GPU element type, complex only: `ComplexF32` (default) or
+`ComplexF64`; an MPS/MPO that is already on GPU keeps the type it was uploaded
+with.
 """
 function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
                                             nsteps::Int,

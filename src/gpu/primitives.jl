@@ -1,19 +1,32 @@
+# gpu/primitives.jl — GPU-safe building blocks shared by the src/gpu/ entry points:
+# the QFT sandwich used by get_bands_gpu, dense GPU delta/one-hot tensors, MPS
+# element evaluation (point, block, all-sites sum), diagonal extraction and density
+# profiles, diagonal-MPO embedding and auxiliary-site projection. Moved from the
+# former gpu/GPU_tk.jl.
+#
+# Main entry points: extract_diagonal_to_mps_gpu and density_profile_from_dm_gpu
+# (documented); internal: _apply_qft_conj_gpu, _make_delta_gpu, _onehot_gpu, the
+# _eval_*_gpu samplers, _mps_to_diagonal_mpo_gpu, _project_aux_gpu.
+# Depends on: core/Utils.jl (constant_mps), gpu/device.jl (CUDA bridge, uploads).
+
+
 # ============================================================
-# primitives.jl — GPU-safe primitives
+# 1. QFT sandwich
 # ============================================================
-# Moved from the former gpu/GPU_tk.jl: the QFT sandwich used by get_bands_gpu, dense GPU
-# delta/one-hot tensors, MPS element evaluation (point, block, all-sites sum),
-# diagonal extraction and density profiles, diagonal-MPO embedding and
-# auxiliary-site projection.
 
 # Apply the QFT sandwich U·W·U† on GPU using pre-built GPU QFT operators.
-# Returns a GPU F32 MPO.
+# Returns a GPU MPO with the element type of its inputs.
 function _apply_qft_conj_gpu(W::MPO, FTirev_gpu::MPO, FTrev_gpu::MPO;
                               tol::Real = 1e-9, maxdim::Int = 100)
     Op1 = apply(W, FTirev_gpu; cutoff=tol, maxdim=maxdim)
     Op2 = apply(swapprime(FTrev_gpu, 0 => 1), Op1; cutoff=tol, maxdim=maxdim)
     return ITensorMPS.truncate!(Op2; cutoff=tol, maxdim=maxdim)
 end
+
+
+# ============================================================
+# 2. Dense GPU delta and one-hot tensors
+# ============================================================
 
 # delta() produces a DiagTensor{Float64} (CPU).  When contracted with a
 # Dense{ComplexF32} GPU tensor, NDTensors promotes the output to ComplexF64
@@ -37,6 +50,11 @@ function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Number}=ComplexF32)
     arr[v] = one(T)
     return ITensors.itensor(_tb_cuda_module().CuArray(arr), i)
 end
+
+
+# ============================================================
+# 3. MPS element evaluation (point, block, all-sites sum)
+# ============================================================
 
 # Evaluate an MPS element at bit-index `idx` entirely on GPU using the legacy
 # LSB-first convention used by the GPU QFT/bands path.
@@ -162,6 +180,26 @@ function _eval_block_mps_1d_complex_gpu(A::MPS, ixp::Int, a::Int, L::Int)
     return ComplexF64(scalar(acc))
 end
 
+# Sum of all MPS elements on GPU (every site contracted with [1, 1, …]); the
+# trace of the diagonal in the NH diagonal-trace DOS (gpu/nh.jl).
+function _eval_fullsum_mps_1d_gpu(A::MPS)
+    cuda = _tb_cuda_module()
+    s    = siteinds(A)
+    ElT  = eltype(A[1])
+    acc  = cuda.cu(ITensor(one(ElT)))
+    for i in 1:length(s)
+        v_arr = fill(one(ElT), dim(s[i]))
+        v = ITensors.itensor(cuda.CuArray(v_arr), s[i])
+        acc *= A[i] * v
+    end
+    return real(scalar(acc))
+end
+
+
+# ============================================================
+# 4. Diagonal extraction, density profiles and diagonal MPOs
+# ============================================================
+
 # extract_diagonal_to_mps (in core/Utils.jl) uses plain onehot() which returns a
 # CPU DiagBlockSparse tensor.  Contracting a GPU MPO tensor with a CPU onehot
 # fails (GPU×CPU mismatch). Here the one-hot basis vectors are explicitly dense
@@ -198,11 +236,14 @@ function extract_diagonal_to_mps_gpu(M::MPO)::MPS
 end
 
 """
-    density_profile_from_dm_gpu(density_mpo, sites=nothing; mode=:direct) -> MPS
+    density_profile_from_dm_gpu(density_mpo, sites=nothing; mode=:direct,
+                                maxdim=100, cutoff=1e-8) -> MPS
 
 GPU-resident analogue of `density_profile_from_dm`. If `density_mpo` is a CPU
-MPO it is uploaded once; if it is already on GPU it is used in place. The
-returned profile is a GPU MPS. `mode=:complement` returns `1 - diag(D)` on GPU.
+MPO it is uploaded once (as ComplexF32); if it is already on GPU it is used in
+place. The returned profile is a GPU MPS. `mode=:complement` returns
+`1 - diag(D)` on GPU, summed with `maxdim`/`cutoff` on the sites `sites`
+(default: the site indices of the diagonal).
 """
 function density_profile_from_dm_gpu(density_mpo::MPO, sites=nothing;
                                      mode::Symbol = :direct,
@@ -220,6 +261,8 @@ function density_profile_from_dm_gpu(density_mpo::MPO, sites=nothing;
     error("Unsupported density extraction mode :$mode. Use :direct or :complement.")
 end
 
+# GPU analogue of mps_to_diagonal_mpo (core/Utils.jl): embed a profile MPS as the
+# diagonal of an MPO on `sites`, with dense GPU deltas from _make_delta_gpu.
 function _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO
     N = length(mps)
     mpo_tensors = Vector{ITensor}(undef, N)
@@ -242,10 +285,16 @@ function _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO
     return MPO(mpo_tensors)
 end
 
+
+# ============================================================
+# 5. Auxiliary-site projection
+# ============================================================
+
 # Project one auxiliary site out of a GPU MPO.
-# Mirrors project_aux (CPU) but builds a dense ComplexF32 projector on GPU so
-# every contraction stays on the GPU.  The contracted site is absorbed into the
-# neighbouring site, returning an MPO with one fewer site.
+# Mirrors project_aux (CPU, core/AuxDOF.jl) but builds a dense projector on GPU,
+# with the element type of T, so every contraction stays on the GPU.  The
+# contracted site is absorbed into the neighbouring site, returning an MPO with
+# one fewer site.
 #
 # setelt() produces a DiagBlockSparse ITensor that cu() leaves on CPU — we
 # therefore build the |sec><sec| projector as an explicit dense array instead.
@@ -272,17 +321,4 @@ function _project_aux_gpu(T::MPO, idx::Index, sec::Int; side::Symbol=:post)
         absorbed = contracted * T[2]     # merge the dangling bond into site 2
         return MPO(vcat([absorbed], [T[i] for i in 3:L]))
     end
-end
-
-function _eval_fullsum_mps_1d_gpu(A::MPS)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:length(s)
-        v_arr = fill(one(ElT), dim(s[i]))
-        v = ITensors.itensor(cuda.CuArray(v_arr), s[i])
-        acc *= A[i] * v
-    end
-    return real(scalar(acc))
 end

@@ -1,7 +1,8 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Random
 using TensorBinding: get_Hamiltonian, add_spin!, add_superconductivity!, add_loss!, TBHamiltonian
 
-# Characterization ("golden") tests for src/gpu/GPU_tk.jl.
+# Characterization ("golden") tests for the GPU code in src/gpu/*.jl (the former
+# src/gpu/GPU_tk.jl).
 #
 # Every public *_gpu entry point is run on a tiny system (L = 2..4, Ncheb <= 12)
 # and its output is pinned twice:
@@ -34,7 +35,8 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_superconductivity!, add_los
 # The runner module below is shared with the generator, which includes this file
 # with `GPU_GOLDEN_GENERATOR` defined so that only the module is loaded. The whole
 # test is skipped (@test_skip) when CUDA.jl is missing or not functional, except
-# the CPU-only case of `_reconstruct_ldos_moment_columns` (it lives in GPU_tk.jl).
+# the CPU-only case of `_reconstruct_ldos_moment_columns` (it lived in GPU_tk.jl
+# and is now in src/solvers/kpm/kernels.jl).
 
 module GPUGoldenRunner
 
@@ -203,7 +205,7 @@ fibonacci() = TB.fibonacci_hamiltonian(4; A = 1.0, B = 2.0, model = :onsite, t =
 pure_dm(H, x) = (ψ = TB.binary_to_MPS(x, length(H.sites), H.sites); outer(ψ', ψ))
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 0. CPU-only helper that lives in GPU_tk.jl
+# 0. CPU-only helper formerly in GPU_tk.jl (now solvers/kpm/kernels.jl)
 # ═════════════════════════════════════════════════════════════════════════════
 case!("reconstruct_ldos_moment_columns",
     () -> (moments = [1.0 2.0; 0.5 -1.0; -0.25 0.75],

@@ -1,7 +1,13 @@
-# ============================================================
-# topology.jl — GPU Chern marker
-# ============================================================
-# Moved from the former gpu/GPU_tk.jl: get_C_gpu.
+# gpu/topology.jl — the GPU real-space Chern marker get_C_gpu, the GPU mirror of
+# get_C (physics/Topology.jl), with the McWeeny/SP2 purification loops run on GPU.
+# One entry point, so the file has no sections. Moved from the former
+# gpu/GPU_tk.jl.
+#
+# Main entry point: get_C_gpu.
+# Depends on: core/Utils.jl (basis MPS, diagonal MPOs, postpend_op),
+# core/TBSystem.jl, solvers/DMRG.jl (_ensure_scale!), physics/Topology.jl
+# (position operators, _get_projector), physics/Purification.jl
+# (purification_initial_guess), gpu/device.jl.
 
 """
     get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
@@ -10,7 +16,7 @@
               Nel=nothing, quenched=true, dtype=ComplexF32,
               printinfo=false) -> Function
 
-GPU-accelerated real-space Chern marker.  Mirrors `get_C` exactly but runs all
+GPU-accelerated real-space Chern marker.  Mirrors `get_C` but runs all
 MPO×MPO products (projector assembly and C1–C4 construction) on GPU.
 
 Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
@@ -27,6 +33,8 @@ Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
   on CPU (via `_get_projector`), then moved to GPU.
 - `get_C`'s `sequential` keyword is not accepted; the quenched marker is always
   assembled from the C1–C4 MPOs.
+- The default `method` is `:mcweeny` (`get_C` defaults to `:KPM`), and
+  `printinfo` prints progress.
 
 All other keyword arguments are identical to `get_C`.
 """

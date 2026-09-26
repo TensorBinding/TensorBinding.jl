@@ -1,10 +1,24 @@
-# ============================================================
-# bands.jl — GPU band structure
-# ============================================================
-# Moved from the former gpu/GPU_tk.jl: get_bands_gpu.
+# gpu/bands.jl — the GPU band structure A(k, ω): get_bands_gpu, the GPU mirror of
+# the TBHamiltonian overload of get_bands (physics/qft/bands.jl). One entry point,
+# so the file has no sections. Moved from the former gpu/GPU_tk.jl.
+#
+# Main entry point: get_bands_gpu.
+# Depends on: core/Utils.jl (fix_sites, kspace_sampling_plan), core/TBSystem.jl,
+# core/AuxDOF.jl (aux-site detection), lattice/masks2d.jl (legacy sublattice
+# masks), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+# (_kpm_weight_matrix), physics/qft/kpath.jl (kpath_setup), gpu/device.jl,
+# gpu/primitives.jl.
 
 """
-    get_bands_gpu(H, Ncheb, ω_phys_vals; kwargs...)
+    get_bands_gpu(H, Ncheb, ω_phys_vals;
+                  kpath=nothing, kpath_lattice=nothing, kpath_Lx=nothing,
+                  spin_proj=false, proj_s=nothing, nambu_proj=false, proj_nambu=nothing,
+                  layer_proj=false, proj_layer=nothing, sublattice=false, proj_sl=nothing,
+                  sublat_proj=false, k_groups_override=nothing,
+                  xmin=0, xmax=nothing, num_x=60, num_avg=1,
+                  ymin=0, ymax=nothing, num_y=10,
+                  kernel=:jackson, lambda=4.0, tol=1e-9, maxdim=100, cutoff=1e-10,
+                  printinfo=false, type=ComplexF32, dtype=nothing)
         -> Matrix{Float64}  or  NamedTuple(Ak, ticks, labels)
 
 GPU-accelerated version of `get_bands`.
@@ -13,16 +27,17 @@ GPU handles: the full Chebyshev MPO recurrence (the dominant cost) and the
              QFT sandwich applied to each Chebyshev moment.
 CPU handles: k-group setup, KPM weight matrix, final scalar accumulation.
 
-Use `type=ComplexF32` or `type=ComplexF64` to choose the GPU tensor datatype. Real types
-are rejected, because the quantics Fourier transform is complex.
+Use `type=ComplexF32` (default) or `type=ComplexF64` to choose the GPU tensor
+datatype. Real types are rejected, because the quantics Fourier transform is complex.
 `dtype=...` is accepted as an alias for consistency with the non-Hermitian GPU
 entry points. ComplexF32 is faster, while ComplexF64 is safer at tight cutoffs
-on large systems.
+on large systems (a warning is emitted for ComplexF32 with `cutoff < 1e-6`).
 
-All keyword arguments are identical to the TBHamiltonian overload of
-`get_bands`.  The return value is also identical: a plain `Matrix{Float64}`
-when no `kpath` is given, or a `NamedTuple(Ak, ticks, labels)` when a
-high-symmetry path is requested.
+The other keyword arguments are identical to the TBHamiltonian overload of
+`get_bands`; as in `get_bands(H, Ncheb, ω_phys_vals)`, the dimension D is taken
+from `H.geometry`, which must be set.  The return value is also identical: a
+plain `Matrix{Float64}` when no `kpath` is given, or a
+`NamedTuple(Ak, ticks, labels)` when a high-symmetry path is requested.
 
 Usage:
 ```julia

@@ -1,12 +1,16 @@
-# ============================================================
-# device.jl — CUDA bridge, CPU/GPU transfers, GPU-residency checks
-# ============================================================
-# Moved from the former gpu/GPU_tk.jl. The first src/gpu/ file to be included, so
-# it also carries the toolkit overview that opened that file.
+# gpu/device.jl — the CUDA bridge (CUDA.jl is looked up at run time; it is not a
+# package dependency), CPU ↔ GPU transfers of MPOs and MPSs with a chosen element
+# type, the resolution of the `type`/`dtype` keyword pair, and GPU-residency checks.
+# Moved from the former gpu/GPU_tk.jl. This is the first src/gpu/ file included, so
+# it also carries the overview of the whole GPU toolkit (below) that opened that file.
 #
-# ============================================================
-# src/gpu/ — GPU production toolkit for TensorBinding
-# ============================================================
+# Main entry points (internal; every other src/gpu/ file uses them): _check_gpu,
+# _gpu_gc!, _to_gpu_mpo / _to_gpu_mps, _to_cpu_mpo / _to_cpu_mps, _resolve_gpu_type,
+# _ensure_gpu_mpo / _ensure_gpu_mps.
+# Depends on: no other file of the package (ITensors/NDTensors only, and CUDA.jl
+# found through Base.loaded_modules).
+#
+# THE src/gpu/ TOOLKIT
 #
 # src/gpu/ is the GPU companion to the CPU solvers in src/solvers/ and
 # src/core/Utils.jl.  Its purpose is to make LARGE PRODUCTION RUNS (big L,
@@ -25,30 +29,43 @@
 #   The *_gpu functions are not exported; call them qualified, e.g.
 #   TensorBinding.get_bands_gpu(...).
 #
-# ENTRY POINTS (each documented in its own docstring)
+# ENTRY POINTS (each documented in its own docstring; defining file in brackets)
+#   Chebyshev moments
+#     KPM_Tn_gpu(H_mpo, N, sites; ...)                    — T_n(H̃) MPOs  [kpm.jl]
 #   Spectral / spatial maps
-#     get_bands_gpu(H, Ncheb, ω; kpath=..., ...)          — A(k,ω) bands
+#     get_bands_gpu(H, Ncheb, ω; kpath=..., ...)          — A(k,ω) bands  [bands.jl]
 #     get_ldos_spatial_gpu(H, Ncheb, ω; reduce=..., ...)  — A(r,ω) real-space LDOS
 #                                                            (:point or :block sampling,
 #                                                             sublattice :average/:resolve)
+#                                                            [kpm.jl]
 #     get_ldos_spatial_mps_gpu(H, Ncheb, ω; ...)          — A(r,ω), independent
 #                                                            GPU MPS recursions (including
 #                                                            projected position spaces)
-#     get_dos_stochastic_gpu(H, Ncheb, ω; ...)            — stochastic-trace DOS
+#                                                            [kpm.jl]
+#     get_dos_stochastic_gpu(H, Ncheb, ω; ...)            — stochastic-trace DOS  [kpm.jl]
+#     get_exciton_ldos_spatial_gpu(H, Ncheb, ω; ...)      — A(X,ω) exciton LDOS  [exciton.jl]
+#     get_exciton_cheb_convergence_gpu(H, X, Ncheb_max; ...)
+#                                                          — truncation check  [exciton.jl]
+#   Non-Hermitian DOS  [nh.jl]
 #     get_nh_dos_grid_gpu(H, xlims, nx, ylims, ny, n; ...) — NH stochastic DOS
 #     get_nh_dos_points_gpu(H, z_points, n; ...)           — NH stochastic DOS at selected z
 #     get_nh_dos_grid_diag_trace_gpu(H, xlims, nx, ylims, ny, n; ...)
 #                                                           — NH deterministic diagonal-trace DOS
 #     get_nh_dos_points_diag_trace_gpu(H, z_points, n; ...) — NH deterministic DOS at selected z
+#   Time evolution  [timeev.jl]
 #     get_nh_density_trajectory_gpu(H, rho0; ...)          — NH density diag vs t
 #     get_state_amplitude_trajectory_gpu(H, psi0; ...)     — TDVP state amplitudes vs t
-#     get_exciton_ldos_spatial_gpu(H, Ncheb, ω; ...)      — A(X,ω) exciton LDOS
-#   Topology
+#   Topology  [topology.jl]
 #     get_C_gpu(H, xfunc, yfunc; ...)                     — real-space Chern marker
-#   Magnetic Hubbard SCF
+#   Magnetic Hubbard SCF  [scf.jl]
 #     scf_magnetic_hubbard_gpu(H0, U; ...)                — collinear mean-field loop
 #     get_scf_magnetization_gpu(res; ...)                 — post-hoc <Sz>(r) map
 #     get_scf_bands_gpu(res, Ncheb, ω; ...)                — post-hoc spin-summed bands
+#   Diagonals  [primitives.jl]
+#     extract_diagonal_to_mps_gpu(M), density_profile_from_dm_gpu(density_mpo, sites; ...)
+#   Internal only: gpu/purification.jl (GPU McWeeny, used by scf.jl) and
+#   gpu/conductivity.jl (Tucker/QFT/Hadamard helpers, no caller). What each file
+#   calls into is in the source map of src/TensorBinding.jl.
 #
 # GPU/CPU SPLIT (general pattern — see each function's docstring for specifics)
 #   GPU : Chebyshev recurrence (KPM_Tn_gpu / inline recursions), weighted MPO
@@ -59,16 +76,21 @@
 #   CPU : one-time setup (Hamiltonian/operator construction, Tucker SVDs,
 #         k-/spatial-group bookkeeping, KPM weight matrices, McWeeny initial
 #         guesses) and the final per-ω scalar accumulation.
+#   (_weighted_mpo_sum_gpu and _hadamard_mpo_gpu are in gpu/conductivity.jl.)
 #
-# PRECISION (WHY F32)
-#   The NDTensors GPU backend requires Float32 storage, so every MPO/MPS
-#   moved to GPU via _to_gpu_mpo / _to_gpu_mps is first cast to ComplexF32;
-#   results moved back via _to_cpu_mpo / _to_cpu_mps are promoted to
-#   ComplexF64. This is fine for the observables computed here, but
-#   ComplexF32 eigendecomposition can produce NaN at very tight `cutoff` on
-#   large systems — functions on this path warn (without altering the value)
-#   if `cutoff` is below a recommended floor, typically 1e-4 to 1e-6
-#   depending on the routine.
+# PRECISION (ELEMENT TYPES)
+#   The one-argument uploads _to_gpu_mpo(mpo) / _to_gpu_mps(mps) cast to
+#   ComplexF32 before cu(); the two-argument methods _to_gpu_mpo(mpo, T) /
+#   _to_gpu_mps(mps, T) upload with element type T. The entry points take T
+#   from their `type` keyword (alias `dtype`), or from `dtype` alone for
+#   get_C_gpu and the NH-DOS and time-evolution entry points: ComplexF32 by
+#   default (ComplexF64 for the NH-DOS entry points), and a real type only
+#   where the docstring allows it, for a real Hamiltonian. Results moved back
+#   via _to_cpu_mpo / _to_cpu_mps are promoted to ComplexF64. ComplexF32
+#   eigendecomposition can produce NaN at very tight `cutoff` on large
+#   systems — functions on this path warn (without altering the value) if
+#   `cutoff` is below a recommended floor, typically 1e-4 to 1e-6 depending
+#   on the routine.
 #
 # REAL-SPACE / BIT-ORDERING CONVENTIONS
 #   Real-space sampling (_eval_mps_bigendian_gpu, _eval_block_mps_gpu, used by
@@ -77,13 +99,11 @@
 #   eval_mps/binary_to_MPS convention exactly. The QFT/bands path
 #   (_eval_diag_mps_gpu, used by get_bands_gpu) instead uses the legacy
 #   LSB-first convention required by the quantics-Fourier MPO. The two are
-#   not interchangeable — see spatial_sampling_plan in Utils.jl for how the
-#   shared sampler keeps them straight.
-# ============================================================
+#   not interchangeable — see eval_mps and _eval_diag_mps in core/Utils.jl.
 
 
 # ============================================================
-# CUDA bridge (no hard dependency)
+# 1. CUDA bridge (no hard dependency)
 # ============================================================
 
 const _TB_CUDA = Ref{Union{Module,Nothing}}(nothing)
@@ -121,7 +141,7 @@ end
 
 
 # ============================================================
-# MPO type conversion
+# 2. CPU ↔ GPU transfers and the element-type keyword
 # ============================================================
 
 # CPU F64 → CPU F32  (prerequisite before cu())
@@ -204,9 +224,12 @@ function _to_gpu_mps(mps::MPS, T::Type{<:Real})
 end
 
 # Resolve the type/dtype kwarg pair into a single GPU element type and emit a
-# tight-cutoff NaN warning for 32-bit types. Shared by the Hermitian/KPM GPU
-# entry points that accept real OR complex element types (ComplexF32 default;
-# ComplexF64 / Float32 / Float64 also valid — real types only for real H).
+# tight-cutoff NaN warning for 32-bit types. Called with the pair by the entry
+# points that accept real OR complex element types (KPM_Tn_gpu,
+# get_ldos_spatial_mps_gpu, get_dos_stochastic_gpu,
+# get_exciton_cheb_convergence_gpu, scf_magnetic_hubbard_gpu: ComplexF32 default;
+# ComplexF64 / Float32 / Float64 also valid — real types only for real H), and
+# with `dtype, nothing` by the complex-only get_C_gpu and trajectory entry points.
 function _resolve_gpu_type(caller::String, type, dtype, cutoff)
     gpu_type = dtype === nothing ? type : dtype
     dtype !== nothing && dtype != type && type != ComplexF32 &&
@@ -244,7 +267,7 @@ end
 
 
 # ============================================================
-# GPU-residency checks
+# 3. GPU-residency checks
 # ============================================================
 
 function _is_gpu_tensor(T::ITensor)
