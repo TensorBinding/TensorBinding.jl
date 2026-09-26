@@ -97,9 +97,21 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                             (uses TBSystem, KPM_tk)
 #   physics/Supercond_tk.jl — spin/Nambu extensions: add_spin!,
 #                              add_superconductivity! (uses TBSystem, Utils)
-#   gpu/GPU_tk.jl          — GPU production toolkit: _gpu mirrors of KPM/QFT/
+#   gpu/*.jl               — GPU production toolkit: _gpu mirrors of KPM/QFT/
 #                             Topology/SCF/TwoParticle entry points (uses CUDA,
-#                             KPM_tk, QFT_tk, Topology_tk, SCF_tk, TwoParticle_tk)
+#                             KPM_tk, QFT_tk, Topology_tk, SCF_tk, TwoParticle_tk):
+#     gpu/device.jl        — CUDA bridge, CPU/GPU transfers, residency checks
+#     gpu/primitives.jl    — GPU-safe delta/one-hot, MPS evaluation, diagonal
+#                             extraction, aux projection, QFT sandwich
+#     gpu/kpm.jl           — KPM_Tn_gpu, spatial LDOS, stochastic DOS
+#     gpu/bands.jl         — get_bands_gpu
+#     gpu/topology.jl      — get_C_gpu
+#     gpu/purification.jl  — GPU McWeeny purification
+#     gpu/scf.jl           — scf_magnetic_hubbard_gpu and its observables
+#     gpu/exciton.jl       — exciton LDOS and Chebyshev convergence
+#     gpu/nh.jl            — non-Hermitian KPM density of states
+#     gpu/timeev.jl        — NH density and TDVP amplitude trajectories
+#     gpu/conductivity.jl  — conductivity-only Tucker/QFT/Hadamard helpers
 
 include("core/Utils.jl")
 include("core/Hamiltonian.jl")
@@ -143,6 +155,16 @@ include("physics/qft/kpath.jl")
 include("physics/qft/exciton_spectra.jl")
 include("physics/qft/aux_projection.jl")
 include("physics/Supercond_tk.jl")
-include("gpu/GPU_tk.jl")
+include("gpu/device.jl")
+include("gpu/primitives.jl")
+include("gpu/kpm.jl")
+include("gpu/bands.jl")
+include("gpu/topology.jl")
+include("gpu/purification.jl")
+include("gpu/scf.jl")
+include("gpu/exciton.jl")
+include("gpu/nh.jl")
+include("gpu/timeev.jl")
+include("gpu/conductivity.jl")
 
 end

@@ -61,7 +61,7 @@ const MESSAGE_PREFIX_CHARS = 60
 # ── get_ldos_spatial_mps_gpu automatic plan ─────────────────────────────────────
 # `get_ldos_spatial_mps_gpu` builds its groups inline, before any GPU work, so it
 # cannot be reached on a CPU-only machine. The body below is a VERBATIM copy of
-# the block of src/gpu/GPU_tk.jl that starts at `groups = if x_groups !== nothing`
+# the block of src/gpu/kpm.jl that starts at `groups = if x_groups !== nothing`
 # inside `get_ldos_spatial_mps_gpu` and ends with the validation loop
 # `for group in groups ... end`, with the keyword defaults of that function
 # (GPU_MPS_AUTO_DEFAULTS). `H = (; N)` stands in for the Hamiltonian so that the
@@ -119,7 +119,7 @@ end
 
 # ── Drift guard for the copy above ─────────────────────────────────────────────
 const RUNNER_FILE = @__FILE__
-const GPU_TK_FILE = joinpath(pkgdir(TensorBinding), "src", "gpu", "GPU_tk.jl")
+const GPU_TK_FILE = joinpath(pkgdir(TensorBinding), "src", "gpu", "kpm.jl")
 
 # Keyword defaults of get_ldos_spatial_mps_gpu that the copy reproduces, with
 # all whitespace removed (the copy writes `min(N, 100)` and `N` for `H.N`).
@@ -153,7 +153,7 @@ end
     check_inline_plan_copy() -> Bool
 
 `true` when `gpu_mps_auto_groups` above still reproduces the automatic plan of
-`get_ldos_spatial_mps_gpu` in src/gpu/GPU_tk.jl: the same block, whitespace
+`get_ldos_spatial_mps_gpu` in src/gpu/kpm.jl: the same block, whitespace
 aside, and the same keyword defaults. Logs the first differing line otherwise.
 """
 function check_inline_plan_copy()

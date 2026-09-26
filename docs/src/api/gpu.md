@@ -8,5 +8,7 @@ GPU-accelerated mirrors of the CPU solvers, powered by CUDA.jl. Most entry point
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["gpu/GPU_tk.jl"]
+Pages   = ["gpu/device.jl", "gpu/primitives.jl", "gpu/kpm.jl", "gpu/bands.jl",
+           "gpu/topology.jl", "gpu/purification.jl", "gpu/scf.jl", "gpu/exciton.jl",
+           "gpu/nh.jl", "gpu/timeev.jl", "gpu/conductivity.jl"]
 ```
