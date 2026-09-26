@@ -52,14 +52,14 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                              ModelRegistry*, sublattice*, NNNeighbor*
 # core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors
 #                            → Utils, Hamiltonian, TBSystem, hopping2d*, Supercond*
-# position_spaces/Fibonacci.jl  Zeckendorf space, Fib* ops, constructors, conumbering
-#                            → Utils, TBSystem, geometry*
-# position_spaces/MetallicMean.jl  metallic-mean (A → AᵐB) spaces on Qudit registers
-#                            → Utils, TBSystem, geometry*
-# position_spaces/KBonacci.jl  k-bonacci spaces (no k consecutive ones)
-#                            → Utils, TBSystem, Fibonacci (Fib* ops), geometry*
 # lattice/geometry.jl        i → position closures, *_positions tables, _resolve_2d_geometry
 #                            → TBSystem
+# position_spaces/Fibonacci.jl  Zeckendorf space, Fib* ops, constructors, conumbering
+#                            → Utils, TBSystem, geometry
+# position_spaces/MetallicMean.jl  metallic-mean (A → AᵐB) spaces on Qudit registers
+#                            → Utils, TBSystem, geometry
+# position_spaces/KBonacci.jl  k-bonacci spaces (no k consecutive ones)
+#                            → Utils, TBSystem, Fibonacci (Fib* ops), geometry
 # lattice/masks2d.jl         row-break/select and checkerboard mask MPOs
 #                            → Utils (sigma_d/u ops)
 # lattice/hopping2d.jl       binary shift MPOs (generate_kin_u/d), 2D kinetic builders
@@ -74,10 +74,10 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, TBSystem, geometry, masks2d, hopping2d
 # lattice/Flake.jl           signed-distance functions, QTCI flake masks
 #                            → TBSystem
-# lattice/Bilayer.jl         commensurate bilayer/multilayer builders
-#                            → Utils, TBSystem, geometry, hopping2d, sublattice, Twisted*
 # lattice/Twisted.jl         twisted multilayer builders
 #                            → Utils, Hamiltonian, TBSystem, geometry, ModelRegistry
+# lattice/Bilayer.jl         commensurate bilayer/multilayer builders
+#                            → Utils, TBSystem, geometry, hopping2d, sublattice, Twisted
 # lattice/TJunction.jl       T/Y-junction builders
 #                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, masks2d, NNNeighbor
 # solvers/DMRG.jl            dmrg_gs, dmrg_spectral, the KPM spectral bounds (_ensure_scale!)
@@ -98,39 +98,39 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, MPOTools, TBSystem
 # solvers/Timeev.jl          TDVP, propagator MPO, density-matrix RK4 and observables
 #                            → Utils, Hamiltonian, TBSystem
-# physics/SCF.jl             mean-field SCF loops and drivers, BdG and profile helpers
-#                            → Utils, TBSystem, AuxDOF, DMRG, Purification*, Supercond*
-# physics/rpa/bubble.jl      polarization bubble Π₀(ω) via KPM, Krylov or Haydock
-#                            → Utils, MPOTools, TBSystem, DMRG, kpm/recursion, kpm/cached,
-#                              Krylov, Purification*
-# physics/rpa/cheb2d.jl      double-Chebyshev bubbles (full MPO, k-space diagonal)
-#                            → Utils, TBSystem, DMRG, kpm/recursion, rpa/bubble, qft/conjugation*
-# physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
-#                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation*
-# physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
-#                            → Utils, TBSystem, NNNeighbor, kpm/recursion, kpm/cached,
-#                              Purification*
 # physics/Purification.jl    McWeeny, SP2, get_density
 #                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached
+# physics/Supercond.jl       pairing MPOs, spin/BdG assemblers
+#                            → Utils (sigma_± ops), MPOTools, Hamiltonian, AuxDOF
+# physics/SCF.jl             mean-field SCF loops and drivers, BdG and profile helpers
+#                            → Utils, TBSystem, AuxDOF, DMRG, Purification, Supercond
 # physics/TwoParticle.jl     exciton Hamiltonian, momentum-space exciton MPS probes
 #                            → Utils, MPOTools, TBSystem
+# physics/qft/conjugation.jl conjugate_by_qft(_exciton), aux-site embedding, get_spect_k
+#                            → Utils, MPOTools, TBSystem
+# physics/qft/kpath.jl       high-symmetry k-paths
+#                            → —
+# physics/qft/bands.jl       get_bands; the overview of physics/qft/
+#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
+#                              qft/conjugation, qft/kpath
+# physics/qft/exciton_spectra.jl  exciton bands and continuum
+#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, TwoParticle
+# physics/rpa/bubble.jl      polarization bubble Π₀(ω) via KPM, Krylov or Haydock
+#                            → Utils, MPOTools, TBSystem, DMRG, kpm/recursion, kpm/cached,
+#                              Krylov, Purification
+# physics/rpa/cheb2d.jl      double-Chebyshev bubbles (full MPO, k-space diagonal)
+#                            → Utils, TBSystem, DMRG, kpm/recursion, rpa/bubble, qft/conjugation
+# physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
+#                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation
+# physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
+#                            → Utils, TBSystem, NNNeighbor, kpm/recursion, kpm/cached,
+#                              Purification
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
 #                            → Utils, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
 #                            → Utils, TBSystem, DMRG, nh/model
 # physics/QPI.jl             quasiparticle interference (LDOS difference + QFT)
 #                            → Utils, TBSystem, Flake, DMRG, kpm/kernels
-# physics/qft/conjugation.jl conjugate_by_qft(_exciton), aux-site embedding, get_spect_k
-#                            → Utils, MPOTools, TBSystem
-# physics/qft/bands.jl       get_bands; the overview of physics/qft/
-#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
-#                              qft/conjugation, qft/kpath*
-# physics/qft/kpath.jl       high-symmetry k-paths
-#                            → —
-# physics/qft/exciton_spectra.jl  exciton bands and continuum
-#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, TwoParticle
-# physics/Supercond.jl       pairing MPOs, spin/BdG assemblers
-#                            → Utils (sigma_± ops), MPOTools, Hamiltonian, AuxDOF
 # gpu/device.jl              CUDA bridge, transfers, residency checks; GPU toolkit overview
 #                            → —
 # gpu/primitives.jl          one-hot, MPS evaluation, diagonals, aux projection, QFT sandwich
@@ -163,10 +163,10 @@ include("core/MPOTools.jl")
 include("core/Hamiltonian.jl")
 include("core/TBSystem.jl")
 include("core/AuxDOF.jl")
+include("lattice/geometry.jl")
 include("position_spaces/Fibonacci.jl")
 include("position_spaces/MetallicMean.jl")
 include("position_spaces/KBonacci.jl")
-include("lattice/geometry.jl")
 include("lattice/masks2d.jl")
 include("lattice/hopping2d.jl")
 include("lattice/presets.jl")
@@ -174,8 +174,8 @@ include("core/ModelRegistry.jl")
 include("lattice/sublattice.jl")
 include("lattice/NNNeighbor.jl")
 include("lattice/Flake.jl")
-include("lattice/Bilayer.jl")
 include("lattice/Twisted.jl")
+include("lattice/Bilayer.jl")
 include("lattice/TJunction.jl")
 include("solvers/DMRG.jl")
 include("solvers/kpm/kernels.jl")
@@ -186,21 +186,21 @@ include("solvers/kpm/dos.jl")
 include("solvers/kpm/exciton.jl")
 include("solvers/Krylov.jl")
 include("solvers/Timeev.jl")
+include("physics/Purification.jl")
+include("physics/Supercond.jl")
 include("physics/SCF.jl")
+include("physics/TwoParticle.jl")
+include("physics/qft/conjugation.jl")
+include("physics/qft/kpath.jl")
+include("physics/qft/bands.jl")
+include("physics/qft/exciton_spectra.jl")
 include("physics/rpa/bubble.jl")
 include("physics/rpa/cheb2d.jl")
 include("physics/rpa/dyson.jl")
 include("physics/Topology.jl")
-include("physics/Purification.jl")
-include("physics/TwoParticle.jl")
 include("physics/nh/model.jl")
 include("physics/nh/kpm.jl")
 include("physics/QPI.jl")
-include("physics/qft/conjugation.jl")
-include("physics/qft/bands.jl")
-include("physics/qft/kpath.jl")
-include("physics/qft/exciton_spectra.jl")
-include("physics/Supercond.jl")
 include("gpu/device.jl")
 include("gpu/primitives.jl")
 include("gpu/kpm.jl")

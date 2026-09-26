@@ -278,7 +278,7 @@ the affected golden cases in the same commit.
       into, derived from the code (every package-defined name each file uses, plus ITensors op
       names and the builders `build_hamiltonian` looks up by Symbol); `*` marks a call into a
       file included later.
-- [ ] Fix the include order where a file calls into a later one. Of the original list, KPM ↔ QFT
+- [x] Fix the include order where a file calls into a later one. Of the original list, KPM ↔ QFT
       and Krylov → RPA are gone (the shared helpers moved to `solvers/kpm/kernels.jl` and
       `solvers/Krylov.jl`) and TBSystem → Supercond is now AuxDOF → Supercond. The map in
       `TensorBinding.jl` shows what is left: Utils → Fibonacci; TBSystem → position_spaces/,
@@ -287,6 +287,10 @@ the affected golden cases in the same commit.
       Supercond; rpa/bubble, Topology → Purification; rpa/cheb2d, rpa/dyson → qft/conjugation;
       qft/bands → qft/kpath. Several are cycles (TBSystem ↔ the lattice builders), so not every
       one can be fixed by reordering.
+      *Reordered: geometry before the position spaces, Twisted before Bilayer, Purification
+      and Supercond before SCF, the qft/ files before rpa/, kpath before bands. What is left
+      is cyclic and cannot be fixed by ordering: Utils → Fibonacci, TBSystem ↔ the
+      `get_Hamiltonian` builders, AuxDOF ↔ hopping2d/Supercond (marked with `*` in the map).*
 - [x] File names: drop the `_tk` suffix; rename `2Dlattice_tk.jl`; fix header comments that
       cite files that do not exist (`utils.jl`, `2D_lattice.jl`, `twoparticle_tk.jl`, `krylov_tk.jl`).
       (renamed in 9f59782, comments in the next commit; tier1/rename) `lattice/{NNNeighbor,Flake,
