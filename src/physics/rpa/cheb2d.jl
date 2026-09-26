@@ -2,14 +2,17 @@
 # chebyshev2d_gf_coeffs, the full-MPO bubbles get_bubble_mpo_cheb2d(_tucker), the
 # k-space diagonal bubbles get_bubble_diag_cheb2d(_svd, _tucker), and their helpers
 # (_cheb2d_out_sites, _cheb2d_require_position_sites, _jackson_kernel, _weighted_mpo_sum).
-# Split verbatim from the former physics/RPA_tk.jl.
+# Split from the former physics/RPA_tk.jl. The five bubbles share the kernels of
+# section 2: the prologue _cheb2d_setup, the plain (m,n) sweep _cheb2d_pair_sweep!, the
+# Tucker steps _tucker_bases, _tucker_components, _tucker_hadamard and _tucker_accumulate,
+# and the per-term _hadamard_difference, _cheb2d_kdiag and _accumulate_scaled!.
 #
 # Entry points: get_bubble_mpo_cheb2d, get_bubble_mpo_cheb2d_tucker,
 #   get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker,
 #   chebyshev2d_gf_coeffs.
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
-#   physics/rpa/bubble.jl, physics/qft/conjugation.jl* (* = included later; see the
-#   source map in src/TensorBinding.jl).
+#   physics/rpa/bubble.jl, physics/qft/conjugation.jl (see the source map in
+#   src/TensorBinding.jl).
 
 # ============================================================
 # 1. Chebyshev coefficients and site helpers
@@ -76,7 +79,294 @@ end
 
 
 # ============================================================
-# 2. Full-MPO bubbles
+# 2. Shared kernels: prologue, (m,n) sweep, Tucker steps
+# ============================================================
+
+# The prologue of every cheb2d bubble, in the order each of them ran it: check the
+# site structure (_cheb2d_out_sites for the MPO bubbles, which also makes their output
+# indices; _cheb2d_require_position_sites for the k-space diagonals), fix the spectral
+# bounds, build T_n(H̃₁) and T_n(H̃₂) (shared when H1 === H2), the density matrices P₁
+# and P₂, and the coefficient matrices C[m,n](ω) of every ω in `ωlist`.
+#
+#   lowrank = false  the plain (m,n) sweep: also precomputes TP1[m] = T_m(H̃₁)·P₁ and
+#                    TP2[n] = T_n(H̃₂)·P₂, and reports each Hamiltonian's steps.
+#   lowrank = true   the SVD and Tucker variants: damps every C(ω) with `kernel`
+#                    (:jackson or :none) and reports the steps jointly.
+#   diagonal = true  the output indices are siteinds("Qubit", H.L), made after P₂.
+#
+# `fname` names the caller in errors, `tag` starts its progress lines.
+# Returns (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites) with N = Ncheb + 1, and
+# TP1 = TP2 = nothing when lowrank.
+function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVector{<:Real},
+                       fname::AbstractString, tag::AbstractString;
+                       diagonal::Bool, lowrank::Bool, kernel::Symbol = :none,
+                       Ncheb::Int, maxdim::Int, cutoff::Real, ϵF::Real, P_method::Symbol,
+                       purify_method::Symbol, purify_maxdim::Int, purify_maxiters::Int,
+                       purify_tol::Float64, η::Real, verbose::Bool)
+    L1 = H1.L; L2 = H2.L
+    @assert L1 == L2 "$fname: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
+    L  = L1
+    nω = length(ωlist)
+    if diagonal
+        _cheb2d_require_position_sites(H1, H2, fname)
+        out_sites = nothing
+    else
+        # Fresh physical indices shared by all Hadamard product calls
+        out_sites = _cheb2d_out_sites(H1, H2, fname)
+    end
+
+    _ensure_scale!(H1)
+    _ensure_scale!(H2)
+    scale1 = H1.scale; center1 = H1.center
+    scale2 = H2.scale; center2 = H2.center
+
+    verbose && println(lowrank ? "$tag: building Chebyshev moments (Ncheb=$Ncheb)..." :
+                                 "$tag: building T_n(H1) moments (Ncheb=$Ncheb)...")
+    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
+                       scale=scale1, center=center1,
+                       maxdim=maxdim, cutoff=cutoff, verbose=false)
+    if H1 === H2
+        Tn2 = Tn1
+    else
+        verbose && !lowrank && println("$tag: building T_n(H2) moments...")
+        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
+                           scale=scale2, center=center2,
+                           maxdim=maxdim, cutoff=cutoff, verbose=false)
+    end
+    N = length(Tn1)   # = Ncheb + 1  (T_0 … T_Ncheb)
+
+    verbose && println(lowrank ? "$tag: computing density matrices..." :
+                                 "$tag: computing P1...")
+    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
+                             purify_method, purify_maxdim, purify_maxiters,
+                             purify_tol, verbose)
+    if H1 === H2
+        P2 = P1
+    else
+        verbose && !lowrank && println("$tag: computing P2...")
+        P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
+                                 purify_method, purify_maxdim, purify_maxiters,
+                                 purify_tol, verbose)
+    end
+
+    TP1 = TP2 = nothing
+    if !lowrank
+        verbose && println("$tag: precomputing T_m(H1)·P1 and T_n(H2)·P2...")
+        TP1 = [ITensorMPS.truncate!(
+                   apply(Tn1[m], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+               for m in 1:N]
+        TP2 = [ITensorMPS.truncate!(
+                   apply(Tn2[n], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+               for n in 1:N]
+    end
+
+    diagonal && (out_sites = siteinds("Qubit", L))
+
+    # All coefficient matrices at once: cheap DCT scalars, one N×N matrix per ω.
+    verbose && println(lowrank ? "$tag: computing coefficient matrices for $nω frequencies..." :
+                                 "$tag: precomputing C[m,n](ω) for all $nω frequencies...")
+    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
+             for ω in ωlist]
+
+    if lowrank
+        if kernel == :jackson
+            g_jk  = _jackson_kernel(N)
+            G_jk  = g_jk * g_jk'         # N×N outer product, applied element-wise
+            C_all = [G_jk .* C for C in C_all]
+            verbose && println("$tag: Jackson kernel applied")
+        elseif kernel != :none
+            error("$fname: unknown kernel=$kernel (use :jackson or :none)")
+        end
+    end
+
+    return (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites)
+end
+
+
+# D = (A ⊙ B) − (C ⊙ E) on `out_sites`, the ω-independent term of every cheb2d bubble:
+# D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n] in the plain sweep, the same built from
+# weighted sums of the moments in the SVD and Tucker variants.
+function _hadamard_difference(A::MPO, B::MPO, C::MPO, E::MPO, out_sites;
+                              maxdim::Int, cutoff::Real)
+    had_A = hadamard_mpo(A, B, out_sites; maxdim=maxdim, cutoff=cutoff)
+    had_B = hadamard_mpo(C, E, out_sites; maxdim=maxdim, cutoff=cutoff)
+    return ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
+end
+
+
+# k-space diagonal of an ω-independent term D, as an MPS: replace_sites maps D's output
+# indices onto `sites` (H1.sites, the Qubit structure conjugate_by_qft expects), then
+# QFT conjugation and diagonal extraction.
+function _cheb2d_kdiag(D::MPO, sites; qft_tol::Real, qft_maxdim::Int, cutoff::Real)
+    D_phys = replace_sites(D, sites)
+    D_k    = conjugate_by_qft(D_phys; tol=qft_tol, maxdim=qft_maxdim)
+    return ITensorMPS.truncate!(extract_diagonal_to_mps(D_k); cutoff=cutoff)
+end
+
+
+# acc[i] += c·X, truncated after each addition (maxdim in the sum, then cutoff); the
+# first term initialises an empty (`nothing`) slot. The per-ω accumulation of every
+# cheb2d bubble, for MPO and MPS terms alike.
+function _accumulate_scaled!(acc::AbstractVector, i::Int, c::Number, X;
+                             maxdim::Int, cutoff::Real)
+    if acc[i] === nothing
+        acc[i] = c * X
+    else
+        acc[i] = +(acc[i], c * X; maxdim=maxdim)
+        ITensorMPS.truncate!(acc[i]; cutoff=cutoff)
+    end
+    return acc
+end
+
+
+# The online multi-ω (m,n) sweep of the plain cheb2d bubbles: the double loop runs once,
+# each pair's ω-independent term X = term(m, n) is built once and c_mn(ω)·X is added
+# into acc[iω] for every ω with |c_mn(ω)| ≥ coeff_tol. Rows m and pairs (m,n) whose
+# coefficient is below coeff_tol for every ω are skipped without any MPO work.
+# Returns (n_computed, n_skipped).
+function _cheb2d_pair_sweep!(term, acc::AbstractVector, C_all::AbstractVector, N::Int;
+                             coeff_tol::Real, maxdim::Int, cutoff::Real, verbose::Bool)
+    n_computed = 0
+    n_skipped  = 0
+
+    for m in 1:N
+        # Row-level skip: if |C[m,n]| < coeff_tol for ALL n and ALL ω, skip
+        max_row = maximum(maximum(abs, @view C[m, :]) for C in C_all)
+        if max_row < coeff_tol
+            n_skipped += N
+            continue
+        end
+
+        for n in 1:N
+            # Pair-level skip: negligible for every ω → no MPO work needed
+            max_c = maximum(abs(C[m, n]) for C in C_all)
+            if max_c < coeff_tol
+                n_skipped += 1
+                continue
+            end
+            n_computed += 1
+
+            X = term(m, n)
+
+            # Accumulate c_mn(ω) · X into each acc[iω] simultaneously
+            for (iω, C) in enumerate(C_all)
+                c = C[m, n]
+                abs(c) < coeff_tol && continue
+                _accumulate_scaled!(acc, iω, c, X; maxdim=maxdim, cutoff=cutoff)
+            end
+        end
+
+        verbose && println("  m=$m/$N  (computed $n_computed, skipped $n_skipped so far)")
+    end
+
+    return n_computed, n_skipped
+end
+
+
+# Tucker-2 bases of the stacked coefficient matrices, shared by all frequencies:
+# HOSVD (independent mode SVDs of the mode-1 unfolding [C(ω₁) | C(ω₂) | …] and the
+# mode-2 unfolding [C(ω₁)ᵀ | …], each N × (N·nω)) gives U_m (N×r_m) and V_n (N×r_n),
+# r = min(tucker_maxrank, #σ > tucker_tol·σ_max); `hooi_iters` HOOI steps then
+# re-optimise them jointly (alternating projection onto the optimal subspaces for the
+# given rank). Returns (U_m, V_n, A_core) with the core tensor
+# A_core[s₁,s₂,ω] = (U_m† C(ω) V_n)[s₁,s₂], so that C(ω) ≈ U_m A_core[:,:,ω] V_n†.
+function _tucker_bases(C_all::AbstractVector{<:AbstractMatrix};
+                       tucker_tol::Real, tucker_maxrank::Int, hooi_iters::Int)
+    T1 = hcat(C_all...)                            # N × (N·nω) — mode-1 unfolding
+    T2 = hcat([transpose(C) for C in C_all]...)   # N × (N·nω) — mode-2 unfolding
+    F1 = svd(T1); F2 = svd(T2)
+    r_m = min(tucker_maxrank, sum(F1.S .> tucker_tol * F1.S[1]))
+    r_n = min(tucker_maxrank, sum(F2.S .> tucker_tol * F2.S[1]))
+    U_m = F1.U[:, 1:r_m]
+    V_n = F2.U[:, 1:r_n]
+
+    for _ in 1:hooi_iters
+        Y   = hcat([C * V_n  for C in C_all]...)   # N × (r_n·nω): contract n with V_n
+        U_m = svd(Y).U[:, 1:r_m]
+        Z   = hcat([C' * U_m for C in C_all]...)   # N × (r_m·nω): contract m with U_m
+        V_n = svd(Z).U[:, 1:r_n]
+    end
+
+    nω     = length(C_all)
+    A_core = zeros(ComplexF64, r_m, r_n, nω)
+    for iω in 1:nω
+        A_core[:, :, iω] = U_m' * C_all[iω] * V_n
+    end
+    return U_m, V_n, A_core
+end
+
+
+# The ω-independent Tucker components: the bare moments are summed first and P applied
+# once per component, r_m + r_n MPO-MPO multiplications in total instead of the 2N of
+# the plain variants' TP1/TP2:
+#   C_tuck[s₁] = Σ_m U_m[m,s₁]·Tn1[m],        A_tuck[s₁] = C_tuck[s₁]·P1,
+#   B_tuck[s₂] = Σ_n conj(V_n[n,s₂])·Tn2[n],  E_tuck[s₂] = B_tuck[s₂]·P2.
+# A component whose weights are all negligible is `nothing`.
+# Returns (A_tuck, B_tuck, C_tuck, E_tuck).
+function _tucker_components(U_m::AbstractMatrix, V_n::AbstractMatrix,
+                            Tn1::Vector{MPO}, Tn2::Vector{MPO}, P1, P2;
+                            maxdim::Int, cutoff::Real)
+    r_m = size(U_m, 2); r_n = size(V_n, 2)
+    C_tuck = [_weighted_mpo_sum(U_m[:, s1],        Tn1; maxdim=maxdim, cutoff=cutoff) for s1 in 1:r_m]
+    B_tuck = [_weighted_mpo_sum(conj.(V_n[:, s2]), Tn2; maxdim=maxdim, cutoff=cutoff) for s2 in 1:r_n]
+    A_tuck = [isnothing(C_tuck[s1]) ? nothing :
+              ITensorMPS.truncate!(apply(C_tuck[s1], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+              for s1 in 1:r_m]
+    E_tuck = [isnothing(B_tuck[s2]) ? nothing :
+              ITensorMPS.truncate!(apply(B_tuck[s2], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+              for s2 in 1:r_n]
+    return A_tuck, B_tuck, C_tuck, E_tuck
+end
+
+
+# The r_m × r_n ω-independent Tucker terms
+#   D[s₁,s₂] = post((A_tuck[s₁] ⊙ B_tuck[s₂]) − (C_tuck[s₁] ⊙ E_tuck[s₂]))
+#            = post(Σ_{m,n} U[m,s₁] conj(V[n,s₂]) · D_mn),
+# with post = identity for the MPO bubble and the k-space diagonal (_cheb2d_kdiag) for
+# the diagonal one. Returns a Matrix{Union{Nothing, T}}, `nothing` where a component is.
+function _tucker_hadamard(post, A_tuck::AbstractVector, B_tuck::AbstractVector,
+                          C_tuck::AbstractVector, E_tuck::AbstractVector, out_sites,
+                          ::Type{T}; maxdim::Int, cutoff::Real, verbose::Bool) where {T}
+    r_m = length(A_tuck); r_n = length(B_tuck)
+    D   = Matrix{Union{Nothing, T}}(nothing, r_m, r_n)
+    for s1 in 1:r_m, s2 in 1:r_n
+        (isnothing(A_tuck[s1]) || isnothing(B_tuck[s2]) ||
+         isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
+
+        D[s1, s2] = post(_hadamard_difference(A_tuck[s1], B_tuck[s2], C_tuck[s1], E_tuck[s2],
+                                              out_sites; maxdim=maxdim, cutoff=cutoff))
+        if verbose
+            idx = (s1 - 1) * r_n + s2
+            (idx % 10 == 0 || idx == r_m * r_n) &&
+                println("  ($s1,$s2)/($r_m,$r_n) done  [$idx/$(r_m*r_n)]")
+        end
+    end
+    return D
+end
+
+
+# Per-ω Tucker accumulation, scalar × term additions only:
+#   acc[ω] = Σ_{s₁,s₂} A_core[s₁,s₂,ω] · D[s₁,s₂],
+# skipping core entries below coeff_tol and missing terms. Returns a
+# Vector{Union{Nothing, T}}, `nothing` for an ω that received no term.
+function _tucker_accumulate(A_core::AbstractArray{<:Number,3}, D::AbstractMatrix,
+                            ::Type{T}; coeff_tol::Real, maxdim::Int,
+                            cutoff::Real) where {T}
+    r_m, r_n, nω = size(A_core)
+    acc = Vector{Union{Nothing, T}}(nothing, nω)
+    for iω in 1:nω
+        for s1 in 1:r_m, s2 in 1:r_n
+            a = A_core[s1, s2, iω]
+            (abs(a) < coeff_tol || isnothing(D[s1, s2])) && continue
+            _accumulate_scaled!(acc, iω, a, D[s1, s2]; maxdim=maxdim, cutoff=cutoff)
+        end
+    end
+    return acc
+end
+
+
+# ============================================================
+# 3. Full-MPO bubbles
 # ============================================================
 
 """
@@ -143,100 +433,19 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                                 η::Real               = 1e-3,
                                 coeff_tol::Real       = 1e-12,
                                 verbose::Bool         = false)
-    L1 = H1.L; L2 = H2.L
-    @assert L1 == L2 "get_bubble_mpo_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
-    L = L1
-    # Fresh physical indices shared by all Hadamard product calls
-    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d")
+    S = _cheb2d_setup(H1, H2, ωlist, "get_bubble_mpo_cheb2d", "cheb2d";
+                      diagonal=false, lowrank=false, Ncheb, maxdim, cutoff, ϵF, P_method,
+                      purify_method, purify_maxdim, purify_maxiters, purify_tol, η, verbose)
+    N  = S.N   # = Ncheb + 1  (T_0 … T_Ncheb)
+    nω = length(ωlist)
 
-    _ensure_scale!(H1)
-    _ensure_scale!(H2)
-    scale1  = H1.scale;  center1 = H1.center
-    scale2  = H2.scale;  center2 = H2.center
-
-    verbose && println("cheb2d: building T_n(H1) moments (Ncheb=$Ncheb)...")
-    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
-                         scale=scale1, center=center1,
-                         maxdim=maxdim, cutoff=cutoff, verbose=false)
-    if H1 === H2
-        Tn2 = Tn1
-    else
-        verbose && println("cheb2d: building T_n(H2) moments...")
-        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
-                             scale=scale2, center=center2,
-                             maxdim=maxdim, cutoff=cutoff, verbose=false)
-    end
-    N = length(Tn1)   # = Ncheb + 1  (T_0 … T_Ncheb)
-
-    verbose && println("cheb2d: computing P1...")
-    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
-                              purify_method, purify_maxdim, purify_maxiters,
-                              purify_tol, verbose)
-    if H1 === H2
-        P2 = P1
-    else
-        verbose && println("cheb2d: computing P2...")
-        P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
-                                  purify_method, purify_maxdim, purify_maxiters,
-                                  purify_tol, verbose)
-    end
-
-    verbose && println("cheb2d: precomputing T_m(H1)·P1 and T_n(H2)·P2...")
-    TP1 = [ITensorMPS.truncate!(
-               apply(Tn1[m], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-           for m in 1:N]
-    TP2 = [ITensorMPS.truncate!(
-               apply(Tn2[n], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-           for n in 1:N]
-
-    nω        = length(ωlist)
-
-    # --- Online multi-ω: precompute all coefficient matrices at once, ---
-    # --- then sweep (m,n) once and accumulate into every Π(ω).       ---
-    verbose && println("cheb2d: precomputing C[m,n](ω) for all $nω frequencies...")
-    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
-             for ω in ωlist]
-
+    # --- Online multi-ω: sweep (m,n) once and accumulate into every Π(ω). ---
     Π = Vector{Union{Nothing, MPO}}(nothing, nω)
-    n_computed = 0
-    n_skipped  = 0
-
-    for m in 1:N
-        # Row-level skip: if |C[m,n]| < coeff_tol for ALL n and ALL ω, skip
-        max_row = maximum(maximum(abs, @view C[m, :]) for C in C_all)
-        if max_row < coeff_tol
-            n_skipped += N
-            continue
-        end
-
-        for n in 1:N
-            # Pair-level skip: negligible for every ω → no MPO work needed
-            max_c = maximum(abs(C[m, n]) for C in C_all)
-            if max_c < coeff_tol
-                n_skipped += 1
-                continue
-            end
-            n_computed += 1
-
-            # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
-            had_A = hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            D_mn  = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
-
-            # Accumulate c_mn(ω) · D_mn into each Π(ω) simultaneously
-            for (iω, C) in enumerate(C_all)
-                c = C[m, n]
-                abs(c) < coeff_tol && continue
-                if Π[iω] === nothing
-                    Π[iω] = c * D_mn
-                else
-                    Π[iω] = +(Π[iω], c * D_mn; maxdim=maxdim)
-                    ITensorMPS.truncate!(Π[iω]; cutoff=cutoff)
-                end
-            end
-        end
-
-        verbose && println("  m=$m/$N  (computed $n_computed, skipped $n_skipped so far)")
+    n_computed, n_skipped = _cheb2d_pair_sweep!(Π, S.C_all, N; coeff_tol, maxdim, cutoff,
+                                                verbose) do m, n
+        # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
+        _hadamard_difference(S.TP1[m], S.Tn2[n], S.Tn1[m], S.TP2[n], S.out_sites;
+                             maxdim, cutoff)
     end
 
     verbose && println("cheb2d: done — $(n_computed)/$(N*N) (m,n) pairs computed, $n_skipped skipped")
@@ -298,121 +507,29 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
                                        kernel::Symbol        = :jackson,
                                        hooi_iters::Int       = 3,
                                        verbose::Bool         = false)
-    L1 = H1.L; L2 = H2.L
-    @assert L1 == L2 "get_bubble_mpo_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
-    L  = L1
+    S = _cheb2d_setup(H1, H2, ωlist, "get_bubble_mpo_cheb2d_tucker", "cheb2d_mpo_tucker";
+                      diagonal=false, lowrank=true, kernel, Ncheb, maxdim, cutoff, ϵF,
+                      P_method, purify_method, purify_maxdim, purify_maxiters, purify_tol, η,
+                      verbose)
     nω = length(ωlist)
-    out_sites = _cheb2d_out_sites(H1, H2, "get_bubble_mpo_cheb2d_tucker")
 
-    _ensure_scale!(H1); _ensure_scale!(H2)
-    scale1 = H1.scale; center1 = H1.center
-    scale2 = H2.scale; center2 = H2.center
-
-    verbose && println("cheb2d_mpo_tucker: building Chebyshev moments (Ncheb=$Ncheb)...")
-    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
-                        scale=scale1, center=center1,
-                        maxdim=maxdim, cutoff=cutoff, verbose=false)
-    if H1 === H2
-        Tn2 = Tn1
-    else
-        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
-                            scale=scale2, center=center2,
-                            maxdim=maxdim, cutoff=cutoff, verbose=false)
-    end
-    N = length(Tn1)
-
-    verbose && println("cheb2d_mpo_tucker: computing density matrices...")
-    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
-                             purify_method, purify_maxdim, purify_maxiters,
-                             purify_tol, verbose)
-    P2 = H1 === H2 ? P1 : _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
-                                               purify_method, purify_maxdim, purify_maxiters,
-                                               purify_tol, verbose)
-
-    verbose && println("cheb2d_mpo_tucker: computing coefficient matrices for $nω frequencies...")
-    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
-             for ω in ωlist]
-
-    if kernel == :jackson
-        g_jk  = _jackson_kernel(N)
-        G_jk  = g_jk * g_jk'
-        C_all = [G_jk .* C for C in C_all]
-        verbose && println("cheb2d_mpo_tucker: Jackson kernel applied")
-    elseif kernel != :none
-        error("get_bubble_mpo_cheb2d_tucker: unknown kernel=$kernel (use :jackson or :none)")
-    end
-
-    # ── Tucker bases: HOSVD initialisation + HOOI refinement ────────────────
-    T1 = hcat(C_all...)
-    T2 = hcat([transpose(C) for C in C_all]...)
-    F1 = svd(T1); F2 = svd(T2)
-    r_m = min(tucker_maxrank, sum(F1.S .> tucker_tol * F1.S[1]))
-    r_n = min(tucker_maxrank, sum(F2.S .> tucker_tol * F2.S[1]))
-    U_m = F1.U[:, 1:r_m]
-    V_n = F2.U[:, 1:r_n]
-
-    for _ in 1:hooi_iters
-        Y   = hcat([C * V_n  for C in C_all]...)
-        U_m = svd(Y).U[:, 1:r_m]
-        Z   = hcat([C' * U_m for C in C_all]...)
-        V_n = svd(Z).U[:, 1:r_n]
-    end
+    # ── Tucker bases (HOSVD + HOOI) and core tensor G[s₁,s₂,ω] = (U_m† C(ω) V_n)[s₁,s₂] ──
+    U_m, V_n, A_core = _tucker_bases(S.C_all; tucker_tol, tucker_maxrank, hooi_iters)
+    r_m, r_n = size(U_m, 2), size(V_n, 2)
     verbose && println("cheb2d_mpo_tucker: Tucker ranks r_m=$r_m, r_n=$r_n (HOSVD + $hooi_iters HOOI iters) → $(r_m*r_n) Hadamard operations")
 
-    # ── Core tensor G[s₁,s₂,ω] = (U_m† C(ω) V_n)[s₁,s₂] ──────────────────
-    A_core = zeros(ComplexF64, r_m, r_n, nω)
-    for iω in 1:nω
-        A_core[:, :, iω] = U_m' * C_all[iω] * V_n
-    end
-
     # ── ω-independent weighted MPO sums ──────────────────────────────────────
-    # Sum bare Chebyshev moments first, then apply P once per component.
-    # This costs r_m + r_n MPO-MPO multiplications total, vs 2N for the plain
-    # variant that precomputes TP1[m] = Tn1[m]·P1 for all N moments.
     verbose && println("cheb2d_mpo_tucker: computing Tucker MPO components (r_m=$r_m, r_n=$r_n)...")
-    C_tuck = [_weighted_mpo_sum(U_m[:, s1],        Tn1; maxdim=maxdim, cutoff=cutoff) for s1 in 1:r_m]
-    B_tuck = [_weighted_mpo_sum(conj.(V_n[:, s2]), Tn2; maxdim=maxdim, cutoff=cutoff) for s2 in 1:r_n]
-    A_tuck = [isnothing(C_tuck[s1]) ? nothing :
-              ITensorMPS.truncate!(apply(C_tuck[s1], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-              for s1 in 1:r_m]
-    E_tuck = [isnothing(B_tuck[s2]) ? nothing :
-              ITensorMPS.truncate!(apply(B_tuck[s2], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-              for s2 in 1:r_n]
+    A_tuck, B_tuck, C_tuck, E_tuck = _tucker_components(U_m, V_n, S.Tn1, S.Tn2, S.P1, S.P2;
+                                                        maxdim, cutoff)
 
     # ── ω-independent Hadamard products: r_m × r_n total ────────────────────
-    # D[s₁,s₂] = (A_tuck[s₁] ⊙ B_tuck[s₂]) − (C_tuck[s₁] ⊙ E_tuck[s₂])
-    #           = Σ_{m,n} U[m,s₁] conj(V[n,s₂]) · D_mn   (ω-independent MPO)
     verbose && println("cheb2d_mpo_tucker: computing $(r_m*r_n) Hadamard products...")
-    D_tuck = Matrix{Union{Nothing, MPO}}(nothing, r_m, r_n)
-    for s1 in 1:r_m, s2 in 1:r_n
-        (isnothing(A_tuck[s1]) || isnothing(B_tuck[s2]) ||
-         isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
+    D_tuck = _tucker_hadamard(identity, A_tuck, B_tuck, C_tuck, E_tuck, S.out_sites, MPO;
+                              maxdim, cutoff, verbose)
 
-        had_A = hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        had_B = hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        D_tuck[s1, s2] = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
-        if verbose
-            idx = (s1 - 1) * r_n + s2
-            (idx % 10 == 0 || idx == r_m * r_n) &&
-                println("  ($s1,$s2)/($r_m,$r_n) done  [$idx/$(r_m*r_n)]")
-        end
-    end
-
-    # ── Per-ω accumulation: scalar × MPO additions only ──────────────────────
-    # Π(ω) = Σ_{s₁,s₂} G[s₁,s₂,ω] · D[s₁,s₂]
-    Π = Vector{Union{Nothing, MPO}}(nothing, nω)
-    for iω in 1:nω
-        for s1 in 1:r_m, s2 in 1:r_n
-            g = A_core[s1, s2, iω]
-            (abs(g) < coeff_tol || isnothing(D_tuck[s1, s2])) && continue
-            if Π[iω] === nothing
-                Π[iω] = g * D_tuck[s1, s2]
-            else
-                Π[iω] = +(Π[iω], g * D_tuck[s1, s2]; maxdim=maxdim)
-                ITensorMPS.truncate!(Π[iω]; cutoff=cutoff)
-            end
-        end
-    end
+    # ── Per-ω accumulation: Π(ω) = Σ_{s₁,s₂} G[s₁,s₂,ω] · D[s₁,s₂] ──────────
+    Π = _tucker_accumulate(A_core, D_tuck, MPO; coeff_tol, maxdim, cutoff)
 
     verbose && println("cheb2d_mpo_tucker: done — r_m=$r_m, r_n=$r_n, $(count(!isnothing, Π))/$nω non-zero")
     return [replace_sites(Π[iω]::MPO, H1.sites) for iω in 1:nω]
@@ -420,7 +537,7 @@ end
 
 
 # ============================================================
-# 3. k-space diagonal bubble
+# 4. k-space diagonal bubble
 # ============================================================
 
 """
@@ -476,105 +593,22 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                                  qft_tol::Real         = 1e-9,
                                  qft_maxdim::Int       = 100,
                                  verbose::Bool         = false)
-    L1 = H1.L; L2 = H2.L
-    @assert L1 == L2 "get_bubble_diag_cheb2d: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
-    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d")
-    L = L1
+    S = _cheb2d_setup(H1, H2, ωlist, "get_bubble_diag_cheb2d", "cheb2d_diag";
+                      diagonal=true, lowrank=false, Ncheb, maxdim, cutoff, ϵF, P_method,
+                      purify_method, purify_maxdim, purify_maxiters, purify_tol, η, verbose)
+    N  = S.N
     nω = length(ωlist)
 
-    _ensure_scale!(H1)
-    _ensure_scale!(H2)
-    scale1  = H1.scale;  center1 = H1.center
-    scale2  = H2.scale;  center2 = H2.center
-
-    verbose && println("cheb2d_diag: building T_n(H1) moments (Ncheb=$Ncheb)...")
-    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
-                         scale=scale1, center=center1,
-                         maxdim=maxdim, cutoff=cutoff, verbose=false)
-    if H1 === H2
-        Tn2 = Tn1
-    else
-        verbose && println("cheb2d_diag: building T_n(H2) moments...")
-        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
-                             scale=scale2, center=center2,
-                             maxdim=maxdim, cutoff=cutoff, verbose=false)
-    end
-    N = length(Tn1)
-
-    verbose && println("cheb2d_diag: computing P1...")
-    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
-                              purify_method, purify_maxdim, purify_maxiters,
-                              purify_tol, verbose)
-    if H1 === H2
-        P2 = P1
-    else
-        verbose && println("cheb2d_diag: computing P2...")
-        P2 = _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
-                                  purify_method, purify_maxdim, purify_maxiters,
-                                  purify_tol, verbose)
-    end
-
-    verbose && println("cheb2d_diag: precomputing T_m(H1)·P1 and T_n(H2)·P2...")
-    TP1 = [ITensorMPS.truncate!(
-               apply(Tn1[m], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-           for m in 1:N]
-    TP2 = [ITensorMPS.truncate!(
-               apply(Tn2[n], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-           for n in 1:N]
-
-    out_sites = siteinds("Qubit", L)
-
-    verbose && println("cheb2d_diag: precomputing C[m,n](ω) for all $nω frequencies...")
-    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
-             for ω in ωlist]
-
-    # Accumulate diagonal MPS (not full MPO) for each ω
+    # Accumulate diagonal MPS (not full MPO) for each ω. The QFT and the diagonal
+    # extraction are done ONCE per (m,n), shared across all ω, and the MPS additions
+    # are much cheaper than MPO additions (bond dim ∝ D vs D²).
     diag_Π = Vector{Union{Nothing, MPS}}(nothing, nω)
-    n_computed = 0
-    n_skipped  = 0
-
-    for m in 1:N
-        max_row = maximum(maximum(abs, @view C[m, :]) for C in C_all)
-        if max_row < coeff_tol
-            n_skipped += N
-            continue
-        end
-
-        for n in 1:N
-            max_c = maximum(abs(C[m, n]) for C in C_all)
-            if max_c < coeff_tol
-                n_skipped += 1
-                continue
-            end
-            n_computed += 1
-
-            # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
-            had_A = hadamard_mpo(TP1[m], Tn2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = hadamard_mpo(Tn1[m], TP2[n], out_sites; maxdim=maxdim, cutoff=cutoff)
-            D_mn  = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
-
-            # QFT + diagonal extraction — done ONCE per (m,n), shared across all ω.
-            # replace_sites maps out_sites → H1.sites so conjugate_by_qft can find
-            # the correct Qubit site structure.
-            D_mn_phys = replace_sites(D_mn, H1.sites)
-            D_k       = conjugate_by_qft(D_mn_phys; tol=qft_tol, maxdim=qft_maxdim)
-            diag_D    = ITensorMPS.truncate!(extract_diagonal_to_mps(D_k); cutoff=cutoff)
-
-            # Accumulate c_mn(ω) · diag_D into each diag_Π[iω] as MPS sums.
-            # MPS additions are much cheaper than MPO additions (bond dim ∝ D vs D²).
-            for (iω, C) in enumerate(C_all)
-                c = C[m, n]
-                abs(c) < coeff_tol && continue
-                if diag_Π[iω] === nothing
-                    diag_Π[iω] = c * diag_D
-                else
-                    diag_Π[iω] = +(diag_Π[iω], c * diag_D; maxdim=maxdim)
-                    ITensorMPS.truncate!(diag_Π[iω]; cutoff=cutoff)
-                end
-            end
-        end
-
-        verbose && println("  m=$m/$N  (computed $n_computed, skipped $n_skipped so far)")
+    n_computed, n_skipped = _cheb2d_pair_sweep!(diag_Π, S.C_all, N; coeff_tol, maxdim,
+                                                cutoff, verbose) do m, n
+        # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
+        D_mn = _hadamard_difference(S.TP1[m], S.Tn2[n], S.Tn1[m], S.TP2[n], S.out_sites;
+                                    maxdim, cutoff)
+        _cheb2d_kdiag(D_mn, H1.sites; qft_tol, qft_maxdim, cutoff)
     end
 
     verbose && println("cheb2d_diag: done — $(n_computed)/$(N*N) pairs computed, $n_skipped skipped")
@@ -584,7 +618,7 @@ end
 
 
 # ============================================================
-# 4. Shared helpers: Jackson kernel, weighted MPO sum
+# 5. Shared helpers: Jackson kernel, weighted MPO sum
 # ============================================================
 
 # Jackson kernel weights for Chebyshev order N:
@@ -614,7 +648,7 @@ end
 
 
 # ============================================================
-# 5. Low-rank k-space diagonal bubbles (per-ω SVD, Tucker)
+# 6. Low-rank k-space diagonal bubbles (per-ω SVD, Tucker)
 # ============================================================
 
 """
@@ -670,51 +704,11 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
                                      svd_maxrank::Int      = 20,
                                      kernel::Symbol        = :jackson,
                                      verbose::Bool         = false)
-    L1 = H1.L; L2 = H2.L
-    @assert L1 == L2 "get_bubble_diag_cheb2d_svd: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
-    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_svd")
-    L  = L1
+    S = _cheb2d_setup(H1, H2, ωlist, "get_bubble_diag_cheb2d_svd", "cheb2d_diag_svd";
+                      diagonal=true, lowrank=true, kernel, Ncheb, maxdim, cutoff, ϵF,
+                      P_method, purify_method, purify_maxdim, purify_maxiters, purify_tol, η,
+                      verbose)
     nω = length(ωlist)
-
-    _ensure_scale!(H1); _ensure_scale!(H2)
-    scale1 = H1.scale; center1 = H1.center
-    scale2 = H2.scale; center2 = H2.center
-
-    verbose && println("cheb2d_diag_svd: building Chebyshev moments (Ncheb=$Ncheb)...")
-    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
-                        scale=scale1, center=center1,
-                        maxdim=maxdim, cutoff=cutoff, verbose=false)
-    if H1 === H2
-        Tn2 = Tn1
-    else
-        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
-                            scale=scale2, center=center2,
-                            maxdim=maxdim, cutoff=cutoff, verbose=false)
-    end
-    N = length(Tn1)
-
-    verbose && println("cheb2d_diag_svd: computing density matrices...")
-    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
-                             purify_method, purify_maxdim, purify_maxiters,
-                             purify_tol, verbose)
-    P2 = H1 === H2 ? P1 : _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
-                                               purify_method, purify_maxdim, purify_maxiters,
-                                               purify_tol, verbose)
-
-    out_sites = siteinds("Qubit", L)
-
-    verbose && println("cheb2d_diag_svd: computing coefficient matrices for $nω frequencies...")
-    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
-             for ω in ωlist]
-
-    if kernel == :jackson
-        g_jk  = _jackson_kernel(N)
-        G_jk  = g_jk * g_jk'         # N×N outer product, applied element-wise
-        C_all = [G_jk .* C for C in C_all]
-        verbose && println("cheb2d_diag_svd: Jackson kernel applied")
-    elseif kernel != :none
-        error("get_bubble_diag_cheb2d_svd: unknown kernel=$kernel (use :jackson or :none)")
-    end
 
     # ── Per-ω SVD of the coefficient matrix C[m,n](ω) ───────────────────────
     # For each ω, the exact SVD gives the optimal low-rank factorisation:
@@ -725,7 +719,7 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
     diag_Π = Vector{Union{Nothing, MPS}}(nothing, nω)
     ranks   = Int[]
 
-    for (iω, C) in enumerate(C_all)
+    for (iω, C) in enumerate(S.C_all)
         F_ω   = svd(C)
         σ_cut = svd_tol * F_ω.S[1]
         r_ω   = min(svd_maxrank, sum(F_ω.S .> σ_cut))
@@ -738,28 +732,17 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
 
             # Sum bare moments first, then apply P once — saves one MPO-MPO
             # multiplication per component vs pre-multiplying each Tn by P.
-            C_s = _weighted_mpo_sum(u_s, Tn1; maxdim=maxdim, cutoff=cutoff)
-            B_s = _weighted_mpo_sum(v_s, Tn2; maxdim=maxdim, cutoff=cutoff)
+            C_s = _weighted_mpo_sum(u_s, S.Tn1; maxdim=maxdim, cutoff=cutoff)
+            B_s = _weighted_mpo_sum(v_s, S.Tn2; maxdim=maxdim, cutoff=cutoff)
             (isnothing(C_s) || isnothing(B_s)) && continue
-            A_s = ITensorMPS.truncate!(apply(C_s, P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-            E_s = ITensorMPS.truncate!(apply(B_s, P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+            A_s = ITensorMPS.truncate!(apply(C_s, S.P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
+            E_s = ITensorMPS.truncate!(apply(B_s, S.P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
 
             (isnothing(A_s) || isnothing(E_s)) && continue
 
-            had_A = hadamard_mpo(A_s, B_s, out_sites; maxdim=maxdim, cutoff=cutoff)
-            had_B = hadamard_mpo(C_s, E_s, out_sites; maxdim=maxdim, cutoff=cutoff)
-            D     = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
-
-            D_phys = replace_sites(D, H1.sites)
-            D_k    = conjugate_by_qft(D_phys; tol=qft_tol, maxdim=qft_maxdim)
-            diag_s = ITensorMPS.truncate!(extract_diagonal_to_mps(D_k); cutoff=cutoff)
-
-            if diag_Π[iω] === nothing
-                diag_Π[iω] = σ_s * diag_s
-            else
-                diag_Π[iω] = +(diag_Π[iω], σ_s * diag_s; maxdim=maxdim)
-                ITensorMPS.truncate!(diag_Π[iω]; cutoff=cutoff)
-            end
+            D      = _hadamard_difference(A_s, B_s, C_s, E_s, S.out_sites; maxdim, cutoff)
+            diag_s = _cheb2d_kdiag(D, H1.sites; qft_tol, qft_maxdim, cutoff)
+            _accumulate_scaled!(diag_Π, iω, σ_s, diag_s; maxdim, cutoff)
         end
 
         verbose && println("  ω=$(round(ωlist[iω];digits=3))  rank=$r_ω")
@@ -832,128 +815,30 @@ function get_bubble_diag_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
                                         kernel::Symbol        = :jackson,
                                         hooi_iters::Int       = 3,
                                         verbose::Bool         = false)
-    L1 = H1.L; L2 = H2.L
-    @assert L1 == L2 "get_bubble_diag_cheb2d_tucker: H1 and H2 must have the same number of sites (got $L1 vs $L2)"
-    _cheb2d_require_position_sites(H1, H2, "get_bubble_diag_cheb2d_tucker")
-    L  = L1
+    S = _cheb2d_setup(H1, H2, ωlist, "get_bubble_diag_cheb2d_tucker", "cheb2d_tucker";
+                      diagonal=true, lowrank=true, kernel, Ncheb, maxdim, cutoff, ϵF,
+                      P_method, purify_method, purify_maxdim, purify_maxiters, purify_tol, η,
+                      verbose)
     nω = length(ωlist)
 
-    _ensure_scale!(H1); _ensure_scale!(H2)
-    scale1 = H1.scale; center1 = H1.center
-    scale2 = H2.scale; center2 = H2.center
-
-    verbose && println("cheb2d_tucker: building Chebyshev moments (Ncheb=$Ncheb)...")
-    Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
-                        scale=scale1, center=center1,
-                        maxdim=maxdim, cutoff=cutoff, verbose=false)
-    if H1 === H2
-        Tn2 = Tn1
-    else
-        Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
-                            scale=scale2, center=center2,
-                            maxdim=maxdim, cutoff=cutoff, verbose=false)
-    end
-    N = length(Tn1)
-
-    verbose && println("cheb2d_tucker: computing density matrices...")
-    P1 = _get_density_matrix(H1, ϵF, P_method, Ncheb, maxdim, cutoff,
-                             purify_method, purify_maxdim, purify_maxiters,
-                             purify_tol, verbose)
-    P2 = H1 === H2 ? P1 : _get_density_matrix(H2, ϵF, P_method, Ncheb, maxdim, cutoff,
-                                               purify_method, purify_maxdim, purify_maxiters,
-                                               purify_tol, verbose)
-
-    out_sites = siteinds("Qubit", L)
-
-    verbose && println("cheb2d_tucker: computing coefficient matrices for $nω frequencies...")
-    C_all = [chebyshev2d_gf_coeffs(ω, scale1, center1, scale2, center2, η, N)
-             for ω in ωlist]
-
-    if kernel == :jackson
-        g_jk  = _jackson_kernel(N)
-        G_jk  = g_jk * g_jk'
-        C_all = [G_jk .* C for C in C_all]
-        verbose && println("cheb2d_tucker: Jackson kernel applied")
-    elseif kernel != :none
-        error("get_bubble_diag_cheb2d_tucker: unknown kernel=$kernel (use :jackson or :none)")
-    end
-
-    # ── Tucker bases: HOSVD initialisation + HOOI refinement ────────────────
-    # HOSVD: independent mode SVDs give a fast but sub-optimal starting point.
-    T1 = hcat(C_all...)                            # N × (N·nω) — mode-1 unfolding
-    T2 = hcat([transpose(C) for C in C_all]...)   # N × (N·nω) — mode-2 unfolding
-    F1 = svd(T1); F2 = svd(T2)
-    r_m = min(tucker_maxrank, sum(F1.S .> tucker_tol * F1.S[1]))
-    r_n = min(tucker_maxrank, sum(F2.S .> tucker_tol * F2.S[1]))
-    U_m = F1.U[:, 1:r_m]
-    V_n = F2.U[:, 1:r_n]
-
-    # HOOI: alternating projection onto the optimal subspaces for the given rank.
-    # Each step re-contracts the full tensor against the current other-mode basis
-    # and extracts the leading singular vectors — converges in a few iterations.
-    for _ in 1:hooi_iters
-        Y   = hcat([C * V_n  for C in C_all]...)   # N × (r_n·nω): contract n with V_n
-        U_m = svd(Y).U[:, 1:r_m]
-        Z   = hcat([C' * U_m for C in C_all]...)   # N × (r_m·nω): contract m with U_m
-        V_n = svd(Z).U[:, 1:r_n]
-    end
+    # ── Tucker bases (HOSVD + HOOI) and core tensor Ã[s1,s2,ω] = (U_m† C(ω) V_n)[s1,s2] ──
+    U_m, V_n, A_core = _tucker_bases(S.C_all; tucker_tol, tucker_maxrank, hooi_iters)
+    r_m, r_n = size(U_m, 2), size(V_n, 2)
     verbose && println("cheb2d_tucker: Tucker ranks r_m=$r_m, r_n=$r_n (HOSVD + $hooi_iters HOOI iters) → $(r_m*r_n) Hadamard+QFT operations")
 
-    # ── Core tensor: project each C(ω) onto Tucker bases ─────────────────────
-    A_core = zeros(ComplexF64, r_m, r_n, nω)
-    for iω in 1:nω
-        A_core[:, :, iω] = U_m' * C_all[iω] * V_n
-    end
-
     # ── ω-independent weighted MPO sums + deferred P application ────────────
-    # Sum bare moments first (r_m + r_n weighted sums of N terms each), then
-    # apply P1/P2 once per component — saves 2N MPO-MPO multiplications vs
-    # precomputing TP1[m]/TP2[n] globally and reduces to r_m + r_n applies.
     verbose && println("cheb2d_tucker: computing Tucker MPO components...")
-    C_tuck = [_weighted_mpo_sum(U_m[:, s1],        Tn1; maxdim=maxdim, cutoff=cutoff) for s1 in 1:r_m]
-    B_tuck = [_weighted_mpo_sum(conj.(V_n[:, s2]), Tn2; maxdim=maxdim, cutoff=cutoff) for s2 in 1:r_n]
-    A_tuck = [isnothing(C_tuck[s1]) ? nothing :
-              ITensorMPS.truncate!(apply(C_tuck[s1], P1; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-              for s1 in 1:r_m]
-    E_tuck = [isnothing(B_tuck[s2]) ? nothing :
-              ITensorMPS.truncate!(apply(B_tuck[s2], P2; maxdim=maxdim, cutoff=cutoff); cutoff=cutoff)
-              for s2 in 1:r_n]
+    A_tuck, B_tuck, C_tuck, E_tuck = _tucker_components(U_m, V_n, S.Tn1, S.Tn2, S.P1, S.P2;
+                                                        maxdim, cutoff)
 
     # ── ω-independent Hadamard + QFT  (r_m × r_n total) ─────────────────────
     verbose && println("cheb2d_tucker: computing $(r_m*r_n) Hadamard+QFT components...")
-    diag_D = Matrix{Union{Nothing, MPS}}(nothing, r_m, r_n)
-    for s1 in 1:r_m, s2 in 1:r_n
-        (isnothing(A_tuck[s1]) || isnothing(B_tuck[s2]) ||
-         isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
-
-        had_A = hadamard_mpo(A_tuck[s1], B_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        had_B = hadamard_mpo(C_tuck[s1], E_tuck[s2], out_sites; maxdim=maxdim, cutoff=cutoff)
-        D     = ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
-
-        D_phys          = replace_sites(D, H1.sites)
-        D_k             = conjugate_by_qft(D_phys; tol=qft_tol, maxdim=qft_maxdim)
-        diag_D[s1, s2]  = ITensorMPS.truncate!(extract_diagonal_to_mps(D_k); cutoff=cutoff)
-        if verbose
-            idx = (s1 - 1) * r_n + s2
-            (idx % 10 == 0 || idx == r_m * r_n) &&
-                println("  ($s1,$s2)/($r_m,$r_n) done  [$idx/$(r_m*r_n)]")
-        end
-    end
+    kdiag  = D -> _cheb2d_kdiag(D, H1.sites; qft_tol, qft_maxdim, cutoff)
+    diag_D = _tucker_hadamard(kdiag, A_tuck, B_tuck, C_tuck, E_tuck, S.out_sites, MPS;
+                              maxdim, cutoff, verbose)
 
     # ── Accumulate per ω: scalar × MPS additions only ────────────────────────
-    diag_Π = Vector{Union{Nothing, MPS}}(nothing, nω)
-    for iω in 1:nω
-        for s1 in 1:r_m, s2 in 1:r_n
-            a = A_core[s1, s2, iω]
-            (abs(a) < coeff_tol || isnothing(diag_D[s1, s2])) && continue
-            if diag_Π[iω] === nothing
-                diag_Π[iω] = a * diag_D[s1, s2]
-            else
-                diag_Π[iω] = +(diag_Π[iω], a * diag_D[s1, s2]; maxdim=maxdim)
-                ITensorMPS.truncate!(diag_Π[iω]; cutoff=cutoff)
-            end
-        end
-    end
+    diag_Π = _tucker_accumulate(A_core, diag_D, MPS; coeff_tol, maxdim, cutoff)
 
     verbose && println("cheb2d_tucker: done — r_m=$r_m, r_n=$r_n, $(count(!isnothing, diag_Π))/$nω non-zero")
     return [diag_Π[iω] for iω in 1:nω]
