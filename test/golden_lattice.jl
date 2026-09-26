@@ -49,12 +49,15 @@ using TensorBinding: get_Hamiltonian, build_hamiltonian, MODEL_REGISTRY, lattice
 #   * a case recorded as throwing must still throw an exception of that type
 #     with the recorded `message_prefix` (first MESSAGE_PREFIX_CHARS characters
 #     of the first line of its message);
-#   * the number of cases per builder must equal EXPECTED_CASE_COUNTS below;
+#   * the number of cases per builder, skipped cases (next rule) not counted,
+#     must equal EXPECTED_CASE_COUNTS below;
 #   * a case that names a function which no longer exists is skipped, not
 #     failed, only when that function is on the Tier 1 deletion list
 #     (DELETABLE_FUNCTIONS: exactly the lattice-file functions of the
 #     checklist's "Delete dead and legacy code" section). A missing function
-#     that is not on that list fails the case.
+#     that is not on that list fails the case. The generator leaves skipped
+#     cases out of regenerated data; the test accepts the data with or without
+#     them.
 #
 # Every case reseeds the global RNG and the ITensors index-id RNG with its own
 # seed before it runs (QTCI draws random pivots from the global RNG).
@@ -81,9 +84,12 @@ const DROP_BELOW = 1e-14
 const DENSE_MAX_LENGTH = 36
 const MESSAGE_PREFIX_CHARS = 60
 
-# Number of cases per builder in test/data/lattice_golden.jl. Update it by hand,
-# in the same commit, when cases are added or removed on purpose (the generator
-# prints the new counts and warns when they differ from these).
+# Number of cases per builder in test/data/lattice_golden.jl, not counting the
+# skipped cases of deleted functions (the data may hold them or not; see
+# `skipped`). Update it by hand, in the same commit, when cases are added or
+# removed on purpose (the generator prints the new counts and warns when they
+# differ from these). The deletions of fb8b2d8 took all of :geom_counts and
+# :legacy_mask, 6 :legacy_hopping cases and 2 :layer_ops cases.
 const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :add_hopping_2D           => 26,
     :add_tjunction            => 6,
@@ -91,16 +97,14 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
     :build_hamiltonian        => 18,
     :central_index            => 3,
     :estimate_scale           => 16,
-    :geom_counts              => 8,
     :geom_positions           => 4,
     :geometry_closure         => 9,
     :get_hamiltonian          => 45,
     :interlayer_mpo           => 5,
     :kinetic2d                => 12,
-    :layer_ops                => 4,
+    :layer_ops                => 2,
     :lattice_positions        => 6,
-    :legacy_hopping           => 10,
-    :legacy_mask              => 5,
+    :legacy_hopping           => 4,
     :mask                     => 13,
     :mask_hamiltonian         => 6,
     :model_registry           => 1,
@@ -131,6 +135,7 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
 # case whose function is missing and is NOT listed here fails (check_case):
 # deleting a function the checklist does not name, e.g. one still in use, is a
 # behaviour change. Change this set only together with that checklist section.
+# All of them were deleted in fb8b2d8 except `sdf_interval`, which QPI_tk.jl uses.
 const DELETABLE_FUNCTIONS = Set{Symbol}([
     # 2Dlattice_tk.jl: `interchain_hopping_*` (2nd_plus/minus, triangle,
     # honeycomb) "with their skeleton/template helpers", `_geom_n_sub`, `_nsublat`
@@ -629,6 +634,17 @@ The functions of `case_functions(spec)` that TensorBinding no longer defines.
 missing_functions(@nospecialize(spec::NamedTuple)) = filter(f -> !function_defined(f), case_functions(spec))
 
 """
+    skipped(spec) -> Bool
+
+Whether a case is skipped: some function it names is gone, and every such
+function is on DELETABLE_FUNCTIONS. The generator leaves these cases out.
+"""
+function skipped(@nospecialize(spec::NamedTuple))
+    gone = missing_functions(spec)
+    return !isempty(gone) && all(in(DELETABLE_FUNCTIONS), gone)
+end
+
+"""
     evaluate(builder, spec, seed) -> (result, error)
 
 Run one case from a freshly seeded RNG with library output silenced.
@@ -791,8 +807,11 @@ function check_case(@nospecialize(case))
     end
 end
 
-case_counts(cases) = Dict{Symbol,Int}(b => count(c -> c.builder === b, cases)
-                                      for b in unique(c.builder for c in cases))
+# Cases per builder, skipped cases (see `skipped`) not counted.
+function case_counts(cases)
+    kept = [c for c in cases if !skipped(c.spec)]
+    return Dict{Symbol,Int}(b => count(c -> c.builder === b, kept) for b in unique(c.builder for c in kept))
+end
 
 function run_tests(cases)
     @testset "Lattice outputs are pinned" begin
@@ -801,9 +820,10 @@ function run_tests(cases)
         counts == EXPECTED_CASE_COUNTS ||
             @error "Golden case counts differ from EXPECTED_CASE_COUNTS" got = counts expected = EXPECTED_CASE_COUNTS
         @test counts == EXPECTED_CASE_COUNTS
-        # Every deletable function must be one that some case calls (no stale entries).
+        # Every deletable function that still exists must be one that some case
+        # calls (no stale entries); a deleted one may have lost its cases already.
         named = reduce(union!, (case_functions(case.spec) for case in cases); init = Set{Symbol}())
-        unused = setdiff(DELETABLE_FUNCTIONS, named)
+        unused = setdiff(filter(function_defined, DELETABLE_FUNCTIONS), named)
         isempty(unused) || @error "DELETABLE_FUNCTIONS names functions no case calls" unused
         @test isempty(unused)
         for builder in unique(case.builder for case in cases)

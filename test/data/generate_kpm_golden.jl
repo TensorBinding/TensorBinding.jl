@@ -23,6 +23,13 @@
 #
 #     JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project=. test/data/generate_kpm_golden.jl
 #
+# An optional first argument writes the data to that path instead, e.g. to
+# compare a regeneration with the committed file without overwriting it.
+#
+# Cases whose `requires` returns false (their function has been deleted) are
+# not run and are left out of the data; test/golden_kpm.jl skips them whether or
+# not the data still holds them.
+#
 # The output is deterministic: no timestamps, cases in a fixed order, the
 # global RNG reseeded before every case. The script reloads the file it wrote
 # and checks that every entry round-trips exactly, element types included.
@@ -33,7 +40,7 @@ const KPM_GOLDEN_GENERATOR = true
 include(joinpath(@__DIR__, "..", "golden_kpm.jl"))   # loads KPMGoldenRunner only
 const R = KPMGoldenRunner
 
-const OUTFILE = joinpath(@__DIR__, "kpm_golden.jl")
+const OUTFILE = isempty(ARGS) ? joinpath(@__DIR__, "kpm_golden.jl") : abspath(ARGS[1])
 
 # An exception of one of these types means the case itself is malformed (a
 # misspelt keyword, a wrong argument type), not a behaviour worth pinning.
@@ -51,8 +58,12 @@ const PINNED_BUGLIKE_THROWS = Set([
 function evaluate(cases)
     entries = NamedTuple[]
     notes = String[]
+    skipped = String[]
     for case in cases
-        case.requires() || error("case $(case.name): its function is missing; nothing to pin")
+        if !case.requires()   # its function has been deleted: nothing left to pin
+            push!(skipped, case.name)
+            continue
+        end
         t0 = time()
         got = R.run_case(case)
         dt = time() - t0
@@ -70,7 +81,7 @@ function evaluate(cases)
         end
         dt > 2.0 && push!(notes, "slow ($(round(dt; digits=1)) s): $(case.name)")
     end
-    return entries, notes
+    return entries, notes, skipped
 end
 
 # The git tree hash of the working-tree src/, computed through a throwaway index.
@@ -120,8 +131,9 @@ function write_golden(path, entries)
 end
 
 t_start = time()
-entries, notes = evaluate(R.CASES)
+entries, notes, skipped = evaluate(R.CASES)
 foreach(println, notes)
+foreach(name -> println("skipped, function deleted: ", name), skipped)
 write_golden(OUTFILE, entries)
 
 # Round trip: every entry must read back exactly as it was computed, with the
@@ -137,7 +149,7 @@ for (a, b) in zip(loaded, entries)
 end
 
 println("Wrote $(length(entries)) cases to $OUTFILE ($(filesize(OUTFILE)) bytes) in ",
-        round(time() - t_start; digits=1), " s")
-length(entries) == R.EXPECTED_CASE_COUNT ||
+        round(time() - t_start; digits=1), " s", isempty(skipped) ? "" : "; skipped $(length(skipped))")
+length(entries) + length(skipped) == R.EXPECTED_CASE_COUNT ||
     @warn "The case count differs from EXPECTED_CASE_COUNT in test/golden_kpm.jl. " *
-          "If the change is intended, update it in the same commit." got = length(entries) expected = R.EXPECTED_CASE_COUNT
+          "If the change is intended, update it in the same commit." got = length(entries) + length(skipped) expected = R.EXPECTED_CASE_COUNT

@@ -19,9 +19,8 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_superconductivity!, add_los
 # rtol = 1e-4. Most cases run in ComplexF64; each entry point that accepts real
 # types has one Float64 case.
 #
-# Not pinned: the aliases get_nh_state_trajectory_gpu and nh_spectrum_grid_gpu
-# (scheduled for deletion in Tier 1), and the internal helpers, which are only
-# reached through the entry points.
+# Not pinned: the internal helpers, which are only reached through the entry
+# points.
 #
 # Runtime: about 6 minutes cold on an RTX 4060 laptop GPU. Nearly all of it is
 # first-call compilation of CUDA.jl/NDTensors kernels (one per element type and

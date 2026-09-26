@@ -24,9 +24,10 @@ using TensorBinding: get_Hamiltonian, get_bands, conjugate_by_qft, conjugate_by_
 # Ncheb, ω), get_exciton_bands (every momentum-selection alias, kernels,
 # errors), get_exciton_continuum (random-phase and k_list probes, seeds,
 # normalize, errors), project_aux, aux_site, _autoenable_proj, and the error
-# branches of all of these. Functions that Tier 1 plans to delete (projop_1DSL,
-# projop_2DSL, sample_diag, project_spin) are pinned in cases marked `requires`;
-# those cases are skipped once the function is gone.
+# branches of all of these. Functions that Tier 1 planned to delete (projop_1DSL,
+# projop_2DSL, sample_diag, project_spin; deleted in 44a79c2) are pinned in cases
+# marked `requires`; those cases are skipped once the function is gone, and the
+# generator leaves them out of regenerated data.
 #
 # Not pinned, because the process dies with a segfault instead of raising:
 # get_bands on a spin index added with add_spin!(H; position=:post), and the
@@ -51,7 +52,8 @@ using TensorBinding: get_Hamiltonian, get_bands, conjugate_by_qft, conjugate_by_
 #     vectors of integers, `nothing`) must be `isequal` with the same type;
 #   * a case recorded as throwing must still throw the same exception type with
 #     the same first MESSAGE_PREFIX_CHARS characters of its message;
-#   * the case names and their order must match the data file exactly.
+#   * the case names and their order must match the data file exactly, except
+#     that the entry of a skipped (`requires`) case may be missing.
 #
 # Every case runs after `Random.seed!(case.seed)`; every fixture is built on
 # first use after `Random.seed!(its own seed)`, with the global RNG saved and
@@ -944,15 +946,20 @@ end
 
 function run_tests(golden)
     @testset "QFT outputs are pinned" begin
-        @test [c.name for c in CASES] == [g.name for g in golden]
+        # A skipped case may keep its entry (data generated while its functions
+        # existed) or not (data regenerated since); every other case needs one.
+        recorded = Dict(g.name => g for g in golden)
+        @test [c.name for c in CASES if available(c) || haskey(recorded, c.name)] ==
+              [g.name for g in golden]
         empty!(FIXTURES)
         nskip = 0
-        for (case, g) in zip(CASES, golden)
+        for case in CASES
             if !available(case)
                 nskip += 1
                 continue
             end
-            @test check_case(case, g)
+            haskey(recorded, case.name) || continue   # already failed the name check
+            @test check_case(case, recorded[case.name])
         end
         nskip > 0 && @info "golden_qft: skipped $nskip case(s) whose functions were removed"
     end

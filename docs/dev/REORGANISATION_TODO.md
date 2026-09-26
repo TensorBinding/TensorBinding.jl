@@ -2,9 +2,9 @@
 
 Outcome of the code-organisation review of 2026-09-23 (four area sweeps over
 `lattice/` + `core/Hamiltonian.jl`, `solvers/`, `physics/`, `gpu/`, plus repo-wide
-metrics). Nothing here is implemented yet. Tiers are ordered so that each one can be
-done and merged on its own with the test suite as the guard; Tier 1 changes no
-behaviour, Tier 2 changes internals only, Tier 3 is user-visible.
+metrics). Items are ticked as they land, with their commits. Tiers are ordered so that
+each one can be done and merged on its own with the test suite as the guard; Tier 1
+changes no behaviour, Tier 2 changes internals only, Tier 3 is user-visible.
 
 Line numbers refer to the working tree on that date and will drift.
 
@@ -225,28 +225,38 @@ the affected golden cases in the same commit.
       gone (f85750b). Kept, because they are used: `sdf_interval` (QPI_tk.jl apodization
       window), `qtci_matrix_to_MPO` (test/bugfix_pivots.jl), `get_bubble_mpo_haydock` (fixed
       in cfe41cf; test/bugfix_rpa.jl, golden_rpa), `fock_exchange_builder`
-      (examples/manybody/scf_examples.ipynb, golden_scftopo), and `get_valley_projectors`,
-      `initial_guess_trivial_up/down_1D`, `spin_hamiltonian`, `bdg_hamiltonian`, which no
-      library code calls but golden_scftopo pins without a skip-on-delete rule (delete them
-      together with their scftopo cases if wanted). Modified_GPU_funcs.jl only defines its own
-      copies of `_onehot_gpu_f32`/`nh_spectrum_grid_gpu` and is included nowhere.*
+      (examples/manybody/scf_examples.ipynb, golden_scftopo). Not decided yet: the four open
+      items below. Modified_GPU_funcs.jl only defines its own copies of
+      `_onehot_gpu_f32`/`nh_spectrum_grid_gpu` and is included nowhere.*
+- [ ] Decide on `get_valley_projectors` (Topology_tk.jl): no library code calls it, but
+      golden_scftopo pins it without a skip-on-delete rule, so deleting it means deleting its
+      scftopo case in the same commit.
+- [ ] Decide on `initial_guess_trivial_up_1D` / `initial_guess_trivial_down_1D` (SCF_tk.jl):
+      unused by the library, pinned by golden_scftopo (same situation).
+- [ ] Decide on `spin_hamiltonian` (Supercond_tk.jl): unused by the library, pinned by
+      golden_scftopo (same situation).
+- [ ] Decide on `bdg_hamiltonian` (Supercond_tk.jl): unused by the library (TBSystem builds
+      the BdG MPO inline), pinned by golden_scftopo (same situation); its docstring example
+      was fixed for v0.1.1 and the `pairingNNN`/`pairing2MPO` docstrings point to it.
 - [x] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
       `Purification_tk.jl:95–96`, unreachable code after early `return` in
       `2Dlattice_tk.jl` (`generate_kin_u/d` l.33–63, six kinetic builders l.388–543).
       *Removed in 3291292.*
 - [ ] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
       190–214) once Tier 2 keyword constructor exists.
-- [x] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
+- [ ] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
       `KPM_tk.jl` 14/30/31, `QFT_tk.jl` 1453–1470, `Topology_tk.jl` 499–539,
       `TBSystem.jl` 1175, RPA legacy pipeline; switch to `@info … maxlog=1` or `verbose` gates.
-      *f6a29c4: progress chatter in Hamiltonian.jl, KPM_tk.jl and Topology_tk.jl (no flag
-      there) → `@debug`; the spinless s-wave → p-wave notice in TBSystem.jl → `@info`; the RPA
-      legacy prints went with the pipeline (28f611f). Every other `println` in src is behind
-      `verbose`/`printinfo`, is the point of its function (`get_shell_disps`,
-      `check_tdvp_vs_U_mpo`) or is a `show` method.*
-- [ ] `QFT_tk.jl` `_autoenable_proj` "Info: … auto-enabling …" lines still go to stdout:
-      test/golden_qft.jl pins them in the captured `stdout` of 20 cases. Switching to `@info`
-      means regenerating those fields in the same commit.
+      *Done except QFT: f6a29c4 made the progress chatter in Hamiltonian.jl and
+      Topology_tk.jl (no flag there) `@debug` and the spinless s-wave → p-wave notice in
+      TBSystem.jl `@info`; in KPM_tk.jl the "estimating…" line is gone and the DMRG estimate
+      of the spectral bounds is one `@info` record (56b3787: it is the only sign that an
+      automatic scale was chosen); the RPA legacy prints went with the pipeline (28f611f).
+      Every other `println` in src is behind `verbose`/`printinfo`, is the point of its
+      function (`get_shell_disps`, `check_tdvp_vs_U_mpo`) or is a `show` method.
+      Still open: the `QFT_tk.jl` `_autoenable_proj` "Info: … auto-enabling …" lines go to
+      stdout, and test/golden_qft.jl pins them in the captured `stdout` of 20 cases, so
+      switching them to `@info` means regenerating those fields in the same commit.*
 
 ### Make the structure legible
 - [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.

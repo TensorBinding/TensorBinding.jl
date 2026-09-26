@@ -19,6 +19,13 @@
 #
 #     JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project=. test/data/generate_qft_golden.jl
 #
+# An optional first argument writes the data to that path instead, e.g. to
+# compare a regeneration with the committed file without overwriting it.
+#
+# Cases marked `requires` whose functions have been deleted are not run and are
+# left out of the data; test/golden_qft.jl skips them whether or not the data
+# still holds them.
+#
 # The cases, fixtures and the comparison live in test/golden_qft.jl (module
 # QFTGoldenRunner); this script only runs them and writes the results. The
 # output is deterministic: no timestamps, cases in the order they are defined,
@@ -32,16 +39,18 @@ const QFT_GOLDEN_GENERATOR = true
 include(joinpath(@__DIR__, "..", "golden_qft.jl"))   # loads QFTGoldenRunner only
 const RUNNER = QFTGoldenRunner
 
-const OUTFILE = joinpath(@__DIR__, "qft_golden.jl")
+const OUTFILE = isempty(ARGS) ? joinpath(@__DIR__, "qft_golden.jl") : abspath(ARGS[1])
 
 function evaluate(cases)
     names = [c.name for c in cases]
     allunique(names) || error("duplicate case names: $(unique(filter(n -> count(==(n), names) > 1, names)))")
-    all(RUNNER.available, cases) ||
-        error("some `requires` functions are missing: $([c.name for c in cases if !RUNNER.available(c)])")
+    # A case whose `requires` functions have been deleted has nothing left to pin.
+    for case in cases
+        RUNNER.available(case) || println("skipped, function deleted: ", case.name)
+    end
     empty!(RUNNER.FIXTURES)
     entries = NamedTuple[]
-    for case in cases
+    for case in filter(RUNNER.available, cases)
         t = time()
         value, err = try
             (RUNNER.run_case(case), nothing)

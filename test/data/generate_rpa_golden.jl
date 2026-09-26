@@ -24,12 +24,12 @@
 # case derived from its name, values written with `repr`. The script reloads the
 # file it wrote and checks that every entry round-trips exactly.
 #
-# Not pinned, because the Tier 1 plan deletes them (pinning would only make the
-# deletion commit regenerate data): mps_kron, nsitelegs, merge_mps_to_mpo,
-# convert_mpo, _swap_mpo, apply_interleave_swaps, get_Tnlists,
-# get_bublle_expanded_from_Tn, build_bubble_mpo. get_bubble_mpo_haydock is on the
-# same list but is still exercised by test/bugfix_rpa.jl, so it is pinned; drop
-# its cases (and its EXPECTED_CASE_COUNTS entry) if it is deleted.
+# Never pinned, because the Tier 1 plan deleted them (in 28f611f): mps_kron,
+# nsitelegs, merge_mps_to_mpo, convert_mpo, _swap_mpo, apply_interleave_swaps,
+# get_Tnlists, get_bublle_expanded_from_Tn, build_bubble_mpo.
+# get_bubble_mpo_haydock was on the same list but is kept (test/bugfix_rpa.jl
+# exercises it), so it is pinned; drop its cases (and its EXPECTED_CASE_COUNTS
+# entry) if it is ever deleted.
 #
 # Sizes are tiny on purpose (L <= 3 position qubits, Ncheb <= 8, maxdim 20): the
 # test is a guard against changed outputs, not a physics check. The exceptions

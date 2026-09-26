@@ -34,7 +34,8 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
 #     Tier 2 reordering of the arithmetic does not trip the test;
 #   * everything else (Int, Bool, Symbol, String, sizes, error records): equal
 #     with the same type;
-#   * every golden case must still exist and every case must have golden data;
+#   * every golden case must still exist and every case must have golden data,
+#     except a `requires` case whose function is gone (see below);
 #   * every function in MIN_CASES keeps at least its floor of compared cases,
 #     so an empty or shrunken case list fails instead of passing vacuously.
 #
@@ -43,10 +44,12 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
 # truncations it cannot reach).
 #
 # Cases marked `requires = :name` exercise functions that the Tier 1 dead-code
-# list slates for deletion (nh_imag_onsite_mpo, add_nh_imag_onsite!,
-# add_nh_loss!, nh_reconstruct_spectral_mpo, nh_spectral_function_allsite_mpo).
-# They are compared while the function exists and skipped with an @info once it
-# has been deleted, so the deletion does not need to touch this file.
+# list slated for deletion (nh_imag_onsite_mpo, add_nh_imag_onsite!,
+# add_nh_loss!, nh_reconstruct_spectral_mpo, nh_spectral_function_allsite_mpo;
+# all deleted in 6d79888). They are compared while the function exists and
+# skipped with an @info once it has been deleted, so the deletion does not need
+# to touch this file. The generator leaves such a case out of regenerated data,
+# and the test accepts the data with or without its record.
 #
 # Every case reseeds the global RNG (QTCI pivots in get_diagonal_mpo, DMRG
 # start states in the scale estimate, the stochastic probes) with a seed
@@ -995,7 +998,9 @@ function run_tests(golden = load_golden())
     @testset "NH outputs are pinned" begin
         @test allunique(first.(golden))
         @test allunique(c.name for c in CASES)
-        missing_data  = [c.name for c in CASES if !haskey(expected, c.name)]
+        # A skipped case may keep its record (data generated while its function
+        # existed) or not (data regenerated since); every other case needs one.
+        missing_data  = [c.name for c in CASES if is_available(c) && !haskey(expected, c.name)]
         missing_cases = setdiff(first.(golden), [c.name for c in CASES])
         isempty(missing_data) || @error "NH cases without golden data (regenerate?)" missing_data
         isempty(missing_cases) || @error "Golden NH cases no longer in the case list" missing_cases
@@ -1008,11 +1013,11 @@ function run_tests(golden = load_golden())
             @test n >= nmin
         end
         for c in CASES
-            haskey(expected, c.name) || continue
             if !is_available(c)
                 @info "NH golden case skipped: TensorBinding.$(c.requires) no longer exists" case = c.name
                 continue
             end
+            haskey(expected, c.name) || continue
             actual, err, bt = try
                 (run_case(c), nothing, nothing)
             catch e

@@ -32,13 +32,16 @@ using TensorBinding: KPM_Tn, KPM_Tn_mps, get_ldos, get_ldos_spectrum, get_ldos_o
 #   * a case recorded as throwing must still throw an exception of that type
 #     whose message starts with the recorded prefix (MESSAGE_PREFIX_CHARS
 #     characters of its first line);
-#   * the case names in the data file must be exactly the names in CASES.
+#   * the data file must hold one entry for every case in CASES, except that
+#     the entry of a skipped case (below) may be missing, and no other entry.
 #
 # Cases whose `requires` returns false are skipped (and counted): they pin code
 # that REORGANISATION_TODO.md lists for deletion ("Delete dead and legacy code":
 # `_get_exciton_ldos_cached` + the exciton `KPM_Tn(H, N, X)` method,
-# `ldos_exc_KPM_Tn`, `get_mus_raw`, `compute_dos_ldos_hodc`), so that deleting it
-# does not need a data regeneration. Their data can be dropped at leisure.
+# `ldos_exc_KPM_Tn`, `get_mus_raw`, `compute_dos_ldos_hodc`, all deleted in
+# c91ff65), so that deleting it does not need a data regeneration. Their data
+# can be dropped at leisure: the generator leaves a skipped case out, and the
+# test accepts the data with or without its entry.
 #
 # Runtime: about 2 minutes in a fresh process, nearly all of it first-call
 # compilation (real and complex MPO/MPS Chebyshev loops, QTCI in the exciton
@@ -68,8 +71,9 @@ const MODEL_SEED = 4242
 const CASE_SEED  = 20260925
 const MESSAGE_PREFIX_CHARS = 60
 
-# Number of cases in CASES and in test/data/kpm_golden.jl. Update it by hand, in
-# the same commit, when cases are added or removed on purpose.
+# Number of cases in CASES, skipped ones included (test/data/kpm_golden.jl holds
+# this many entries, or fewer by the skipped cases it was generated without).
+# Update it by hand, in the same commit, when cases are added or removed on purpose.
 const EXPECTED_CASE_COUNT = 261
 
 # ── Dense views of tensor-network outputs ────────────────────────────────────
@@ -1340,16 +1344,19 @@ function run_tests(entries)
         names = [c.name for c in CASES]
         @test allunique(names)
         @test length(CASES) == EXPECTED_CASE_COUNT
-        @test length(entries) == EXPECTED_CASE_COUNT
+        @test allunique(e.name for e in entries)
         by_name = Dict(e.name => e for e in entries)
-        @test Set(keys(by_name)) == Set(names)
+        # A skipped case may keep its entry (data generated while its function
+        # existed) or not (data regenerated since); every other case needs one.
+        @test Set(keys(by_name)) ==
+              Set(c.name for c in CASES if c.requires() || haskey(by_name, c.name))
         skipped = String[]
         for case in CASES
-            haskey(by_name, case.name) || continue
             if !case.requires()
                 push!(skipped, case.name)
                 continue
             end
+            haskey(by_name, case.name) || continue
             @test check_case(case, by_name[case.name])
         end
         isempty(skipped) ||

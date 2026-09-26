@@ -19,6 +19,14 @@
 #
 #     JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project=. test/data/generate_lattice_golden.jl
 #
+# An optional first argument writes the data to that path instead, e.g. to
+# compare a regeneration with the committed file without overwriting it.
+#
+# A case that names a function which no longer exists is left out of the data
+# when that function is on DELETABLE_FUNCTIONS in test/golden_lattice.jl (the
+# test skips such a case whether or not the data still holds it); a missing
+# function that is not on that list stops the script.
+#
 # All cases run in one process. Each case reseeds the RNGs with its own seed
 # (derived from its name by `name_seed`, stored in the data file), so the output
 # depends neither on the order in which the test replays the cases nor on which
@@ -46,7 +54,7 @@ const LATTICE_GOLDEN_GENERATOR = true
 include(joinpath(@__DIR__, "..", "golden_lattice.jl"))   # loads LatticeGoldenRunner only
 const R = LatticeGoldenRunner
 
-const OUTFILE = joinpath(@__DIR__, "lattice_golden.jl")
+const OUTFILE = isempty(ARGS) ? joinpath(@__DIR__, "lattice_golden.jl") : abspath(ARGS[1])
 
 const CASES = Tuple{String,Symbol,NamedTuple}[]
 add!(name, builder, spec) = push!(CASES, (name, builder, spec))
@@ -500,6 +508,14 @@ function evaluate_all(cases)
     entries = NamedTuple[]
     notes = String[]
     for (name, builder, spec) in cases
+        gone = R.missing_functions(spec)
+        if R.skipped(spec)   # its function has been deleted: nothing left to pin
+            push!(notes, "skipped, $(join(gone, ", ")) deleted: $name")
+            continue
+        elseif !isempty(gone)
+            error("case $name: $(join(gone, ", ")) no longer exist(s) and is not on " *
+                  "DELETABLE_FUNCTIONS in test/golden_lattice.jl")
+        end
         seed = name_seed(name)
         t = time()
         result, err = R.evaluate(builder, spec, seed)

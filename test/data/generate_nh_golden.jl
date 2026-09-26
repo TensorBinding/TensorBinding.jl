@@ -28,6 +28,13 @@
 #
 #     JULIA_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 julia --project=. test/data/generate_nh_golden.jl
 #
+# An optional first argument writes the data to that path instead, e.g. to
+# compare a regeneration with the committed file without overwriting it.
+#
+# Cases marked `requires` whose function has been deleted are not run and are
+# left out of the data; test/golden_nh.jl skips them whether or not the data
+# still holds them.
+#
 # The script reloads the file it wrote and checks that every record round-trips
 # exactly (same types, `isequal` values), then replays the test against it.
 
@@ -37,7 +44,7 @@ using TensorBinding, ITensors, ITensorMPS
 const NH_GOLDEN_GENERATOR = true
 include(joinpath(@__DIR__, "..", "golden_nh.jl"))   # loads module NHGolden only
 
-const OUTFILE = NHGolden.DATA_FILE
+const OUTFILE = isempty(ARGS) ? NHGolden.DATA_FILE : abspath(ARGS[1])
 
 # ── Literal writer ────────────────────────────────────────────────────────────
 
@@ -84,6 +91,10 @@ function generate()
     records = Pair{String,NamedTuple}[]
     t0 = time()
     for c in NHGolden.CASES
+        if !NHGolden.is_available(c)   # its function has been deleted: nothing left to pin
+            println(rpad(c.name, 56), " skipped, TensorBinding.$(c.requires) deleted")
+            continue
+        end
         t = @elapsed rec = NHGolden.run_case(c)
         rec isa NamedTuple || error("case $(c.name) returned $(typeof(rec)), expected a NamedTuple")
         push!(records, c.name => rec)
