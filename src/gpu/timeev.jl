@@ -248,7 +248,7 @@ therefore a loss term `-im * Γ` (Γ >= 0) damps the norm, matching
 and initial state are uploaded once, the TDVP loop stays on GPU, and only
 sampled scalar amplitudes are copied back to CPU. `nsteps` and `dt` are
 required; `nsite`, `reverse_step`, `outputlevel` and `normalize_each_step` are
-passed to `tdvp` (the last also renormalizes the state after every step).
+passed to `tdvp` (with the last, `tdvp` renormalizes the state after every step).
 
 The returned `amplitude` matrix has rows = sampled positions and columns =
 sampled times. By default it stores `real(<x|psi(t)>)`; `component` may be
@@ -339,7 +339,6 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
             reverse_step=reverse_step,
             outputlevel=outputlevel,
         )
-        normalize_each_step && normalize!(ψ_gpu)
 
         if step % sample_every == 0 || step == nsteps
             sample_idx += 1

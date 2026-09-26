@@ -33,7 +33,9 @@ using ITensorMPS
 
 # One TDVP step of size `dt` under the generator `H` (−im·H for Schrödinger
 # evolution): every tdvp call in this file and in gpu/timeev.jl goes through here.
-# Extra keywords (`updater_kwargs`) go to tdvp.
+# With `normalize=true`, tdvp ends each half-sweep with `normalize!` of the state,
+# so the result needs no second normalisation. Extra keywords (`updater_kwargs`)
+# go to tdvp.
 function _tdvp_step(H, psi, dt; nsite, maxdim, cutoff, normalize, reverse_step,
                     outputlevel, kwargs...)
     return tdvp(
@@ -258,7 +260,8 @@ end
 Apply one TDVP step to `psi` under Hamiltonian `H` for time `dt`.
 
 `H` must already carry the `-im` prefactor for Schrödinger evolution.
-When `normalize=true` the output is renormalised after the step.
+When `normalize=true` the output is normalised (`tdvp` normalises the state at the
+end of each half-sweep).
 
 A `TBHamiltonian` overload applies `-im` internally:
 `tdvp_evolve(H::TBHamiltonian, psi, dt; ...)`.
@@ -274,7 +277,7 @@ function tdvp_evolve(
     outputlevel = 0,
     nsite = 2,
 )
-    psi_out = _tdvp_step(
+    return _tdvp_step(
         H,
         psi,
         dt;
@@ -285,13 +288,6 @@ function tdvp_evolve(
         reverse_step = reverse_step,
         outputlevel = outputlevel,
     )
-
-    if normalize
-        nrm = sqrt(real(inner(psi_out, psi_out)))
-        psi_out = psi_out / nrm
-    end
-
-    return psi_out
 end
 
 
@@ -361,7 +357,7 @@ function evolve_with_tdvp(H, psi0, nsteps, dt;
     nsite = 2,
 )
     return _trajectory(psi0, nsteps, MPS) do _, psi
-        psi = _tdvp_step(
+        return _tdvp_step(
             H,
             psi,
             dt;
@@ -372,10 +368,6 @@ function evolve_with_tdvp(H, psi0, nsteps, dt;
             reverse_step = reverse_step,
             outputlevel = outputlevel,
         )
-        if normalize_each_step
-            normalize!(psi)
-        end
-        return psi
     end
 end
 
@@ -410,7 +402,7 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
         t_mid = (step - 1) * dt + dt / 2
         Hmid = Hoft(t_mid)
 
-        psi = _tdvp_step(
+        return _tdvp_step(
             -im * Hmid,
             psi,
             dt;
@@ -422,10 +414,6 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
             outputlevel = outputlevel,
             updater_kwargs = (; tol = tol, krylovdim = krylovdim, eager = true),
         )
-        if normalize_each_step
-            normalize!(psi)
-        end
-        return psi
     end
 end
 

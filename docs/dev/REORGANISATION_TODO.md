@@ -382,8 +382,16 @@ the affected golden cases in the same commit.
       `get_rpa_susceptibility_wynn` and `get_magnon_susceptibility_wynn` (tier2/rpa). Outputs and
       verbose lines unchanged. The magnon functions stay public: folding them into
       `mode=:magnetic` changes the API, so it moved to Tier 3.*
-- [ ] Timeev: `_rk4_step(rhs, …)` (2 copies), one `evolve_rk4_dm_*`, one trajectory loop;
+- [x] Timeev: `_rk4_step(rhs, …)` (2 copies), one `evolve_rk4_dm_*`, one trajectory loop;
       remove the double normalisation after `tdvp(normalize=true)`.
+      *Section 1 of `solvers/Timeev.jl` (tier2/timeev): `_rk4_step` (also behind
+      `rk4_step_dm_nh_gpu`, which passes its ComplexF32 coefficients and `maxdim` for the
+      MPO sums), `_evolve_rk4_dm`, `_trajectory` (all five `evolve_*` loops) and `_tdvp_step`
+      (every `tdvp` call, GPU included); outputs bit for bit unchanged. The second
+      normalisation is gone from `tdvp_evolve`, `evolve_with_tdvp(_timedep)` and
+      `get_state_amplitude_trajectory_gpu`: `tdvp` already ends each half-sweep with
+      `normalize!`, so only `tdvp_evolve` moved, by ≤ 4.5e-16. The two GPU sampled-trajectory
+      loops keep their own loops (they sample on the fly instead of storing states).*
 - [ ] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
