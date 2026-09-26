@@ -13,6 +13,10 @@
 # Helper:
 #   build_K        — assemble K as an MPO (useful standalone)
 #   local_weight   — |⟨i|ψ⟩|²  (LDoS proxy at a single site)
+#
+# KPM spectral bounds (last section, moved from solvers/kpm/recursion.jl):
+#   _estimate_spectral_bounds — two short DMRG runs give (scale, center)
+#   _ensure_scale!            — fill H.scale / H.center on demand
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -144,4 +148,63 @@ For a BdG or spin-extended system pass the full `ext_sites` and set
 function local_weight(ψ::MPS, i::Integer, L::Integer, sites)
     ket = binary_to_MPS(i, L, sites)
     return abs2(inner(ket, ψ))
+end
+
+
+# ============================================================
+# Spectral bounds (DMRG estimate of the Chebyshev rescaling)
+# ============================================================
+
+"""
+    _estimate_spectral_bounds(H_mpo, sites; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+        -> (scale, center)
+
+Run two short DMRG sweeps (minimising H and −H) to find the spectral edges
+E_min and E_max, then return:
+    center = (E_max + E_min) / 2
+    scale  = (E_max − E_min) / 2 × 1.1   (10 % buffer)
+"""
+function _estimate_spectral_bounds(H_mpo::MPO, sites;
+                                    dmrg_nsweeps::Int = 5,
+                                    dmrg_maxdim       = [10, 20, 40],
+                                    dmrg_linkdim::Int = 4)
+    E_min, _ = dmrg_gs(H_mpo, sites;
+                        nsweeps      = dmrg_nsweeps,
+                        maxdim       = dmrg_maxdim,
+                        linkdim_init = dmrg_linkdim,
+                        noise        = [1e-6, 1e-7, 0.0],
+                        outputlevel  = 0)
+    E_max_neg, _ = dmrg_gs((-1.0) * H_mpo, sites;
+                             nsweeps      = dmrg_nsweeps,
+                             maxdim       = dmrg_maxdim,
+                             linkdim_init = dmrg_linkdim,
+                             noise        = [1e-6, 1e-7, 0.0],
+                             outputlevel  = 0)
+    E_max  = -E_max_neg
+    center = (E_max + E_min) / 2
+    scale  = (E_max - E_min) / 2 * 1.1
+    # Visible by default: an automatic scale that misses the spectrum breaks KPM silently.
+    @info "KPM_Tn: spectral bounds estimated by DMRG" E_min E_max center scale
+    return scale, center
+end
+
+
+"""
+    _ensure_scale!(H::TBHamiltonian; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+
+If `H.scale == 0` (sentinel meaning "not yet determined"), run
+`_estimate_spectral_bounds` and store the results in `H.scale` and `H.center`.
+No-op if `H.scale > 0` (analytic estimate already set at construction or
+a previous KPM call already ran DMRG).
+"""
+function _ensure_scale!(H::TBHamiltonian;
+                         dmrg_nsweeps::Int = 5,
+                         dmrg_maxdim       = [10, 20, 40],
+                         dmrg_linkdim::Int = 4)
+    H.scale > 0.0 && return H
+    H.scale, H.center = _estimate_spectral_bounds(H.mpo, H.sites;
+                             dmrg_nsweeps = dmrg_nsweeps,
+                             dmrg_maxdim  = dmrg_maxdim,
+                             dmrg_linkdim = dmrg_linkdim)
+    return H
 end

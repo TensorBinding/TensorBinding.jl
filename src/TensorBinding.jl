@@ -73,21 +73,24 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                                 Bilayer_tk)
 #   lattice/TJunction_tk.jl    — T/Y-junction geometries (uses TBSystem, Hamiltonian,
 #                                 MPOTools)
+#   solvers/DMRG_tk.jl     — ground-state and spectral DMRG, and the DMRG spectral
+#                             bounds _estimate_spectral_bounds/_ensure_scale! that
+#                             every KPM caller uses (uses TBSystem)
 #   solvers/kpm/           — Chebyshev kernel polynomial method, "KPM_tk" below
-#                             (uses TBSystem, AuxDOF): kernels.jl (damping kernels, HODC
-#                             and DOS weights), recursion.jl (spectral bounds,
-#                             KPM_Tn/KPM_Tn_mps, online MPS recursion), cached.jl
-#                             (LDOS/Green's functions from cached T_n or μ_n),
-#                             ldos.jl (online and spatial LDOS), dos.jl (stochastic
-#                             and trace DOS), exciton.jl (exciton LDOS)
-#   solvers/Krylov_tk.jl   — Green's function via vectorized linsolve (uses TBSystem,
-#                             MPOTools)
-#   solvers/DMRG_tk.jl     — ground-state and spectral DMRG (uses TBSystem)
+#                             (uses TBSystem, AuxDOF, DMRG_tk): kernels.jl (damping
+#                             kernels, KPM/HODC/DOS weights, moment-column
+#                             reconstruction), recursion.jl (KPM_Tn/KPM_Tn_mps, online
+#                             MPS recursion), cached.jl (LDOS/Green's functions from
+#                             cached T_n or μ_n), ldos.jl (online and spatial LDOS),
+#                             dos.jl (stochastic and trace DOS), exciton.jl (exciton LDOS)
+#   solvers/Krylov_tk.jl   — Green's function via vectorized linsolve and the
+#                             Haydock recursion haydock_cf (uses TBSystem, MPOTools)
 #   solvers/Timeev_tk.jl   — time evolution: TDVP, propagator MPO, density-matrix
 #                             dynamics (uses Hamiltonian, TBSystem)
 #   physics/SCF_tk.jl      — self-consistent mean-field SCF loop (uses KPM_tk,
 #                             Purification_tk, TBSystem, AuxDOF)
-#   physics/rpa/bubble.jl   — polarization bubble Π₀(ω) (get_bubble_mpo, Haydock)
+#   physics/rpa/bubble.jl   — polarization bubble Π₀(ω) (get_bubble_mpo,
+#                              get_bubble_mpo_haydock; uses Krylov_tk)
 #   physics/rpa/cheb2d.jl   — double-Chebyshev bubbles (full MPO, k-space diagonal)
 #   physics/rpa/dyson.jl    — RPA susceptibility: Dyson solve, Wynn series, magnon
 #                              channel (rpa/ uses MPOTools, KPM_tk, QFT_tk,
@@ -106,7 +109,8 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                             nh_spectrum_grid (uses nh/model, KPM_tk, Utils)
 #   physics/QPI_tk.jl      — quasiparticle interference via KPM LDOS difference
 #                             + QFT (uses KPM_tk, physics/qft)
-#   physics/qft/           — QFT conjugation (conjugation.jl), band structure
+#   physics/qft/           — QFT conjugation and the k-space diagonal get_spect_k
+#                             (conjugation.jl), band structure
 #                             get_bands (bands.jl), high-symmetry k-paths
 #                             (kpath.jl), exciton spectra (exciton_spectra.jl)
 #                             (uses TBSystem, AuxDOF, KPM_tk, MPOTools)
@@ -147,6 +151,7 @@ include("lattice/Flake_tk.jl")
 include("lattice/Bilayer_tk.jl")
 include("lattice/Twisted_tk.jl")
 include("lattice/TJunction_tk.jl")
+include("solvers/DMRG_tk.jl")
 include("solvers/kpm/kernels.jl")
 include("solvers/kpm/recursion.jl")
 include("solvers/kpm/cached.jl")
@@ -154,7 +159,6 @@ include("solvers/kpm/ldos.jl")
 include("solvers/kpm/dos.jl")
 include("solvers/kpm/exciton.jl")
 include("solvers/Krylov_tk.jl")
-include("solvers/DMRG_tk.jl")
 include("solvers/Timeev_tk.jl")
 include("physics/SCF_tk.jl")
 include("physics/rpa/bubble.jl")

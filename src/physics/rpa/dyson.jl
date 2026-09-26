@@ -8,8 +8,9 @@
 # Step 1 lives in bubble.jl and cheb2d.jl. This file holds step 2 and the drivers
 # built on it: the Dyson linear solve (rpa_from_bubble_diag, get_rpa_susceptibility),
 # the Wynn ε-accelerated Neumann series (wynn_epsilon, rpa_wynn_from_bubbles,
-# get_spect_k, get_rpa_susceptibility_wynn) and the transverse-spin channel
-# (get_magnon_*; its spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
+# get_rpa_susceptibility_wynn; its k-space readout get_spect_k is in
+# physics/qft/conjugation.jl) and the transverse-spin channel (get_magnon_*; its
+# spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
 # Split verbatim from physics/RPA_tk.jl.
 
 # ============================================================
@@ -232,26 +233,6 @@ function rpa_wynn_from_bubbles(Π0_list::Vector{<:MPO}, MPOV::MPO;
     end
 
     return chi_partial, chi_wynn
-end
-
-
-"""
-    get_spect_k(W; tol, maxdim) -> Vector{ComplexF64}
-
-Extract the k-space diagonal of MPO `W` as a dense vector of 2^L values.
-
-Conjugates `W` by the QFT (giving W̃ = QFT·W·QFT†), extracts the diagonal
-as an MPS, then evaluates each ⟨k|W̃|k⟩ for the 2^L quantics k-indices.
-Uses LSB-first quantics convention (site 1 = least significant bit).
-"""
-function get_spect_k(W::MPO; tol::Real=1e-9, maxdim::Int=100)
-    Wk   = conjugate_by_qft(W; tol=tol, maxdim=maxdim)
-    diag = extract_diagonal_to_mps(Wk)
-    L    = length(diag)
-    N    = 2^L
-    sd   = siteinds(diag)
-    return ComplexF64[inner(MPS(sd, [string((k >> (i-1)) & 1) for i in 1:L]), diag)
-                      for k in 0:N-1]
 end
 
 

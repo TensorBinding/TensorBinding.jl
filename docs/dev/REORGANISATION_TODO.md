@@ -186,7 +186,7 @@ the affected golden cases in the same commit.
       `aux_site`, `_autoenable_proj` (from QFT), `_aux_setup`, `_ldos_make_psi0` (from KPM),
       and the four `add_spin!`/`add_zeeman!`/`add_superconductivity!`/`add_soc!` mutators
       (from TBSystem). Include it right after TBSystem. (moved in tier1/move-auxdof)
-- [ ] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM.
+- [x] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM. (moved in tier1/move-solvers)
 - [x] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
       other product-state builders. (moved in tier1/move-utils)
 - [x] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
@@ -198,8 +198,8 @@ the affected golden cases in the same commit.
 - [ ] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
       junction geometry, `geometry_uc` closures) → `lattice/Geometry.jl` with one `(Lx, Ly)`
       signature.
-- [ ] `_reconstruct_ldos_moment_columns` (GPU) → `solvers/kpm/kernels.jl`; move its test out of
-      `test/gpu_mps_ldos.jl`.
+- [x] `_reconstruct_ldos_moment_columns` (GPU) → `solvers/kpm/kernels.jl`; move its test out of
+      `test/gpu_mps_ldos.jl`. (moved in tier1/move-solvers)
 
 ### Delete dead and legacy code
 - [x] Confirmed unreferenced everywhere (incl. notebooks and generated docs):

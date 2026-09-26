@@ -2,8 +2,8 @@
 # kpm.jl — GPU Chebyshev recurrence, spatial LDOS and stochastic DOS
 # ============================================================
 # Moved from gpu/GPU_tk.jl: KPM_Tn_gpu, get_ldos_spatial_gpu,
-# get_ldos_spatial_mps_gpu with _reconstruct_ldos_moment_columns, and
-# get_dos_stochastic_gpu.
+# get_ldos_spatial_mps_gpu and get_dos_stochastic_gpu. The CPU helper
+# _reconstruct_ldos_moment_columns lives in solvers/kpm/kernels.jl.
 
 # ============================================================
 # GPU Chebyshev recurrence
@@ -330,46 +330,6 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         result[iω, :] = accum[iω, :] ./ (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
     end
 
-    return result
-end
-
-
-"""
-    _reconstruct_ldos_moment_columns(moments, W, denom, valid)
-        -> Matrix{Float64}
-
-Reconstruct one LDOS column per column of raw Chebyshev `moments`. The weight
-matrix follows `_dos_weight_matrix`: `W[n, iω]` multiplies moment order `n-1`,
-and `denom[iω]` supplies the kernel-specific normalization. Invalid energies
-are returned as zero columns in energy space.
-"""
-function _reconstruct_ldos_moment_columns(
-    moments::AbstractMatrix{<:Real},
-    W::AbstractMatrix{<:Real},
-    denom::AbstractVector{<:Real},
-    valid::AbstractVector{Bool},
-)
-    Ncheb, ncols = size(moments)
-    size(W, 1) == Ncheb || throw(DimensionMismatch(
-        "moment rows ($(size(moments, 1))) must match weight rows ($(size(W, 1))).",
-    ))
-    Nω = size(W, 2)
-    length(denom) == Nω || throw(DimensionMismatch(
-        "denominator length ($(length(denom))) must match energy count ($Nω).",
-    ))
-    length(valid) == Nω || throw(DimensionMismatch(
-        "valid-mask length ($(length(valid))) must match energy count ($Nω).",
-    ))
-
-    result = zeros(Float64, Nω, ncols)
-    mul!(result, transpose(W), moments)
-    for iω in 1:Nω
-        if valid[iω]
-            view(result, iω, :) ./= denom[iω]
-        else
-            fill!(view(result, iω, :), 0.0)
-        end
-    end
     return result
 end
 

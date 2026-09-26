@@ -1,66 +1,7 @@
 # solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method:
-# DMRG spectral bounds (_estimate_spectral_bounds, _ensure_scale!), the cached MPO
-# and MPS recursions KPM_Tn / KPM_Tn_mps, and the online MPS recursion
-# _run_kpm_mps!. Moved verbatim from solvers/KPM_tk.jl (Tier 1 split).
-
-# ============================================================
-# Spectral bounds (DMRG estimate of the Chebyshev rescaling)
-# ============================================================
-
-"""
-    _estimate_spectral_bounds(H_mpo, sites; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
-        -> (scale, center)
-
-Run two short DMRG sweeps (minimising H and −H) to find the spectral edges
-E_min and E_max, then return:
-    center = (E_max + E_min) / 2
-    scale  = (E_max − E_min) / 2 × 1.1   (10 % buffer)
-"""
-function _estimate_spectral_bounds(H_mpo::MPO, sites;
-                                    dmrg_nsweeps::Int = 5,
-                                    dmrg_maxdim       = [10, 20, 40],
-                                    dmrg_linkdim::Int = 4)
-    E_min, _ = dmrg_gs(H_mpo, sites;
-                        nsweeps      = dmrg_nsweeps,
-                        maxdim       = dmrg_maxdim,
-                        linkdim_init = dmrg_linkdim,
-                        noise        = [1e-6, 1e-7, 0.0],
-                        outputlevel  = 0)
-    E_max_neg, _ = dmrg_gs((-1.0) * H_mpo, sites;
-                             nsweeps      = dmrg_nsweeps,
-                             maxdim       = dmrg_maxdim,
-                             linkdim_init = dmrg_linkdim,
-                             noise        = [1e-6, 1e-7, 0.0],
-                             outputlevel  = 0)
-    E_max  = -E_max_neg
-    center = (E_max + E_min) / 2
-    scale  = (E_max - E_min) / 2 * 1.1
-    # Visible by default: an automatic scale that misses the spectrum breaks KPM silently.
-    @info "KPM_Tn: spectral bounds estimated by DMRG" E_min E_max center scale
-    return scale, center
-end
-
-
-"""
-    _ensure_scale!(H::TBHamiltonian; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
-
-If `H.scale == 0` (sentinel meaning "not yet determined"), run
-`_estimate_spectral_bounds` and store the results in `H.scale` and `H.center`.
-No-op if `H.scale > 0` (analytic estimate already set at construction or
-a previous KPM call already ran DMRG).
-"""
-function _ensure_scale!(H::TBHamiltonian;
-                         dmrg_nsweeps::Int = 5,
-                         dmrg_maxdim       = [10, 20, 40],
-                         dmrg_linkdim::Int = 4)
-    H.scale > 0.0 && return H
-    H.scale, H.center = _estimate_spectral_bounds(H.mpo, H.sites;
-                             dmrg_nsweeps = dmrg_nsweeps,
-                             dmrg_maxdim  = dmrg_maxdim,
-                             dmrg_linkdim = dmrg_linkdim)
-    return H
-end
-
+# the cached MPO and MPS recursions KPM_Tn / KPM_Tn_mps, and the online MPS recursion
+# _run_kpm_mps!. Moved verbatim from solvers/KPM_tk.jl (Tier 1 split). The DMRG
+# spectral bounds (_estimate_spectral_bounds, _ensure_scale!) live in solvers/DMRG_tk.jl.
 
 # ============================================================
 # Cached Chebyshev MPO recursion: KPM_Tn

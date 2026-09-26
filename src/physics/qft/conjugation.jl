@@ -2,8 +2,9 @@
 #
 # Contains conjugate_by_qft (plain and TBHamiltonian-aware), the aux-site
 # embedding helpers _embed_in_full_sites / _embed_displacement_in_full_sites,
-# and the two-particle conjugate_by_qft_exciton.  Moved verbatim from section 1
-# of physics/QFT_tk.jl; the overview and file map of physics/qft/ are at the
+# the two-particle conjugate_by_qft_exciton and the k-space diagonal get_spect_k.
+# Moved verbatim from section 1 of physics/QFT_tk.jl (get_spect_k from
+# physics/rpa/dyson.jl); the overview and file map of physics/qft/ are at the
 # top of bands.jl.
 
 # ============================================================
@@ -191,4 +192,28 @@ function conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim::Int=100
     Op1 = apply(W, FTirev; cutoff=tol, maxdim=maxdim)
     Op2 = apply(swapprime(FTrev, 0 => 1), Op1; cutoff=tol, maxdim=maxdim)
     return TCI.truncate(Op2; cutoff=tol, maxdim=maxdim)
+end
+
+
+# ------------------------------------------------------------
+# 1c. k-space diagonal of an MPO
+# ------------------------------------------------------------
+
+"""
+    get_spect_k(W; tol, maxdim) -> Vector{ComplexF64}
+
+Extract the k-space diagonal of MPO `W` as a dense vector of 2^L values.
+
+Conjugates `W` by the QFT (giving W̃ = QFT·W·QFT†), extracts the diagonal
+as an MPS, then evaluates each ⟨k|W̃|k⟩ for the 2^L quantics k-indices.
+Uses LSB-first quantics convention (site 1 = least significant bit).
+"""
+function get_spect_k(W::MPO; tol::Real=1e-9, maxdim::Int=100)
+    Wk   = conjugate_by_qft(W; tol=tol, maxdim=maxdim)
+    diag = extract_diagonal_to_mps(Wk)
+    L    = length(diag)
+    N    = 2^L
+    sd   = siteinds(diag)
+    return ComplexF64[inner(MPS(sd, [string((k >> (i-1)) & 1) for i in 1:L]), diag)
+                      for k in 0:N-1]
 end

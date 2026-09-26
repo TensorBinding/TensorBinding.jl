@@ -11,6 +11,9 @@
 # where |M⟩⟩ is the vectorized (MPS) representation of the matrix M on a 2L-site
 # interleaved quantics chain (odd sites = row bits, even sites = column bits).
 #
+# Also holds the operator-level Haydock (Lanczos) recursion haydock_cf,
+# eval_haydock_cf, haydock_resolve_mpo (moved from physics/rpa/bubble.jl).
+#
 # Requires: interleave_mpo (core/MPOTools.jl), custom_mpo (utils.jl).
 
 
@@ -159,4 +162,129 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
     return get_green_krylov(H.mpo, H.sites, ω_phys;
                             η, nsweeps, maxdim, cutoff, x0_mpo, ishermitian,
                             tol, maxiter, krylovdim, verbose)
+end
+
+
+# ============================================================
+# Haydock recursion (operator-level Krylov)
+# ============================================================
+
+"""
+    haydock_cf(H_mpo, seed, N_steps; maxdim, cutoff, verbose)
+        -> (a, b, basis, norm0)
+
+Haydock (Lanczos) recursion with H_mpo acting on MPO vectors from the left.
+Starting from `seed`, builds an orthogonal Krylov basis under H_mpo using
+the Frobenius (Hilbert-Schmidt) inner product (A, B) = Tr[A† B].
+
+Three-term recurrence (Φ₀ = seed / β₀, β₀ = ||seed||_F):
+
+    Φₙ₊₁ = H·Φₙ − aₙ·Φₙ − bₙ·Φₙ₋₁    (b₁ = 0)
+
+Returns:
+- `a`    : diagonal coefficients a[1..N]
+- `b`    : b[1] = norm0 = ||seed||_F; b[2..N] = off-diagonal βₙ
+- `basis`: normalized Krylov MPOs {Φ₀, …, Φₙ₋₁}
+- `norm0`: sqrt(inner(seed, seed))
+
+The scalar projected GF ⟨seed|(z−H)⁻¹|seed⟩ is recovered via
+`eval_haydock_cf(a, b, z)`.  The full resolvent MPO (z−H)⁻¹|seed⟩ is
+recovered via `haydock_resolve_mpo(a, b, basis, z)`.
+"""
+function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
+                    maxdim::Int   = 200,
+                    cutoff::Real  = 1e-8,
+                    verbose::Bool = false)
+
+    a     = zeros(Float64, N_steps)
+    b     = zeros(Float64, N_steps)
+    basis = Vector{MPO}(undef, N_steps)
+
+    norm0    = sqrt(real(tr(apply(dag(seed), seed; cutoff=cutoff, maxdim=maxdim))))
+    b[1]     = norm0
+    Phi_prev = nothing
+    Phi_curr = (1.0 / norm0) * seed
+
+    actual_N = N_steps
+    for n in 1:N_steps
+        basis[n] = Phi_curr
+
+        HPhi = apply(H_mpo, Phi_curr; maxdim=maxdim, cutoff=cutoff)
+        a[n] = real(tr(apply(dag(Phi_curr), HPhi; cutoff=cutoff, maxdim=maxdim)))
+
+        r = +(HPhi, (-a[n]) * Phi_curr; maxdim=maxdim)
+        ITensorMPS.truncate!(r; cutoff=cutoff)
+        if n > 1
+            r = +(r, (-b[n]) * Phi_prev; maxdim=maxdim)
+            ITensorMPS.truncate!(r; cutoff=cutoff)
+        end
+
+        b_next = sqrt(max(0.0, real(tr(apply(dag(r), r; cutoff=cutoff, maxdim=maxdim)))))
+        verbose && println("  step $n: a=$(round(a[n];digits=5))  b_next=$(round(b_next;digits=5))  chi=$(maxlinkdim(Phi_curr))")
+
+        if b_next < 1e-12
+            verbose && println("  haydock_cf: invariant subspace at step $n")
+            actual_N = n
+            break
+        end
+
+        Phi_prev = Phi_curr
+        Phi_curr = (1.0 / b_next) * r
+        n < N_steps && (b[n + 1] = b_next)
+    end
+
+    return a[1:actual_N], b[1:actual_N], basis[1:actual_N], norm0
+end
+
+
+"""
+    eval_haydock_cf(a, b, z) -> ComplexF64
+
+Evaluate the Haydock continued fraction ⟨seed|(z−H)⁻¹|seed⟩ via backward
+recursion. `b[1]` must be norm0 = ||seed||_F (as returned by `haydock_cf`).
+
+    G(z) = b[1]² / (z − a[1] − b[2]²/(z − a[2] − b[3]²/…))
+
+Calling with truncated arrays a[1:N], b[1:N] gives the N-th CF convergent,
+whose sequence over N is suitable for Wynn ε-acceleration.
+"""
+function eval_haydock_cf(a::AbstractVector, b::AbstractVector, z::Number)
+    N = length(a)
+    f = ComplexF64(z) - a[N]
+    for n in N-1:-1:1
+        f = ComplexF64(z) - a[n] - b[n + 1]^2 / f
+    end
+    return b[1]^2 / f
+end
+
+
+"""
+    haydock_resolve_mpo(a, b, basis, z; maxdim, cutoff) -> MPO
+
+Reconstruct (z−H)⁻¹|seed⟩ as an MPO by solving the N×N Lanczos tridiagonal
+system and forming a linear combination of the Krylov basis MPOs:
+
+    (z·I − T) c = b[1]·e₁,   Π₀(z) = Σₙ c[n]·basis[n]
+
+where T has diagonal `a` and off-diagonal `b[2:]`, and b[1] = norm0.
+"""
+function haydock_resolve_mpo(a::AbstractVector, b::AbstractVector,
+                              basis::Vector{<:MPO}, z::Number;
+                              maxdim::Int  = 200,
+                              cutoff::Real = 1e-8)
+    N  = length(a)
+    zc = ComplexF64(z)
+    d  = [zc - a[n] for n in 1:N]
+    ev = N > 1 ? ComplexF64[-b[n] for n in 2:N] : ComplexF64[]
+    T  = Tridiagonal(ev, d, ev)
+    rhs       = zeros(ComplexF64, N)
+    rhs[1]    = b[1]
+    c         = T \ rhs
+
+    result = c[1] * basis[1]
+    for n in 2:N
+        result = +(result, c[n] * basis[n]; maxdim=maxdim)
+        ITensorMPS.truncate!(result; cutoff=cutoff)
+    end
+    return result
 end

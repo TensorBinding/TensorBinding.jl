@@ -1,7 +1,10 @@
-# solvers/kpm/kernels.jl — KPM damping kernels (_kpm_kernel), the HODC contour
-# kernel helpers (compute_hodc_params, get_hodc_weights, get_hodc_gf_weights) and
-# the stochastic-DOS weight matrix _dos_weight_matrix. Moved verbatim from
-# solvers/KPM_tk.jl (Tier 1 split); _kpm_weight_matrix still lives in QFT_tk.jl.
+# solvers/kpm/kernels.jl — KPM damping kernels (_kpm_kernel), the Chebyshev-KPM
+# weight matrix _kpm_weight_matrix, the HODC contour kernel helpers
+# (compute_hodc_params, get_hodc_weights, get_hodc_gf_weights), the stochastic-DOS
+# weight matrix _dos_weight_matrix and the moment-column LDOS reconstruction
+# _reconstruct_ldos_moment_columns. Moved verbatim from solvers/KPM_tk.jl (Tier 1
+# split), physics/qft/bands.jl (_kpm_weight_matrix) and gpu/kpm.jl
+# (_reconstruct_ldos_moment_columns).
 
 # ============================================================
 # KPM damping kernels
@@ -21,6 +24,41 @@ function _kpm_kernel(N::Int, kernel::Symbol; lambda::Real = 4.0)
     else
         error("Unknown KPM kernel: $kernel. Choose :jackson, :lorentz, :fejer, or :dirichlet")
     end
+end
+
+
+# ============================================================
+# Chebyshev-KPM weight matrix
+# ============================================================
+
+"""
+    _kpm_weight_matrix(Ncheb, ω_vals; kernel=:jackson, lambda=4.0) -> Matrix{Float64}
+
+Precompute the full KPM weight matrix `W[n, iω]` for fast in-loop accumulation.
+
+```
+W[n, iω] = c_n · g_n · cos((n-1) · arccos(ω_iω))
+```
+
+- `c_n = 1` for n=1, `c_n = 2` otherwise (Chebyshev expansion factor)
+- `g_n` = kernel damping: Jackson (default, finite-size ringing suppressed)
+  or Lorentz (controlled width `lambda`, smoother tails)
+- Entries for `|ω| ≥ 1` are set to zero (outside the spectral support)
+
+Pre-computing W avoids recomputing cos((n-1)·arccos(ω)) inside the inner loop,
+which is called Ncheb × Nω times.
+"""
+function _kpm_weight_matrix(Ncheb::Int, ω_vals; kernel::Symbol=:jackson, lambda::Real=4.0)
+    kweights = _kpm_kernel(Ncheb, kernel; lambda=lambda)
+    Nω = length(ω_vals)
+    W = zeros(Float64, Ncheb, Nω)
+    for iω in 1:Nω
+        abs(ω_vals[iω]) >= 1.0 && continue
+        for n in 1:Ncheb
+            W[n, iω] = (n == 1 ? 1.0 : 2.0) * kweights[n] * cos((n-1) * acos(ω_vals[iω]))
+        end
+    end
+    return W
 end
 
 
@@ -112,4 +150,48 @@ function _dos_weight_matrix(Ncheb::Int, ω_vals;
         denom = [π^2 * Ncheb * sqrt(max(1 - ω^2, 0.0)) for ω in ω_vals]
         return W, denom
     end
+end
+
+
+# ============================================================
+# Moment-column LDOS reconstruction
+# ============================================================
+
+"""
+    _reconstruct_ldos_moment_columns(moments, W, denom, valid)
+        -> Matrix{Float64}
+
+Reconstruct one LDOS column per column of raw Chebyshev `moments`. The weight
+matrix follows `_dos_weight_matrix`: `W[n, iω]` multiplies moment order `n-1`,
+and `denom[iω]` supplies the kernel-specific normalization. Invalid energies
+are returned as zero columns in energy space.
+"""
+function _reconstruct_ldos_moment_columns(
+    moments::AbstractMatrix{<:Real},
+    W::AbstractMatrix{<:Real},
+    denom::AbstractVector{<:Real},
+    valid::AbstractVector{Bool},
+)
+    Ncheb, ncols = size(moments)
+    size(W, 1) == Ncheb || throw(DimensionMismatch(
+        "moment rows ($(size(moments, 1))) must match weight rows ($(size(W, 1))).",
+    ))
+    Nω = size(W, 2)
+    length(denom) == Nω || throw(DimensionMismatch(
+        "denominator length ($(length(denom))) must match energy count ($Nω).",
+    ))
+    length(valid) == Nω || throw(DimensionMismatch(
+        "valid-mask length ($(length(valid))) must match energy count ($Nω).",
+    ))
+
+    result = zeros(Float64, Nω, ncols)
+    mul!(result, transpose(W), moments)
+    for iω in 1:Nω
+        if valid[iω]
+            view(result, iω, :) ./= denom[iω]
+        else
+            fill!(view(result, iω, :), 0.0)
+        end
+    end
+    return result
 end

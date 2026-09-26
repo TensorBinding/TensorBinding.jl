@@ -104,6 +104,7 @@ include("fibonacci.jl")
 include("fibonacci_sampling.jl")
 include("metallic_mean.jl")
 include("kbonacci.jl")
+include("kpm_moment_columns.jl")
 include("gpu_mps_ldos.jl")
 
 # Regression tests for the bugs found in the 2026-09 code audit

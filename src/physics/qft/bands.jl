@@ -1,9 +1,10 @@
 # bands.jl — Momentum-space band structure via online Chebyshev KPM
 #
 # Contains get_bands (low-level MPO method and the TBHamiltonian overloads)
-# with its helper _kpm_weight_matrix (_eval_diag_mps: core/Utils.jl).  Moved verbatim from
-# sections 3, 4 and 5 of physics/QFT_tk.jl, together with that file's overview,
-# which now describes the whole physics/qft/ folder.
+# (its helpers _eval_diag_mps and _kpm_weight_matrix now live in core/Utils.jl and
+# solvers/kpm/kernels.jl).  Moved verbatim from sections 3, 4 and 5 of
+# physics/QFT_tk.jl, together with that file's overview, which now describes the
+# whole physics/qft/ folder.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # Overview
@@ -74,12 +75,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # fix_sites, _kpm_kernel               → utils.jl
 # extract_diagonal_to_mps              → utils.jl
-# _eval_diag_mps                       → utils.jl
+# _eval_diag_mps                       → core/Utils.jl
 # interleave_mpo                       → core/MPOTools.jl
 # _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
-# TBHamiltonian, _ensure_scale!        → TBSystem.jl
+# TBHamiltonian                        → TBSystem.jl
+# _ensure_scale!                       → solvers/DMRG_tk.jl
+# _kpm_weight_matrix                   → solvers/kpm/kernels.jl
 # project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
 # _run_kpm_mps!, _dos_weight_matrix    → KPM_tk.jl
+# _kpm_weight_matrix                   → KPM_tk.jl
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # File structure  (src/physics/qft/, in include order)
@@ -89,9 +93,11 @@
 #       1a. Single-particle QFT    conjugate_by_qft, _embed_in_full_sites,
 #                                  _embed_displacement_in_full_sites
 #       1b. Exciton QFT            conjugate_by_qft_exciton
+#       1c. k-space diagonal       get_spect_k
 # bands.jl  (this file)
-#   3.  Internal utilities         _kpm_weight_matrix
-#                                  (_eval_diag_mps, ilinspace / kspace_sampling_plan: core/Utils.jl)
+#   3.  Internal utilities         (none left here: _eval_diag_mps, ilinspace and
+#                                  kspace_sampling_plan are in core/Utils.jl,
+#                                  _kpm_weight_matrix in solvers/kpm/kernels.jl)
 #   4.  Online band structure      get_bands (low-level MPO method)
 #   5.  High-level overloads       get_bands (TBHamiltonian, single-particle)
 # kpath.jl
@@ -110,43 +116,12 @@
 # 3. Internal utilities
 #
 # ilinspace       — evenly-spaced integer grid for k-center placement
-# _kpm_weight_matrix — precomputed Chebyshev-KPM weights W[n, iω]
+# _kpm_weight_matrix — Chebyshev-KPM weights W[n, iω] (in solvers/kpm/kernels.jl)
 # ============================================================
 
 # `ilinspace` and `kspace_sampling_plan` (k-point centre placement and grouping
 # shared with get_bands_gpu) live in core/Utils.jl with the other sampling plans;
 # `_eval_diag_mps` (LSB-first diagonal readout) lives there beside `eval_mps`.
-
-
-"""
-    _kpm_weight_matrix(Ncheb, ω_vals; kernel=:jackson, lambda=4.0) -> Matrix{Float64}
-
-Precompute the full KPM weight matrix `W[n, iω]` for fast in-loop accumulation.
-
-```
-W[n, iω] = c_n · g_n · cos((n-1) · arccos(ω_iω))
-```
-
-- `c_n = 1` for n=1, `c_n = 2` otherwise (Chebyshev expansion factor)
-- `g_n` = kernel damping: Jackson (default, finite-size ringing suppressed)
-  or Lorentz (controlled width `lambda`, smoother tails)
-- Entries for `|ω| ≥ 1` are set to zero (outside the spectral support)
-
-Pre-computing W avoids recomputing cos((n-1)·arccos(ω)) inside the inner loop,
-which is called Ncheb × Nω times.
-"""
-function _kpm_weight_matrix(Ncheb::Int, ω_vals; kernel::Symbol=:jackson, lambda::Real=4.0)
-    kweights = _kpm_kernel(Ncheb, kernel; lambda=lambda)
-    Nω = length(ω_vals)
-    W = zeros(Float64, Ncheb, Nω)
-    for iω in 1:Nω
-        abs(ω_vals[iω]) >= 1.0 && continue
-        for n in 1:Ncheb
-            W[n, iω] = (n == 1 ? 1.0 : 2.0) * kweights[n] * cos((n-1) * acos(ω_vals[iω]))
-        end
-    end
-    return W
-end
 
 
 # ============================================================
