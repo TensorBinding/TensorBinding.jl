@@ -1,18 +1,11 @@
-# masks2d.jl — diagonal mask MPOs for 2D lattice geometries: the single-qubit
-# projectors sigma_d/sigma_u and the row-break, row/column-select and
-# checkerboard masks used by the hopping builders (hopping2d.jl) and the
-# sublattice presets (sublattice.jl). Split from lattice/2Dlattice_tk.jl.
+# masks2d.jl — diagonal mask MPOs for 2D lattice geometries: the row-break,
+# row/column-select and checkerboard masks used by the hopping builders
+# (hopping2d.jl) and the sublattice presets (sublattice.jl), built from the
+# single-qubit projectors sigma_d/sigma_u (core/Utils.jl). Split from
+# lattice/2Dlattice_tk.jl.
 
 # ============================================================
-# 1. Single-qubit projectors
-# ============================================================
-
-ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
-ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
-
-
-# ============================================================
-# 2. Row/column/checkerboard mask MPOs (diagonal, exact)
+# 1. Row/column/checkerboard mask MPOs (diagonal, exact)
 #    Bit layout: sites 1..Ly → iy (MSB first), sites Ly+1..L → ix (MSB first)
 # ============================================================
 

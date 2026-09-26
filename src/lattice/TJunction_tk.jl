@@ -71,29 +71,7 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3.  Internal helper: exact site-projector MPO
-# ─────────────────────────────────────────────────────────────────
-
-# Build the rank-1 projector |n><n| for 0-indexed site n on L position qubits.
-# Site ordering: pos_sites[1] = MSB, pos_sites[L] = LSB.
-# Returns a bond-dim-1 MPO (product of single-qubit projectors); no QTCI needed.
-function _site_projector_mpo(L::Int, pos_sites, n::Int)
-    0 <= n < 2^L ||
-        error("Site index n=$n is out of range [0, $(2^L - 1)].")
-    b0 = (n >> (L - 1)) & 1
-    os  = OpSum()
-    os += 1, b0 == 1 ? "sigma_d" : "sigma_u", 1
-    for k in 2:L
-        b  = (n >> (L - k)) & 1
-        op = b == 1 ? "sigma_d" : "sigma_u"
-        os *= 1, op, k
-    end
-    return MPO(os, pos_sites)
-end
-
-
-# ─────────────────────────────────────────────────────────────────
-# 4.  add_tjunction! — in-place extension of an existing TBHamiltonian
+# 3.  add_tjunction! — in-place extension of an existing TBHamiltonian
 # ─────────────────────────────────────────────────────────────────
 
 """
@@ -187,7 +165,7 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────
-# 5.  tjunction_hamiltonian — standalone constructor
+# 4.  tjunction_hamiltonian — standalone constructor
 # ─────────────────────────────────────────────────────────────────
 
 """
@@ -254,7 +232,7 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────
-# 6.  tjunction_lattice_hamiltonian — triangular lattice of T-junctions
+# 5.  tjunction_lattice_hamiltonian — triangular lattice of T-junctions
 # ─────────────────────────────────────────────────────────────────
 
 """

@@ -187,11 +187,11 @@ the affected golden cases in the same commit.
       and the four `add_spin!`/`add_zeeman!`/`add_superconductivity!`/`add_soc!` mutators
       (from TBSystem). Include it right after TBSystem. (moved in tier1/move-auxdof)
 - [ ] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM.
-- [ ] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
-      other product-state builders.
-- [ ] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
+- [x] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
+      other product-state builders. (moved in tier1/move-utils)
+- [x] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
       `_site_projector_mpo`, `sigma_d/sigma_u` ops, layer prepend helpers → `core/Utils.jl`
-      (or `lattice/Masks2D.jl` for the masks).
+      (or `lattice/Masks2D.jl` for the masks). (moved in tier1/move-utils)
 - [ ] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
 - [x] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
       (moved in tier1/move-auxdof; name kept: the rename is left to Tier 2's `_project_aux_sectors`)

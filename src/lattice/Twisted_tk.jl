@@ -66,28 +66,7 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3.  Layer prepend helpers (thin wrappers around prepend_op)
-# ─────────────────────────────────────────────────────────────────
-
-"""
-    prepend_layer_projector(H_mpo, layer_s, k) -> MPO
-
-Prepend the diagonal projector `|k⟩⟨k|` on `layer_s` (1-based).
-Equivalent to `prepend_op(H_mpo, layer_s, k)`.
-"""
-prepend_layer_projector(H::MPO, s::Index, k::Int) = prepend_op(H, s, k)
-
-"""
-    prepend_layer_hopping(H_mpo, layer_s, k, l) -> MPO
-
-Prepend the off-diagonal operator `|k⟩⟨l|` on `layer_s` (1-based).
-Equivalent to `prepend_op(H_mpo, layer_s, k, l)`.
-"""
-prepend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = prepend_op(H, s, k, l)
-
-
-# ─────────────────────────────────────────────────────────────────
-# 4.  Twisted multilayer Hamiltonian
+# 3.  Twisted multilayer Hamiltonian
 # ─────────────────────────────────────────────────────────────────
 
 """

@@ -14,7 +14,7 @@
 #   Sites 2...L+1 : L unit-cell position qubits
 #   Site L+2      : Sublattice index
 #
-# Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl, twisted_tk.jl
+# Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl
 
 
 # ─────────────────────────────────────────────────────────────────

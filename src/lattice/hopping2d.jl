@@ -10,7 +10,7 @@
 #   site ordering: sites 1..Ly hold iy bits (MSB first),
 #                  sites Ly+1..L hold ix bits (MSB first).
 #
-# compose_power lives in core/Hamiltonian.jl; low-level utilities
+# compose_power lives in core/MPOTools.jl; low-level utilities
 # (to_binary_vector, binary_to_MPS) live in core/Utils.jl.
 
 # ============================================================

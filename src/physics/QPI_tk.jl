@@ -287,7 +287,7 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
         # QPI(k,ω) = |δÃ(k,ω)|²  evaluated at every momentum index.
         # Read out with LSB-first encoding (site 1 = bit 0), consistent with the
-        # QFT MPO convention after TCI.reverse — same as _eval_diag_mps in physics/qft/bands.jl.
+        # QFT MPO convention after TCI.reverse — same as _eval_diag_mps in core/Utils.jl.
         for k in 0:H.N-1
             acc = ITensor(1.0)
             for i in 1:L_pos

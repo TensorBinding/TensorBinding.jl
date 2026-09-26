@@ -1,9 +1,12 @@
-# physics/rpa/plumbing.jl — MPO Kronecker product and site-index plumbing for the RPA
-# bubbles, also used by solvers/Krylov_tk.jl, physics/QFT_tk.jl and
-# physics/TwoParticle_tk.jl: mpo_kron, interleave_mpo_tb, swap_every_other_legs,
-# collapse_mpo_pairs, interleave_mpo.
-# Split verbatim from physics/RPA_tk.jl; Tier 1 step 4 of docs/dev/REORGANISATION_TODO.md
-# moves these helpers to core/Utils.jl.
+# MPOTools.jl — MPO composition and embedding helpers shared across TensorBinding:
+# the MPO Kronecker product (mpo_kron), the interleaving site plumbing
+# (interleave_mpo, interleave_mpo_tb, swap_every_other_legs, collapse_mpo_pairs)
+# used by the RPA bubbles, the Krylov Green's function, the exciton QFT and the
+# two-particle Hamiltonian, MPO powers by squaring (compose_power) and the exact
+# rank-1 site projector (_site_projector_mpo).
+# Moved verbatim from physics/rpa/plumbing.jl, core/Hamiltonian.jl and
+# lattice/TJunction_tk.jl (Tier 1 of docs/dev/REORGANISATION_TODO.md).
+# Uses Utils (_bra_ket, the sigma_d/sigma_u ops).
 
 # ============================================================
 # Tensor product utilities (MPO Kronecker product)
@@ -168,4 +171,64 @@ function interleave_mpo(target_mpo, phys_sites, n)
         end
     end
     return new_mpo
+end
+
+
+# ============================================================
+# Exponentiation-by-squaring for MPO composition
+# ============================================================
+
+"""
+    compose_power(base, nn; side=:right, apply_kwargs=NamedTuple()) -> MPO
+
+Compose `base` with itself `nn` times using **exponentiation-by-squaring** (O(log n) applies).
+Replaces the old `arbitarty_offline` helper which used O(n) sequential applies.
+
+- `side = :right`: `acc = apply(acc, base)` at each set bit
+- `side = :left`: `acc = apply(base, acc)` at each set bit
+
+`apply_kwargs` (e.g. `(; cutoff=1e-8, maxdim=200)`) are forwarded to every `apply` call.
+`nn = 0` returns the identity MPO; `nn = 1` returns `base` unchanged.
+"""
+function compose_power(base::MPO, nn::Integer;
+                       side::Symbol    = :right,
+                       apply_kwargs    = NamedTuple())
+    @assert nn >= 0 "nn must be non-negative"
+    nn == 0 && return MPO(siteinds(base), "Id")
+    nn == 1 && return base
+    acc = nothing
+    cur = base
+    k   = nn
+    while k > 0
+        if (k & 1) == 1
+            acc = acc === nothing ? cur :
+                  side === :right ? apply(acc, cur; apply_kwargs...) :
+                                    apply(cur, acc; apply_kwargs...)
+        end
+        k >>>= 1
+        k > 0 && (cur = apply(cur, cur; apply_kwargs...))
+    end
+    return acc::MPO
+end
+
+
+# ============================================================
+# Exact site-projector MPO
+# ============================================================
+
+# Build the rank-1 projector |n><n| for 0-indexed site n on L position qubits.
+# Site ordering: pos_sites[1] = MSB, pos_sites[L] = LSB.
+# Returns a bond-dim-1 MPO (product of single-qubit projectors); no QTCI needed.
+function _site_projector_mpo(L::Int, pos_sites, n::Int)
+    0 <= n < 2^L ||
+        error("Site index n=$n is out of range [0, $(2^L - 1)].")
+    b0 = (n >> (L - 1)) & 1
+    os  = OpSum()
+    os += 1, b0 == 1 ? "sigma_d" : "sigma_u", 1
+    for k in 2:L
+        b  = (n >> (L - k)) & 1
+        op = b == 1 ? "sigma_d" : "sigma_u"
+        os *= 1, op, k
+    end
+    return MPO(os, pos_sites)
 end

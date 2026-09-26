@@ -1,5 +1,6 @@
 # twoparticle_tk.jl — exciton/two-particle Hamiltonian construction (1-2) and
-# MPS basis-state probes, real-space and momentum-space (3)
+# momentum-space MPS basis-state probes (3); the real-space probe mpsexciton
+# lives in core/Utils.jl
 
 # ─────────────────────────────────────────────────────────────────
 # 1.  High-level constructor (returns TBHamiltonian)
@@ -195,34 +196,8 @@ end
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3.  MPS probes (real-space and momentum-space)
+# 3.  MPS probes (momentum-space)
 # ─────────────────────────────────────────────────────────────────
-
-# ------------------------------------------------------------
-# Real-space (position) basis states
-# ------------------------------------------------------------
-
-# Exciton basis state |xe, xh> on the interleaved electron-hole chain.
-# xe, xh are 1-indexed (in {1, ..., 2^LPhys}), consistent with get_diagonal_mpo
-# and add_onsite! conventions in TensorBinding.
-function mpsexciton(xe, xh, sites)
-    L     = length(sites)
-    LPhys = div(L, 2)
-    bits_e = to_binary_vector(Int(xe) - 1, LPhys)   # shift to 0-indexed for binary encoding
-    bits_h = to_binary_vector(Int(xh) - 1, LPhys)
-
-    elechole = Vector{String}(undef, L)
-    for i in 1:LPhys
-        elechole[2i - 1] = bits_e[i]
-        elechole[2i]     = bits_h[i]
-    end
-
-    return MPS(sites, elechole)
-end
-
-# |x, x> bound electron-hole probe (d = 0 separation).
-mpsexciton(x, sites) = mpsexciton(x, x, sites)
-
 
 # ------------------------------------------------------------
 # Exciton momentum-basis MPS probes

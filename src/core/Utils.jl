@@ -16,6 +16,9 @@ ITensors.op(::OpName"sigma_minus", ::SiteType"Qubit") =
     [0 0
      1 0]
 
+ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
+ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
+
 # ============================================================
 # Binary / index utilities
 # ============================================================
@@ -121,6 +124,28 @@ psi   = binary_to_MPS(5, 4, sites)   # |0101>
 function binary_to_MPS(n::Integer, L::Integer, sites)
     return MPS(sites, to_binary_vector(n, L))
 end
+
+
+# Exciton basis state |xe, xh> on the interleaved electron-hole chain.
+# xe, xh are 1-indexed (in {1, ..., 2^LPhys}), consistent with get_diagonal_mpo
+# and add_onsite! conventions in TensorBinding.
+function mpsexciton(xe, xh, sites)
+    L     = length(sites)
+    LPhys = div(L, 2)
+    bits_e = to_binary_vector(Int(xe) - 1, LPhys)   # shift to 0-indexed for binary encoding
+    bits_h = to_binary_vector(Int(xh) - 1, LPhys)
+
+    elechole = Vector{String}(undef, L)
+    for i in 1:LPhys
+        elechole[2i - 1] = bits_e[i]
+        elechole[2i]     = bits_h[i]
+    end
+
+    return MPS(sites, elechole)
+end
+
+# |x, x> bound electron-hole probe (d = 0 separation).
+mpsexciton(x, sites) = mpsexciton(x, x, sites)
 
 # ============================================================
 # MPO / MPS site-index manipulation
@@ -317,6 +342,24 @@ function eval_mps(A::MPS, n::Int)
     sites = siteinds(A)
     psi = binary_to_MPS(n, length(sites), sites)
     return real(inner(psi, A))
+end
+
+"""
+    _eval_diag_mps(A, x) -> Float64
+
+Evaluate the diagonal MPS `A` at the 0-indexed position `x` using a
+LSB-first bit encoding (site 1 = bit 0 of x).  Equivalent to
+`inner(binary_MPS(x), A)` but avoids constructing the full basis MPS.
+"""
+function _eval_diag_mps(A::MPS, x::Int)
+    L     = length(A)
+    sites = siteinds(A)
+    acc   = ITensor(1.0)
+    for i in 1:L
+        b    = (x >> (i - 1)) & 1     # bit i-1 of x, LSB first
+        acc *= A[i] * setelt(sites[i] => b + 1)
+    end
+    return real(scalar(acc))
 end
 
 # Block-integrated MPS element (reduce=:block): the sum of `A` over one coarse
@@ -1091,6 +1134,40 @@ function mps_to_diagonal_mpo(mps, sites)
     return MPO(mpo_tensors)
 end
 
+
+# ============================================================
+# Fast diagonal MPO builder (via QTCI)
+# ============================================================
+
+"""
+    qtt_mpo(L, xvals, sites, func; tol_quantics=1e-8, maxbonddim_quantics=50) -> MPO
+
+Compress a scalar function `func(x)` evaluated on the explicit integer grid `xvals`
+(typically `0:2^L-1`) into a **diagonal MPO** via Quantics Tensor Cross Interpolation.
+
+The result is `diag(func(0), func(1), ..., func(2^L-1))` stored as an L-site MPO.
+Use this to encode spatially varying on-site potentials or hopping amplitudes as
+diagonal MPOs for use with `kineticNNN` and the 2D kinetic builders.
+
+`xvals = 0:2^L-1`        for a 1D chain of 2^L sites
+`xvals = 0:Nx*Ny-1`      for a row-major flattened 2D grid
+
+See also `get_diagonal_mpo` in utils.jl for a simpler 1-based-index wrapper.
+"""
+function qtt_mpo(L, xvals, sites, func;
+                 tol_quantics::Real    = 1e-8,
+                 maxbonddim_quantics::Int = 50)
+    qtt = QuanticsTCI.quanticscrossinterpolate(ComplexF64, func, xvals;
+              tolerance=tol_quantics, maxbonddim=maxbonddim_quantics)[1]
+    tt  = TCI.tensortrain(qtt.tci)
+    mps = MPS(tt; sites)
+    mpo = outer(mps', mps)
+    for s in 1:L
+        mpo.data[s] = Quantics._asdiagonal(mps.data[s], sites[s])
+    end
+    return mpo
+end
+
 # ============================================================
 # Auxiliary site prepend - unified prepend_op
 # ============================================================
@@ -1176,6 +1253,27 @@ function postpend_op(H_mpo::MPO, s::Index, k::Int, l::Int)
     return postpend_op(H_mpo, s, mat)
 end
 postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
+
+
+# ---------------------------------------------------------------------
+# Layer prepend helpers (thin wrappers around prepend_op)
+# ---------------------------------------------------------------------
+
+"""
+    prepend_layer_projector(H_mpo, layer_s, k) -> MPO
+
+Prepend the diagonal projector `|k⟩⟨k|` on `layer_s` (1-based).
+Equivalent to `prepend_op(H_mpo, layer_s, k)`.
+"""
+prepend_layer_projector(H::MPO, s::Index, k::Int) = prepend_op(H, s, k)
+
+"""
+    prepend_layer_hopping(H_mpo, layer_s, k, l) -> MPO
+
+Prepend the off-diagonal operator `|k⟩⟨l|` on `layer_s` (1-based).
+Equivalent to `prepend_op(H_mpo, layer_s, k, l)`.
+"""
+prepend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = prepend_op(H, s, k, l)
 
 
 # ============================================================

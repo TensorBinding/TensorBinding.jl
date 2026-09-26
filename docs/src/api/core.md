@@ -11,6 +11,13 @@ Modules = [TensorBinding]
 Pages   = ["core/Utils.jl"]
 ```
 
+## MPO Tools
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/MPOTools.jl"]
+```
+
 ## Hamiltonian Builders
 
 ```@autodocs

@@ -15,7 +15,7 @@ Pages   = ["physics/SCF_tk.jl"]
 
 ```@autodocs
 Modules = [TensorBinding]
-Pages   = ["physics/rpa/plumbing.jl", "physics/rpa/bubble.jl", "physics/rpa/cheb2d.jl", "physics/rpa/dyson.jl"]
+Pages   = ["physics/rpa/bubble.jl", "physics/rpa/cheb2d.jl", "physics/rpa/dyson.jl"]
 ```
 
 ## Topology

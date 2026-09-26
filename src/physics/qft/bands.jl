@@ -1,7 +1,7 @@
 # bands.jl — Momentum-space band structure via online Chebyshev KPM
 #
 # Contains get_bands (low-level MPO method and the TBHamiltonian overloads)
-# with its helpers _eval_diag_mps and _kpm_weight_matrix.  Moved verbatim from
+# with its helper _kpm_weight_matrix (_eval_diag_mps: core/Utils.jl).  Moved verbatim from
 # sections 3, 4 and 5 of physics/QFT_tk.jl, together with that file's overview,
 # which now describes the whole physics/qft/ folder.
 #
@@ -74,7 +74,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # fix_sites, _kpm_kernel               → utils.jl
 # extract_diagonal_to_mps              → utils.jl
-# _row_checker_mpo, _col_select_mpo    → 2D_lattice.jl
+# _eval_diag_mps                       → utils.jl
+# interleave_mpo                       → core/MPOTools.jl
+# _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
 # TBHamiltonian, _ensure_scale!        → TBSystem.jl
 # project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
 # _run_kpm_mps!, _dos_weight_matrix    → KPM_tk.jl
@@ -88,8 +90,8 @@
 #                                  _embed_displacement_in_full_sites
 #       1b. Exciton QFT            conjugate_by_qft_exciton
 # bands.jl  (this file)
-#   3.  Internal utilities         _eval_diag_mps, _kpm_weight_matrix
-#                                  (ilinspace / kspace_sampling_plan: core/Utils.jl)
+#   3.  Internal utilities         _kpm_weight_matrix
+#                                  (_eval_diag_mps, ilinspace / kspace_sampling_plan: core/Utils.jl)
 #   4.  Online band structure      get_bands (low-level MPO method)
 #   5.  High-level overloads       get_bands (TBHamiltonian, single-particle)
 # kpath.jl
@@ -97,7 +99,8 @@
 #                                  kpath_setup, _hs_label, _hsk
 # exciton_spectra.jl
 #       Exciton spectra (MPS-KPM)  get_exciton_bands, get_exciton_continuum
-#       (exciton MPS probes mpsexciton/Q/QTrace/KQ now live in TwoParticle_tk.jl)
+#       (exciton MPS probes mpsexcitonQ/QTrace/KQ now live in TwoParticle_tk.jl,
+#        mpsexciton in core/Utils.jl)
 # (5b. Aux index projection — project_aux, _autoenable_proj, aux_site — is in
 #  core/AuxDOF.jl.)
 
@@ -107,31 +110,12 @@
 # 3. Internal utilities
 #
 # ilinspace       — evenly-spaced integer grid for k-center placement
-# _eval_diag_mps  — fast diagonal evaluation without constructing basis MPS
 # _kpm_weight_matrix — precomputed Chebyshev-KPM weights W[n, iω]
 # ============================================================
 
 # `ilinspace` and `kspace_sampling_plan` (k-point centre placement and grouping
-# shared with get_bands_gpu) live in core/Utils.jl with the other sampling plans.
-
-
-"""
-    _eval_diag_mps(A, x) -> Float64
-
-Evaluate the diagonal MPS `A` at the 0-indexed position `x` using a
-LSB-first bit encoding (site 1 = bit 0 of x).  Equivalent to
-`inner(binary_MPS(x), A)` but avoids constructing the full basis MPS.
-"""
-function _eval_diag_mps(A::MPS, x::Int)
-    L     = length(A)
-    sites = siteinds(A)
-    acc   = ITensor(1.0)
-    for i in 1:L
-        b    = (x >> (i - 1)) & 1     # bit i-1 of x, LSB first
-        acc *= A[i] * setelt(sites[i] => b + 1)
-    end
-    return real(scalar(acc))
-end
+# shared with get_bands_gpu) live in core/Utils.jl with the other sampling plans;
+# `_eval_diag_mps` (LSB-first diagonal readout) lives there beside `eval_mps`.
 
 
 """
