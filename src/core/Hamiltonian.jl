@@ -1,10 +1,17 @@
-﻿# Hamiltonian.jl - MPO construction for tight-binding Hamiltonians
+﻿# Hamiltonian.jl — 1D kinetic MPOs and the QTCI compressor for hopping matrices.
 #
-# Functions here build Hamiltonian MPOs from hopping functions or
-# lattice parameters.  Low-level tensor utilities live in core/Utils.jl.
+# Contents: kinetic_1d_nn (uniform nearest-neighbour chain) with its boundary
+# parser _tb_periodic_boundary, hopping2MPO and qtci_matrix_to_MPO (compress an
+# arbitrary hopping matrix f(i, j) by 2D QTCI), and kineticNNN (a chain with a
+# spatially varying nn-th-neighbour hopping field).
+#
+# Main entry points: hopping2MPO, kinetic_1d_nn, kineticNNN.
+#
+# Depends on: Utils (shift_pair_mpos, shift_hopping_mpo, custom_mpo, fused_mpo).
+# The 2D kinetic builders are in lattice/hopping2d.jl.
 
 # ============================================================
-# 1D nearest-neighbour kinetic MPO (quantics binary encoding)
+# 1. 1D nearest-neighbour kinetic MPO (quantics binary encoding)
 # ============================================================
 
 function _tb_periodic_boundary(boundary::Symbol)
@@ -14,12 +21,13 @@ function _tb_periodic_boundary(boundary::Symbol)
 end
 
 """
-    kinetic_1d_nn(L, sites; boundary=:open) -> MPO
+    kinetic_1d_nn(L, sites; boundary=:open, bc=nothing) -> MPO
 
 Build the nearest-neighbour hopping MPO for a 1D chain of 2^L sites
 in the quantics binary representation. Hopping amplitude = 1; scale by
 multiplying the result. The default `boundary=:open` preserves the package's
-open-chain convention; `boundary=:periodic` adds the wrap-around bond.
+open-chain convention; `boundary=:periodic` adds the wrap-around bond. `bc`
+(e.g. `:pbc`), when given, overrides `boundary`.
 """
 function kinetic_1d_nn(L, sites; boundary::Symbol=:open, bc=nothing)
     @assert L == length(sites) "L must equal length(sites)"
@@ -30,7 +38,7 @@ end
 
 
 # ============================================================
-# General QTCI-based hopping MPO
+# 2. General QTCI-based hopping MPO
 # ============================================================
 
 """
@@ -120,11 +128,12 @@ end
 
 
 # ============================================================
-# General NNN 1D kinetic MPO (spatially varying hopping)
+# 3. General NNN 1D kinetic MPO (spatially varying hopping)
 # ============================================================
 
 """
-    kineticNNN(L, sites, hopping, nn; apply_kwargs=NamedTuple()) -> MPO
+    kineticNNN(L, sites, hopping, nn; apply_kwargs=NamedTuple(), boundary=:open,
+               bc=nothing) -> MPO
 
 Build a kinetic MPO for a 1D chain with a **spatially varying hopping field**
 encoded as the diagonal MPO `hopping`, and a neighbor reach controlled by `nn`.

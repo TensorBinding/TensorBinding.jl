@@ -96,7 +96,7 @@ dkw(; ϵF=0.0, P_method=:kpm, purify_method=:mcweeny) =
        purify_maxdim=40, purify_maxiters=30, purify_tol=1e-5, verbose=false)
 
 # ══════════════════════════════════════════════════════════════════
-# MPO kron / interleave plumbing (moves to core/Utils.jl)
+# MPO kron / interleave plumbing (core/MPOTools.jl)
 # ══════════════════════════════════════════════════════════════════
 add!("mpo_kron_q2_sub3", :mpo_kron, :kron)
 add!("interleave_mpo_L2_n1", :interleave_mpo, :ileave2, (1,))

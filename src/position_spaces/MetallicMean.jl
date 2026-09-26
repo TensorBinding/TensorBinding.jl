@@ -11,6 +11,25 @@
 # bond-dimension-2 automaton MPS and the Hamiltonian MPO is exact at any L.
 # For m = 1 this reproduces the Zeckendorf construction of Fibonacci.jl on
 # dimension-2 Qudit sites.
+#
+# Contents: MetallicMeanPositionSpace and its position-space interface methods,
+# the numeration (metallic_mean_number, metallic_mean_digits), the automaton
+# MPS, the Qudit ops MMLower/MMP0/MMRaiseTop and the decrement MPO, the bond
+# word, metallic_mean_hamiltonian with its get_Hamiltonian builder, and a dense
+# test oracle.
+#
+# Main entry points: metallic_mean_hamiltonian
+# (get_Hamiltonian("metallic_mean", …; m)), metallic_mean_site_count,
+# metallic_mean_digits, metallic_mean_bond_symbol.
+#
+# Depends on: Utils (mps_to_diagonal_mpo, shift_adjoint_mpo, _product_state_mps),
+# TBSystem (TBHamiltonian and the position-space interface), geometry*
+# (_chain_geometry; a * marks a file included later, see the source map in
+# TensorBinding.jl).
+
+# ============================================================
+# 1. Position-space type and metallic-mean numeration
+# ============================================================
 
 """
     MetallicMeanPositionSpace(m, projector)
@@ -44,7 +63,11 @@ function metallic_mean_number(m::Integer, n::Integer)
     return a
 end
 
-"""Number `q_L` of admissible length-`L` digit strings for the metallic mean `m`."""
+"""
+    metallic_mean_site_count(m, L) -> Int
+
+Number `q_L` of admissible length-`L` digit strings for the metallic mean `m`.
+"""
 metallic_mean_site_count(m::Integer, L::Integer) = Int(metallic_mean_number(m, L))
 
 """
@@ -69,6 +92,10 @@ function metallic_mean_digits(m::Integer, n::Integer, L::Integer)
     iszero(remainder) || error("metallic-mean conversion failed for m=$m, n=$n, L=$L")
     return digits
 end
+
+# ============================================================
+# 2. Automaton MPS, digit operators and the decrement MPO
+# ============================================================
 
 # Bond-dimension-2 automaton MPS on (m+1)-dimensional sites. Link state 1 means
 # "the last digit read was in 0:m-1 (or nothing was read yet)", link state 2
@@ -173,6 +200,10 @@ function metallic_mean_decrement_mpo(m::Integer, sites; boundary::Symbol=:open)
     return MPO(shifts, sites)
 end
 
+# ============================================================
+# 3. Position-space interface
+# ============================================================
+
 function physical_projector(space::MetallicMeanPositionSpace, H::TBHamiltonian)
     length(H.sites) == H.L ||
         error("MetallicMeanPositionSpace currently supports position-only Hamiltonians")
@@ -202,6 +233,10 @@ function site_permutation(::MetallicMeanPositionSpace, H::TBHamiltonian;
     return collect(1:H.N)
 end
 
+# ============================================================
+# 4. Bond word
+# ============================================================
+
 """
     metallic_mean_bond_symbol(m, L, bond) -> Symbol
 
@@ -214,6 +249,10 @@ function metallic_mean_bond_symbol(m::Integer, L::Integer, bond::Integer)
     1 <= bond <= N || throw(BoundsError(1:N, bond))
     return metallic_mean_digits(m, bond - 1, L)[end] == m ? :B : :A
 end
+
+# ============================================================
+# 5. Hamiltonian constructors
+# ============================================================
 
 """
     metallic_mean_hamiltonian(m, L; A, B, model=:hopping, t=1.0, onsite=0.0,
@@ -318,6 +357,10 @@ function _build_metallic_mean(params, L::Integer;
         scale=scale, cutoff=tol, maxdim=maxdim, kwargs...,
     )
 end
+
+# ============================================================
+# 6. Dense test oracle
+# ============================================================
 
 # Dense small-system oracle used only by the test suite.
 function _dense_metallic_mean_hamiltonian(

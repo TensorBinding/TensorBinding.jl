@@ -3,6 +3,26 @@
 # Fibonacci chains use Zeckendorf strings (no adjacent ones) inside an ambient
 # 2^L qubit register. The validity projector is therefore the physical identity
 # for every projected-space solver operation.
+#
+# Contents: FibonacciPositionSpace and its position-space interface methods,
+# Fibonacci numbers and Zeckendorf digits, the automaton MPS, the qubit ops
+# FibLower/FibRaise/FibP0 (reused by KBonacci.jl) and the decrement MPO, bond
+# symbols and site environments, conumbering and the RG partition, the
+# TBHamiltonian method of fibonacci_ldos_sampling_plan, fibonacci_hamiltonian
+# with its get_Hamiltonian builder, and a dense test oracle.
+#
+# Main entry points: fibonacci_hamiltonian (get_Hamiltonian("fibonacci", …)),
+# fibonacci_conumber, fibonacci_site_from_conumber, fibonacci_rg_partition,
+# fibonacci_atomic_depth, fibonacci_site_environment, site_axis(H; ordering).
+#
+# Depends on: Utils (mps_to_diagonal_mpo, fibonacci_ldos_sampling_plan),
+# TBSystem (TBHamiltonian and the position-space interface), geometry*
+# (_chain_geometry; a * marks a file included later, see the source map in
+# TensorBinding.jl).
+
+# ============================================================
+# 1. Position-space type and Zeckendorf numeration
+# ============================================================
 
 """
     FibonacciPositionSpace(projector)
@@ -16,7 +36,11 @@ end
 
 ambient_dimension(::FibonacciPositionSpace, H::TBHamiltonian) = big(2)^H.L
 
-"""Return the `n`th Fibonacci number with `F_0=0` and `F_1=1`."""
+"""
+    fibonacci_number(n) -> BigInt
+
+Return the `n`th Fibonacci number with `F_0=0` and `F_1=1`.
+"""
 function fibonacci_number(n::Integer)
     n >= 0 || throw(ArgumentError("n must be non-negative"))
     a, b = big(0), big(1)
@@ -26,7 +50,11 @@ function fibonacci_number(n::Integer)
     return a
 end
 
-"""Number `F_(L+2)` of valid length-`L` Zeckendorf strings."""
+"""
+    fibonacci_site_count(L) -> Int
+
+Number `F_(L+2)` of valid length-`L` Zeckendorf strings.
+"""
 fibonacci_site_count(L::Integer) = Int(fibonacci_number(L + 2))
 
 """
@@ -51,6 +79,10 @@ function fibonacci_zeckendorf_digits(n::Integer, L::Integer)
     iszero(remainder) || error("Zeckendorf conversion failed for n=$n, L=$L")
     return digits
 end
+
+# ============================================================
+# 2. Automaton MPS, digit operators and the decrement MPO
+# ============================================================
 
 function _fibonacci_automaton_mps(sites; A=0.0, B=1.0)
     L = length(sites)
@@ -121,6 +153,10 @@ end
 
 _fibonacci_mpo_adjoint(A::MPO) = swapprime(dag(A), 0, 1)
 
+# ============================================================
+# 3. Position-space interface: projector and site states
+# ============================================================
+
 function physical_projector(space::FibonacciPositionSpace, H::TBHamiltonian)
     length(H.sites) == H.L ||
         error("FibonacciPositionSpace currently supports position-only Hamiltonians")
@@ -133,6 +169,10 @@ function physical_site_state(::FibonacciPositionSpace, H::TBHamiltonian, x::Inte
         error("FibonacciPositionSpace currently supports position-only Hamiltonians")
     return MPS(H.sites, string.(fibonacci_zeckendorf_digits(x - 1, H.L)))
 end
+
+# ============================================================
+# 4. Bond word and site environments
+# ============================================================
 
 """
     fibonacci_bond_symbol(L, bond) -> Symbol
@@ -169,6 +209,10 @@ function fibonacci_site_environment(L::Integer, site::Integer;
     left === :B && right === :A && return :molecular_BA
     error("invalid Fibonacci bond environment $left$right at site $site")
 end
+
+# ============================================================
+# 5. Conumbering and the RG partition
+# ============================================================
 
 function _fibonacci_conumber_rank(L::Integer, site::Integer;
                                   orientation::Symbol=:standard,
@@ -221,7 +265,13 @@ function fibonacci_conumber(L::Integer, site::Integer;
     return centered ? rank - fld(N, 2) : rank
 end
 
-"""Inverse of [`fibonacci_conumber`](@ref), returning a 1-indexed site."""
+"""
+    fibonacci_site_from_conumber(L, conumber; orientation=:standard,
+                                 alignment=:atomic, centered=true,
+                                 origin=0) -> Int
+
+Inverse of [`fibonacci_conumber`](@ref), returning a 1-indexed site.
+"""
 function fibonacci_site_from_conumber(L::Integer, conumber::Integer;
                                        orientation::Symbol=:standard,
                                        alignment::Symbol=:atomic,
@@ -245,7 +295,7 @@ function fibonacci_site_from_conumber(L::Integer, conumber::Integer;
 end
 
 """
-    fibonacci_rg_partition(L; depth=0, centered=true)
+    fibonacci_rg_partition(L; depth=0, centered=true) -> NamedTuple
 
 Return the molecular–atomic–molecular conumber intervals after `depth`
 successive atomic deflations. Each deflation maps `L -> L-3`. The returned
@@ -289,7 +339,7 @@ function fibonacci_rg_partition(L::Integer; depth::Integer=0,
 end
 
 """
-    fibonacci_atomic_depth(L, site; kwargs...) -> Int
+    fibonacci_atomic_depth(L, site; orientation=:standard, origin=0) -> Int
 
 Number of consecutive atomic deflations containing `site`. This directly
 tests whether a site remains inside the nested central atomic windows.
@@ -315,6 +365,10 @@ function fibonacci_atomic_depth(L::Integer, site::Integer;
     end
     return depth
 end
+
+# ============================================================
+# 6. Plot orderings and the LDOS sampling plan
+# ============================================================
 
 function _fibonacci_conumbering(H::TBHamiltonian;
                                 orientation::Symbol=:standard,
@@ -377,6 +431,10 @@ function fibonacci_ldos_sampling_plan(H::TBHamiltonian; kwargs...)
         throw(ArgumentError("Hamiltonian has N=$(H.N), expected F_(L+2)=$expected_N for L=$(H.L)"))
     return fibonacci_ldos_sampling_plan(H.L; kwargs...)
 end
+
+# ============================================================
+# 7. Hamiltonian constructors
+# ============================================================
 
 """
     fibonacci_hamiltonian(L; A, B, model=:hopping, t=1.0, onsite=0.0,
@@ -472,6 +530,10 @@ function _build_fibonacci(params, L::Integer;
         scale=scale, cutoff=tol, maxdim=maxdim, kwargs...,
     )
 end
+
+# ============================================================
+# 8. Dense test oracle
+# ============================================================
 
 # Dense small-system oracle used only by the test suite.
 function _dense_fibonacci_hamiltonian(

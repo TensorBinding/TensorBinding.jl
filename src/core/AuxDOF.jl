@@ -13,41 +13,41 @@
 #   spin:  state 1 = ↑,        state 2 = ↓
 #   Nambu: state 1 = particle,  state 2 = hole
 #
-# Contents, moved verbatim in Tier 1 of the reorganisation (in this order):
-#   0–2.  spin_index, _SPIN_OPS, Symbol prepend_op/postpend_op,
+# Main entry points: add_spin!, add_zeeman!, add_superconductivity!, add_soc!,
+# spin_index, nambu_index, prepend_spin/postpend_spin,
+# prepend_nambu/postpend_nambu, project_aux, aux_site.
+#
+# Contents by section, moved verbatim in Tier 1 of the reorganisation from:
+#   1–2.  spin_index, _SPIN_OPS, Symbol prepend_op/postpend_op,
 #         prepend_spin/postpend_spin, nambu_index, _NAMBU_OPS,
 #         prepend_nambu/postpend_nambu            ← physics/Supercond.jl
-#   add_spin!, add_zeeman!, add_superconductivity!, add_soc!
+#   3–6.  add_spin!, add_zeeman!, add_superconductivity!, add_soc!
 #                                                 ← core/TBSystem.jl
-#   5b.   project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl
-#   Auxiliary sector projectors:
-#         _project_aux_block                      ← physics/SCF.jl (section 5)
+#   7.    project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl
+#   8.    _project_aux_block                      ← physics/SCF.jl
 #         _project_spin_sector                    ← physics/rpa/dyson.jl
-#   _aux_setup, _ldos_make_psi0                   ← solvers/kpm/ldos.jl
+#   9–10. _aux_setup, _ldos_make_psi0             ← solvers/kpm/ldos.jl
 #
-# Load order: included right after core/TBSystem.jl.  At definition time this
-# file needs only the ITensors types and TBHamiltonian (core/TBSystem.jl).  Its
-# callees are resolved at run time: the matrix-form prepend_op/postpend_op,
-# get_diagonal_mpo and _basis_state_mps (core/Utils.jl), hopping2MPO
-# (core/Hamiltonian.jl), _pos_sites, _invalidate_cache! and
-# _require_binary_position_space (core/TBSystem.jl), generate_kin_u/d
-# (lattice/hopping2d.jl) and pairingNNN/pairing2MPO (physics/Supercond.jl).
+# Depends on: Utils, Hamiltonian, TBSystem, hopping2d*, Supercond* (a * marks a
+# file included later; see the source map in TensorBinding.jl).  Included right
+# after core/TBSystem.jl, this file needs only the ITensors types and
+# TBHamiltonian at definition time.  Its callees are resolved at run time: the
+# matrix-form prepend_op/postpend_op, get_diagonal_mpo and _basis_state_mps
+# (core/Utils.jl), hopping2MPO (core/Hamiltonian.jl), _pos_sites,
+# _invalidate_cache! and _require_binary_position_space (core/TBSystem.jl),
+# generate_kin_u/d (lattice/hopping2d.jl) and pairingNNN/pairing2MPO
+# (physics/Supercond.jl).
 
 
-# ─────────────────────────────────────────────────────────────────
-# 0.  Symbol dispatch for prepend_op (defined in core/Utils.jl)
-# ─────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────
-# 1.  Spin-½ site index and operators
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. Spin-½ site index and operators; Symbol methods of prepend_op/postpend_op
+# ============================================================
 
 """
     spin_index() -> Index
 
 Create a dim-2 Index tagged "Spin" (state 1 = ↑, state 2 = ↓).
-Pass the result as `spin_s` to all `prepend_spin` calls.
+Pass the result as `s` to all `prepend_spin` / `postpend_spin` calls.
 """
 spin_index() = Index(2, "Spin")
 
@@ -110,11 +110,11 @@ end
 
 
 """
-    prepend_spin(H_mpo, spin_s, op) -> MPO
+    prepend_spin(H, s, op) -> MPO
 
-Prepend a spin-½ operator on `spin_s` (created with `spin_index()`).
+Prepend a spin-½ operator on the spin index `s` (created with `spin_index()`).
 `op` is a `Symbol` from the table below or an explicit 2×2 matrix.
-Equivalent to `prepend_op(H_mpo, spin_s, op)`.
+Equivalent to `prepend_op(H, s, op)`.
 
 | Symbol  | Matrix                  | Typical use                      |
 |---------|-------------------------|----------------------------------|
@@ -135,25 +135,25 @@ prepend_spin(H::MPO, s::Index, op::Symbol)           = prepend_op(H, s, op)
 prepend_spin(H::MPO, s::Index, mat::AbstractMatrix)  = prepend_op(H, s, mat)
 
 """
-    postpend_spin(H_mpo, spin_s, op) -> MPO
+    postpend_spin(H, s, op) -> MPO
 
-Append a spin-½ operator on `spin_s` to the *end* of `H_mpo`.
+Append a spin-½ operator on the spin index `s` to the *end* of `H`.
 `op` is a `Symbol` (same table as `prepend_spin`) or an explicit 2×2 matrix.
-Equivalent to `postpend_op(H_mpo, spin_s, op)`.
+Equivalent to `postpend_op(H, s, op)`.
 """
 postpend_spin(H::MPO, s::Index, op::Symbol)          = postpend_op(H, s, op)
 postpend_spin(H::MPO, s::Index, mat::AbstractMatrix) = postpend_op(H, s, mat)
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2.  Nambu (particle–hole) site index and operators
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Nambu (particle–hole) site index and operators
+# ============================================================
 
 """
     nambu_index() -> Index
 
 Create a dim-2 Index tagged "Nambu" (state 1 = particle, state 2 = hole).
-Pass the result as `nambu_s` to all `prepend_nambu` calls.
+Pass the result as `s` to all `prepend_nambu` / `postpend_nambu` calls.
 """
 nambu_index() = Index(2, "Nambu")
 
@@ -173,11 +173,11 @@ const _NAMBU_OPS = Dict{Symbol, Matrix{ComplexF64}}(
 
 
 """
-    prepend_nambu(H_mpo, nambu_s, op) -> MPO
+    prepend_nambu(H, s, op) -> MPO
 
-Prepend a Nambu (particle–hole) operator on `nambu_s` (created with `nambu_index()`).
-`op` is a `Symbol` from the table below or an explicit 2×2 matrix.
-Equivalent to `prepend_op(H_mpo, nambu_s, op)`.
+Prepend a Nambu (particle–hole) operator on the Nambu index `s` (created with
+`nambu_index()`). `op` is a `Symbol` from the table below or an explicit 2×2
+matrix. Equivalent to `prepend_op(H, s, op)`.
 
 | Symbol | Matrix      | Typical use                    |
 |--------|-------------|--------------------------------|
@@ -196,24 +196,25 @@ prepend_nambu(H::MPO, s::Index, op::Symbol)          = prepend_op(H, s, op)
 prepend_nambu(H::MPO, s::Index, mat::AbstractMatrix) = prepend_op(H, s, mat)
 
 """
-    postpend_nambu(H_mpo, nambu_s, op) -> MPO
+    postpend_nambu(H, s, op) -> MPO
 
-Append a Nambu operator on `nambu_s` to the *end* of `H_mpo`.
+Append a Nambu operator on the Nambu index `s` to the *end* of `H`.
 `op` is a `Symbol` (same table as `prepend_nambu`) or an explicit 2×2 matrix.
-Equivalent to `postpend_op(H_mpo, nambu_s, op)`.
+Equivalent to `postpend_op(H, s, op)`.
 """
 postpend_nambu(H::MPO, s::Index, op::Symbol)          = postpend_op(H, s, op)
 postpend_nambu(H::MPO, s::Index, mat::AbstractMatrix) = postpend_op(H, s, mat)
 
 
 # ============================================================
-# Spin extension
+# 3. Spin extension
 # ============================================================
 
 """
-    add_spin!(H; cutoff=1e-8, maxdim=200) -> H
+    add_spin!(H; cutoff=1e-8, maxdim=200, position=:pre) -> H
 
-Extend `H` to a spin-½ degenerate system by prepending a spin-½ index.
+Extend `H` to a spin-½ degenerate system by adding a spin-½ index in front of
+(`position=:pre`) or behind (`position=:post`) the existing sites.
 The resulting Hamiltonian is `I_spin ⊗ H` (both spin sectors identical).
 
 No-op if `H` is already spinful (`H.spin_s !== nothing`).
@@ -240,14 +241,15 @@ end
 
 
 # ============================================================
-# Zeeman coupling
+# 4. Zeeman coupling
 # ============================================================
 
 """
-    add_zeeman!(H, h; direction=:z, tol=1e-8, maxdim=200) -> H
+    add_zeeman!(H, h; direction=:z, tol=1e-8, maxdim=200, position=nothing) -> H
 
 Add a Zeeman coupling `h · Sα` to `H`.  Calls `add_spin!` automatically if
-`H` is not yet spinful.
+`H` is not yet spinful, placing the spin index at `position` (default
+`H.aux_side`).
 
 `h` can be:
 - a `Number`    — uniform field amplitude `h₀`
@@ -298,14 +300,16 @@ end
 
 
 # ============================================================
-# Superconducting pairing (BdG extension)
+# 5. Superconducting pairing (BdG extension)
 # ============================================================
 
 """
-    add_superconductivity!(H, Δ; type=:swave, tol=1e-8, maxdim=200) -> H
+    add_superconductivity!(H, Δ; type=:swave, tol=1e-8, maxdim=200,
+                           position=nothing) -> H
 
-Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending a
-Nambu (particle–hole) index.
+Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending
+(`position=:pre`) or postpending (`position=:post`) a Nambu (particle–hole)
+index; `position` defaults to `H.aux_side`.
 
 The BdG structure is:
     H_BdG = τ_z ⊗ H_kin  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
@@ -427,13 +431,15 @@ end
 
 
 # ============================================================
-# Spin-orbit coupling
+# 6. Spin-orbit coupling
 # ============================================================
 
 """
-    add_soc!(H, λ; type=:rashba, direction=:z, tol=1e-8, maxdim=200) -> H
+    add_soc!(H, λ; type=:rashba, direction=:z, tol=1e-8, maxdim=200,
+             position=nothing) -> H
 
-Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed.
+Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed,
+placing the spin index at `position` (default `H.aux_side`).
 
 `type`:
 - `:rashba` — nearest-neighbour Rashba SOC on the position chain:
@@ -512,12 +518,13 @@ end
 
 
 # ============================================================
-# 5b. Auxiliary index projection utilities
+# 7. Auxiliary index projection utilities
+# ============================================================
 #
 # Any auxiliary DOF (spin, Nambu, layer, sublattice) added with prepend_op /
 # postpend_op lives at the first or last site of the MPO as a dim-1-bonded
-# tensor.  The functions below implement the removal step used in Steps 0–1c
-# of the get_bands projection pipeline.
+# tensor.  The functions below implement the removal step used in Steps 0, 1,
+# 1b and 1c of the get_bands projection pipeline (physics/qft/bands.jl).
 #
 # project_aux(W, aux_s, sec; side)
 #   Contracts the projector |sec⟩⟨sec| onto the bra (aux_s') and ket (aux_s)
@@ -531,7 +538,6 @@ end
 #   `which` ∈ :spin, :nambu, :layer, :sublattice.
 #   Used by the TBHamiltonian overload to auto-detect all auxiliary indices
 #   and pass them to the low-level get_bands without user intervention.
-# ============================================================
 
 """
     project_aux(W, aux_s, σ; side=:pre) -> MPO
@@ -634,8 +640,7 @@ end
 
 
 # ============================================================
-# Auxiliary sector projectors  (_project_aux_block from physics/SCF.jl,
-# _project_spin_sector from physics/rpa/dyson.jl)
+# 8. Auxiliary sector projectors (_project_aux_block, _project_spin_sector)
 # ============================================================
 
 function _project_aux_block(mpo::MPO, aux_s::Index, row::Int, col::Int; tag::String="")
@@ -710,7 +715,7 @@ end
 
 
 # ============================================================
-# Shared KPM helpers  (used by get_ldos_online, get_ldos_spatial, get_dos_stochastic)
+# 9. Shared KPM helpers (get_ldos_online, get_ldos_spatial, get_dos_stochastic[_gpu])
 # ============================================================
 
 """
@@ -750,7 +755,7 @@ end
 
 
 # ============================================================
-# Auxiliary DOF helpers for LDOS
+# 10. Auxiliary DOF helpers for LDOS
 # ============================================================
 
 """

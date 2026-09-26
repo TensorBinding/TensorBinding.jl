@@ -1,3 +1,7 @@
+# TensorBinding.jl — the package module: its dependencies, the re-exported
+# ITensors names, the source map below (what each file holds and calls into) and
+# the include order. The API reference is in docs/src/api/.
+
 """
 TensorBinding provides tight-binding physics on MPS/MPO tensor-network representations.
 It combines DMRG, KPM, TDVP, and TCI with GPU acceleration for large 1D/2D lattice models.

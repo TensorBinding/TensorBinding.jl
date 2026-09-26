@@ -1,7 +1,17 @@
 # ModelRegistry.jl — MODEL_REGISTRY and the build_hamiltonian dispatcher for
-# the preset builders in lattice/presets.jl. The _geom_positions helpers that
-# map a geometry name to its *_positions table live in lattice/geometry.jl.
-# Split from the former lattice/2Dlattice_tk.jl (first as lattice/model_registry.jl).
+# the preset builders in lattice/presets.jl.
+#
+# Contents: _parse_param_string (the "key=value, …" parameter strings),
+# MODEL_REGISTRY (model name → builder, dimension, required parameters, keyword
+# defaults) and the 1D and 2D methods of build_hamiltonian.
+#
+# Main entry point: build_hamiltonian; get_Hamiltonian (core/TBSystem.jl) routes
+# its preset geometries through it.
+#
+# Depends on: presets (the H* builders, looked up by Symbol at call time). The
+# _geom_positions helpers that map a geometry name to its *_positions table live
+# in lattice/geometry.jl. Split from the former lattice/2Dlattice_tk.jl (first
+# as lattice/model_registry.jl).
 
 # ============================================================
 # 1. Model registry + build_hamiltonian dispatcher
@@ -50,10 +60,14 @@ const MODEL_REGISTRY = Dict{String, Tuple{Symbol,Int,Vector{Symbol},NamedTuple}}
 
 
 """
-    build_hamiltonian(model, L; mparams="", mparam_dict=Dict()) -> MPO          (1D)
-    build_hamiltonian(model, Lx, Ly; mparams="", mparam_dict=Dict()) -> MPO     (2D)
+    build_hamiltonian(model, L; mparams="", mparam_dict=Dict{Symbol,Any}()) -> MPO       (1D)
+    build_hamiltonian(model, Lx, Ly; mparams="", mparam_dict=Dict{Symbol,Any}()) -> MPO  (2D)
 
-Build a Hamiltonian MPO by model name using the MODEL_REGISTRY.
+Build a Hamiltonian MPO by model name using the MODEL_REGISTRY. `L`, `Lx` and
+`Ly` are qubit counts (`2^L` sites, or a `2^Lx × 2^Ly` grid). The parameters are
+the `mparams` string merged with `mparam_dict` (which wins); the required ones
+are passed positionally to the builder, the rest as keywords on top of the
+registry defaults.
 
 ```julia
 H = build_hamiltonian("aah",  8; mparams="V=2.0, phi=0.0, t=1.0")

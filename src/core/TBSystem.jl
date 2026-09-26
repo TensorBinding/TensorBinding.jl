@@ -2,11 +2,28 @@
 #
 # Provides TBHamiltonian, which wraps the Hamiltonian MPO together with
 # metadata (geometry, KPM scale) and lazy caches for Chebyshev moments
-# and the density matrix.  All observable methods (get_DoS, get_density,
-# get_Chern, get_bands …) dispatch on this struct.
+# and the density matrix.  All observable methods (get_ldos_spatial,
+# get_dos_stochastic, get_density, get_C, get_bands …) dispatch on this struct.
+#
+# Contents: the position-space policy types and the interface the projected
+# spaces of position_spaces/ specialize (ambient_dimension, physical_projector,
+# physical_site_state, site_axis, site_permutation); TBHamiltonian with its
+# backward-compatible constructors and cache management (_invalidate_cache!,
+# truncate!); get_Hamiltonian and its per-geometry builders (chain, Haldane,
+# custom, presets, multi-atom lattices) with their default KPM scales;
+# central_index; the mutators add_hopping!, add_onsite!, add_interaction!;
+# _pos_sites; Base.show. The spin, Zeeman, pairing and SOC mutators live in
+# core/AuxDOF.jl.
+#
+# Main entry points: get_Hamiltonian, TBHamiltonian, add_hopping!, add_onsite!,
+# add_interaction!, truncate!, central_index, haldane_hoppingf.
+#
+# Depends on: Utils, Hamiltonian, Fibonacci*, MetallicMean*, KBonacci*,
+# geometry*, ModelRegistry*, sublattice*, NNNeighbor* (a * marks a file included
+# later; see the source map in TensorBinding.jl).
 
 # ============================================================
-# Position-space policy types
+# 1. Position-space policy types
 # ============================================================
 
 """
@@ -20,11 +37,15 @@ is defined below.
 """
 abstract type AbstractPositionSpace end
 
-"""Ordinary binary position register containing all `2^L` basis states."""
+"""
+    BinaryPositionSpace()
+
+Ordinary binary position register containing all `2^L` basis states.
+"""
 struct BinaryPositionSpace <: AbstractPositionSpace end
 
 # ============================================================
-# TBHamiltonian struct
+# 2. TBHamiltonian struct
 # ============================================================
 
 """
@@ -81,7 +102,7 @@ mutable struct TBHamiltonian
     spin_s        :: Union{Nothing, Index}
     nambu_s       :: Union{Nothing, Index}
     layer_s       :: Union{Nothing, Index}    # set by bilayer/multilayer constructors
-    sublattice_s  :: Union{Nothing, Index}    # set by kagomé/Lieb constructors
+    sublattice_s  :: Union{Nothing, Index}    # set by the multi-atom lattice constructors
     aux_side :: Symbol                        # :pre (aux at front) or :post (aux at back)
     # ---- lazy caches (invalidated whenever mpo changes) ----
     _tn_cache      :: Union{Nothing, Vector{MPO}}   # MPO Chebyshev list (mode=:mpo)
@@ -144,7 +165,7 @@ function TBHamiltonian(H::TBHamiltonian; kwargs...)
 end
 
 # ============================================================
-# Position-space interface
+# 3. Position-space interface
 # ============================================================
 
 """
@@ -183,7 +204,13 @@ function physical_site_state(::BinaryPositionSpace, H::TBHamiltonian, x::Integer
     return binary_to_MPS(x - 1, H.L, H.sites)
 end
 
-"""Return the plotting axis for physical positions or an encoding-defined ordering."""
+"""
+    site_axis(H; ordering=:physical, kwargs...) -> Vector{Int}
+
+Return the plotting axis for physical positions or an encoding-defined ordering.
+`kwargs` are encoding-specific (for a Fibonacci space: `orientation`, `centered`,
+`origin`, `alignment`).
+"""
 function site_axis(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
     return site_axis(H.position_space, H; ordering, kwargs...)
 end
@@ -195,7 +222,12 @@ function site_axis(::BinaryPositionSpace, H::TBHamiltonian;
     return collect(0:(H.N - 1))
 end
 
-"""Return the 1-based physical-site permutation associated with a plotting ordering."""
+"""
+    site_permutation(H; ordering=:physical, kwargs...) -> Vector{Int}
+
+Return the 1-based physical-site permutation associated with a plotting ordering.
+`kwargs` are as for [`site_axis`](@ref).
+"""
 function site_permutation(H::TBHamiltonian; ordering::Symbol=:physical, kwargs...)
     return site_permutation(H.position_space, H; ordering, kwargs...)
 end
@@ -214,6 +246,10 @@ function _require_binary_position_space(H::TBHamiltonian, api::AbstractString)
     throw(ArgumentError("$api is not yet supported for $(typeof(H.position_space)); " *
                         "the first projected-space release supports CPU KPM DOS/LDOS only."))
 end
+
+# ============================================================
+# 4. Backward-compatible positional constructors (13 to 16 arguments)
+# ============================================================
 
 # Backward-compatible 16-arg constructor (pre-geometry_uc callers); inserts geometry_uc=nothing.
 TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
@@ -242,7 +278,7 @@ TBHamiltonian(L, N, sites, mpo, geometry, scale, center,
                   spin_s, nambu_s, layer_s, nothing, :pre, _tn_cache, nothing, _tn_Ncheb, _density_cache)
 
 # ============================================================
-# Cache management
+# 5. Cache management
 # ============================================================
 
 """
@@ -287,55 +323,107 @@ function truncate!(H::TBHamiltonian; cutoff::Real = 1e-10, maxdim = nothing)
 end
 
 # ============================================================
-# Constructor
+# 6. get_Hamiltonian constructor
 # ============================================================
 
 """
-    get_Hamiltonian(geometry, params; L, [scale, tol, maxdim, kwargs...])
-        -> TBHamiltonian
+    get_Hamiltonian(geometry, params; L, scale=nothing, tol=1e-8, maxdim=15,
+                    ref_sites=nothing, kwargs...) -> TBHamiltonian
 
 Build a `TBHamiltonian` from a named geometry and model parameters.
 
-Supported geometry strings
---------------------------
-| `geometry`    | `params`                       | Extra kwargs                  |
-|---------------|--------------------------------|-------------------------------|
-| `"chain_1d"`  | hopping amplitude `t::Number`  | direct MPO, no QTCI; use `add_onsite!` for potentials |
-| `"square_2d"` | hopping amplitude `t::Number`  | `Lx`, `Ly` (default `L÷2` each) |
-| `"haldane"`   | `(t2, phi, M)` NamedTuple      | `rs` (N×2 positions from `honeycomb_positions`, required) |
-| `"custom"`    | hopping function `f(i,j)`      | `geometry`, `scale` (required), `type` |
-| `"fibonacci"` | `(A, B[, t, onsite])` NamedTuple | `model=:hopping/:onsite`, `boundary=:periodic/:open` |
-| `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple | `m` (required; `m=2` silver mean), `model`, `boundary` |
-| `"kbonacci"` | `(A, B, C, ...[, t, onsite])` or `(values=(a_1, ..., a_k)[, t, onsite])` NamedTuple | `k` (required; `k=3` Tribonacci), `model`, `boundary` |
-| `"kagome"`    | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
-| `"lieb"`      | hopping amplitude `t::Number`  | `Lx`, `Ly`; 3-atom unit cell, sublattice index postpended |
+`L`, and `Lx`/`Ly` for the 2D geometries, are qubit counts: a 2D system has
+`2^Lx × 2^Ly` unit cells with `L = Lx + Ly`, and `Lx` defaults to `L ÷ 2`,
+`Ly` to `L - Lx`. A keyword that a geometry does not take is an error, except
+for the multi-atom lattices, which ignore it.
+
+Direct builders
+---------------
+| `geometry`   | `params`                        | Extra kwargs |
+|--------------|---------------------------------|--------------|
+| `"chain_1d"` | hopping amplitude `t::Number`   | `boundary=:open` or `:periodic` (`bc` overrides it); direct MPO, no QTCI; use `add_onsite!` for potentials |
+| `"haldane"`  | `(t2, phi, M)` NamedTuple       | `rs` (N×2 positions from `honeycomb_positions`, required); no other kwargs |
+| `"custom"`   | hopping function `f(i,j)`       | `scale` (required), `geometry` (`i -> position` or an N×2 matrix), `type=ComplexF64` |
+
+Projected position spaces (quasicrystals; `H.N` counts the admissible sites only)
+---------------------------------------------------------------------------------
+| `geometry`        | `params`                                        | Extra kwargs |
+|-------------------|-------------------------------------------------|--------------|
+| `"fibonacci"`     | `(A, B[, t, onsite])` NamedTuple or Dict        | `model=:hopping` or `:onsite`, `boundary=:periodic` or `:open`, `padding` |
+| `"metallic_mean"` | `(A, B[, t, onsite])` NamedTuple or Dict        | `m` (required; `m=2` silver mean), `model`, `boundary`, `padding` |
+| `"kbonacci"`      | `(A, B, C, …[, t, onsite])` or `(values=(a_1, …, a_k)[, t, onsite])` | `k` (required; `k=3` Tribonacci), `model`, `boundary`, `padding` |
+
+These call [`fibonacci_hamiltonian`](@ref), [`metallic_mean_hamiltonian`](@ref) and
+[`kbonacci_hamiltonian`](@ref) with `cutoff=tol` and `maxdim=maxdim`; they reject
+`ref_sites`.
+
+Preset models (routed through [`build_hamiltonian`](@ref) and `MODEL_REGISTRY`)
+-------------------------------------------------------------------------------
+`params` is a `Number` (taken as the first required parameter), a NamedTuple or a
+Dict; entries beyond the required ones are passed to the builder as keywords, over
+the `MODEL_REGISTRY` defaults (which also set `tol_quantics`, `maxbonddim_quantics`
+and, in 2D, `cutoff`). Extra kwargs: `Lx`, `Ly` (2D only), `mparams` (a
+`"key=value, …"` string that `params` overrides) and `ref_sites`.
+
+| `geometry`             | builder                 | dim | required `params` | optional `params` (default) |
+|------------------------|-------------------------|-----|-------------------|-----------------------------|
+| `"uniform"`            | `HUniform`              | 1D  | `t`               | `v=1e-6`, `nn=1`            |
+| `"ssh"`                | `HSSH`                  | 1D  | `t`, `d`          | `nn=1`                      |
+| `"aah"`                | `HAAH`                  | 1D  | `V`, `phi`, `t`   | `b=(1+√5)/2`                |
+| `"square_2d"`          | `HUniform2Dsquare`      | 2D  | `t`               |                             |
+| `"hex_2d"`             | `HUniform2Dhex`         | 2D  | `t`               |                             |
+| `"triangular_2d"`      | `HUniform2Dtri`         | 2D  | `t`               |                             |
+| `"triangular_bravais"` | `HUniform2Dtri_bravais` | 2D  | `t`               |                             |
+| `"chern8"`             | `HChern8`               | 2D  | `V`, `t`          | `t2=0.2`                    |
+| `"chernhex"`           | `H2DChernhex`           | 2D  | `t`, `t2`, `ms`   | `uniformhaldane=false`, `uniformsemenoff=false` |
+| `"qc2dsquare"`         | `HQC2Dsquare`           | 2D  | `t`               |                             |
+
+Multi-atom unit cells (explicit sublattice index)
+-------------------------------------------------
+| `geometry`         | `params`                                   | atoms per cell | Extra kwargs |
+|--------------------|--------------------------------------------|----------------|--------------|
+| `"kagome"`         | `t` (a Number, `(t=…,)` or a Dict)         | 3              | `Lx`, `Ly`   |
+| `"lieb"`           | `t`                                        | 3              | `Lx`, `Ly`   |
+| `"dice"`           | `t`                                        | 3              | `Lx`, `Ly`   |
+| `"honeycomb"`      | `t`                                        | 2              | `Lx`, `Ly`   |
+| `"honeycomb_nnn"`  | `(t, t2)` NamedTuple or Dict (`t2=0`)      | 2              | `Lx`, `Ly`   |
+| `"ssh_sublattice"` | `t` or `(t, d)` NamedTuple or Dict (`t=1`, `d=0`) | 2       | none (1D chain) |
 
 `"haldane"` is the textbook, C3-symmetric Haldane model `⟨i|H|j⟩ = t2 exp(i phi ν_ij)`
 (Dirac masses `-M ± 3√3 t2 sin(phi)`, see [`haldane_hoppingf`](@ref)); it refuses an `rs`
 whose sites are not on the `honeycomb_positions` lattice.
 
-For `"kagome"` and `"lieb"`, `L = Lx + Ly` counts only the position qubits;
-the total atom count is `3 × 2^L`.  The sublattice index is stored in
-`H.sublattice_s` with `H.aux_side = :post`.  `H.geometry` returns the full
-real-space position of each atom (1-indexed over all `3 × 2^L` atoms).
+For the multi-atom lattices `L` (`= Lx + Ly` in 2D) counts only the position
+qubits; the total atom count is `n_sub × 2^L` with `n_sub` the atoms per cell.
+The sublattice index is stored in `H.sublattice_s` with `H.aux_side = :post`.
+`H.geometry` returns the full real-space position of each atom (1-indexed over
+all `n_sub × 2^L` atoms) and `H.geometry_uc` the Bravais position of its cell.
 
 Common keyword arguments
 ------------------------
-- `L`      : number of qubit sites (system size = 2^L)
-- `scale`  : energy half-bandwidth for KPM normalisation (estimated if `nothing`)
-- `tol`    : QTCI tolerance (default `1e-8`)
-- `maxdim` : maximum MPO bond dimension after construction (default `15`)
+- `L`         : number of position qubits (`2^L` sites or unit cells; the projected
+                spaces keep only their admissible subset)
+- `scale`     : energy half-bandwidth for KPM normalisation (default `nothing`:
+                estimated per geometry; `"custom"` requires it)
+- `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`)
+- `maxdim`    : maximum MPO bond dimension after construction (default `15`)
+- `ref_sites` : preset models only: replace the MPO's site indices by these, so
+                that Hamiltonians built with the same `ref_sites` share `Index`
+                objects (default `nothing`; the other geometries ignore it or,
+                for the projected spaces, reject it)
 
 Examples
 --------
 ```julia
 H = get_Hamiltonian("chain_1d", 1.0;    L=10)
-H = get_Hamiltonian("square_2d", 1.0;   L=10, Lx=32)
+H = get_Hamiltonian("square_2d", 1.0;   L=10, Lx=5)   # 32 × 32 sites
 
 rs = honeycomb_positions(10)
 H  = get_Hamiltonian("haldane", (t2=0.2, phi=π/2, M=0.0); L=10, rs=rs)
 
 H  = get_Hamiltonian("custom", (i,j) -> ...; L=10, scale=5.0, geometry=rs)
+Ha = get_Hamiltonian("aah", (V=2.0, phi=0.0, t=1.0); L=8)
+Hk = get_Hamiltonian("kagome", 1.0; L=6, Lx=3, Ly=3)   # 3 × 8 × 8 atoms
 Hf = get_Hamiltonian("fibonacci", (A=1.0, B=2.0); L=8, model=:hopping)
 Hs = get_Hamiltonian("metallic_mean", (A=1.0, B=2.0); L=8, m=2)   # silver mean
 Ht = get_Hamiltonian("kbonacci", (A=0.64, B=0.8, C=1.0); L=8, k=3)   # Tribonacci
@@ -411,7 +499,7 @@ function get_Hamiltonian(geometry::String, params;
 end
 
 # ============================================================
-# Per-geometry builders (internal)
+# 7. Per-geometry builders (internal): 1D chain
 # ============================================================
 
 function _build_chain_1d(t, L, N, sites;
@@ -427,6 +515,10 @@ function _build_chain_1d(t, L, N, sites;
     return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
+
+# ============================================================
+# 8. Haldane model (chirality, haldane_hoppingf, the "haldane" builder)
+# ============================================================
 
 # Sublattice sign of a honeycomb_positions site, read from the position: -1 on sublattice A
 # (the one of site 1, at x ∈ 1.5ℤ), +1 on B (x ∈ 1.5ℤ + 1), i.e. σ = (-1)^(ix+iy+1). The index
@@ -455,7 +547,7 @@ function chirality(r1, r2)
 end
 
 """
-    haldane_hoppingf(r1, r2, i, j; t2=0.2, phi=π/2, M=0.0) -> Number
+    haldane_hoppingf(r1, r2, i, j; t2=0.2, phi=pi/2, M=0.0) -> Number
 
 Matrix element `⟨r1|H|r2⟩` of the textbook, C3-symmetric Haldane model
 `H = Σ_ij H_ij c†_i c_j` on the honeycomb with bond length 1 laid out as in
@@ -590,6 +682,10 @@ function _build_haldane(params, L, N, sites;
     return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
+
+# ============================================================
+# 9. Custom, preset and multi-atom builders; default KPM scales
+# ============================================================
 
 function _build_custom(f, L, N, sites;
                        geometry=nothing,
@@ -735,7 +831,7 @@ end
 
 
 # ============================================================
-# Geometry utilities
+# 10. Geometry utilities
 # ============================================================
 
 """
@@ -759,11 +855,13 @@ function central_index(H::TBHamiltonian)
 end
 
 # ============================================================
-# Additive interaction API
+# 11. Additive interaction API
 # ============================================================
 
 """
-    add_hopping!(H, f; nn, sublat, sublat_from, sublat_to, maxdim, tol, ...) -> H
+    add_hopping!(H, f; nn=1, boundary=:open, bc=nothing, maxdim=15, tol=1e-8,
+                 type=ComplexF64, apply_kwargs=NamedTuple(), sublat=nothing,
+                 sublat_from=nothing, sublat_to=nothing) -> H
 
 Add a hopping term to `H`.
 
@@ -792,6 +890,20 @@ Add a hopping term to `H`.
   add_hopping!(H, -0.3; sublat_from=1, sublat_to=2, nn=1)   # A↔B NN inter-cell
   add_hopping!(H, δt;   sublat_from=2, sublat_to=3, nn=0)   # B↔C intra-cell only
   ```
+
+**Other keywords**
+
+- `boundary=:open` or `:periodic` (`bc` overrides it): boundary of the position
+  shift for scalar and 1-arg `f` and for the inter-sublattice hops.
+- `maxdim`, `tol`: truncation of the summed MPO (`tol` is also the QTCI
+  tolerance of a 2-arg `f`).
+- `type`: element type of the QTCI compression of a 2-arg `f`.
+- `apply_kwargs`: keywords for the `apply` calls inside [`kineticNNN`](@ref)
+  (scalar and 1-arg `f`).
+
+On a 2D Hamiltonian (`H.Lx` set) the call is forwarded to
+[`add_hopping_2D!`](@ref) with `Lx = H.Lx`, `Ly = H.L - H.Lx`, `nn`, `maxdim` and
+`tol`; the sublattice keywords are not supported there.
 
 Without sublattice keywords the function errors if any auxiliary DOF is already attached.
 Invalidates all caches.
@@ -1036,7 +1148,7 @@ end
 
 
 # ============================================================
-# Position-site accessor
+# 12. Position-site accessor
 # ============================================================
 
 """
@@ -1057,11 +1169,11 @@ end
 
 
 # ============================================================
-# Interaction storage
+# 13. Interaction storage
 # ============================================================
 
 """
-    add_interaction!(H, V; channel=:hartree, type=Float64, tol=1e-8) -> H
+    add_interaction!(H, V; channel=:hartree, type=Float64, tol=1e-8, kwargs...) -> H
 
 Store a pre-built interaction MPO in `H` for later use with `get_scf(H, channel)`.
 
@@ -1074,6 +1186,9 @@ Store a pre-built interaction MPO in `H` for later use with `get_scf(H, channel)
 `channel`:
 - `:hartree` or `:default` → stored in `H.interaction_mpo` (used by `:cdw` and `:magnetic` SCF)
 - `:fock` or `:exchange`   → stored in `H.fock_mpo`
+
+`type`, `tol` and `kwargs` are passed to [`get_mpo`](@ref) for a `Function` `V`
+(it forwards `kwargs` to the QTCI of a 2-arg kernel).
 """
 function add_interaction!(H::TBHamiltonian, V;
                           channel::Symbol = :hartree,
@@ -1105,7 +1220,7 @@ end
 
 
 # ============================================================
-# Display
+# 14. Display
 # ============================================================
 
 function Base.show(io::IO, H::TBHamiltonian)

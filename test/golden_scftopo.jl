@@ -8,14 +8,15 @@ using TensorBinding: get_Hamiltonian, add_onsite!, add_hopping!, add_spin!, add_
 #
 #   src/physics/SCF.jl            get_scf (every channel), the SCF drivers, BdG
 #                                 builders, mean-field and profile helpers
-#   src/physics/Supercond.jl      spin/Nambu indices and operator tables, prepend/
-#                                 postpend wrappers, pairing and BdG assemblers
+#   src/physics/Supercond.jl      pairing MPOs and spin/BdG assemblers
 #   src/physics/Purification.jl   McWeeny/SP2, get_density (:mcweeny/:sp2/:kpm),
 #                                 sign_mpo, finite-difference DOS/LDOS
 #   src/physics/Topology.jl       projector, winding and Chern markers, valley
 #                                 operator/projectors/Chern, Thouless pump
-#   src/core/TBSystem.jl          add_onsite!, add_hopping!, add_spin!, add_zeeman!,
-#                                 add_soc!, add_interaction!, add_superconductivity!
+#   src/core/TBSystem.jl          add_onsite!, add_hopping!, add_interaction!
+#   src/core/AuxDOF.jl            spin/Nambu indices and operator tables, prepend/
+#                                 postpend wrappers, add_spin!, add_zeeman!,
+#                                 add_soc!, add_superconductivity!
 #
 # They pin what the code computes *today*, bugs included, so that the Tier 1 moves of
 # docs/dev/REORGANISATION_TODO.md (splitting files, moving helpers, deleting dead

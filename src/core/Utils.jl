@@ -1,11 +1,23 @@
-﻿# Utils.jl - shared infrastructure used across TensorBinding
+﻿# Utils.jl — shared plumbing used across TensorBinding; no physics lives here.
 #
-# Functions here are pure plumbing: binary <-> MPS conversions,
-# site-index manipulation, diagonal MPO construction, and debug
-# helpers.  No physics lives here.
+# Contents: the Qubit ops sigma_plus/sigma_minus/sigma_d/sigma_u, binary shift
+# MPOs, basis-state MPS, site-index surgery on MPOs and MPS, MPS evaluation, the
+# sampling planners (real space, Fibonacci, k space), QTCI compression of
+# functions into MPS/MPO, diagonal MPO <-> MPS conversion, auxiliary-site
+# prepend/postpend and small-system debug helpers.
+#
+# Main entry points: get_mps, get_mpo, get_diagonal_mpo, qtt_mpo, eval_mps,
+# eval_mps_spatial, spatial_sampling_plan, kspace_sampling_plan,
+# fibonacci_ldos_sampling_plan, shift_mpo, extract_diagonal_to_mps,
+# prepend_op/postpend_op, get_matrix.
+#
+# Depends on: Fibonacci* (fibonacci_rg_partition, fibonacci_site_count and
+# fibonacci_site_from_conumber, called by fibonacci_ldos_sampling_plan); a *
+# marks a file included later, see the source map in TensorBinding.jl. The
+# Symbol methods of prepend_op/postpend_op are defined in core/AuxDOF.jl.
 
 # ============================================================
-# Operator extensions (defined once to avoid duplicate definitions)
+# 1. Qubit operator extensions (defined once to avoid duplicate definitions)
 # ============================================================
 
 ITensors.op(::OpName"sigma_plus", ::SiteType"Qubit") =
@@ -20,13 +32,8 @@ ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
 ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 
 # ============================================================
-# Binary / index utilities
+# 2. Shift MPOs: (Q f)(x) = f(x + q) on a binary-encoded chain
 # ============================================================
-
-
-# ---------------------------------------------------------------------
-# Shift MPO:  (Q f)(x) = f(x + q)  on a binary-encoded chain
-# ---------------------------------------------------------------------
 
 function build_shift_mpo(sites, q,cyclic=true)
     N      = length(sites)
@@ -93,6 +100,10 @@ function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
 end
 
 
+# ============================================================
+# 3. Basis-state labels and MPS (binary states, exciton probes)
+# ============================================================
+
 """
     to_binary_vector(n, L) -> Vector{String}
 
@@ -148,7 +159,7 @@ end
 mpsexciton(x, sites) = mpsexciton(x, x, sites)
 
 # ============================================================
-# MPO / MPS site-index manipulation
+# 4. MPO / MPS site-index manipulation
 # ============================================================
 
 """
@@ -330,6 +341,10 @@ function hadamard_mpo(A::MPO, B::MPO, out_sites;
     return mpo
 end
 
+# ============================================================
+# 5. Evaluating an MPS at basis states and blocks
+# ============================================================
+
 """
     eval_mps(A, n) -> Real
 
@@ -348,8 +363,9 @@ end
     _eval_diag_mps(A, x) -> Float64
 
 Evaluate the diagonal MPS `A` at the 0-indexed position `x` using a
-LSB-first bit encoding (site 1 = bit 0 of x).  Equivalent to
-`inner(binary_MPS(x), A)` but avoids constructing the full basis MPS.
+LSB-first bit encoding (site 1 = bit 0 of x).  Equivalent to `eval_mps`
+(MSB-first) at the bit-reversed position, but contracts each site tensor with a
+one-hot vector instead of constructing the full basis MPS.
 """
 function _eval_diag_mps(A::MPS, x::Int)
     L     = length(A)
@@ -389,9 +405,15 @@ function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
     return real(scalar(acc))
 end
 
+# ============================================================
+# 6. Sampling plans (real space, Fibonacci, k space) and the spatial MPS sampler
+# ============================================================
+
 """
-    spatial_sampling_plan(L; Lx, grid, reduce, n_sub, num_x, num_y, num_avg,
-                          x_start, x_end, xwin, ywin, x_groups, box_half, sublattice)
+    spatial_sampling_plan(L; Lx=nothing, grid=false, reduce=:point, n_sub=1,
+                          num_x=0, num_y=nothing, num_avg=1, x_start=1, x_end=2^L,
+                          xwin=nothing, ywin=nothing, x_groups=nothing,
+                          box_half=0, sublattice=:auto)
         -> (; centers, groups, resolve_sublattice, n_sub, stride_x, stride_y,
              grid, reduce, a, b)
 
@@ -401,10 +423,10 @@ Geometry-aware real-space sampling plan shared by every spatial sampler
 pixel reduces the cells under it (`reduce`), and — for multi-atom unit cells —
 whether to **resolve** or **average** the sublattice.
 
-# The three sampling procedures (`reduce`)
+# The two sampling procedures (`reduce`)
 
 A spatial map of a `2^Lx × 2^Ly`-unit-cell system at a coarse output resolution
-can reduce the cells beneath each pixel in three qualitatively different ways.
+can reduce the cells beneath each pixel in two qualitatively different ways.
 The right choice depends on whether the quantity is *smooth on the large scale*
 (e.g. a Chern marker, an SCF density envelope) or a *thin feature on a flat
 background* (e.g. in-gap edge/domain-wall LDOS, width ξ ≪ system size).
@@ -636,8 +658,9 @@ function spatial_sampling_plan(L::Int;
 end
 
 """
-    eval_mps_spatial(A::MPS; num_x, num_avg, x_start, x_end, x_groups,
-                     box_half, Lx) -> (values, centers, groups)
+    eval_mps_spatial(A::MPS; num_x=N, num_avg=1, x_start=1, x_end=N,
+                     x_groups=nothing, box_half=0, Lx=nothing)
+        -> (; values, centers, groups)
 
 Higher-level spatial sampler for a profile MPS such as an SCF occupation/density
 profile (`res.rho_up`). It mirrors `get_ldos_spatial`'s `num_x` / `num_avg` /
@@ -653,13 +676,17 @@ position is expanded into a `(2·box_half+1)²` neighborhood on the 2D grid
 from `Lx` (defaults to `L÷2`, with `Ly = L - Lx`).
 
 # Keyword arguments
+
+`N = prod(dim(s) for s in siteinds(A))` is the register size (`2^L` for qubits).
+
 - `num_x`    : number of sampled grid positions (default: all `2^L` sites).
 - `num_avg`  : sub-positions averaged per grid point along the 1D index (stride).
 - `x_start`, `x_end` : 1-indexed sampling window (default `1 … 2^L`).
 - `x_groups` : explicit groups — a vector of site indices (one per group) or a
   vector of vectors (each averaged). Overrides `num_x`/`num_avg`/`x_start`/`x_end`.
 - `box_half` : 2D neighborhood half-width for averaging (0 = no box averaging).
-- `Lx`       : number of x qubits for the 2D layout (default `L÷2`).
+- `Lx`       : number of x qubits for the 2D layout (default `nothing`; `L÷2` is
+  used when `box_half > 0`).
 
 # Returns
 - `values`  : `Vector{Float64}`, the averaged MPS value per group.
@@ -997,6 +1024,10 @@ function kspace_sampling_plan(L_pos::Int, D::Int;
     end
 end
 
+# ============================================================
+# 7. MPS / MPO from scalar functions (QTCI), constant MPS, RMS error
+# ============================================================
+
 """
     rms_error(a, b) -> Float64
 
@@ -1077,6 +1108,10 @@ function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
 end
 
 
+# ============================================================
+# 8. Diagonal MPO <-> MPS conversion
+# ============================================================
+
 """
     extract_diagonal_to_mps(M) -> MPS
 
@@ -1101,11 +1136,6 @@ function extract_diagonal_to_mps(M::MPO)::MPS
     return MPS(new_tensors)
 end
 
-
-
-# ---------------------------------------------------------------------
-# MPS -> diagonal MPO conversion
-# ---------------------------------------------------------------------
 
 """
     mps_to_diagonal_mpo(mps, sites) -> MPO
@@ -1136,7 +1166,7 @@ end
 
 
 # ============================================================
-# Fast diagonal MPO builder (via QTCI)
+# 9. Fast diagonal MPO builder (via QTCI)
 # ============================================================
 
 """
@@ -1169,7 +1199,7 @@ function qtt_mpo(L, xvals, sites, func;
 end
 
 # ============================================================
-# Auxiliary site prepend - unified prepend_op
+# 10. Auxiliary-site prepend / postpend (prepend_op, postpend_op)
 # ============================================================
 
 """
@@ -1255,29 +1285,29 @@ end
 postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
 
 
-# ---------------------------------------------------------------------
-# Layer prepend helpers (thin wrappers around prepend_op)
-# ---------------------------------------------------------------------
+# ============================================================
+# 11. Layer prepend helpers (thin wrappers around prepend_op)
+# ============================================================
 
 """
-    prepend_layer_projector(H_mpo, layer_s, k) -> MPO
+    prepend_layer_projector(H, s, k) -> MPO
 
-Prepend the diagonal projector `|k⟩⟨k|` on `layer_s` (1-based).
-Equivalent to `prepend_op(H_mpo, layer_s, k)`.
+Prepend the diagonal projector `|k⟩⟨k|` on the layer index `s` (1-based).
+Equivalent to `prepend_op(H, s, k)`.
 """
 prepend_layer_projector(H::MPO, s::Index, k::Int) = prepend_op(H, s, k)
 
 """
-    prepend_layer_hopping(H_mpo, layer_s, k, l) -> MPO
+    prepend_layer_hopping(H, s, k, l) -> MPO
 
-Prepend the off-diagonal operator `|k⟩⟨l|` on `layer_s` (1-based).
-Equivalent to `prepend_op(H_mpo, layer_s, k, l)`.
+Prepend the off-diagonal operator `|k⟩⟨l|` on the layer index `s` (1-based).
+Equivalent to `prepend_op(H, s, k, l)`.
 """
 prepend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = prepend_op(H, s, k, l)
 
 
 # ============================================================
-# Debug / validation utilities
+# 12. Debug / validation utilities
 # ============================================================
 
 # Build a product-state MPS with an explicit 1-indexed value per site.

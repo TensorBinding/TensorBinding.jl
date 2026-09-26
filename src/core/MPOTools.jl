@@ -1,16 +1,21 @@
-# MPOTools.jl — MPO composition and embedding helpers shared across TensorBinding:
-# the MPO Kronecker product (mpo_kron), the interleaving site plumbing
+# MPOTools.jl — MPO composition and embedding helpers shared across TensorBinding.
+#
+# Contents: the MPO Kronecker product (mpo_kron), the interleaving site plumbing
 # (interleave_mpo, interleave_mpo_tb, swap_every_other_legs, collapse_mpo_pairs)
 # used by the RPA bubbles, the Krylov Green's function, the exciton QFT and the
 # two-particle Hamiltonian, MPO powers by squaring (compose_power) and the exact
 # rank-1 site projector (_site_projector_mpo).
-# Moved verbatim from physics/rpa/plumbing.jl (an interim file split out of the
-# former physics/RPA_tk.jl), core/Hamiltonian.jl and lattice/TJunction.jl (Tier 1
-# of docs/dev/REORGANISATION_TODO.md).
-# Uses Utils (_bra_ket, the sigma_d/sigma_u ops).
+#
+# Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power.
+#
+# Depends on: Utils (_bra_ket, the sigma_d/sigma_u ops).
+#
+# Moved verbatim in Tier 1 of docs/dev/REORGANISATION_TODO.md from the interim
+# physics/rpa/plumbing.jl (split out of the former physics/RPA_tk.jl),
+# core/Hamiltonian.jl and lattice/TJunction.jl.
 
 # ============================================================
-# Tensor product utilities (MPO Kronecker product)
+# 1. Tensor product utilities (MPO Kronecker product)
 # ============================================================
 
 """
@@ -32,7 +37,7 @@ function mpo_kron(A::MPO, B::MPO)
 end
 
 # ============================================================
-# Site-index manipulation helpers
+# 2. Site-index manipulation helpers
 # ============================================================
 
 """
@@ -114,7 +119,7 @@ function collapse_mpo_pairs(mpo2L::MPO, out_sites)
 end
 
 # ============================================================
-# Interleaving (embed an L-site MPO into a 2L-site space)
+# 3. Interleaving (embed an L-site MPO into a 2L-site space)
 # ============================================================
 
 """
@@ -176,7 +181,7 @@ end
 
 
 # ============================================================
-# Exponentiation-by-squaring for MPO composition
+# 4. Exponentiation-by-squaring for MPO composition
 # ============================================================
 
 """
@@ -214,7 +219,7 @@ end
 
 
 # ============================================================
-# Exact site-projector MPO
+# 5. Exact site-projector MPO
 # ============================================================
 
 # Build the rank-1 projector |n><n| for 0-indexed site n on L position qubits.
