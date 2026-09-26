@@ -361,9 +361,10 @@ the affected golden cases in the same commit.
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
       `_resolve_gpu_type` with a single warning threshold; `_gpu_log`.
-- [ ] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
+- [x] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
       changing its output (decided 2026-09-25); a balanced tiler may come later as an opt-in
       keyword with today's behaviour as the default.
+      *`interval_sampling_plan` (tier2/registry); the sampling golden calls it directly.*
 
 ## Tier 3 — API consistency (user-visible)
 

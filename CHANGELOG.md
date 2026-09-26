@@ -35,6 +35,11 @@ but could be called as `TensorBinding.name`:
 - the GPU aliases `get_nh_state_trajectory_gpu` (use `get_state_amplitude_trajectory_gpu`)
   and `nh_spectrum_grid_gpu` (use `get_nh_dos_grid_gpu`).
 
+### Added
+
+- `interval_sampling_plan`: the automatic probe plan of `get_ldos_spatial_mps_gpu`, now a
+  planner of its own in `core/Utils.jl` (same groups as before).
+
 ### Changed
 
 - Unconditional progress prints in library code ("MPS COMPUTED!", "C1 done", …) are

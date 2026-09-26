@@ -25,9 +25,12 @@
 #     than 100_000 integers) is compared through the same digest of the current
 #     output;
 #   * the number of cases per planner must equal EXPECTED_CASE_COUNTS below, so
-#     that cases dropped from the generator are noticed;
-#   * the copy of get_ldos_spatial_mps_gpu's inline plan must still match the
-#     source (see `inline_plan_block`).
+#     that cases dropped from the generator are noticed.
+#
+# The :gpu_mps_auto cases pin the automatic plan of get_ldos_spatial_mps_gpu, which
+# calls core/Utils.jl's interval_sampling_plan (with caller="get_ldos_spatial_mps_gpu",
+# the prefix of its error messages); the cases call that planner directly. Until
+# the plan moved there they ran a verbatim copy of the GPU function's inline code.
 #
 # The runner below is shared with the generator, which includes this file with
 # `SAMPLING_GOLDEN_GENERATOR` defined so that only the module is loaded.
@@ -58,126 +61,6 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
 # line of the exception's `msg` (ErrorException, ArgumentError, AssertionError).
 const MESSAGE_PREFIX_CHARS = 60
 
-# ── get_ldos_spatial_mps_gpu automatic plan ─────────────────────────────────────
-# `get_ldos_spatial_mps_gpu` builds its groups inline, before any GPU work, so it
-# cannot be reached on a CPU-only machine. The body below is a VERBATIM copy of
-# the block of src/gpu/kpm.jl that starts at `groups = if x_groups !== nothing`
-# inside `get_ldos_spatial_mps_gpu` and ends with the validation loop
-# `for group in groups ... end`, with the keyword defaults of that function
-# (GPU_MPS_AUTO_DEFAULTS). `H = (; N)` stands in for the Hamiltonian so that the
-# copied `H.N` is unchanged. `check_inline_plan_copy` compares the two, so an
-# edit to either side fails the tests. Retire the copy (and the check) when the
-# plan moves into core/Utils.jl and `run_case` can call the real function.
-function gpu_mps_auto_groups(N::Int;
-                             x_groups     = nothing,
-                             num_x::Int   = min(N, 100),
-                             num_avg::Int = 1,
-                             x_start::Int = 1,
-                             x_end::Int   = N)
-    H = (; N)
-    groups = if x_groups !== nothing
-        x_groups isa AbstractVector{<:AbstractVector} ?
-            [collect(Int, group) for group in x_groups] :
-            [[Int(x)] for x in x_groups]
-    else
-        num_x > 0 || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_x must be positive."
-        ))
-        num_avg > 0 || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_avg must be positive."
-        ))
-        1 <= x_start <= x_end <= H.N || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: expected 1 <= x_start <= x_end <= H.N."
-        ))
-        window = x_end - x_start + 1
-        num_x <= window || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_x=$num_x exceeds the sampling " *
-            "window length $window."
-        ))
-        [let
-             lo = x_start + fld((i - 1) * window, num_x)
-             hi = x_start + fld(i * window, num_x) - 1
-             nsample = min(num_avg, hi - lo + 1)
-             nsample == 1 ? Int[lo] :
-                 unique(round.(Int, range(lo, hi; length=nsample)))
-         end for i in 1:num_x]
-    end
-
-    isempty(groups) && throw(ArgumentError(
-        "get_ldos_spatial_mps_gpu: no spatial groups were selected."
-    ))
-    for group in groups
-        isempty(group) && throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: spatial groups must not be empty."
-        ))
-        all(x -> 1 <= x <= H.N, group) || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: every position must lie in 1:H.N."
-        ))
-    end
-    return groups
-end
-
-# ── Drift guard for the copy above ─────────────────────────────────────────────
-const RUNNER_FILE = @__FILE__
-const GPU_TK_FILE = joinpath(pkgdir(TensorBinding), "src", "gpu", "kpm.jl")
-
-# Keyword defaults of get_ldos_spatial_mps_gpu that the copy reproduces, with
-# all whitespace removed (the copy writes `min(N, 100)` and `N` for `H.N`).
-const GPU_MPS_AUTO_DEFAULTS = ("x_groups=nothing,", "num_x::Int=min(H.N,100),",
-                               "num_avg::Int=1,", "x_start::Int=1,", "x_end::Int=H.N,")
-
-_indent(line) = length(line) - length(lstrip(line))
-
-"""
-    inline_plan_block(path, function_line) -> Vector{String}
-
-The whitespace-stripped, non-empty lines of the automatic-plan block in `path`:
-from the first line after `function_line` that starts with
-`groups = if x_groups !== nothing`, through the `end` that closes the next
-`for group in groups` loop. Errors if an anchor is missing.
-"""
-function inline_plan_block(path::AbstractString, function_line::AbstractString)
-    lines = readlines(path)
-    i_fun = findfirst(l -> startswith(strip(l), function_line), lines)
-    i_fun === nothing && error("inline_plan_block: `$function_line` not found in $path")
-    i0 = findnext(l -> startswith(strip(l), "groups = if x_groups !== nothing"), lines, i_fun)
-    i0 === nothing && error("inline_plan_block: `groups = if x_groups !== nothing` not found in $path")
-    i_for = findnext(l -> strip(l) == "for group in groups", lines, i0)
-    i_for === nothing && error("inline_plan_block: `for group in groups` not found in $path")
-    i_end = findnext(l -> strip(l) == "end" && _indent(l) == _indent(lines[i_for]), lines, i_for + 1)
-    i_end === nothing && error("inline_plan_block: the end of `for group in groups` not found in $path")
-    return [String(strip(l)) for l in lines[i0:i_end] if !isempty(strip(l))]
-end
-
-"""
-    check_inline_plan_copy() -> Bool
-
-`true` when `gpu_mps_auto_groups` above still reproduces the automatic plan of
-`get_ldos_spatial_mps_gpu` in src/gpu/kpm.jl: the same block, whitespace
-aside, and the same keyword defaults. Logs the first differing line otherwise.
-"""
-function check_inline_plan_copy()
-    src  = inline_plan_block(GPU_TK_FILE, "function get_ldos_spatial_mps_gpu(")
-    copy = inline_plan_block(RUNNER_FILE, "function gpu_mps_auto_groups(")
-    ok = true
-    if src != copy
-        i = findfirst(k -> k > length(src) || k > length(copy) || src[k] != copy[k],
-                      1:max(length(src), length(copy)))
-        @error "get_ldos_spatial_mps_gpu's inline plan and its copy in test/sampling_golden.jl differ" line = i src = get(src, i, "(missing)") copy = get(copy, i, "(missing)")
-        ok = false
-    end
-    lines = readlines(GPU_TK_FILE)
-    i_fun = findfirst(l -> startswith(strip(l), "function get_ldos_spatial_mps_gpu("), lines)
-    i_body = findnext(l -> occursin("Ncheb >= 2", l), lines, i_fun)
-    signature = replace(join(lines[i_fun:i_body]), r"\s" => "")
-    for default in GPU_MPS_AUTO_DEFAULTS
-        occursin(default, signature) && continue
-        @error "get_ldos_spatial_mps_gpu keyword default changed; update gpu_mps_auto_groups" expected = default
-        ok = false
-    end
-    return ok
-end
-
 """
     run_case(planner, args, kwargs) -> NamedTuple
 
@@ -203,7 +86,9 @@ function run_case(planner::Symbol, @nospecialize(args::Tuple), @nospecialize(kwa
         # args = (number of position qubits,); the wrapper only reads the sites' count/dims
         return TB._tb_spatial_plan_gpu(TB.siteinds("Qubit", args[1]); kwargs...)
     elseif planner === :gpu_mps_auto
-        return (; groups = gpu_mps_auto_groups(args...; kwargs...))
+        # the automatic plan of get_ldos_spatial_mps_gpu, called as that function calls it
+        return (; groups = TB.interval_sampling_plan(args...; kwargs...,
+                                                     caller = "get_ldos_spatial_mps_gpu"))
     else
         error("SamplingGoldenRunner: unknown planner :$planner")
     end
@@ -368,7 +253,6 @@ function run_tests(cases)
         counts == EXPECTED_CASE_COUNTS ||
             @error "Golden case counts differ from EXPECTED_CASE_COUNTS" got = counts expected = EXPECTED_CASE_COUNTS
         @test counts == EXPECTED_CASE_COUNTS
-        @test check_inline_plan_copy()
         for planner in unique(case.planner for case in cases)
             @testset "$planner" begin
                 for case in cases

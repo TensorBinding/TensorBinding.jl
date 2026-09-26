@@ -6,8 +6,8 @@
 #
 # Main entry points: KPM_Tn_gpu, get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu,
 # get_dos_stochastic_gpu.
-# Depends on: core/Utils.jl (spatial_sampling_plan, basis-state and exciton MPS
-# builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (aux-site
+# Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan,
+# basis-state and exciton MPS builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (aux-site
 # detection, projected probes), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
 # solvers/kpm/kernels.jl (KPM weights), gpu/device.jl, gpu/primitives.jl.
 
@@ -405,7 +405,8 @@ over `x_start:x_end` are sampled with `num_avg` approximately equidistant probes
 per interval. Automatic planning allocates only `O(num_x * num_avg)` probe
 indices, so callers can sample a huge projected space without enumerating it by
 choosing a modest `num_x` (or by supplying `x_groups`).
-The default is at most 100 output columns.
+The default is at most 100 output columns. The groups come from
+[`interval_sampling_plan`](@ref).
 
 `kernel=:hodc` uses HODC reconstruction (`eta`, `m_order`; `eta=0` uses
 `1/(Ncheb+1)`). Other supported kernels are `:jackson`, `:lorentz` (`lambda`),
@@ -507,45 +508,8 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         "on this MPS GPU path."
     ))
 
-    groups = if x_groups !== nothing
-        x_groups isa AbstractVector{<:AbstractVector} ?
-            [collect(Int, group) for group in x_groups] :
-            [[Int(x)] for x in x_groups]
-    else
-        num_x > 0 || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_x must be positive."
-        ))
-        num_avg > 0 || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_avg must be positive."
-        ))
-        1 <= x_start <= x_end <= H.N || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: expected 1 <= x_start <= x_end <= H.N."
-        ))
-        window = x_end - x_start + 1
-        num_x <= window || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: num_x=$num_x exceeds the sampling " *
-            "window length $window."
-        ))
-        [let
-             lo = x_start + fld((i - 1) * window, num_x)
-             hi = x_start + fld(i * window, num_x) - 1
-             nsample = min(num_avg, hi - lo + 1)
-             nsample == 1 ? Int[lo] :
-                 unique(round.(Int, range(lo, hi; length=nsample)))
-         end for i in 1:num_x]
-    end
-
-    isempty(groups) && throw(ArgumentError(
-        "get_ldos_spatial_mps_gpu: no spatial groups were selected."
-    ))
-    for group in groups
-        isempty(group) && throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: spatial groups must not be empty."
-        ))
-        all(x -> 1 <= x <= H.N, group) || throw(ArgumentError(
-            "get_ldos_spatial_mps_gpu: every position must lie in 1:H.N."
-        ))
-    end
+    groups = interval_sampling_plan(H.N; x_groups, num_x, num_avg, x_start, x_end,
+                                    caller="get_ldos_spatial_mps_gpu")
 
     _check_gpu("get_ldos_spatial_mps_gpu")
     gpu_type = _resolve_gpu_type(

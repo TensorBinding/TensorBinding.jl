@@ -393,7 +393,7 @@ add!("tb_spatial_plan_gpu_L5_nx2_ny4", :tb_spatial_plan_gpu, (5,), kw(num_x=2, n
 add!("tb_spatial_plan_gpu_L5_block_nx2_ny2", :tb_spatial_plan_gpu, (5,), kw(reduce=:block, num_x=2, num_y=2))
 add!("tb_spatial_plan_gpu_L7_nx4_bh1", :tb_spatial_plan_gpu, (7,), kw(num_x=4, box_half=1))
 
-# ── get_ldos_spatial_mps_gpu automatic plan (copied inline code) ─────────────
+# ── get_ldos_spatial_mps_gpu automatic plan (interval_sampling_plan) ─────────
 for N in (8, 16, 17, 24)
     for (xs, xe) in ((nothing, nothing), (3, N - 2))
         for num_x in (1, 3, 4, 5, 7, 8, 16, 17), num_avg in (1, 2, 3, 4)
@@ -589,11 +589,6 @@ function write_golden(path, entries, notes)
         println(io, "SAMPLING_GOLDEN_CASES")
     end
 end
-
-# The :gpu_mps_auto cases run a copy of get_ldos_spatial_mps_gpu's inline plan;
-# refuse to pin a copy that no longer matches the source.
-SamplingGoldenRunner.check_inline_plan_copy() ||
-    error("the copy of get_ldos_spatial_mps_gpu's inline plan in test/sampling_golden.jl is stale; update it first")
 
 entries, notes = evaluate(CASES)
 foreach(println, notes)

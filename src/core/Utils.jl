@@ -7,9 +7,9 @@
 # prepend/postpend and small-system debug helpers.
 #
 # Main entry points: get_mps, get_mpo, get_diagonal_mpo, qtt_mpo, eval_mps,
-# eval_mps_spatial, spatial_sampling_plan, kspace_sampling_plan,
-# fibonacci_ldos_sampling_plan, shift_mpo, extract_diagonal_to_mps,
-# prepend_op/postpend_op, get_matrix.
+# eval_mps_spatial, spatial_sampling_plan, interval_sampling_plan,
+# kspace_sampling_plan, fibonacci_ldos_sampling_plan, shift_mpo,
+# extract_diagonal_to_mps, prepend_op/postpend_op, get_matrix.
 #
 # Depends on: Fibonacci* (fibonacci_rg_partition, fibonacci_site_count and
 # fibonacci_site_from_conumber, called by fibonacci_ldos_sampling_plan); a *
@@ -655,6 +655,76 @@ function spatial_sampling_plan(L::Int;
 
     return (; centers, groups, resolve_sublattice=resolve, n_sub=max(n_sub, 1),
             stride_x, stride_y, grid, reduce=:point, a=0, b=0)
+end
+
+"""
+    interval_sampling_plan(N; x_groups=nothing, num_x=min(N, 100), num_avg=1,
+                           x_start=1, x_end=N, caller="interval_sampling_plan")
+        -> Vector{Vector{Int}}
+
+Probe groups over the physical sites `1:N` of a one-dimensional register (`N = H.N`),
+the plan of [`get_ldos_spatial_mps_gpu`](@ref): one group per output column, each
+group a vector of 1-based sites whose values are averaged.
+
+- `x_groups` given: a vector of sites (one group each) or a vector of site vectors,
+  used as they are.
+- otherwise the window `x_start:x_end` is cut into `num_x` intervals of nearly equal
+  length (interval `i` covers `x_start + fld((i-1)·w, num_x)` to
+  `x_start + fld(i·w, num_x) - 1`, `w` the window length), and each interval holds
+  `min(num_avg, its length)` approximately equidistant probes (both ends included).
+  Only `O(num_x · num_avg)` indices are allocated, so a huge projected space can be
+  sampled without enumerating it.
+
+Every group must be non-empty and inside `1:N`. Errors are `ArgumentError`s whose
+message starts with `caller`.
+"""
+function interval_sampling_plan(N::Integer;
+                                x_groups     = nothing,
+                                num_x::Int   = min(N, 100),
+                                num_avg::Int = 1,
+                                x_start::Int = 1,
+                                x_end::Int   = N,
+                                caller::AbstractString = "interval_sampling_plan")
+    groups = if x_groups !== nothing
+        x_groups isa AbstractVector{<:AbstractVector} ?
+            [collect(Int, group) for group in x_groups] :
+            [[Int(x)] for x in x_groups]
+    else
+        num_x > 0 || throw(ArgumentError(
+            "$caller: num_x must be positive."
+        ))
+        num_avg > 0 || throw(ArgumentError(
+            "$caller: num_avg must be positive."
+        ))
+        1 <= x_start <= x_end <= N || throw(ArgumentError(
+            "$caller: expected 1 <= x_start <= x_end <= H.N."
+        ))
+        window = x_end - x_start + 1
+        num_x <= window || throw(ArgumentError(
+            "$caller: num_x=$num_x exceeds the sampling " *
+            "window length $window."
+        ))
+        [let
+             lo = x_start + fld((i - 1) * window, num_x)
+             hi = x_start + fld(i * window, num_x) - 1
+             nsample = min(num_avg, hi - lo + 1)
+             nsample == 1 ? Int[lo] :
+                 unique(round.(Int, range(lo, hi; length=nsample)))
+         end for i in 1:num_x]
+    end
+
+    isempty(groups) && throw(ArgumentError(
+        "$caller: no spatial groups were selected."
+    ))
+    for group in groups
+        isempty(group) && throw(ArgumentError(
+            "$caller: spatial groups must not be empty."
+        ))
+        all(x -> 1 <= x <= N, group) || throw(ArgumentError(
+            "$caller: every position must lie in 1:H.N."
+        ))
+    end
+    return groups
 end
 
 """
