@@ -71,13 +71,13 @@
 #   _eval_diag_mps, kspace_sampling_plan,
 #   spatial_sampling_plan              → core/Utils.jl
 # interleave_mpo, mpo_kron             → core/MPOTools.jl
-# TBHamiltonian, _pos_sites,
+# TBHamiltonian, _pos_sites, physical_projector,
 #   _require_binary_position_space     → core/TBSystem.jl
 # project_aux, aux_site, _autoenable_proj → core/AuxDOF.jl
 # _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl
 # _ensure_scale!                       → solvers/DMRG.jl
-# _kpm_weight_matrix, _dos_weight_matrix → solvers/kpm/kernels.jl
-# _run_kpm_mps!                        → solvers/kpm/recursion.jl
+# _rescaled_energies, _kpm_energy_grid → solvers/kpm/kernels.jl
+# _scaled_hamiltonian, _run_kpm_mps!   → solvers/kpm/recursion.jl
 # mpsexcitonQ, mpsexcitonQTrace, mpsexcitonKQ → physics/TwoParticle.jl
 #
 # == File structure (src/physics/qft/, in include order) ==
@@ -99,7 +99,7 @@
 # Elsewhere: the aux-index projection (project_aux, aux_site, _autoenable_proj) is in
 # core/AuxDOF.jl; _eval_diag_mps (LSB-first diagonal readout, beside eval_mps),
 # ilinspace and kspace_sampling_plan (k-point centres and groups, shared with
-# get_bands_gpu) in core/Utils.jl; _kpm_weight_matrix in solvers/kpm/kernels.jl; the
+# get_bands_gpu) in core/Utils.jl; _kpm_energy_grid in solvers/kpm/kernels.jl; the
 # exciton MPS probes mpsexcitonQ/QTrace/KQ in physics/TwoParticle.jl and mpsexciton
 # in core/Utils.jl.
 
@@ -270,13 +270,14 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
 
     # ── Scaled Hamiltonian ────────────────────────────────────────────────────
     # sites already includes all aux sites; MPO(sites, "Id") is correctly sized.
+    # (A raw MPO carries no position space: the TBHamiltonian method below admits
+    # binary position spaces only, where this identity is the physical projector.)
     I_mpo = MPO(sites, "Id")
-    Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    Ham_n = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
-    # ── KPM weight matrix  W[n, iω] ──────────────────────────────────────────
+    # ── KPM weight matrix  W[n, iω], normalisation, support mask ─────────────
     Nω    = length(ω_vals)
-    valid = [abs(ω) < 1.0 for ω in ω_vals]
-    W     = _kpm_weight_matrix(Ncheb, ω_vals; kernel = kernel, lambda = lambda)
+    _, W, denom, valid = _kpm_energy_grid(Ncheb, ω_vals; kernel = kernel, lambda = lambda)
 
     # Lx is needed for both the 2D k-group builder and the sublattice mask builder;
     # compute it unconditionally so it is always in scope when D==2.
@@ -412,7 +413,7 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     # ── Normalization: divide by the KPM DOS weight ───────────────────────────
     for iω in 1:Nω
         valid[iω] || continue
-        Ak_w[iω, :] ./= (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
+        Ak_w[iω, :] ./= denom[iω]
     end
 
     return Ak_w
@@ -503,7 +504,7 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_resc = _rescaled_energies(H, ω_phys_vals)
 
     # ── High-symmetry path shortcut ──────────────────────────────────────────
     # When `kpath` is provided, build k_groups_override from symbols and use

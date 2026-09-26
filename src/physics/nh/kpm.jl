@@ -7,7 +7,8 @@
 #
 # Entry points: nh_spectrum_grid, nh_spectral_function, nh_kpm_partials,
 #   nh_reconstruct_spectral_mps, nh_kpm_scale, nh_block_source, contract_nh_block.
-# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, physics/nh/model.jl.
+# Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/kernels.jl
+#   (_kpm_kernel: the Jackson weights), physics/nh/model.jl.
 
 # ============================================================
 # 1. Non-Hermitian KPM scale
@@ -291,10 +292,9 @@ function nh_ones_mps(sites::Vector{<:Index})
     return MPS(tensors)
 end
 
-function nh_jackson_weights(N::Int)
-    return [((N - k + 1) * cos(pi * k / (N + 1)) +
-             sin(pi * k / (N + 1)) / tan(pi / (N + 1))) for k in 0:N-1]
-end
+# The Jackson weights g_l of the reconstructions below are the textbook kernel for
+# N moments, unnormalised: _kpm_kernel(N + 1, :jackson)[1:N] (solvers/kpm/kernels.jl),
+# = (N − k + 1)cos(πk/(N+1)) + sin(πk/(N+1))cot(π/(N+1)), k = 0 … N−1.
 
 """
     nh_reconstruct_spectral_mps(partials, n, block_s; maxdim=100,
@@ -316,7 +316,7 @@ function nh_reconstruct_spectral_mps(partials::AbstractVector{<:MPO}, n::Int,
                                      col::Int = 1)
     N = 2 * n
     length(partials) >= N || error("Expected at least $N partials, got $(length(partials)).")
-    weights = nh_jackson_weights(N)
+    weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     diag_list = nh_preprocess_partials(partials, block_s; row=row, col=col)
 
     A = diag_list[1]
@@ -466,7 +466,7 @@ function _nh_kpm_mps_ldos(NH::NonHermitianHamiltonian, n::Int, probe_site::Int;
         pkm2 = pkm1;  pkm1 = pk
     end
 
-    weights = nh_jackson_weights(N)
+    weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     dos = ComplexF64(0)
     for l in 2:2:N
         dos += (-1)^(l ÷ 2 - 1) * weights[l - 1] * partial_vals[l]
@@ -514,7 +514,7 @@ function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
 
     A_op    = Hh.mpo / sc
     source  = nh_block_source(NH; row=source_row, col=source_col)
-    weights = nh_jackson_weights(N)
+    weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     ones_p  = nh_ones_mps(filter(!=(NH.block_s), Hh.sites))
 
     Tkm2 = MPO(Hh.sites, "Id")
@@ -587,7 +587,7 @@ function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
 
     A_op    = Hh.mpo / sc
     source  = nh_block_source(NH; row=source_row, col=source_col)
-    weights = nh_jackson_weights(N)
+    weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
 
     Tkm2 = MPO(Hh.sites, "Id")
     Tkm1 = A_op
@@ -707,7 +707,7 @@ function _nh_stochastic_online(NH::NonHermitianHamiltonian, n::Int;
 
     A_op    = Hh.mpo / sc
     S       = nh_block_source(NH; row=source_row, col=source_col)
-    weights = nh_jackson_weights(N)
+    weights = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     D       = NH.parent.N   # 2^L = number of physical sites
 
     dos_acc = ComplexF64(0)

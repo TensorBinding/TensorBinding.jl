@@ -1,20 +1,50 @@
 # solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method
 #
-# Contents: the cached recursions that keep every order, as MPOs T_n(H̃) (KPM_Tn) or
-# as MPS T_n(H̃)|ψ₀⟩ (KPM_Tn_mps), H̃ = (H − center)/scale, each with a raw-MPO
+# Contents: the Chebyshev argument H̃ = (H − center)/scale of every KPM solver of
+# the package (_scaled_hamiltonian); the cached recursions that keep every order, as
+# MPOs T_n(H̃) (KPM_Tn) or as MPS T_n(H̃)|ψ₀⟩ (KPM_Tn_mps), each with a raw-MPO
 # method and a TBHamiltonian method that caches the list on H; and the online MPS
 # recursion that accumulates weighted moments ⟨ψ₀|T_n(H̃)|ψ₀⟩ without storing the
 # states (_run_kpm_mps!), shared by the LDOS, DOS and exciton solvers of
 # solvers/kpm/ and by physics/qft/exciton_spectra.jl.
 #
-# Entry points: KPM_Tn, KPM_Tn_mps, _run_kpm_mps!
+# Entry points: _scaled_hamiltonian, KPM_Tn, KPM_Tn_mps, _run_kpm_mps!
 # Depends on: core/TBSystem.jl (TBHamiltonian, physical_projector),
 #   solvers/DMRG.jl (_estimate_spectral_bounds, _ensure_scale!).
 #
-# Split from the former solvers/KPM_tk.jl in Tier 1.
+# Split from the former solvers/KPM_tk.jl in Tier 1; _scaled_hamiltonian (Tier 2)
+# replaced the rescaling written out in each solver.
 
 # ============================================================
-# 1. Cached Chebyshev MPO recursion: KPM_Tn
+# 1. The rescaled Hamiltonian H̃ = (H − center)/scale
+# ============================================================
+
+"""
+    _scaled_hamiltonian(H_mpo::MPO, scale, center, identity::MPO; cutoff) -> MPO
+    _scaled_hamiltonian(H::TBHamiltonian; cutoff, identity=physical_projector(H)) -> MPO
+
+The Chebyshev argument `H̃ = (H − center·identity) / scale`, computed as
+`(1 / scale) * +(H_mpo, (-center) * identity; cutoff=cutoff)`: the shift is added
+with `cutoff` as the only truncation, then the sum is multiplied by `1 / scale`.
+
+The `TBHamiltonian` method uses `H.mpo`, `H.scale`, `H.center` and, as `identity`,
+`physical_projector(H)`, the identity on the physical states: for a projected
+position space (Fibonacci & co.) the ambient `MPO(H.sites, "Id")` would shift the
+unphysical register states to `−center/scale` and give them Chebyshev weight. A
+caller that also needs the projector as `T₀` builds it once and passes it as
+`identity`. The raw-MPO method takes the identity explicitly (`MPO(sites, "Id")`
+where no position space is known).
+"""
+_scaled_hamiltonian(H_mpo::MPO, scale::Real, center::Real, identity::MPO; cutoff::Real) =
+    (1 / scale) * +(H_mpo, (-center) * identity; cutoff = cutoff)
+
+_scaled_hamiltonian(H::TBHamiltonian; cutoff::Real,
+                    identity::MPO = physical_projector(H)) =
+    _scaled_hamiltonian(H.mpo, H.scale, H.center, identity; cutoff = cutoff)
+
+
+# ============================================================
+# 2. Cached Chebyshev MPO recursion: KPM_Tn
 # ============================================================
 
 """
@@ -68,7 +98,7 @@ function KPM_Tn(H_mpo::MPO, N::Int, sites;
 
     # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
     I_mpo   = isnothing(identity_mpo) ? MPO(sites, "Id") : copy(identity_mpo)
-    Ham_n   = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    Ham_n   = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
     # ── Chebyshev recursion T_0 = I,  T_1 = H_scaled,  T_k = 2H·T_{k-1} − T_{k-2}
     T_k_minus_2 = I_mpo
@@ -207,7 +237,7 @@ end
 
 
 # ============================================================
-# 2. Cached Chebyshev MPS recursion: KPM_Tn_mps
+# 3. Cached Chebyshev MPS recursion: KPM_Tn_mps
 # ============================================================
 
 """
@@ -264,7 +294,7 @@ function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
 
     # ── Scaled Hamiltonian: (H − center·I) / scale ────────────────────────
     I_mpo = isnothing(identity_mpo) ? MPO(sites, "Id") : copy(identity_mpo)
-    Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    Ham_n = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
     # ── Chebyshev recursion T_0 = |ψ₀⟩,  |T_1⟩ = H_scaled|ψ₀⟩,  |T_k⟩ = 2H_scaled|ψ_{k-1}⟩ − |ψ_{k-2}⟩
     psi0_n      = psi0 / norm(psi0)  # ensure normalisation
@@ -312,7 +342,7 @@ end
 
 
 # ============================================================
-# 3. Online MPS Chebyshev recursion (shared by the LDOS, DOS and exciton solvers)
+# 4. Online MPS Chebyshev recursion (shared by the LDOS, DOS and exciton solvers)
 # ============================================================
 
 """

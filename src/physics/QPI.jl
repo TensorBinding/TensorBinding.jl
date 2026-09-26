@@ -13,10 +13,12 @@
 #   6. QPI(k, ω) = |⟨k|δÃ_mps⟩|².
 #
 # Dependencies (step 2 runs its own Chebyshev loop, not KPM_Tn/get_ldos_spectrum):
-#   central_index, add_onsite!, _invalidate_cache! → core/TBSystem.jl
+#   central_index, add_onsite!, _invalidate_cache!,
+#   physical_projector                             → core/TBSystem.jl
 #   fix_sites, extract_diagonal_to_mps             → core/Utils.jl
 #   _ensure_scale!                                 → solvers/DMRG.jl
-#   _kpm_weight_matrix                             → solvers/kpm/kernels.jl
+#   _kpm_energy_grid                               → solvers/kpm/kernels.jl
+#   _scaled_hamiltonian                            → solvers/kpm/recursion.jl
 #   sdf_disk, sdf_interval                         → lattice/Flake.jl
 #   QuanticsTCI.quanticsfouriermpo, TCI.reverse    → external
 
@@ -159,17 +161,15 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     _ensure_scale!(H)
     _ensure_scale!(H_imp)
 
-    I_mpo      = MPO(H.sites, "Id")
-    Ham_clean  = (1/H.scale)     * +(H.mpo,     (-H.center)     * I_mpo; cutoff=cutoff)
-    Ham_imp_sc = (1/H_imp.scale) * +(H_imp.mpo, (-H_imp.center) * I_mpo; cutoff=cutoff)
+    I_mpo      = physical_projector(H)
+    Ham_clean  = _scaled_hamiltonian(H;     cutoff=cutoff, identity=I_mpo)
+    Ham_imp_sc = _scaled_hamiltonian(H_imp; cutoff=cutoff, identity=I_mpo)
 
-    ω_clean = (collect(ω_phys_vals) .- H.center)     ./ H.scale
-    ω_imp   = (collect(ω_phys_vals) .- H_imp.center) ./ H_imp.scale
     Nω_loc  = length(ω_phys_vals)
-    W_c     = _kpm_weight_matrix(Ncheb, ω_clean; kernel=kernel, lambda=lambda)
-    W_i     = _kpm_weight_matrix(Ncheb, ω_imp;   kernel=kernel, lambda=lambda)
-    valid_c = [abs(ω) < 1.0 for ω in ω_clean]
-    valid_i = [abs(ω) < 1.0 for ω in ω_imp]
+    _, W_c, denom_c, valid_c = _kpm_energy_grid(H,     Ncheb, ω_phys_vals;
+                                                kernel=kernel, lambda=lambda)
+    _, W_i, denom_i, valid_i = _kpm_energy_grid(H_imp, Ncheb, ω_phys_vals;
+                                                kernel=kernel, lambda=lambda)
 
     ldos_clean = Vector{Union{Nothing, MPS}}(nothing, Nω_loc)
     ldos_imp   = Vector{Union{Nothing, MPS}}(nothing, Nω_loc)
@@ -183,7 +183,7 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         end
     end
 
-    function _run_online_ldos!(acc, Ham_sc, W, valid, ω_vals, label)
+    function _run_online_ldos!(acc, Ham_sc, W, valid, denom, label)
         Tkm2 = I_mpo;  Tkm1 = Ham_sc
         _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tkm2); cutoff=cutoff), W, valid, 1)
         _accum!(acc, ITensorMPS.truncate!(extract_diagonal_to_mps(Tkm1); cutoff=cutoff), W, valid, 2)
@@ -197,15 +197,14 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         end
         for iω in 1:Nω_loc
             valid[iω] && acc[iω] !== nothing || continue
-            acc[iω] = ITensorMPS.truncate!(
-                acc[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2)); cutoff=cutoff)
+            acc[iω] = ITensorMPS.truncate!(acc[iω] / denom[iω]; cutoff=cutoff)
         end
     end
 
     verbose && println("QPI: online KPM clean…")
-    _run_online_ldos!(ldos_clean, Ham_clean,  W_c, valid_c, ω_clean, "clean")
+    _run_online_ldos!(ldos_clean, Ham_clean,  W_c, valid_c, denom_c, "clean")
     verbose && println("QPI: online KPM impurity…")
-    _run_online_ldos!(ldos_imp,   Ham_imp_sc, W_i, valid_i, ω_imp,   "imp")
+    _run_online_ldos!(ldos_imp,   Ham_imp_sc, W_i, valid_i, denom_i, "imp")
 
     # ── Position sites and QFT MPO ────────────────────────────────────────────
     L_pos  = H.L

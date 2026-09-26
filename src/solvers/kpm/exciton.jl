@@ -10,7 +10,8 @@
 #   get_exciton_ldos_separation, exciton_radius2
 # Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl
 #   (TBHamiltonian), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
-#   (_dos_weight_matrix), solvers/kpm/recursion.jl (_run_kpm_mps!).
+#   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
+#   _run_kpm_mps!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1.
 
@@ -98,15 +99,13 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
             error("get_exciton_ldos_spatial: all positions must lie in 1:H.N.")
     end
 
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
-    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    omega_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, omega_phys_vals;
+                                                   kernel=kernel, lambda=lambda,
+                                                   eta=eta, m_order=m_order,
+                                                   allow_hodc=true)
     Nomega     = length(omega_vals)
-    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
-                                    kernel=kernel, lambda=lambda,
-                                    eta=eta, m_order=m_order)
-    valid      = [abs(omega) < 1.0 for omega in omega_vals]
 
     nX     = length(groups)
     Xs     = first.(groups)
@@ -232,15 +231,13 @@ function get_exciton_ldos_separation(H::TBHamiltonian, Ncheb::Int, omega_phys_va
     boundary in (:open, :periodic) ||
         error("get_exciton_ldos_separation: boundary must be :open or :periodic, got $boundary.")
 
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
-    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    omega_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, omega_phys_vals;
+                                                   kernel=kernel, lambda=lambda,
+                                                   eta=eta, m_order=m_order,
+                                                   allow_hodc=true)
     Nomega     = length(omega_vals)
-    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
-                                    kernel=kernel, lambda=lambda,
-                                    eta=eta, m_order=m_order)
-    valid      = [abs(omega) < 1.0 for omega in omega_vals]
 
     ds = collect(Int, d_list)
     Rs = collect(Int, R_list)

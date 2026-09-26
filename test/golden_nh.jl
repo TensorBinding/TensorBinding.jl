@@ -4,7 +4,7 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
                      nh_nonreciprocal_hopping_mpo, add_nh_nonreciprocal_hopping!,
                      add_nh_skin_hopping!, nh_block_source, nh_kpm_partials,
                      contract_nh_block, nh_preprocess_partials, nh_ones_mps,
-                     nh_jackson_weights, nh_reconstruct_spectral_mps,
+                     nh_reconstruct_spectral_mps,
                      nh_spectral_function, nh_spectrum_grid
 
 # Characterization ("golden") tests for the non-Hermitian toolkit,
@@ -66,7 +66,7 @@ using TensorBinding: get_Hamiltonian, add_spin!, nh_block_index, hermitized_hami
                      nh_nonreciprocal_hopping_mpo, add_nh_nonreciprocal_hopping!,
                      add_nh_skin_hopping!, nh_block_source, nh_kpm_partials,
                      contract_nh_block, nh_preprocess_partials, nh_ones_mps,
-                     nh_jackson_weights, nh_reconstruct_spectral_mps,
+                     nh_reconstruct_spectral_mps,
                      nh_spectral_function, nh_spectrum_grid
 const TB = TensorBinding
 
@@ -526,6 +526,9 @@ case("nh_ones_mps") do
      mixed = dense_vec(nh_ones_mps(mixed), mixed), empty_length = length(nh_ones_mps(Index[])))
 end
 
+# The NH Jackson weights: nh_jackson_weights(N) until Tier 2, now the shared kernel
+# _kpm_kernel(N + 1, :jackson)[1:N] (bit for bit the same values; same record).
+nh_jackson_weights(N) = TB._kpm_kernel(N + 1, :jackson)[1:N]
 case("nh_jackson_weights") do
     (w1 = nh_jackson_weights(1), w6 = nh_jackson_weights(6), w9 = nh_jackson_weights(9))
 end

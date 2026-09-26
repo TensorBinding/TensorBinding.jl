@@ -11,8 +11,8 @@
 #   get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker,
 #   chebyshev2d_gf_coeffs.
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
-#   physics/rpa/bubble.jl, physics/qft/conjugation.jl (see the source map in
-#   src/TensorBinding.jl).
+#   solvers/kpm/cached.jl (_chebyshev_sum), physics/rpa/bubble.jl,
+#   physics/qft/conjugation.jl (see the source map in src/TensorBinding.jl).
 
 # ============================================================
 # 1. Chebyshev coefficients and site helpers
@@ -124,6 +124,7 @@ function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVec
                                  "$tag: building T_n(H1) moments (Ncheb=$Ncheb)...")
     Tn1, _, _ = KPM_Tn(H1.mpo, Ncheb, H1.sites;
                        scale=scale1, center=center1,
+                       identity_mpo=physical_projector(H1),
                        maxdim=maxdim, cutoff=cutoff, verbose=false)
     if H1 === H2
         Tn2 = Tn1
@@ -131,6 +132,7 @@ function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVec
         verbose && !lowrank && println("$tag: building T_n(H2) moments...")
         Tn2, _, _ = KPM_Tn(H2.mpo, Ncheb, H2.sites;
                            scale=scale2, center=center2,
+                           identity_mpo=physical_projector(H2),
                            maxdim=maxdim, cutoff=cutoff, verbose=false)
     end
     N = length(Tn1)   # = Ncheb + 1  (T_0 … T_Ncheb)
@@ -624,26 +626,23 @@ end
 # Jackson kernel weights for Chebyshev order N:
 # g[m+1] = ((N-m)cos(πm/(N+1)) + sin(πm/(N+1))/tan(π/(N+1))) / (N+1)
 # Suppresses Gibbs oscillations from truncation; broadening ≈ π·scale/N.
+# Not the _kpm_kernel formula under any normalisation: the textbook kernel for N
+# moments has (N−m+1) where this has (N−m), so g[m+1] = textbook g_m − cos(πm/(N+1))/(N+1)
+# (g[1] = N/(N+1), not 1). Kept as it is: the cheb2d bubbles are pinned with it.
 function _jackson_kernel(N::Int)
     m = 0:N-1
     return @. ((N - m) * cos(π * m / (N+1)) +
                sin(π * m / (N+1)) / tan(π / (N+1))) / (N+1)
 end
 
-# Weighted MPO sum  Σ_i w_i · mpos[i]  with online truncation.
+# Weighted MPO sum  Σ_i w_i · mpos[i]  with online truncation (_chebyshev_sum,
+# solvers/kpm/cached.jl), over the pairs with |w_i| ≥ weight_tol; `nothing` if none.
 # Accepts real or complex weights; complex weights produce complex-tensor MPOs.
 function _weighted_mpo_sum(weights::AbstractVector{<:Number}, mpos::Vector{MPO};
                            maxdim::Int, cutoff::Real, weight_tol::Real = 1e-14)
-    result = nothing
-    for (w, mpo) in zip(weights, mpos)
-        abs(w) < weight_tol && continue
-        if result === nothing
-            result = w * mpo
-        else
-            result = ITensorMPS.truncate!(+(result, w * mpo; maxdim=maxdim); cutoff=cutoff)
-        end
-    end
-    return result
+    terms = [(mpo, w) for (w, mpo) in zip(weights, mpos) if !(abs(w) < weight_tol)]
+    isempty(terms) && return nothing
+    return _chebyshev_sum(first.(terms), last.(terms); maxdim=maxdim, cutoff=cutoff)
 end
 
 

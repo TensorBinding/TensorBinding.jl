@@ -6,8 +6,8 @@
 # Depends on: core/Utils.jl (fix_sites, kspace_sampling_plan), core/TBSystem.jl,
 # core/AuxDOF.jl (aux-site detection), lattice/masks2d.jl (legacy sublattice
 # masks), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
-# (_kpm_weight_matrix), physics/qft/kpath.jl (kpath_setup), gpu/device.jl,
-# gpu/primitives.jl.
+# (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian),
+# physics/qft/kpath.jl (kpath_setup), gpu/device.jl, gpu/primitives.jl.
 
 """
     get_bands_gpu(H, Ncheb, ω_phys_vals;
@@ -93,10 +93,9 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    ω_resc = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_resc, W_kpm, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                                   kernel=kernel, lambda=lambda)
     Nω     = length(ω_resc)
-    valid  = [abs(ω) < 1.0 for ω in ω_resc]
-    W_kpm  = _kpm_weight_matrix(Ncheb, ω_resc; kernel=kernel, lambda=lambda)
 
     # ── Auto-detect aux indices (mirrors the CPU TBHamiltonian overload) ────
     nambu_s_det, nambu_side_det = !isnothing(H.nambu_s) ?
@@ -161,8 +160,8 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── GPU Ham and QFT operators ────────────────────────────────────────────
-    I_mpo_cpu = MPO(H.sites, "Id")
-    Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
+    I_mpo_cpu = physical_projector(H)
+    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff, identity=I_mpo_cpu)
     I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
@@ -278,7 +277,7 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── KPM normalization: 1 / (π² Ncheb √(1 − ε²)) ────────────────────────
     for iω in 1:Nω
         valid[iω] || continue
-        Ak_w[iω, :] ./= (π^2 * Ncheb * sqrt(1 - ω_resc[iω]^2))
+        Ak_w[iω, :] ./= denom[iω]
     end
 
     return isnothing(kpath_ticks) ? Ak_w :

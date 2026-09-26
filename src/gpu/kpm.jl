@@ -9,7 +9,8 @@
 # Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan,
 # basis-state and exciton MPS builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (aux-site
 # detection, projected probes), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
-# solvers/kpm/kernels.jl (KPM weights), gpu/device.jl, gpu/primitives.jl.
+# solvers/kpm/kernels.jl (energy grid, moment-column reconstruction),
+# solvers/kpm/recursion.jl (_scaled_hamiltonian), gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
@@ -61,7 +62,7 @@ function KPM_Tn_gpu(H_mpo::MPO, N::Int, sites;
     end
 
     I_mpo = MPO(sites, "Id")
-    Ham_n = (1 / scale) * +(H_mpo, (-center) * I_mpo; cutoff = cutoff)
+    Ham_n = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
     I_mpo = _to_gpu_mpo(I_mpo, gpu_type)
     Ham_n = _to_gpu_mpo(Ham_n, gpu_type)
@@ -237,18 +238,17 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         (1:1)
 
     # ── KPM setup ────────────────────────────────────────────────────────────
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda)
     Nω     = length(ω_vals)
-    W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     ng     = length(groups)
     n_cols = average_sl ? ng : ng * n_sub
     accum  = zeros(Float64, Nω, n_cols)
 
     # ── GPU operators ────────────────────────────────────────────────────────
-    I_mpo_cpu = MPO(H.sites, "Id")
-    Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
+    I_mpo_cpu = physical_projector(H)
+    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff, identity=I_mpo_cpu)
     I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
@@ -356,7 +356,7 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     result = zeros(Float64, Nω, n_cols)
     for iω in 1:Nω
         valid[iω] || continue
-        result[iω, :] = accum[iω, :] ./ (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
+        result[iω, :] = accum[iω, :] ./ denom[iω]
     end
 
     return result
@@ -517,20 +517,17 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     )
     _ensure_scale!(H)
 
-    # P, rather than the ambient identity, is essential for projected position
-    # spaces: invalid register states must remain zero under the spectral shift.
-    P_cpu = physical_projector(H)
-    Ham_n_cpu = (1 / H.scale) * +(
-        H.mpo, (-H.center) * P_cpu; cutoff=Float64(cutoff),
-    )
+    # P (the default identity of _scaled_hamiltonian), rather than the ambient
+    # identity, is essential for projected position spaces: invalid register
+    # states must remain zero under the spectral shift.
+    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=Float64(cutoff))
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
-    Nω = length(ω_vals)
-    W, denom = _dos_weight_matrix(
-        Ncheb, ω_vals; kernel=kernel, lambda=lambda, eta=eta, m_order=m_order,
+    ω_vals, W, denom, valid = _kpm_energy_grid(
+        H, Ncheb, ω_phys_vals; kernel=kernel, lambda=lambda, eta=eta, m_order=m_order,
+        allow_hodc=true,
     )
-    valid = [abs(ω) < 1.0 for ω in ω_vals]
+    Nω = length(ω_vals)
     # Store kernel-independent, group-averaged moments. Besides making them
     # available for offline reconstruction, this avoids applying all Nω
     # energy weights separately for every probe in an averaged group.
@@ -674,8 +671,7 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     N_sample >= 0 || error("get_dos_stochastic_gpu: N_sample must be non-negative.")
     N_bound >= 0 || error("get_dos_stochastic_gpu: N_bound must be non-negative.")
 
-    I_mpo_cpu = MPO(H.sites, "Id")
-    Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
+    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff)
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
     D      = prod(ITensors.dim(s) for s in H.sites)
@@ -690,11 +686,10 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
                       layer_proj, proj_layer, sublat_proj, proj_sl)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda, eta=eta,
+                                               m_order=m_order, allow_hodc=true)
     Nω     = length(ω_vals)
-    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
-                                  kernel=kernel, lambda=lambda, eta=eta, m_order=m_order)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     accum_full  = zeros(Float64, Nω)

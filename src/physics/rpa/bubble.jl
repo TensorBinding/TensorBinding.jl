@@ -41,7 +41,9 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
     elseif P_method == :kpm
         _ensure_scale!(H)
         Tn_list, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
-                                 scale=H.scale, center=H.center, maxdim=maxdim, cutoff=cutoff)
+                                 scale=H.scale, center=H.center,
+                                 identity_mpo=physical_projector(H),
+                                 maxdim=maxdim, cutoff=cutoff)
         fermi_rescaled = (ϵF - H.center) / H.scale
         return get_density_from_Tn(Tn_list, Ncheb; fermi=fermi_rescaled, maxdim=maxdim,
                                     cutoff=cutoff)

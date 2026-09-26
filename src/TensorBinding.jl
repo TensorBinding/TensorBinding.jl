@@ -86,11 +86,14 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, masks2d, NNNeighbor
 # solvers/DMRG.jl            dmrg_gs, dmrg_spectral, the KPM spectral bounds (_ensure_scale!)
 #                            → Utils, TBSystem
-# solvers/kpm/kernels.jl     damping kernels, KPM/HODC/DOS weights, moment-column LDOS
-#                            → —
-# solvers/kpm/recursion.jl   KPM_Tn, KPM_Tn_mps, online MPS recursion _run_kpm_mps!
+# solvers/kpm/kernels.jl     damping kernels, KPM/HODC/DOS weights, moment-column LDOS, the
+#                            energy grid _kpm_energy_grid
+#                            → TBSystem
+# solvers/kpm/recursion.jl   rescaled H̃ (_scaled_hamiltonian), KPM_Tn, KPM_Tn_mps, online MPS
+#                            recursion _run_kpm_mps!
 #                            → TBSystem, DMRG
-# solvers/kpm/cached.jl      LDOS, density, Green's functions from cached T_n / μ_n
+# solvers/kpm/cached.jl      LDOS, density, Green's functions from cached T_n / μ_n; the
+#                            weighted T_n sum _chebyshev_sum
 #                            → Utils, TBSystem, kpm/kernels
 # solvers/kpm/ldos.jl        get_ldos_online, get_ldos_spatial
 #                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
@@ -117,14 +120,15 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → —
 # physics/qft/bands.jl       get_bands; the overview of physics/qft/
 #                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
-#                              qft/conjugation, qft/kpath
+#                              kpm/recursion, qft/conjugation, qft/kpath
 # physics/qft/exciton_spectra.jl  exciton bands and continuum
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, TwoParticle
 # physics/rpa/bubble.jl      polarization bubble Π₀(ω) via KPM, Krylov or Haydock
 #                            → Utils, MPOTools, TBSystem, DMRG, kpm/recursion, kpm/cached,
 #                              Krylov, Purification
 # physics/rpa/cheb2d.jl      double-Chebyshev bubbles (full MPO, k-space diagonal)
-#                            → Utils, TBSystem, DMRG, kpm/recursion, rpa/bubble, qft/conjugation
+#                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached, rpa/bubble,
+#                              qft/conjugation
 # physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
 #                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
@@ -133,19 +137,19 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
 #                            → Utils, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
-#                            → Utils, TBSystem, DMRG, nh/model
+#                            → Utils, TBSystem, DMRG, kpm/kernels, nh/model
 # physics/QPI.jl             quasiparticle interference (LDOS difference + QFT)
-#                            → Utils, TBSystem, Flake, DMRG, kpm/kernels
+#                            → Utils, TBSystem, Flake, DMRG, kpm/kernels, kpm/recursion
 # gpu/device.jl              CUDA bridge, transfers, residency checks; GPU toolkit overview
 #                            → —
 # gpu/primitives.jl          one-hot, MPS evaluation, diagonals, aux projection, QFT sandwich
 #                            → Utils, gpu/device
 # gpu/kpm.jl                 KPM_Tn_gpu, spatial LDOS, stochastic DOS
-#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, gpu/device,
-#                              gpu/primitives
-# gpu/bands.jl               get_bands_gpu
-#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels, qft/kpath,
+#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion,
 #                              gpu/device, gpu/primitives
+# gpu/bands.jl               get_bands_gpu
+#                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
+#                              kpm/recursion, qft/kpath, gpu/device, gpu/primitives
 # gpu/topology.jl            get_C_gpu
 #                            → Utils, TBSystem, DMRG, Topology, Purification, gpu/device
 # gpu/purification.jl        McWeeny purification
@@ -154,9 +158,10 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, TBSystem, SCF, gpu/device, gpu/primitives, gpu/bands,
 #                              gpu/purification
 # gpu/exciton.jl             exciton LDOS, Chebyshev convergence
-#                            → Utils, TBSystem, DMRG, kpm/kernels, gpu/device
+#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, gpu/device
 # gpu/nh.jl                  NH KPM density of states
-#                            → TBSystem, nh/model, nh/kpm, gpu/device, gpu/primitives
+#                            → TBSystem, kpm/kernels, nh/model, nh/kpm, gpu/device,
+#                              gpu/primitives
 # gpu/timeev.jl              NH density and TDVP amplitude trajectories
 #                            → Utils, TBSystem, Timeev, gpu/device, gpu/primitives
 # gpu/conductivity.jl        conductivity-only Tucker/QFT/Hadamard helpers

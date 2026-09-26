@@ -11,8 +11,8 @@
 #   _eval_block_mps, binary_to_MPS, mpsexciton), core/TBSystem.jl (TBHamiltonian,
 #   physical_projector, physical_site_state, site_permutation), core/AuxDOF.jl
 #   (_autoenable_proj, _aux_setup, _ldos_make_psi0, project_aux), solvers/DMRG.jl
-#   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_weight_matrix),
-#   solvers/kpm/recursion.jl (_run_kpm_mps!).
+#   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
+#   solvers/kpm/recursion.jl (_scaled_hamiltonian, _run_kpm_mps!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1.
 
@@ -88,13 +88,11 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     nambu_proj, spin_proj, layer_proj, sublat_proj =
         _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
 
-    I_mpo = physical_projector(H)
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda)
     Nω     = length(ω_vals)
-    W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
     accum  = zeros(Float64, Nω)
 
     (; nambu_range, spin_range, layer_range, sl_range, any_aux_proj) =
@@ -116,7 +114,7 @@ function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
     result = zeros(Float64, Nω)
     for iω in 1:Nω
         valid[iω] || continue
-        result[iω] = accum[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
+        result[iω] = accum[iω] / denom[iω]
     end
     return result
 end
@@ -394,12 +392,11 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         (1:1)
 
     I_mpo = physical_projector(H)
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff, identity=I_mpo)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda)
     Nω     = length(ω_vals)
-    W      = _kpm_weight_matrix(Ncheb, ω_vals; kernel=kernel, lambda=lambda)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     ng     = length(groups)
     # Averaging collapses the n_sub atoms into one column per group.
@@ -428,7 +425,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
                     for iω in 1:Nω
                         valid[iω] || continue
-                        grp_accum[iω, σ_sl] += accum_loc[iω] / (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
+                        grp_accum[iω, σ_sl] += accum_loc[iω] / denom[iω]
                     end
                 end  # sector loop
             end  # x
@@ -554,7 +551,7 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
         for iω in 1:Nω
             valid[iω] || continue
-            result[iω, :] = accum[iω, :] ./ (π^2 * Ncheb * sqrt(1 - ω_vals[iω]^2))
+            result[iω, :] = accum[iω, :] ./ denom[iω]
         end
 
     else

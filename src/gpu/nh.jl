@@ -7,9 +7,9 @@
 #
 # Main entry points: get_nh_dos_grid_gpu, get_nh_dos_points_gpu,
 # get_nh_dos_points_diag_trace_gpu, get_nh_dos_grid_diag_trace_gpu.
-# Depends on: core/TBSystem.jl, physics/nh/model.jl (NonHermitianHamiltonian,
-# hermitize), physics/nh/kpm.jl (nh_kpm_scale, nh_block_source,
-# nh_jackson_weights), gpu/device.jl, gpu/primitives.jl.
+# Depends on: core/TBSystem.jl, solvers/kpm/kernels.jl (_kpm_kernel: the NH Jackson
+# weights), physics/nh/model.jl (NonHermitianHamiltonian, hermitize),
+# physics/nh/kpm.jl (nh_kpm_scale, nh_block_source), gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
@@ -86,7 +86,7 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
     S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
     I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
-    weights  = nh_jackson_weights(N)
+    weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     two      = dtype(2)
     negone   = dtype(-1)
     zero     = dtype(0)
@@ -159,7 +159,7 @@ function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
     S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
     I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
-    weights  = nh_jackson_weights(N)
+    weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     two      = dtype(2)
     negone   = dtype(-1)
     zero     = dtype(0)
@@ -277,7 +277,7 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
 
     A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
     S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
-    weights  = nh_jackson_weights(N)
+    weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     D        = NH.parent.N
 
     dos_acc = ComplexF64(0)

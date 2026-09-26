@@ -5,8 +5,8 @@
 #
 # Main entry points: get_exciton_ldos_spatial_gpu, get_exciton_cheb_convergence_gpu.
 # Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl,
-# solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl (_dos_weight_matrix),
-# gpu/device.jl.
+# solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
+# solvers/kpm/recursion.jl (_scaled_hamiltonian), gpu/device.jl.
 
 
 # ============================================================
@@ -138,15 +138,13 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     end
     Xs = first.(groups)
 
-    I_mpo_cpu = MPO(H.sites, "Id")
-    Ham_n_cpu = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=cutoff)
+    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff)
     Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda, eta=eta,
+                                               m_order=m_order, allow_hodc=true)
     Nω     = length(ω_vals)
-    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
-                                  kernel=kernel, lambda=lambda, eta=eta, m_order=m_order)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     nX           = length(groups)
     result       = zeros(Float64, Nω, nX)
@@ -265,8 +263,7 @@ function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::I
 
     _ensure_scale!(H)
 
-    I_mpo_cpu  = MPO(H.sites, "Id")
-    Ham_n_cpu  = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo_cpu; cutoff=Float64(cutoff))
+    Ham_n_cpu  = _scaled_hamiltonian(H; cutoff=Float64(cutoff))
     Ham_n_gpu  = _to_gpu_mpo(Ham_n_cpu, gpu_type)
 
     psi0_gpu   = _to_gpu_mps(mpsexciton(X, H.sites), gpu_type)

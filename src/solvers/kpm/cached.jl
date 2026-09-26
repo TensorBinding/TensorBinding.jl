@@ -7,15 +7,18 @@
 # `fermi` (get_density_from_Tn), the retarded Green's function
 # (get_Green_retarded_from_Tn, _hodc variant), the spectral-weight MPO
 # (get_ldos_w_from_Tn, _hodc variant) and the diagonal LDOS MPS at many energies
-# (get_ldos_diag_from_Tn).
+# (get_ldos_diag_from_Tn). The operator-valued ones are weighted sums of the T_n,
+# all formed by _chebyshev_sum.
 #
 # Entry points: get_ldos, get_ldos_spectrum, get_ldos_from_mun, get_density_from_Tn,
-#   get_Green_retarded_from_Tn, get_ldos_w_from_Tn, get_ldos_diag_from_Tn
+#   get_Green_retarded_from_Tn, get_ldos_w_from_Tn, get_ldos_diag_from_Tn,
+#   _chebyshev_sum
 # Depends on: core/Utils.jl (extract_diagonal_to_mps), core/TBSystem.jl
-#   (TBHamiltonian), solvers/kpm/kernels.jl (_kpm_kernel, _kpm_weight_matrix,
-#   compute_hodc_params, get_hodc_weights, get_hodc_gf_weights).
+#   (TBHamiltonian), solvers/kpm/kernels.jl (_kpm_kernel, _rescaled_energies,
+#   _kpm_energy_grid, compute_hodc_params, get_hodc_weights, get_hodc_gf_weights).
 #
-# Split from the former solvers/KPM_tk.jl in Tier 1.
+# Split from the former solvers/KPM_tk.jl in Tier 1; _chebyshev_sum (Tier 2)
+# replaced the five hand-written weighted-sum loops.
 
 # ============================================================
 # 1. Cached-Chebyshev LDOS: get_ldos, get_ldos_spectrum
@@ -146,7 +149,7 @@ function get_ldos_spectrum(H::TBHamiltonian, ω_phys_vals;
     H._tn_cache === nothing &&
         error("No MPO Chebyshev cache. Call KPM_Tn(H, Ncheb; mode=:mpo) first.")
     N      = H._tn_Ncheb
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals = _rescaled_energies(H, ω_phys_vals)
     return get_ldos_diag_from_Tn(H._tn_cache, N, ω_vals;
                                   kernel=kernel, lambda=lambda,
                                   maxdim=maxdim, cutoff=cutoff)
@@ -238,6 +241,34 @@ end
 # 3. Density, Green's functions and LDOS from cached T_n MPOs
 # ============================================================
 
+"""
+    _chebyshev_sum(Tn, coeffs; maxdim, cutoff) -> MPO (or MPS)
+
+Weighted sum `Σ_n c_n·Tn[n]` over `n = 1:length(coeffs)`, truncated as it goes:
+
+    A = term(1);  for n ≥ 2:  A = +(A, term(n); maxdim);  A = truncate!(A; cutoff)
+
+`coeffs[n]` is a number `c` (term `Tn[n] * c`) or a tuple of numbers `(a, b, …)`,
+whose factors multiply the operator one at a time, left to right
+(`((Tn[n] * a) * b) * …`). A caller's `2 * T * g * k` is the tuple `(2, g, k)`:
+scalar products of an MPO/MPS scale one tensor in place, so the grouping of the
+factors, not only their product, fixes the floating-point result.
+"""
+function _chebyshev_sum(Tn, coeffs; maxdim::Int, cutoff::Real)
+    A = _chebyshev_term(Tn[1], coeffs[1])
+    for n in 2:length(coeffs)
+        A = +(A, _chebyshev_term(Tn[n], coeffs[n]); maxdim=maxdim)
+        A = ITensorMPS.truncate!(A; cutoff=cutoff)
+    end
+    return A
+end
+
+_chebyshev_term(T, c::Number) = T * c
+_chebyshev_term(T, c::Tuple)  = foldl(*, c; init=T)
+
+# Note: the coefficients below expand θ(x − μ), the projector onto the EMPTY states
+# (docs/dev/REORGANISATION_TODO.md, "silently wrong results"); kept as they are
+# until that is decided.
 function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
                               kernel=:jackson, lambda=4.0)
     jackson_kernel = _kpm_kernel(N, kernel; lambda=lambda)
@@ -246,11 +277,9 @@ function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
         n == 1 ? acos(fermi) : sin((n-1) * acos(fermi)) / (n-1)
     end
 
-    A = Tn_list[1] * G_n(1) * jackson_kernel[1]
-    for n in 2:N
-        A = +(A, 2 * Tn_list[n] * G_n(n) * jackson_kernel[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=cutoff)
-    end
+    coeffs = [n == 1 ? (G_n(1), jackson_kernel[1]) : (2, G_n(n), jackson_kernel[n])
+              for n in 1:N]
+    A = _chebyshev_sum(Tn_list, coeffs; maxdim=maxdim, cutoff=cutoff)
     A /= (π * N)
     return A
 end
@@ -272,11 +301,8 @@ function get_Green_retarded_from_Tn(Tn_list, N, ω; η=1e-2, maxdim=40, cutoff=1
         return -2im/(1 + ==(n-1,0)) * exp(-1im * (n-1) * θ) / sqrt(1 - z^2)
     end
 
-    G = Tn_list[1] * G_n(1, ω, η) * kweights[1]
-    for n in 2:N
-        G = +(G, Tn_list[n] * G_n(n, ω, η) * kweights[n]; maxdim=maxdim)
-        G = ITensorMPS.truncate!(G; cutoff=cutoff)
-    end
+    G = _chebyshev_sum(Tn_list, [(G_n(n, ω, η), kweights[n]) for n in 1:N];
+                       maxdim=maxdim, cutoff=cutoff)
     G /= N
     return G
 end
@@ -284,13 +310,7 @@ end
 function get_Green_retarded_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40,
                                           cutoff=1e-8)
     c = get_hodc_gf_weights(ω, N, eta, zl, wl)
-
-    G = Tn_list[1] * c[1]
-    for n in 2:N
-        G = +(G, Tn_list[n] * c[n]; maxdim=maxdim)
-        G = ITensorMPS.truncate!(G; cutoff=cutoff)
-    end
-    return G
+    return _chebyshev_sum(Tn_list, c[1:N]; maxdim=maxdim, cutoff=cutoff)
 end
 
 
@@ -304,11 +324,8 @@ function get_ldos_w_from_Tn(Tn_list, N, ω; maxdim=40, cutoff=1e-8, kernel=:jack
     kweights = _kpm_kernel(N, kernel; lambda=lambda)
     G_n(n) = cos((n - 1) * acos(ω)) / (π * sqrt(1 - ω^2))
 
-    A = Tn_list[1] * G_n(1) * kweights[1]
-    for n in 2:N
-        A = +(A, 2 * Tn_list[n] * G_n(n) * kweights[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=cutoff)
-    end
+    coeffs = [n == 1 ? (G_n(1), kweights[1]) : (2, G_n(n), kweights[n]) for n in 1:N]
+    A = _chebyshev_sum(Tn_list, coeffs; maxdim=maxdim, cutoff=cutoff)
     A /= (π * N)
     return A
 end
@@ -317,13 +334,7 @@ end
 # Call compute_hodc_params once per expansion order, then pass zl, wl here.
 function get_ldos_w_from_Tn_hodc(Tn_list, N, ω, zl, wl; eta=1e-2, maxdim=40, cutoff=1e-8)
     nu = get_hodc_weights(ω, N, eta, zl, wl)
-
-    A = Tn_list[1] * nu[1]
-    for n in 2:N
-        A = +(A, Tn_list[n] * nu[n]; maxdim=maxdim)
-        A = ITensorMPS.truncate!(A; cutoff=cutoff)
-    end
-    return A
+    return _chebyshev_sum(Tn_list, nu[1:N]; maxdim=maxdim, cutoff=cutoff)
 end
 
 
@@ -359,8 +370,7 @@ function get_ldos_diag_from_Tn(Tn_list, N::Int, ω_vals;
                                  maxdim::Int    = 40,
                                  cutoff::Real   = 1e-8)
     Nω    = length(ω_vals)
-    W     = _kpm_weight_matrix(N, ω_vals; kernel=kernel, lambda=lambda)
-    valid = [abs(ω) < 1.0 for ω in ω_vals]
+    _, W, denom, valid = _kpm_energy_grid(N, ω_vals; kernel=kernel, lambda=lambda)
 
     ldos_accum = Vector{Union{Nothing, MPS}}(nothing, Nω)
 
@@ -382,8 +392,7 @@ function get_ldos_diag_from_Tn(Tn_list, N::Int, ω_vals;
     # Normalize: A(r, ω) = [accumulated] / (π² · N · √(1 − ω²))
     for iω in 1:Nω
         valid[iω] && ldos_accum[iω] !== nothing || continue
-        ldos_accum[iω] = ITensorMPS.truncate!(
-            ldos_accum[iω] / (π^2 * N * sqrt(1 - ω_vals[iω]^2)); cutoff=cutoff)
+        ldos_accum[iω] = ITensorMPS.truncate!(ldos_accum[iω] / denom[iω]; cutoff=cutoff)
     end
 
     return ldos_accum

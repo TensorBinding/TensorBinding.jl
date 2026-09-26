@@ -9,7 +9,8 @@
 #   mpsexciton), core/TBSystem.jl (TBHamiltonian, physical_projector,
 #   physical_site_state, _is_binary_position_space), core/AuxDOF.jl (_aux_setup,
 #   _ldos_make_psi0), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
-#   (_dos_weight_matrix), solvers/kpm/recursion.jl (_run_kpm_mps!).
+#   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
+#   _run_kpm_mps!).
 #
 # Split from the former solvers/KPM_tk.jl in Tier 1.
 
@@ -116,8 +117,7 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     dos_weighting in (:trace, :sample) ||
         error("get_dos_stochastic: dos_weighting must be :trace or :sample.")
 
-    I_mpo = physical_projector(H)
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
     projected_position_space = !_is_binary_position_space(H)
     D      = projected_position_space ? H.N : prod(ITensors.dim(s) for s in H.sites)
@@ -128,11 +128,10 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         _aux_setup(H, nambu_proj, proj_nambu, spin_proj, proj_s,
                       layer_proj, proj_layer, sublat_proj, proj_sl)
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel=kernel, lambda=lambda, eta=eta,
+                                               m_order=m_order, allow_hodc=true)
     Nω     = length(ω_vals)
-    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
-                                  kernel=kernel, lambda=lambda, eta=eta, m_order=m_order)
-    valid  = [abs(ω) < 1.0 for ω in ω_vals]
 
     rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     accum_full  = zeros(Float64, Nω)
@@ -244,7 +243,7 @@ function get_dos_trace(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     Ncheb >= 2 || throw(ArgumentError("Ncheb must be at least 2"))
     _ensure_scale!(H)
     P = physical_projector(H)
-    Ham_n = (1 / H.scale) * +(H.mpo, (-H.center) * P; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H; cutoff=cutoff, identity=P)
 
     function trace_diagonal(Tn::MPO)
         diagonal = extract_diagonal_to_mps(Tn)
@@ -269,12 +268,12 @@ function get_dos_trace(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             println("get_dos_trace step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tkm1))")
     end
 
-    ω_vals = (collect(ω_phys_vals) .- H.center) ./ H.scale
-    W, denom = _dos_weight_matrix(Ncheb, ω_vals;
-                                  kernel, lambda, eta, m_order)
+    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
+                                               kernel, lambda, eta, m_order,
+                                               allow_hodc=true)
     result = zeros(Float64, length(ω_vals))
     for iω in eachindex(ω_vals)
-        abs(ω_vals[iω]) < 1 || continue
+        valid[iω] || continue
         result[iω] = dot(moments, view(W, :, iω)) / denom[iω]
     end
     normalize && (result ./= moments[1])

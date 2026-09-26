@@ -33,7 +33,10 @@ but could be called as `TensorBinding.name`:
   (use `prefactor * loss_profile_mpo(H, f)`), `nh_reconstruct_spectral_mpo` and
   `nh_spectral_function_allsite_mpo` (use `nh_spectral_function`);
 - the GPU aliases `get_nh_state_trajectory_gpu` (use `get_state_amplitude_trajectory_gpu`)
-  and `nh_spectrum_grid_gpu` (use `get_nh_dos_grid_gpu`).
+  and `nh_spectrum_grid_gpu` (use `get_nh_dos_grid_gpu`);
+- `nh_jackson_weights(N)`: the NH KPM now takes its Jackson weights from the shared KPM
+  kernel, `TensorBinding._kpm_kernel(N + 1, :jackson)[1:N]`, which gives the same values
+  bit for bit.
 
 The positional `TBHamiltonian` constructors with 13, 14, 15, 16, 17 and 20 arguments (the
 "backward-compatible" forms, which filled in the fields added since) are removed. Use the
@@ -89,6 +92,21 @@ constructor that takes all 21 fields in order, caches included, remains.
     `"haldane"`, `"chernhex"`, the multi-atom lattices, `"custom"` and the projected spaces
     keep their builders' defaults.
   Pass `scale=` explicitly to reproduce an old result.
+- **Projected position spaces** (Fibonacci, metallic-mean, k-bonacci): every KPM path that
+  accepts one now shifts the spectrum and starts its Chebyshev recursion with
+  `physical_projector(H)`, as most of them already did. The last ones that used the
+  identity of the whole register:
+  - the RPA bubbles with `P_method=:kpm` (`get_bubble_mpo`, `get_bubble_mpo_haydock`,
+    the cheb2d bubbles and the susceptibilities built on them): the density matrix is now
+    zero on the unphysical register states, where it used to hold spurious weight. The
+    physical block is the same up to truncation (without truncation the two agree to
+    ~1e-12; with a binding `maxdim` it moves within the truncation error, e.g. ~20 % at
+    `maxdim = 30` on an L = 4 Fibonacci chain). The cheb2d bubbles move by ~1e-13.
+  - `get_qpi` now throws on a projected space, in the diagonal-LDOS accumulation (a known
+    issue with the leg order of the projector). It used to return maps that included the
+    unphysical register states. It was never valid there: the impurity address and the
+    Fourier transform are binary.
+  Binary position spaces are unaffected, bit for bit.
 
 ## [0.1.1] — unreleased
 

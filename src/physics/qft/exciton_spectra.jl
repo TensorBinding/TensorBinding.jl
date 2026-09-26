@@ -110,15 +110,14 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
             error("get_exciton_bands: all momenta must lie in 1:H.N.")
     end
 
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H_QFT, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H_QFT, H.scale, H.center, physical_projector(H);
+                                cutoff=cutoff)
 
-    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    omega_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, omega_phys_vals;
+                                                   kernel=kernel, lambda=lambda,
+                                                   eta=eta, m_order=m_order,
+                                                   allow_hodc=true)
     Nomega     = length(omega_vals)
-    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
-                                    kernel=kernel, lambda=lambda,
-                                    eta=eta, m_order=m_order)
-    valid      = [abs(omega) < 1.0 for omega in omega_vals]
 
     nQ     = length(groups)
     Qs     = first.(groups)
@@ -231,15 +230,14 @@ function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_p
         error("get_exciton_continuum: N_sample must be positive when k_list is not provided.")
     end
 
-    I_mpo = MPO(H.sites, "Id")
-    Ham_n = (1 / H.scale) * +(H_QFT, (-H.center) * I_mpo; cutoff=cutoff)
+    Ham_n = _scaled_hamiltonian(H_QFT, H.scale, H.center, physical_projector(H);
+                                cutoff=cutoff)
 
-    omega_vals = (collect(omega_phys_vals) .- H.center) ./ H.scale
+    omega_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, omega_phys_vals;
+                                                   kernel=kernel, lambda=lambda,
+                                                   eta=eta, m_order=m_order,
+                                                   allow_hodc=true)
     Nomega     = length(omega_vals)
-    W, denom   = _dos_weight_matrix(Ncheb, omega_vals;
-                                    kernel=kernel, lambda=lambda,
-                                    eta=eta, m_order=m_order)
-    valid      = [abs(omega) < 1.0 for omega in omega_vals]
 
     rng    = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
     result = zeros(Float64, Nomega, length(Qs))
