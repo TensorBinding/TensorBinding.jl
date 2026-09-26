@@ -37,6 +37,10 @@ but could be called as `TensorBinding.name`:
 
 ### Added
 
+- `estimate_scale(geometry, params; L, method)`: KPM scale estimates for any
+  `get_Hamiltonian` model, by the dense spectrum of the same model at a small size
+  (`:small`), the padded row-sum bound of its terms (`:geometry`) or DMRG (`:dmrg`).
+  `get_Hamiltonian(...; scale=:small | :geometry | :dmrg)` builds with that estimate.
 - `interval_sampling_plan`: the automatic probe plan of `get_ldos_spatial_mps_gpu`, now a
   planner of its own in `core/Utils.jl` (same groups as before).
 
@@ -46,6 +50,30 @@ but could be called as `TensorBinding.name`:
   `@debug` messages (`JULIA_DEBUG=TensorBinding` shows them). The DMRG estimate of the
   spectral bounds, which sets an automatic KPM scale, is reported as an `@info` message.
   The spinless s-wave → p-wave notice of `add_superconductivity!` is an `@info` message.
+- `get_Hamiltonian` looks every geometry up in one model registry (`MODELS` in
+  `core/ModelRegistry.jl`); `MODEL_REGISTRY` and `build_hamiltonian` are unchanged.
+
+### Changed results
+
+- **Default KPM scales** of `get_Hamiltonian` (no `scale` keyword) are now
+  `max(former default, estimate_scale(...; method=:auto))` for `"chain_1d"` and the preset
+  models except `"chernhex"`. The Hamiltonians themselves are unchanged. Exactly these
+  defaults move:
+  - `"qc2dsquare"`: always, `6|t|` → `10.56|t|` (padded row-sum bound); `6|t|` was below the
+    spectral radius from `L ≈ 12`.
+  - `"chern8"`: when `|V·t2| > 1/11` (with the default `t2 = 0.2`: `|V| > 0.455`), to
+    `1.1(4|t| + 16|t·V·t2|)`; e.g. `V = t = 1`: `6` → `7.92`.
+  - `"aah"`: wherever `1.1 ×` the spectral radius of the chain (built at `L ≤ 10`) exceeds
+    `1.2(|t| + |V|)`, i.e. for weak potentials: at `t = 1`, `V = 0.5` goes from `1.8` to
+    `2.11` at `L = 3` and `2.24` at `L ≥ 10`, `V = 0.8` from `2.16` to `2.30` at `L ≥ 10`;
+    `V = 1` and `V = 2` are unchanged.
+  - `"uniform"`: when the on-site `v` exceeds about `0.27|t|` (`2.5|t|` < `1.1(2|t| + |v|)`).
+  - `"ssh"`: when `|d|` exceeds about `1.14|t|` (bonds `t ± d` beyond the `2.5|t|` window).
+  - Never: `"chain_1d"`, `"square_2d"`, `"hex_2d"`, `"triangular_2d"`,
+    `"triangular_bravais"`, whose former default already bounds `1.1 ×` the row sum;
+    `"haldane"`, `"chernhex"`, the multi-atom lattices, `"custom"` and the projected spaces
+    keep their builders' defaults.
+  Pass `scale=` explicitly to reproduce an old result.
 
 ## [0.1.1] — unreleased
 

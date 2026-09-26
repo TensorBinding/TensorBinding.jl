@@ -19,10 +19,10 @@ using TensorBinding: get_Hamiltonian, build_hamiltonian, MODEL_REGISTRY, lattice
 # H* presets, kagome/lieb/honeycomb/honeycomb_nnn/dice/ssh sublattice
 # Hamiltonians and positions, bilayer, multilayer and twisted stacks, flake
 # SDFs and mask_hamiltonian, T-junctions, add_hopping_2D! with every amplitude
-# form, and the geometry closures, *_positions and _preset_geometry of
-# lattice/geometry.jl), MODEL_REGISTRY and build_hamiltonian
+# form, and the geometry closures and *_positions of lattice/geometry.jl),
+# MODEL_REGISTRY, build_hamiltonian, _preset_geometry and _estimate_scale
 # (core/ModelRegistry.jl) and, from core/TBSystem.jl, every get_Hamiltonian
-# geometry name plus _estimate_scale and central_index. Left out on purpose
+# geometry name and central_index. Left out on purpose
 # (other work is changing them): get_Hamiltonian("haldane"), "chernhex"
 # (H2DChernhex), haldane_hoppingf/chirality and the default scale of "chern8"
 # and "qc2dsquare" (those cases pass an explicit `scale=`).

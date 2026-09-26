@@ -74,8 +74,9 @@ Line numbers refer to the working tree on that date and will drift.
       √3·t2 instead of 3√3·t2). *Fixed in c1470e3, 2d529b6, test 9277c03.* The manuscript's
       `build_APSOS_hamiltonian` and `get_valley_operator` were already textbook; the manuscript
       model and `haldane` share the φ convention, `chernhex` has the opposite Chern sign.
-- [ ] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
+- [x] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
       (`qc2dsquare` from L≈12). Decided: fix through the Tier 2 scale maker (below).
+      *Fixed by the scale maker (tier2/registry): max(6|t|, 1.1 × row-sum bound).*
 - [ ] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
       QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
 - [ ] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
@@ -104,7 +105,9 @@ the affected golden cases in the same commit.
       electron sites (`interleave_mpo(..., 0)` targets even sites).
 - [ ] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
       the kx = ky diagonal.
-- [ ] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
+- [x] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
+      *The default is now max(that, 1.1 × dense radius at L ≤ 10) (tier2/registry); the
+      formula itself stays in `_estimate_scale` (golden-pinned).*
 - [ ] `honeycomb_sublattice_hamiltonian`/`honeycomb_nnn_hamiltonian` (and the `"honeycomb"`,
       `"honeycomb_nnn"` presets) are ~1e-6 off after compression at cutoff 1e-8 (spurious entries).
 - [ ] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
@@ -155,6 +158,17 @@ the affected golden cases in the same commit.
 - [ ] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
 - [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
       `project_aux` error message names sublattice for every aux index.
+
+### Found by the Tier 2 scale maker (2026-09-26; not fixed, decision needed)
+
+- [ ] `"lieb"` default scale 2.5|t| is below the bulk spectral radius 2√2|t| (2.82 at
+      Lx = Ly = 4); `"honeycomb_nnn"` 3.5(|t| + |t2|) is below 3|t| + 6|t2| once
+      |t2| > 0.2|t| (t2 = 0.3, Lx = 5, Ly = 4: radius 4.76 > 4.55). The multi-atom lattices
+      keep their builder defaults because the max rule would also move the pinned
+      `lieb_L3_*` golden cases, whose radius (2.48) is below 2.5 but above 2.5/1.1.
+      `scale=:small` / `:geometry` give a bounding scale today.
+- [ ] `dice_hamiltonian` docstring says the bands reach ±3t; they reach ±3√2 t (the
+      4.5|t| default still bounds them).
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -334,17 +348,24 @@ the affected golden cases in the same commit.
 - [ ] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
 - [ ] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
       constructor; delete the six positional overloads.
-- [ ] One model registry entry per model (builder → `TBHamiltonian`, dim, params, geometry,
+- [x] One model registry entry per model (builder → `TBHamiltonian`, dim, params, geometry,
       scale) replacing `get_Hamiltonian`'s if-chain + `build_hamiltonian` + `_build_preset` +
       `_build_sublattice` + `_preset_geometry` + `_estimate_scale`; `_param(params, :t, default)`
       replacing the parsing ternaries; remove drifted `kw_defaults` from the registry.
-- [ ] Universal scale maker `estimate_scale` in the model registry (decided 2026-09-26):
+      *`MODELS` (one `ModelEntry` per geometry) in `core/ModelRegistry.jl` (tier2/registry);
+      `MODEL_REGISTRY` is now its preset view and `_preset_geometry`/`_estimate_scale` read
+      the entries. Not done: removing the drifted `kw_defaults`, which set the pinned MPOs
+      (e.g. `qc2dsquare` tol 1e-9); the quirks kept are listed in the file header.*
+- [x] Universal scale maker `estimate_scale` in the model registry (decided 2026-09-26):
       preset default = max(today's formula, estimate); `:small` = exact dense spectrum of
       the same preset at a small size, padded, for presets whose terms do not depend on
       the system size; `:geometry` = row-sum bound from the builder's terms for the
       size-scaled `chern8` and `qc2dsquare` (their defaults change; changelog); `:dmrg` =
       today's `scale=0` path for modified Hamiltonians; `scale=:small|:geometry|:dmrg`
       selects a method explicitly. Supersedes the held commit b6b9fba.
+      *Done in tier2/registry for `chain_1d` and the MODEL_REGISTRY presets (chernhex keeps
+      its analytic bound, the multi-atom lattices their builder defaults: see "Found by
+      the Tier 2 scale maker"); test/scale_maker.jl.*
 
 - [ ] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
       2D kinetic builders; retire `generate_kin_u/d` in favour of `shift_mpo`.

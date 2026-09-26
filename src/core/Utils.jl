@@ -1472,3 +1472,31 @@ function get_matrix(mpo, sites)
 end
 get_matrix(mpo, ::Int, sites) = get_matrix(mpo, sites)
 
+"""
+    _mpo_dense_matrix(mpo::MPO) -> Matrix{ComplexF64}
+
+Dense matrix of `mpo`: rows on the primed (output) site indices, columns on the
+unprimed ones, the first MPO site the most significant digit. Contracted one site at
+a time with ordinary matrix products, so it stays cheap up to a few thousand states
+(`get_matrix` evaluates D² inner products). Every tensor must carry one site index
+(and its prime); several link indices on a bond are merged. Creates no new indices.
+"""
+function _mpo_dense_matrix(mpo::MPO)
+    n = length(mpo)
+    links = [collect(commoninds(mpo[k], mpo[k + 1])) for k in 1:n - 1]
+    R = ones(ComplexF64, 1, 1, 1)                 # (rows so far, columns so far, right link)
+    for k in 1:n
+        lk = k > 1 ? links[k - 1] : Index[]
+        rk = k < n ? links[k] : Index[]
+        s  = only(filter(i -> plev(i) == 0 && !(i in lk) && !(i in rk), inds(mpo[k])))
+        d, a, b = dim(s), prod(dim, lk; init=1), prod(dim, rk; init=1)
+        A = reshape(convert(Array{ComplexF64}, Array(mpo[k], lk..., prime(s), s, rk...)),
+                    a, d * d * b)
+        nr, nc, _ = size(R)
+        P = reshape(reshape(R, nr * nc, a) * A, nr, nc, d, d, b)
+        # new row = (output digit of site k, old row), the old row more significant
+        R = reshape(permutedims(P, (3, 1, 4, 2, 5)), d * nr, d * nc, b)
+    end
+    return R[:, :, 1]
+end
+

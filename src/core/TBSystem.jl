@@ -9,18 +9,17 @@
 # spaces of position_spaces/ specialize (ambient_dimension, physical_projector,
 # physical_site_state, site_axis, site_permutation); TBHamiltonian with its
 # backward-compatible constructors and cache management (_invalidate_cache!,
-# truncate!); get_Hamiltonian and its per-geometry builders (chain, Haldane,
-# custom, presets, multi-atom lattices) with their default KPM scales;
-# central_index; the mutators add_hopping!, add_onsite!, add_interaction!;
-# _pos_sites; Base.show. The spin, Zeeman, pairing and SOC mutators live in
-# core/AuxDOF.jl.
+# truncate!); get_Hamiltonian, which looks the geometry up in the model registry
+# (core/ModelRegistry.jl: builders, parameters, default KPM scales), and the direct
+# builders it holds (chain, Haldane, custom); central_index; the mutators
+# add_hopping!, add_onsite!, add_interaction!; _pos_sites; Base.show. The spin,
+# Zeeman, pairing and SOC mutators live in core/AuxDOF.jl.
 #
 # Main entry points: get_Hamiltonian, TBHamiltonian, add_hopping!, add_onsite!,
 # add_interaction!, truncate!, central_index, haldane_hoppingf.
 #
-# Depends on: Utils, Hamiltonian, Fibonacci*, MetallicMean*, KBonacci*,
-# geometry*, ModelRegistry*, sublattice*, NNNeighbor* (a * marks a file included
-# later; see the source map in TensorBinding.jl).
+# Depends on: Utils, Hamiltonian, geometry*, ModelRegistry*, NNNeighbor* (a *
+# marks a file included later; see the source map in TensorBinding.jl).
 
 # ============================================================
 # 1. Position-space policy types
@@ -343,7 +342,7 @@ Direct builders
 |--------------|---------------------------------|--------------|
 | `"chain_1d"` | hopping amplitude `t::Number`   | `boundary=:open` or `:periodic` (`bc` overrides it); direct MPO, no QTCI; use `add_onsite!` for potentials |
 | `"haldane"`  | `(t2, phi, M)` NamedTuple       | `rs` (N×2 positions from `honeycomb_positions`, required); no other kwargs |
-| `"custom"`   | hopping function `f(i,j)`       | `scale` (required), `geometry` (`i -> position` or an N×2 matrix), `type=ComplexF64` |
+| `"custom"`   | hopping function `f(i,j)`       | `scale` (required: a number, `:dmrg`, or `:small` up to 1024 sites), `geometry` (`i -> position` or an N×2 matrix), `type=ComplexF64` |
 
 Projected position spaces (quasicrystals; `H.N` counts the admissible sites only)
 ---------------------------------------------------------------------------------
@@ -403,14 +402,33 @@ Common keyword arguments
 ------------------------
 - `L`         : number of position qubits (`2^L` sites or unit cells; the projected
                 spaces keep only their admissible subset)
-- `scale`     : energy half-bandwidth for KPM normalisation (default `nothing`:
-                estimated per geometry; `"custom"` requires it)
+- `scale`     : energy half-bandwidth for KPM normalisation: a number (used as
+                given), `nothing` (default: see "Default KPM scale" below; `"custom"`
+                requires a scale) or an [`estimate_scale`](@ref) method, `:small`
+                (dense spectrum of the model at a small size), `:geometry`
+                (row-sum bound) or `:dmrg` (DMRG spectral bounds of `H`, which also
+                set `center`)
 - `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`)
 - `maxdim`    : maximum MPO bond dimension after construction (default `15`)
 - `ref_sites` : preset models only: replace the MPO's site indices by these, so
                 that Hamiltonians built with the same `ref_sites` share `Index`
                 objects (default `nothing`; the other geometries ignore it or,
                 for the projected spaces, reject it)
+
+Default KPM scale
+-----------------
+Without `scale`, `"chain_1d"` and the preset models (`"chernhex"` excepted) take
+`max(f, estimate_scale(geometry, params; L, kwargs..., method=:auto))`, where `f` is
+the geometry's former default (`2.5|t|` for `"chain_1d"`, `"uniform"`, `"ssh"`;
+`1.2(|t| + |V|)` for `"aah"`; `4.4|t|`, `4.0|t|`, `7|t|`, `7|t|` for `"square_2d"`,
+`"hex_2d"`, `"triangular_2d"`, `"triangular_bravais"`; `6|t|` for `"chern8"`,
+`"qc2dsquare"`) and `:auto` is the padded row-sum bound (`:geometry`) for the
+size-scaled `"chern8"` and `"qc2dsquare"` and the dense small-size estimate (`:small`)
+otherwise. Where `f` already reaches `1.1 ×` the row-sum bound, the estimate cannot
+exceed it and is not computed. Every other geometry keeps its builder's default:
+the analytic bounds of `"haldane"`, `"chernhex"`, `"ssh_sublattice"` and the projected
+spaces, and the fixed multiples of `t` of the other multi-atom lattices. The centre is
+0 except for the projected spaces.
 
 Examples
 --------
@@ -439,63 +457,22 @@ function get_Hamiltonian(geometry::String, params;
                          maxdim=15,
                          ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                          kwargs...)
-    if geometry == "fibonacci"
-        ref_sites === nothing ||
-            throw(ArgumentError("ref_sites is not supported for FibonacciPositionSpace"))
-        return _build_fibonacci(params, L; scale, tol, maxdim, kwargs...)
+    entry  = _model_entry(geometry)   # the registry entry (core/ModelRegistry.jl)
+    method = scale isa Symbol ? _check_scale_method(entry, scale, L, kwargs) : nothing
+    # Every builder but the projected spaces' receives Qubit sites; the presets and the
+    # multi-atom lattices make their own and ignore them (drawn all the same, so the
+    # index-id RNG stream is what it always was).
+    projected = entry.kind === :projected
+    sites = projected ? nothing : siteinds("Qubit", L)
+    # With a scale method the builder gets a provisional scale, replaced below.
+    H = entry.build(params, L, projected ? nothing : 2^L, sites;
+                    scale = method === nothing ? scale : 1.0, tol, maxdim, ref_sites, kwargs...)
+    if method !== nothing
+        _apply_scale_method!(H, entry, method, params, L; tol, maxdim, kwargs...)
+    elseif scale === nothing
+        H.scale = _default_scale(entry, H, params, L; tol, maxdim, kwargs...)
     end
-    if geometry == "metallic_mean"
-        ref_sites === nothing ||
-            throw(ArgumentError("ref_sites is not supported for MetallicMeanPositionSpace"))
-        return _build_metallic_mean(params, L; scale, tol, maxdim, kwargs...)
-    end
-    if geometry == "kbonacci"
-        ref_sites === nothing ||
-            throw(ArgumentError("ref_sites is not supported for KBonacciPositionSpace"))
-        return _build_kbonacci(params, L; scale, tol, maxdim, kwargs...)
-    end
-
-    sites = siteinds("Qubit", L)
-    N     = 2^L
-
-    if geometry == "chain_1d"
-        return _build_chain_1d(params, L, N, sites; scale, tol, maxdim, kwargs...)
-
-    elseif geometry == "haldane"
-        return _build_haldane(params, L, N, sites; scale, tol, maxdim, kwargs...)
-
-    elseif geometry == "custom"
-        return _build_custom(params, L, N, sites; scale, tol, maxdim, kwargs...)
-
-    # ---- multi-atom unit-cell lattices (kagomé, Lieb, honeycomb, dice) ----
-    elseif geometry in ("kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
-        return _build_sublattice(geometry, params, L; scale, tol, maxdim, kwargs...)
-
-    # ---- SSH with explicit sublattice index ----
-    elseif geometry == "ssh_sublattice"
-        t  = params isa Number                                          ? params     :
-             params isa NamedTuple && hasfield(typeof(params), :t)     ? params.t   :
-             params isa AbstractDict && haskey(params, :t)             ? params[:t] : 1.0
-        d  = params isa NamedTuple && hasfield(typeof(params), :d)     ? params.d   :
-             params isa AbstractDict && haskey(params, :d)             ? params[:d] : 0.0
-        H  = ssh_sublattice_hamiltonian(L, t, d; cutoff=tol, maxdim=maxdim)
-        isnothing(scale) || (H.scale = Float64(scale))
-        return H
-
-    # ---- preset models routed through build_hamiltonian ----
-    elseif geometry in ("ssh", "aah", "uniform",
-                        "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
-                        "chern8", "chernhex", "qc2dsquare")
-        return _build_preset(geometry, params, L, N, sites; scale, tol, maxdim, ref_sites, kwargs...)
-
-    else
-        known = ("chain_1d", "haldane", "custom", "fibonacci", "metallic_mean", "kbonacci",
-                 "uniform", "ssh", "ssh_sublattice", "aah",
-                 "square_2d", "hex_2d", "triangular_2d", "triangular_bravais",
-                 "chern8", "chernhex", "qc2dsquare",
-                 "kagome", "lieb", "honeycomb", "honeycomb_nnn", "dice")
-        error("Unknown geometry \"$geometry\". Supported: $(join(known, ", ")).")
-    end
+    return H
 end
 
 # ============================================================
@@ -511,7 +488,7 @@ function _build_chain_1d(t, L, N, sites;
     bc === nothing || (boundary = Symbol(bc))
     mpo = t * kinetic_1d_nn(L, sites; boundary=boundary)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    sc  = something(scale, 2.5 * abs(t))
+    sc  = something(scale, _estimate_scale("chain_1d", t))   # 2.5|t|
     return TBHamiltonian(L, N, sites, mpo, _chain_geometry(), sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
@@ -656,6 +633,10 @@ function _check_haldane_mpo(mpo, sites, f, rs, piv; tol=1e-8, nbulk=16)
     return nothing
 end
 
+# Row-sum (Gershgorin) bound of the Haldane matrix (t1 = 1): a site has |M| on site,
+# at most 3 NN and 6 NNN hops.
+_haldane_rowsum(t2, M) = 3.0 + 6.0 * abs(t2) + abs(M)
+
 function _build_haldane(params, L, N, sites;
                         rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
@@ -675,16 +656,15 @@ function _build_haldane(params, L, N, sites;
                       nrandominitpivot=0, nsearchglobalpivot=0)
     _check_haldane_mpo(mpo, sites, f, rsN, piv; tol=tol)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    # Gershgorin bound (t1 = 1): a site has |M| on site, ≤ 3 NN and ≤ 6 NNN hops, so the
-    # spectral radius is ≤ 3 + 6|t2| + |M| (nearly reached at phi = 0, π); pad by 10%.
-    sc  = something(scale, 1.1 * (3.0 + 6.0 * abs(t2) + abs(M)))
+    # Gershgorin bound, padded by 10% (nearly reached at phi = 0, π).
+    sc  = something(scale, _SCALE_PADDING * _haldane_rowsum(t2, M))
     rs_f = let m = Float64.(rs); i -> m[i, :]; end
     return TBHamiltonian(L, N, sites, mpo, rs_f, sc, 0.0, nothing, nothing, nothing, nothing, 0, nothing)
 end
 
 
 # ============================================================
-# 9. Custom, preset and multi-atom builders; default KPM scales
+# 9. Custom builder (the preset and multi-atom builders are in core/ModelRegistry.jl)
 # ============================================================
 
 function _build_custom(f, L, N, sites;
@@ -698,135 +678,6 @@ function _build_custom(f, L, N, sites;
     mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     return TBHamiltonian(L, N, sites, mpo, geom_f, Float64(scale), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
-end
-
-function _build_preset(geometry, params, L, N, sites;
-                       scale=nothing, tol=1e-8, maxdim=15,
-                       ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
-                       kwargs...)
-    # Route through build_hamiltonian which dispatches on MODEL_REGISTRY.
-    # params can be: a scalar, a NamedTuple, or a Dict — normalise to mparam_dict.
-    dim = MODEL_REGISTRY[geometry][2]
-    if dim == 1
-        mpo = if params isa AbstractDict
-            build_hamiltonian(geometry, L; mparam_dict=Dict{Symbol,Any}(params), kwargs...)
-        elseif params isa NamedTuple
-            build_hamiltonian(geometry, L; mparam_dict=Dict{Symbol,Any}(pairs(params)), kwargs...)
-        elseif params isa Number
-            # single-param shorthand: first required param
-            req = MODEL_REGISTRY[geometry][3][1]
-            build_hamiltonian(geometry, L; mparam_dict=Dict{Symbol,Any}(req => params), kwargs...)
-        else
-            build_hamiltonian(geometry, L; mparam_dict=Dict{Symbol,Any}(:t => params), kwargs...)
-        end
-    else
-        # 2D: expect Lx and Ly in kwargs, or factorise L equally
-        Lx = get(kwargs, :Lx, L ÷ 2)
-        Ly = get(kwargs, :Ly, L - Lx)
-        kw_filtered = Dict(k => v for (k, v) in kwargs if k ∉ (:Lx, :Ly))
-        mpo = if params isa AbstractDict
-            build_hamiltonian(geometry, Lx, Ly; mparam_dict=Dict{Symbol,Any}(params), kw_filtered...)
-        elseif params isa NamedTuple
-            build_hamiltonian(geometry, Lx, Ly; mparam_dict=Dict{Symbol,Any}(pairs(params)), kw_filtered...)
-        elseif params isa Number
-            req = MODEL_REGISTRY[geometry][3][1]
-            build_hamiltonian(geometry, Lx, Ly; mparam_dict=Dict{Symbol,Any}(req => params), kw_filtered...)
-        else
-            build_hamiltonian(geometry, Lx, Ly; mparam_dict=Dict{Symbol,Any}(:t => params), kw_filtered...)
-        end
-    end
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
-    # The model builders (HAAH, HSSH, …) create their own site indices internally,
-    # so we extract the actual sites from the MPO rather than using the ones
-    # created at the top of get_Hamiltonian (which would be a different set).
-    mpo_sites = getindex.(siteinds(mpo), 2)
-    # If caller supplied ref_sites, replace MPO indices in-place so all
-    # Hamiltonians built with the same ref_sites share identical Index objects.
-    if !isnothing(ref_sites)
-        fix_sites(mpo, ref_sites)
-        mpo_sites = ref_sites
-    end
-    sc   = something(scale, _estimate_scale(geometry, params; mparams=get(kwargs, :mparams, "")))
-    lx_2d = dim == 2 ? get(kwargs, :Lx, L ÷ 2) : nothing
-    geom = _preset_geometry(geometry, isnothing(lx_2d) ? nothing : 2^lx_2d)
-    H = TBHamiltonian(L, N, mpo_sites, mpo, geom, Float64(sc), 0.0, nothing, nothing, nothing, nothing, 0, nothing)
-    H.Lx = lx_2d
-    return H
-end
-
-function _build_sublattice(geometry, params, L;
-                            scale=nothing, tol=1e-8, maxdim=200, kwargs...)
-    Lx = get(kwargs, :Lx, L ÷ 2)
-    Ly = get(kwargs, :Ly, L - Lx)
-    t  = params isa Number                                           ? params      :
-         params isa NamedTuple && hasfield(typeof(params), :t)      ? params.t    :
-         params isa AbstractDict && haskey(params, :t)              ? params[:t]  : 1.0
-    t2 = params isa NamedTuple && hasfield(typeof(params), :t2)     ? params.t2   :
-         params isa AbstractDict && haskey(params, :t2)             ? params[:t2] : 0.0
-
-    H = geometry == "kagome"        ? kagome_hamiltonian(               Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
-        geometry == "lieb"          ? lieb_hamiltonian(                 Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
-        geometry == "dice"          ? dice_hamiltonian(                 Lx, Ly, t;     cutoff=tol, maxdim=maxdim) :
-        geometry == "honeycomb_nnn" ? honeycomb_nnn_hamiltonian(        Lx, Ly, t, t2; cutoff=tol, maxdim=maxdim) :
-                                      honeycomb_sublattice_hamiltonian( Lx, Ly, t;     cutoff=tol, maxdim=maxdim)
-
-    rs         = geometry == "kagome"    ? kagome_positions(                 Lx, Ly) :
-                 geometry == "lieb"      ? lieb_positions(                   Lx, Ly) :
-                 geometry == "dice"      ? dice_positions(                   Lx, Ly) :
-                                          honeycomb_sublattice_positions(    Lx, Ly)
-    H.geometry = let m = rs; i -> m[i, :]; end
-
-    # UC geometry: same Bravais position for every atom in the same unit cell.
-    # All four lattices share a triangular Bravais basis; n_sub = atoms per UC.
-    n_sub  = geometry in ("honeycomb", "honeycomb_nnn") ? 2 : 3
-    Nx_uc  = 2^Lx
-    sq3_2  = sqrt(3) / 2
-    H.geometry_uc = let n_sub = n_sub, Nx = Nx_uc, sq3_2 = sq3_2
-        i -> begin
-            n_cell = (i - 1) ÷ n_sub
-            ix = n_cell % Nx
-            iy = n_cell ÷ Nx
-            [ix + iy * 0.5, iy * sq3_2]
-        end
-    end
-
-    isnothing(scale) || (H.scale = Float64(scale))
-    H.Lx = Lx
-    return H
-end
-
-# Rough scale estimates for known geometries (used when scale=nothing). `mparams` is the
-# parameter string _build_preset forwards to build_hamiltonian, if any.
-function _estimate_scale(geometry, params; mparams::AbstractString="")
-    geometry == "chernhex" && return _chernhex_scale(params, mparams)
-    t = params isa Number ? abs(params) :
-        params isa NamedTuple && hasfield(typeof(params), :t) ? abs(params.t) :
-        params isa AbstractDict && haskey(params, :t) ? abs(params[:t]) : 1.0
-    geometry == "chain_1d"     && return 2.5 * t
-    geometry == "ssh"          && return 2.5 * t
-    geometry == "aah"          && return (t + (params isa NamedTuple ? abs(params.V) : 1.0)) * 1.2
-    geometry == "uniform"      && return 2.5 * t
-    geometry == "square_2d"    && return 4.4 * t
-    geometry == "hex_2d"       && return 4.0 * t
-    geometry == "triangular_2d"     && return 7.0 * t
-    geometry == "triangular_bravais" && return 7.0 * t
-    geometry in ("chern8","qc2dsquare") && return 6.0 * t
-    return 5.0 * t   # conservative fallback
-end
-
-# Default "chernhex" scale: the Gershgorin bound of H2DChernhex's terms (3 NN bonds of |t|,
-# 6 NNN bonds of |t2|, on-site |Ms| with Ms = ms, or ms + 3.3√3 t2 on the right half unless
-# uniformsemenoff), padded by 10% and never below the former default 6|t|. The parameters
-# are merged the way _build_preset and build_hamiltonian merge them: the `mparams` string,
-# then `params` on top, then the registry defaults.
-function _chernhex_scale(params, mparams::AbstractString)
-    p = _parse_param_string(mparams)
-    q = params isa AbstractDict || params isa NamedTuple ? pairs(params) : (:t => params,)
-    for (k, v) in q; p[k] = v; end
-    t, t2, ms = abs(p[:t]), p[:t2], p[:ms]
-    uniform   = get(p, :uniformsemenoff, MODEL_REGISTRY["chernhex"][4].uniformsemenoff)
-    Mmax      = uniform ? abs(ms) : max(abs(ms), abs(ms + 3.3 * sqrt(3) * t2))
-    return max(6.0 * t, 1.1 * (3.0 * t + 6.0 * abs(t2) + Mmax))
 end
 
 

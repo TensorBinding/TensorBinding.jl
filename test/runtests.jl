@@ -125,6 +125,9 @@ include("bugfix_gpu3.jl")
 include("bugfix_tdvp.jl")
 include("bugfix_haldane_textbook.jl")
 
+# The KPM scale maker: estimate_scale and the default get_Hamiltonian scales.
+include("scale_maker.jl")
+
 # Characterization tests: the sampling planners' current output, pinned before
 # the code-organisation refactor (data in test/data/sampling_golden.jl).
 include("sampling_golden.jl")

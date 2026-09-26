@@ -41,15 +41,15 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 # call inside a function body when the call runs, not when the file is loaded. The
 # order is therefore not a strict layering; a * says the callee is further down.
 #
-# core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans
+# core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans,
+#                            dense MPO matrices
 #                            → Fibonacci*
 # core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo
 #                            → Utils
 # core/Hamiltonian.jl        1D kinetic MPOs, the QTCI hopping builder hopping2MPO
 #                            → Utils
 # core/TBSystem.jl           TBHamiltonian, position spaces, get_Hamiltonian, add_hopping!/add_onsite!
-#                            → Utils, Hamiltonian, Fibonacci*, MetallicMean*, KBonacci*, geometry*,
-#                              ModelRegistry*, sublattice*, NNNeighbor*
+#                            → Utils, Hamiltonian, geometry*, ModelRegistry*, NNNeighbor*
 # core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors
 #                            → Utils, Hamiltonian, TBSystem, hopping2d*, Supercond*
 # lattice/geometry.jl        i → position closures, *_positions tables, _resolve_2d_geometry
@@ -66,8 +66,10 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #                            → Utils, masks2d
 # lattice/presets.jl         preset QTCI model Hamiltonians H*
 #                            → Utils, Hamiltonian, hopping2d
-# core/ModelRegistry.jl      MODEL_REGISTRY, build_hamiltonian
-#                            → presets
+# core/ModelRegistry.jl      model registry MODELS (MODEL_REGISTRY), build_hamiltonian, the
+#                            per-kind builders, the KPM scale maker estimate_scale
+#                            → Utils, TBSystem, geometry, Fibonacci, MetallicMean, KBonacci,
+#                              presets, sublattice*, DMRG*
 # lattice/sublattice.jl      kagome/Lieb/honeycomb/dice/SSH sublattice builders
 #                            → Utils, TBSystem, masks2d, hopping2d
 # lattice/NNNeighbor.jl      nth-neighbour hopping add_hopping_2D!, get_shell_disps

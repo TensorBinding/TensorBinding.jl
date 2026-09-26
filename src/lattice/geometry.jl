@@ -7,8 +7,8 @@
 #   triangular_bravais_positions, honeycomb_positions, kagome_positions,
 #   lieb_positions, honeycomb_sublattice_positions, dice_positions,
 #   tjunction_positions.
-# Internals: the _*_geometry closures and _preset_geometry, which picks one by
-#   model name for get_Hamiltonian (core/TBSystem.jl); _geom_positions;
+# Internals: the _*_geometry closures (the model registry in core/ModelRegistry.jl
+#   assigns one to each preset; _preset_geometry reads it there); _geom_positions;
 #   _resolve_2d_geometry, for add_hopping_2D! (lattice/NNNeighbor.jl).
 #
 # Depends on: core/TBSystem.jl (TBHamiltonian).
@@ -61,15 +61,6 @@ function _hex_geometry(Nx)
         return Float64[x, y]
     end
     return pos
-end
-
-function _preset_geometry(geometry, Nx)
-    geometry in ("uniform", "ssh", "aah", "chain_1d") && return _chain_geometry()
-    geometry == "square_2d"    && return _square_geometry(Nx)
-    geometry == "hex_2d"       && return _hex_geometry(Nx)
-    geometry == "triangular_2d"     && return _tri_geometry(Nx)
-    geometry == "triangular_bravais" && return _tri_bravais_geometry(Nx)
-    return nothing
 end
 
 

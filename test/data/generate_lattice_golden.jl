@@ -277,8 +277,8 @@ gh("kbonacci_L4_k3", "kbonacci", (A = 0.64, B = 0.8, C = 1.0), (L = 4, k = 3))
 gh("fibonacci_ref_sites_rejected", "fibonacci", (A = 1.0, B = 2.0), (L = 4,); ref_sites = true)
 gh("unknown_geometry", "no_such_geometry_used_as_a_golden_probe", 1.0, (L = 3,))   # prefix stops before the list
 
-# ── geometry closures, _preset_geometry, *_positions (lattice/geometry.jl) and
-# _estimate_scale (core/TBSystem.jl) ──────────────────────────────────────────
+# ── geometry closures, *_positions (lattice/geometry.jl), _preset_geometry and
+# _estimate_scale (core/ModelRegistry.jl) ─────────────────────────────────────
 add!("chain_geometry_n4", :geometry_closure, (fn = :_chain_geometry, Nx = nothing, n = 4))
 for fn in (:_square_geometry, :_tri_geometry, :_tri_bravais_geometry, :_hex_geometry), (Nx, n) in ((4, 16), (2, 8))
     add!("$(fn)_Nx$(Nx)_n$n", :geometry_closure, (; fn, Nx, n))
