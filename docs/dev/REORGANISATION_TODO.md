@@ -424,7 +424,7 @@ the affected golden cases in the same commit.
       8-keyword block copied into ~10 signatures; one `_project_aux_sectors` replacing the
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
       projectors (`project_aux`, `_project_aux_block`, `_project_spin_sector`, `contract_nh_block`).
-      *`core/AuxDOF.jl` §8–9 (tier2/aux). A struct, because the chain needs a flag, a
+      *`core/AuxDOF.jl` §8–9 (tier2/auxproj). A struct, because the chain needs a flag, a
       selector, an Index and a side per DOF and the low-level `get_bands` supplies its
       indices instead of detecting them: `AuxProjection(nambu, spin, layer, sublat)` of
       `AuxDOFProjection(on, sector, index, side)`, built by `_aux_projection(H; <the eight
@@ -442,7 +442,7 @@ the affected golden cases in the same commit.
       struct (golden-pinned); `get_ldos_spatial_mps_gpu` keeps its rejection test (building
       the struct would run the index detection first). Outputs bit for bit unchanged.*
 - [x] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
-      *`core/AuxDOF.jl` §10 (tier2/aux): `probe_state(H, x)` (position probe, or |x, x⟩ on
+      *`core/AuxDOF.jl` §10 (tier2/auxproj): `probe_state(H, x)` (position probe, or |x, x⟩ on
       an exciton register) and `probe_state(H, x, σ)` with `σ` from `_probe_sectors(aux)`
       (`_ldos_make_psi0`), in `get_ldos_online`, `get_ldos_spatial` (`:mps` and the `:mpo`
       probe dictionary) and both stochastic DOS.*
@@ -499,7 +499,7 @@ the affected golden cases in the same commit.
       vector of the wrong length throws DimensionMismatch instead of AssertionError.*
 - [x] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
       `_get_projector` in Topology); `_purified_pair` for the ρ± blocks in Purification.
-      *`physics/Purification.jl` §1 and §5 (tier2/aux): `get_density` keeps its position-space
+      *`physics/Purification.jl` §1 and §5 (tier2/auxproj): `get_density` keeps its position-space
       and cache checks and calls `_density_matrix(H, method; …, Tn, store)`, the one dispatch
       over `:mcweeny`/`:sp2`/`:kpm`. `_get_density_matrix` and `_get_projector` are not
       deleted (golden-pinned by name, with their error texts) but are translation layers over
