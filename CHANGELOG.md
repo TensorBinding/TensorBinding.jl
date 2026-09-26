@@ -34,9 +34,10 @@ keyword named in the entry.
 - **The KPM density matrix is the occupied-state projector.** `get_density_from_Tn`
   had the signs of its Chebyshev coefficients reversed and returned θ(H − ϵF), the projector
   onto the EMPTY states (at half filling with a symmetric spectrum both have trace N/2, which
-  hid it). This affects `get_density(H; method=:kpm)`, Chern and winding markers computed
-  with `method=:KPM` (`get_C`, `get_W`, `get_C_gpu`), whose sign was opposite to
-  `:mcweeny`, RPA bubbles with `P_method=:kpm`, and SCF runs that use the KPM density.
+  hid it). This affects `get_density(H; method=:kpm)`, local Chern markers computed with
+  `method=:KPM` (`get_C`, `get_C_gpu`), whose sign was opposite to `:mcweeny` (winding
+  markers, `get_W`, are unchanged under P → 1 − P and were not affected), RPA bubbles with
+  `P_method=:kpm`, and SCF runs that use the KPM density.
   Purification-based paths (`:mcweeny`, `:sp2`, the defaults) were not affected.
 - **Haldane models are now the textbook, C₃-symmetric model.** `get_Hamiltonian("haldane")`
   and `"chernhex"` gave the vertical next-nearest-neighbour bonds the wrong phase, so the
