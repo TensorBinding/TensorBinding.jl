@@ -1,33 +1,38 @@
-# Krylov.jl — Green's function via vectorized linear solve
+# solvers/Krylov.jl — Krylov-space Green's functions
 #
-# Computes the retarded single-particle Green's function
-#
-#     G(ω) = (ω + iη − H)⁻¹
-#
-# by solving the linear system
+# Contents: the retarded single-particle Green's function G(ω) = (ω + iη − H)⁻¹ as
+# an MPO, from the vectorized linear system
 #
 #     [(ω + iη − H) ⊗ I] |G⟩⟩ = |I⟩⟩
 #
-# where |M⟩⟩ is the vectorized (MPS) representation of the matrix M on a 2L-site
-# interleaved quantics chain (odd sites = row bits, even sites = column bits).
+# solved by ITensorMPS.linsolve (get_green_krylov), where |M⟩⟩ is the vectorized
+# (MPS) representation of the matrix M on a 2L-site interleaved quantics chain (odd
+# sites = row bits, even sites = column bits; built by _vec_mps_from_mpo); and the
+# operator-level Haydock (Lanczos) recursion with its continued fraction and
+# resolvent MPO (haydock_cf, eval_haydock_cf, haydock_resolve_mpo).
 #
-# Also holds the operator-level Haydock (Lanczos) recursion haydock_cf,
-# eval_haydock_cf, haydock_resolve_mpo (moved from physics/rpa/bubble.jl).
+# Entry points: get_green_krylov, haydock_cf, eval_haydock_cf, haydock_resolve_mpo
+# Depends on: core/Utils.jl (custom_mpo), core/MPOTools.jl (interleave_mpo),
+#   core/TBSystem.jl (TBHamiltonian).
 #
-# Requires: interleave_mpo (core/MPOTools.jl), custom_mpo (core/Utils.jl).
+# Section 2 moved here from physics/rpa/bubble.jl in Tier 1.
 
 
+# ============================================================
+# 1. Green's function by vectorized linear solve
+# ============================================================
 
 """
-    _vec_mps_from_mpo(G_mpo, sites2; cutoff, maxdim) -> MPS
+    _vec_mps_from_mpo(G_mpo::MPO, sites2; cutoff=1e-12, maxdim=typemax(Int)) -> MPS
 
-Convert an L-site MPO into the 2L-site interleaved vectorized MPS used as
-the initial guess for `get_green_krylov`.
+Convert an L-site MPO into the 2L-site interleaved vectorized MPS that
+`get_green_krylov` uses for the right-hand side `|I⟩⟩` and for the optional
+initial guess `x0_mpo`.
 
 Each MPO tensor at site k is split by SVD into two MPS tensors at positions
 (2k-1, 2k): the bra (primed) physical index maps to the odd row site and the
-ket (unprimed) index maps to the even column site, matching the encoding
-produced by `custom_mpo` and `_identity_vec_mps`.
+ket (unprimed) index maps to the even column site, the encoding that `custom_mpo`
+reads back into an MPO.
 """
 function _vec_mps_from_mpo(G_mpo::MPO, sites2::Vector{<:Index};
                             cutoff::Real = 1e-12,
@@ -60,8 +65,9 @@ end
 
 
 """
-    get_green_krylov(H_mpo, sites, ω_phys; η, nsweeps, maxdim, cutoff,
-                     x0_mpo, ishermitian, tol, maxiter, krylovdim, verbose) -> MPO
+    get_green_krylov(H_mpo::MPO, sites, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
+                     cutoff=1e-8, x0_mpo=nothing, ishermitian=false, tol=1e-10,
+                     maxiter=600, krylovdim=30, verbose=false) -> MPO
 
 Low-level: compute the retarded Green's function G(ω) = (ω + iη − H)⁻¹ for a
 raw MPO `H_mpo` defined on `sites`, via the vectorized linear system
@@ -104,8 +110,9 @@ end
 
 
 """
-    get_green_krylov(H::TBHamiltonian, ω_phys; η, nsweeps, maxdim, cutoff,
-                     x0_mpo, ishermitian, tol, maxiter, krylovdim, verbose) -> MPO
+    get_green_krylov(H::TBHamiltonian, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
+                     cutoff=1e-8, x0_mpo=nothing, ishermitian=false, tol=1e-10,
+                     maxiter=600, krylovdim=30, verbose=false) -> MPO
 
 Compute the retarded Green's function
 
@@ -166,11 +173,12 @@ end
 
 
 # ============================================================
-# Haydock recursion (operator-level Krylov)
+# 2. Haydock recursion (operator-level Krylov)
 # ============================================================
 
 """
-    haydock_cf(H_mpo, seed, N_steps; maxdim, cutoff, verbose)
+    haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int; maxdim=200, cutoff=1e-8,
+               verbose=false)
         -> (a, b, basis, norm0)
 
 Haydock (Lanczos) recursion with H_mpo acting on MPO vectors from the left.
@@ -259,7 +267,7 @@ end
 
 
 """
-    haydock_resolve_mpo(a, b, basis, z; maxdim, cutoff) -> MPO
+    haydock_resolve_mpo(a, b, basis, z; maxdim=200, cutoff=1e-8) -> MPO
 
 Reconstruct (z−H)⁻¹|seed⟩ as an MPO by solving the N×N Lanczos tridiagonal
 system and forming a linear combination of the Krylov basis MPOs:

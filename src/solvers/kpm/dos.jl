@@ -1,20 +1,38 @@
-# solvers/kpm/dos.jl — total DOS: stochastic trace estimation (get_dos_stochastic)
-# and the deterministic tensor-network trace (get_dos_trace). Moved verbatim from
-# the former solvers/KPM_tk.jl (Tier 1 split).
+# solvers/kpm/dos.jl — total density of states
+#
+# Contents: the stochastic trace estimate over random basis states, with optional
+# aux-DOF projections and exciton bound-sector stratification (get_dos_stochastic),
+# and the deterministic trace of each online Chebyshev MPO (get_dos_trace).
+#
+# Entry points: get_dos_stochastic, get_dos_trace
+# Depends on: core/Utils.jl (_basis_state_mps, extract_diagonal_to_mps,
+#   mpsexciton), core/TBSystem.jl (TBHamiltonian, physical_projector,
+#   physical_site_state, _is_binary_position_space), core/AuxDOF.jl (_aux_setup,
+#   _ldos_make_psi0), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+#   (_dos_weight_matrix), solvers/kpm/recursion.jl (_run_kpm_mps!).
+#
+# Split from the former solvers/KPM_tk.jl in Tier 1.
 
 # ============================================================
-# Stochastic full DOS (trace estimation via random diagonal sampling)
+# 1. Stochastic full DOS (trace estimation via random diagonal sampling)
 # ============================================================
 
 """
     get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
-                       N_sample, N_bound, seed, normalize, dos_weighting,
-                       kernel, lambda, eta, m_order, maxdim, cutoff, verbose,
-                       nambu_proj, proj_nambu, spin_proj, proj_s,
-                       layer_proj, proj_layer, sublat_proj, proj_sl)
+                       N_sample=50, N_bound=0, seed=42, normalize=false,
+                       dos_weighting=:trace, kernel=:jackson, lambda=4.0, eta=0.0,
+                       m_order=4, maxdim=100, cutoff=1e-8, verbose=false,
+                       nambu_proj=false, proj_nambu=nothing, spin_proj=false,
+                       proj_s=nothing, layer_proj=false, proj_layer=nothing,
+                       sublat_proj=false, proj_sl=nothing)
         -> Vector{Float64}
 
 Stochastic full DOS via random trace estimation (MPS Chebyshev, 3 MPS per sample).
+
+**Sampling**: `N_sample` random basis states (default `50`), drawn from a
+`MersenneTwister(seed)`; `seed=nothing` draws from the global RNG. `maxdim` and
+`cutoff` truncate each MPS recursion step; `verbose` prints the bond dimension
+every 15 samples.
 
 **Normalization**
 
@@ -197,7 +215,7 @@ end
 
 
 # ============================================================
-# Deterministic full DOS from the exact tensor-network trace
+# 2. Deterministic full DOS from the exact tensor-network trace
 # ============================================================
 
 """

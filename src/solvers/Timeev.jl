@@ -1,11 +1,40 @@
+# solvers/Timeev.jl — time evolution: TDVP, propagator MPOs, density-matrix RK4
+#
+# Contents: the short-time propagator U(dt) = e^{-iH dt} as an MPO, sampled column
+# by column with TDVP and compressed by TCI (build_tdvp_propagator_mpo); state
+# evolution by TDVP or by repeated application of U (tdvp_evolve, apply_mpo_to_mps,
+# evolve_with_propagator, evolve_with_tdvp, evolve_with_tdvp_timedep); basis-overlap
+# diagnostics (compute_basis_overlaps, basis_amplitude, phase_aligned_distance,
+# check_tdvp_vs_U_mpo); RK4 for a density-matrix MPO under dρ/dt = −i[H(t), ρ] and
+# under the non-Hermitian −i(Hρ − ρH†) (rk4_step_dm_timedep, evolve_rk4_dm_timedep,
+# rk4_step_dm_nh, evolve_rk4_dm_nh); and observables along a density-matrix
+# trajectory (dm_expect, observables_trajectory, timedep_observable_trajectory,
+# purity, bond_current_x, central_x_bond, …).
+#
+# build_tdvp_propagator_mpo, tdvp_evolve, evolve_with_tdvp and check_tdvp_vs_U_mpo
+# take an MPO already multiplied by −im; their TBHamiltonian methods (section 7)
+# apply it. evolve_with_tdvp_timedep and the RK4 functions take the physical H(t).
+#
+# Entry points: build_tdvp_propagator_mpo, tdvp_evolve, evolve_with_tdvp,
+#   evolve_with_tdvp_timedep, evolve_with_propagator, evolve_rk4_dm_timedep,
+#   evolve_rk4_dm_nh, observables_trajectory, bond_current_x_trajectory
+# Depends on: core/Utils.jl (binary_to_MPS, matrix_checker), core/Hamiltonian.jl
+#   (hopping2MPO), core/TBSystem.jl (TBHamiltonian).
+
 using ITensors
 using ITensorMPS
 
+# ============================================================
+# 1. TDVP propagator MPO
+# ============================================================
+
 """
-    build_tdvp_propagator_mpo(H, dt, L, sites; maxdim, cutoff, reverse_step,
-                              outputlevel, nsite, cross_tol, initial_positions,
-                              use_diagonal_pivots, expand_basis, cache_columns,
-                              interpolation_type) -> MPO
+    build_tdvp_propagator_mpo(H, dt, L, sites; maxdim=50, cutoff=1e-8,
+                              reverse_step=true, outputlevel=0, nsite=2,
+                              cross_tol=1e-8, initial_positions=[],
+                              use_diagonal_pivots=false, expand_basis=true,
+                              cache_columns=true, interpolation_type=ComplexF64)
+        -> MPO
 
 Build an MPO approximation of the short-time propagator `U(dt) = e^{-iH dt}` by
 sampling matrix elements `⟨i|U(dt)|j⟩` via TDVP and compressing with TCI.
@@ -37,13 +66,17 @@ expansion makes each TDVP run about 4x more expensive (L = 8-10: 15-16 ms agains
     result against a dense `exp(-iH dt)` at small L.
 
 ## Keyword arguments
-- `maxdim`, `cutoff`    : TDVP truncation parameters.
+- `maxdim`, `cutoff`    : TDVP truncation parameters. Defaults `50`, `1e-8`.
 - `reverse_step`        : Evolve the bond tensor backwards between two-site updates, as the
                           TDVP projector splitting requires. Default `true` (the ITensorMPS
                           default). `false` counts terms of `H` twice, so sampled elements are
                           off at O(dt) (some hops come out 1.5x too large); it warns.
-- `cross_tol`           : TCI interpolation tolerance.
-- `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)`. Default `false`:
+- `outputlevel`, `nsite` : passed to `tdvp`. Defaults `0`, `2`.
+- `cross_tol`           : TCI interpolation tolerance. Default `1e-8`.
+- `initial_positions`   : TCI pivots `(i, j)` (1-indexed) passed to `hopping2MPO`.
+                          Default `[]` (none).
+- `use_diagonal_pivots` : Seed TCI with all N diagonal positions `(i, i)` when
+                          `initial_positions` is empty. Default `false`:
                           seeding makes TCI sample every column, so it costs N TDVP runs
                           (L = 8: 256 against 182-238 unseeded; L = 10: 1024 against 334),
                           and it does not make TCI find the off-diagonal structure more
@@ -133,9 +166,13 @@ function build_tdvp_propagator_mpo(
 end
 
 
+# ============================================================
+# 2. State evolution: TDVP and propagator MPO
+# ============================================================
+
 """
-    tdvp_evolve(H, psi, dt; maxdim, cutoff, normalize, reverse_step,
-                outputlevel, nsite) -> MPS
+    tdvp_evolve(H, psi, dt; maxdim=200, cutoff=1e-10, normalize=true,
+                reverse_step=false, outputlevel=0, nsite=2) -> MPS
 
 Apply one TDVP step to `psi` under Hamiltonian `H` for time `dt`.
 
@@ -179,7 +216,7 @@ end
 
 
 """
-    apply_mpo_to_mps(U_mpo, psi; cutoff, maxdim, normalize) -> MPS
+    apply_mpo_to_mps(U_mpo, psi; cutoff=1e-12, maxdim=500, normalize=true) -> MPS
 
 Apply a propagator MPO `U_mpo` to the MPS `psi` with optional truncation and
 normalisation.  Used to advance a state by one time step when `U_mpo` was
@@ -196,8 +233,8 @@ end
 
 
 """
-    evolve_with_propagator(U_mpo, psi0, nsteps; normalize_each_step,
-                           cutoff, maxdim) -> Vector{MPS}
+    evolve_with_propagator(U_mpo, psi0, nsteps; normalize_each_step=true,
+                           cutoff=1e-8, maxdim=10_000) -> Vector{MPS}
 
 Apply the fixed MPO propagator `U_mpo` repeatedly for `nsteps` steps,
 returning the full trajectory `[psi(0), psi(1*dt), ..., psi(nsteps*dt)]`.
@@ -229,8 +266,9 @@ end
 
 
 """
-    evolve_with_tdvp(H, psi0, nsteps, dt; normalize_each_step, maxdim,
-                     cutoff, reverse_step, outputlevel, nsite) -> Vector{MPS}
+    evolve_with_tdvp(H, psi0, nsteps, dt; normalize_each_step=true, maxdim=200,
+                     cutoff=1e-10, reverse_step=false, outputlevel=0, nsite=2)
+        -> Vector{MPS}
 
 Run a TDVP loop for `nsteps` steps of size `dt` under a fixed Hamiltonian `H`,
 returning `[psi(0), psi(dt), ..., psi(nsteps*dt)]`.
@@ -276,15 +314,18 @@ end
 
 
 """
-    evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt; normalize_each_step,
-                             maxdim, cutoff, reverse_step, outputlevel,
-                             nsite, krylovdim, tol) -> Vector{MPS}
+    evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt; normalize_each_step=true,
+                             maxdim=200, cutoff=1e-10, reverse_step=false,
+                             outputlevel=0, nsite=2, krylovdim=20, tol=1e-10)
+        -> Vector{MPS}
 
 TDVP loop for a time-dependent Hamiltonian `H(t)`.
 
 `Hoft` is a callable `t::Float64 -> MPO`.  On each interval `[t, t+dt]` the
 Hamiltonian is frozen at the midpoint `t + dt/2` (midpoint rule).  `Hoft` must
 return the physical Hamiltonian; the `-im` prefactor is applied internally.
+`krylovdim` and `tol` go to the TDVP exponentiation step (`updater_kwargs`);
+the other keywords are as in `evolve_with_tdvp`.
 
 Returns `[psi(0), psi(dt), ..., psi(nsteps*dt)]`.
 """
@@ -328,6 +369,10 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
     return states
 end
 
+
+# ============================================================
+# 3. Basis overlaps and TDVP-vs-propagator checks
+# ============================================================
 
 """
     compute_basis_overlaps(states, L, sites)
@@ -404,10 +449,26 @@ end
 
 
 """
-    check_tdvp_vs_U_mpo(H, U_mpo, dt, L, sites; test_states, ...) -> (max_overlap_error, max_phase_error)
+    check_tdvp_vs_U_mpo(H, U_mpo, dt, L, sites;
+                        test_states=[0, 1, 3, 7, 13, 29, 57, 2^L - 1],
+                        tdvp_maxdim=200, tdvp_cutoff=1e-10, tdvp_normalize=true,
+                        tdvp_reverse_step=false, tdvp_outputlevel=0, tdvp_nsite=2,
+                        apply_maxdim=500, apply_cutoff=1e-12,
+                        print_sample_amplitudes=true, sample_amplitudes=[0, 1, 2, 3])
+        -> (max_overlap_error, max_phase_error)
+    check_tdvp_vs_U_mpo(H::TBHamiltonian, U_mpo::MPO, dt; kwargs...)
 
 Validate that `U_mpo` agrees with direct TDVP on a set of computational basis states.
 Prints per-state overlap errors and phase-aligned distances, then returns the maxima.
+
+## Keyword arguments
+- `test_states`             : 0-indexed basis states `|n⟩` to evolve both ways.
+- `tdvp_*`                  : `maxdim`, `cutoff`, `normalize`, `reverse_step`,
+                              `outputlevel`, `nsite` of the reference `tdvp_evolve`
+                              step (`tdvp_normalize` also normalises the `U_mpo` result).
+- `apply_maxdim`, `apply_cutoff` : truncation of `apply_mpo_to_mps`.
+- `print_sample_amplitudes` : also print `⟨m|ψ⟩` of both results for each `m` in
+                              `sample_amplitudes`.
 
 The reference is one TDVP step from the bare basis state, so it has the errors described
 in `build_tdvp_propagator_mpo`: it drops the hops that flip three or more qubits, and
@@ -416,7 +477,7 @@ of order `dt` therefore does not mean `U_mpo` is wrong (chain_1d, L = 4, `dt = 0
 phase error of 0.056 for a `U_mpo` within 8e-5 of `exp(-iH dt)`).  At small L, compare
 with a dense `exp(-iH dt)` instead.
 
-A `TBHamiltonian` overload is available.
+The `TBHamiltonian` method applies `-im` internally and takes `L`, `sites` from `H`.
 """
 function check_tdvp_vs_U_mpo(
     H,
@@ -503,6 +564,10 @@ function check_tdvp_vs_U_mpo(
 end
 
 
+# ============================================================
+# 4. Density-matrix RK4 (Hermitian H(t))
+# ============================================================
+
 # dρ/dt = -i[H, ρ] RHS for Hermitian H
 function _von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
     Hρ   = apply(H, ρ; maxdim=maxdim, cutoff=cutoff)
@@ -514,8 +579,8 @@ end
 
 
 """
-    rk4_step_dm_timedep(Hoft, ρ, t, dt; maxdim, cutoff,
-                        truncate_intermediates) -> MPO
+    rk4_step_dm_timedep(Hoft, ρ::MPO, t::Float64, dt::Float64; maxdim=200,
+                        cutoff=1e-10, truncate_intermediates=true) -> MPO
 
 Single RK4 step for `dρ/dt = -i[H(t), ρ]` with a time-dependent Hamiltonian MPO.
 `H` is evaluated at `t`, `t+dt/2`, and `t+dt` per the classical RK4 tableau.
@@ -556,8 +621,9 @@ end
 
 
 """
-    evolve_rk4_dm_timedep(Hoft, ρ0, nsteps, dt; maxdim, cutoff,
-                          truncate_intermediates, verbose) -> Vector{MPO}
+    evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64; maxdim=200,
+                          cutoff=1e-10, truncate_intermediates=true, verbose=false)
+        -> Vector{MPO}
 
 Evolve a density-matrix MPO `ρ0` under `dρ/dt = -i[H(t), ρ]` for `nsteps` steps
 of size `dt` using RK4.
@@ -567,8 +633,10 @@ Returns the full trajectory `[ρ(0), ρ(dt), ..., ρ(nsteps*dt)]` as a `Vector{M
 
 ## Keyword arguments
 - `maxdim`, `cutoff`          : Truncation for intermediate MPO sums and products.
+                                Defaults `200`, `1e-10`.
 - `truncate_intermediates`    : Truncate after each RK4 sub-step to control bond growth.
-- `verbose`                   : Print step/bond-dim progress.
+                                Default `true`.
+- `verbose`                   : Print step/bond-dim progress. Default `false`.
 """
 function evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
     maxdim::Int     = 200,
@@ -595,6 +663,10 @@ function evolve_rk4_dm_timedep(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
 end
 
 
+# ============================================================
+# 5. Density-matrix RK4 (non-Hermitian H(t))
+# ============================================================
+
 # dρ/dt = -i(Hρ - ρH†) RHS for non-Hermitian H.
 # H† is formed by swapping prime levels and conjugating: conj(swapprime(H, 0, 1)).
 function _nh_von_neumann_rhs(H::MPO, ρ::MPO; maxdim::Int, cutoff::Float64)
@@ -608,7 +680,8 @@ end
 
 
 """
-    rk4_step_dm_nh(Hoft, ρ, t, dt; maxdim, cutoff, truncate_intermediates) -> MPO
+    rk4_step_dm_nh(Hoft, ρ::MPO, t::Float64, dt::Float64; maxdim=200, cutoff=1e-10,
+                   truncate_intermediates=true) -> MPO
 
 Single RK4 step for the non-Hermitian von Neumann equation
 
@@ -652,8 +725,9 @@ end
 
 
 """
-    evolve_rk4_dm_nh(Hoft, ρ0, nsteps, dt; maxdim, cutoff,
-                     truncate_intermediates, verbose) -> Vector{MPO}
+    evolve_rk4_dm_nh(Hoft, ρ0::MPO, nsteps::Int, dt::Float64; maxdim=200,
+                     cutoff=1e-10, truncate_intermediates=true, verbose=false)
+        -> Vector{MPO}
 
 RK4 evolution of a density-matrix MPO under the non-Hermitian von Neumann equation
 
@@ -689,6 +763,10 @@ function evolve_rk4_dm_nh(Hoft, ρ0::MPO, nsteps::Int, dt::Float64;
     return states
 end
 
+
+# ============================================================
+# 6. Density-matrix observables
+# ============================================================
 
 """
     dm_expect(O, ρ) -> Float64
@@ -765,7 +843,7 @@ end
 
 
 """
-    bond_current_x_trajectory(states, j, tx, L, sites; dt) -> Vector{ComplexF64}
+    bond_current_x_trajectory(states, j, tx, L, sites; dt=1.0) -> Vector{ComplexF64}
 
 Compute the x-direction bond current `Jⱼˣ(t)` along a trajectory of density-matrix MPOs.
 
@@ -786,7 +864,7 @@ end
 
 
 """
-    central_x_bond(L; Nx) -> Int
+    central_x_bond(L; Nx=nothing) -> Int
 
 Return the 0-indexed site `j` of the central x-direction bond (`j → j+1`).
 
@@ -805,7 +883,9 @@ function central_x_bond(L::Int; Nx::Union{Int,Nothing} = nothing)
 end
 
 
-# ── TBHamiltonian overloads (apply -im internally) ───────────────────────────
+# ============================================================
+# 7. TBHamiltonian overloads (apply -im internally)
+# ============================================================
 
 function build_tdvp_propagator_mpo(H::TBHamiltonian, dt; kwargs...)
     return build_tdvp_propagator_mpo(-im * H.mpo, dt, H.L, H.sites; kwargs...)

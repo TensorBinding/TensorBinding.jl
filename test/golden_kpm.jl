@@ -2,10 +2,11 @@ using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Random
 using TensorBinding: KPM_Tn, KPM_Tn_mps, get_ldos, get_ldos_spectrum, get_ldos_online,
                      get_ldos_spatial, get_dos_stochastic, get_dos_trace
 
-# Characterization ("golden") tests for the KPM solver, src/solvers/KPM_tk.jl.
+# Characterization ("golden") tests for the KPM solver, src/solvers/kpm/ (split in
+# Tier 1 from the former src/solvers/KPM_tk.jl).
 #
 # These tests pin what the KPM functions compute *today*, suspected bugs
-# included, so that the Tier 1 split of KPM_tk.jl (docs/dev/REORGANISATION_TODO.md)
+# included, so that the Tier 1 split of the former KPM_tk.jl (docs/dev/REORGANISATION_TODO.md)
 # cannot silently change an output. The expected values live in
 # test/data/kpm_golden.jl, written by test/data/generate_kpm_golden.jl (see its
 # header for how to rerun it).
@@ -984,7 +985,8 @@ case!("dos_trace/Ncheb1") do
 end
 
 # ════════════════════════════════════════════════════════════════════════════
-# 7. Shared internal helpers of KPM_tk.jl
+# 7. Shared internal helpers of the KPM solver (core/AuxDOF.jl,
+#    solvers/kpm/recursion.jl, solvers/DMRG.jl)
 # ════════════════════════════════════════════════════════════════════════════
 function aux_record(H, args...)
     a = TB._aux_setup(H, args...)
@@ -1046,7 +1048,7 @@ case!("ensure_scale/noop_when_set") do
 end
 
 # ════════════════════════════════════════════════════════════════════════════
-# 8. Exciton KPM (KPM_tk.jl l.~1640-1990)
+# 8. Exciton KPM (solvers/kpm/exciton.jl)
 # ════════════════════════════════════════════════════════════════════════════
 exc_spatial(Ncheb, ws; kw...) = get_exciton_ldos_spatial(model(:exc3), Ncheb, ws; kw...)
 

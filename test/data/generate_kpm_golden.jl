@@ -1,9 +1,10 @@
 # Generator for test/data/kpm_golden.jl, the pinned ("golden") outputs of the
-# KPM solver (src/solvers/KPM_tk.jl), checked by test/golden_kpm.jl.
+# KPM solver (src/solvers/kpm/, formerly src/solvers/KPM_tk.jl), checked by
+# test/golden_kpm.jl.
 #
 # Reference: the golden data was generated from commit 1a5548b ("Run the
 # third-round audit regression tests from runtests.jl"), before the Tier 1
-# split of KPM_tk.jl (docs/dev/REORGANISATION_TODO.md). It pins what the KPM
+# split of the former KPM_tk.jl (docs/dev/REORGANISATION_TODO.md). It pins what the KPM
 # functions do today, suspected bugs included. Line 4 of the data file records
 # the git tree hash of the working-tree src/, which does not move when only
 # tests or docs change.

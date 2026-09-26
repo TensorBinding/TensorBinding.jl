@@ -1,13 +1,23 @@
-# solvers/kpm/kernels.jl — KPM damping kernels (_kpm_kernel), the Chebyshev-KPM
-# weight matrix _kpm_weight_matrix, the HODC contour kernel helpers
-# (compute_hodc_params, get_hodc_weights, get_hodc_gf_weights), the stochastic-DOS
-# weight matrix _dos_weight_matrix and the moment-column LDOS reconstruction
-# _reconstruct_ldos_moment_columns. Moved verbatim from the former solvers/KPM_tk.jl
-# (Tier 1 split), physics/qft/bands.jl (_kpm_weight_matrix) and gpu/kpm.jl
-# (_reconstruct_ldos_moment_columns).
+# solvers/kpm/kernels.jl — KPM reconstruction kernels and weight matrices
+#
+# Contents: the damping kernels g_n (_kpm_kernel); the Chebyshev weight matrix
+# W[n, ω] = c_n g_n T_{n-1}(ω) (_kpm_weight_matrix); the HODC contour weights for
+# δ(ω − H) and for the retarded Green's function (compute_hodc_params,
+# get_hodc_weights, get_hodc_gf_weights); the DOS weights with their per-ω
+# normalisation for any kernel, HODC included (_dos_weight_matrix); and the
+# moment-column LDOS reconstruction shared with gpu/kpm.jl
+# (_reconstruct_ldos_moment_columns). Pure numerics on moments: no MPS or MPO.
+#
+# Entry points: _kpm_kernel, _kpm_weight_matrix, _dos_weight_matrix,
+#   compute_hodc_params, get_hodc_weights, get_hodc_gf_weights,
+#   _reconstruct_ldos_moment_columns
+# Depends on: no other file of the package (FFTW for the HODC transforms).
+#
+# Split from the former solvers/KPM_tk.jl in Tier 1; _kpm_weight_matrix came from
+# physics/qft/bands.jl and _reconstruct_ldos_moment_columns from gpu/kpm.jl.
 
 # ============================================================
-# KPM damping kernels
+# 1. KPM damping kernels
 # ============================================================
 
 # All kernels are unnormalized (max ≈ N at n=0) so caller's existing /N stays correct.
@@ -28,7 +38,7 @@ end
 
 
 # ============================================================
-# Chebyshev-KPM weight matrix
+# 2. Chebyshev-KPM weight matrix
 # ============================================================
 
 """
@@ -63,7 +73,7 @@ end
 
 
 # ============================================================
-# HODC kernel helpers
+# 3. HODC kernel helpers
 # ============================================================
 
 function compute_hodc_params(m=6)
@@ -110,11 +120,11 @@ end
 
 
 # ============================================================
-# Stochastic-DOS reconstruction weights
+# 4. Stochastic-DOS reconstruction weights
 # ============================================================
 
 """
-    _dos_weight_matrix(Ncheb, ω_vals; kernel, lambda, eta, m_order)
+    _dos_weight_matrix(Ncheb, ω_vals; kernel=:jackson, lambda=4.0, eta=0.0, m_order=4)
         -> (W::Matrix, denom::Vector)
 
 Stochastic-DOS reconstruction weights `W[n, iω]` and per-ω normalisation
@@ -154,7 +164,7 @@ end
 
 
 # ============================================================
-# Moment-column LDOS reconstruction
+# 5. Moment-column LDOS reconstruction
 # ============================================================
 
 """

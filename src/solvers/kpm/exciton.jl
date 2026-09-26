@@ -1,16 +1,31 @@
-# solvers/kpm/exciton.jl — CPU exciton KPM: bound-pair LDOS (get_exciton_ldos_spatial,
-# get_exciton_ldos), separation-resolved LDOS (get_exciton_ldos_separation) and
-# exciton_radius2. Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split).
+# solvers/kpm/exciton.jl — CPU exciton KPM on the 2L-site electron–hole chain
+#
+# Contents: the bound-pair LDOS ⟨X,X|δ(E − H)|X,X⟩ at sampled positions
+# (get_exciton_ldos_spatial) and its one-position wrapper (get_exciton_ldos); the
+# separation-resolved LDOS ⟨R+d,R|δ(E − H)|R+d,R⟩ (get_exciton_ldos_separation) and
+# the energy-resolved exciton radius built from it (exciton_radius2). Every probe
+# runs an online MPS recursion; nothing is cached on H.
+#
+# Entry points: get_exciton_ldos_spatial, get_exciton_ldos,
+#   get_exciton_ldos_separation, exciton_radius2
+# Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl
+#   (TBHamiltonian), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+#   (_dos_weight_matrix), solvers/kpm/recursion.jl (_run_kpm_mps!).
+#
+# Split from the former solvers/KPM_tk.jl in Tier 1.
 
 # ============================================================
-# Exciton LDOS  (MPS-based only — no MPO Chebyshev for the 2L-site chain)
+# 1. Exciton LDOS (MPS-based only — no MPO Chebyshev for the 2L-site chain)
 # ============================================================
 
 """
-    get_exciton_ldos_spatial(H, Ncheb, omega_phys_vals; X_list, X_groups,
-                             num_x, num_avg, x_start, x_end, kernel,
-                             lambda, eta, m_order, maxdim, cutoff,
-                             verbose, printinfo) -> Matrix{Float64}
+    get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
+                             X_list=nothing, X_groups=nothing, x_groups=nothing,
+                             num_x=H.N, num_avg=1, x_start=1, x_end=H.N,
+                             kernel=:jackson, lambda=4.0, eta=0.0, m_order=4,
+                             maxdim=100, cutoff=1e-8, verbose=false,
+                             printinfo=false, return_maxlinkdim=false)
+        -> Matrix{Float64}   # (result, linkdims) with return_maxlinkdim=true
 
 CPU spatial exciton LDOS. For each bound exciton position `X` (electron = hole =
 `X`, 1-indexed in `1:H.N`) this runs an online MPS Chebyshev recursion from
@@ -22,9 +37,10 @@ directly. `X_groups` (or alias `x_groups`) averages several bound-pair probes in
 one output column. If no explicit positions are provided, `num_x` coarse groups
 are generated over `x_start:x_end`, with `num_avg` subpositions per group.
 
-`kernel=:hodc` uses the HODC reconstruction (`eta`, `m_order`); otherwise the
-standard KPM kernels are available (`:jackson`, `:lorentz`, `:fejer`,
-`:dirichlet`).
+`kernel=:hodc` uses the HODC reconstruction (`eta`, `m_order`; `eta=0` means
+`1/(Ncheb+1)`); otherwise the standard KPM kernels are available (`:jackson`,
+`:lorentz` with `lambda`, `:fejer`, `:dirichlet`). `maxdim` and `cutoff` truncate
+each MPS recursion step; `verbose` or `printinfo` prints progress every 5 columns.
 
 `return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`,
 where `linkdims::Vector{Int}` is the reached MPS bond dimension per output column
@@ -121,6 +137,18 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
     return return_maxlinkdim ? (result, linkdims) : result
 end
 
+"""
+    get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real; Ncheb=200,
+                     kernel=:jackson, lambda=4.0, eta=0.0, m_order=4, maxdim=40,
+                     cutoff=1e-8, verbose=false) -> Float64
+    get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys_vals; <same keywords>)
+        -> Vector{Float64}
+
+Bound-pair exciton LDOS at the single position `X` (1-indexed in `1:H.N`): a
+one-column call of `get_exciton_ldos_spatial` with `X_list=[X]`. Note that the
+Chebyshev order is the keyword `Ncheb` here, and that `maxdim` defaults to `40`
+(`get_exciton_ldos_spatial`: `100`).
+"""
 function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real;
                           Ncheb::Int     = 200,
                           kernel::Symbol = :jackson,
@@ -155,6 +183,10 @@ function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys_vals;
     return vec(ldos[:, 1])
 end
 
+
+# ============================================================
+# 2. Separation-resolved exciton LDOS and exciton radius
+# ============================================================
 
 """
     get_exciton_ldos_separation(H, Ncheb, omega_phys_vals; d_list, R_list=1:H.N,

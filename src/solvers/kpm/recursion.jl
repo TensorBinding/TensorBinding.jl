@@ -1,24 +1,42 @@
-# solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method:
-# the cached MPO and MPS recursions KPM_Tn / KPM_Tn_mps, and the online MPS recursion
-# _run_kpm_mps!. Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split).
-# The DMRG spectral bounds (_estimate_spectral_bounds, _ensure_scale!) live in
-# solvers/DMRG.jl.
+# solvers/kpm/recursion.jl — Chebyshev recursions of the kernel polynomial method
+#
+# Contents: the cached recursions that keep every order, as MPOs T_n(H̃) (KPM_Tn) or
+# as MPS T_n(H̃)|ψ₀⟩ (KPM_Tn_mps), H̃ = (H − center)/scale, each with a raw-MPO
+# method and a TBHamiltonian method that caches the list on H; and the online MPS
+# recursion that accumulates weighted moments ⟨ψ₀|T_n(H̃)|ψ₀⟩ without storing the
+# states (_run_kpm_mps!), shared by the LDOS, DOS and exciton solvers of
+# solvers/kpm/ and by physics/qft/exciton_spectra.jl.
+#
+# Entry points: KPM_Tn, KPM_Tn_mps, _run_kpm_mps!
+# Depends on: core/TBSystem.jl (TBHamiltonian, physical_projector),
+#   solvers/DMRG.jl (_estimate_spectral_bounds, _ensure_scale!).
+#
+# Split from the former solvers/KPM_tk.jl in Tier 1.
 
 # ============================================================
-# Cached Chebyshev MPO recursion: KPM_Tn
+# 1. Cached Chebyshev MPO recursion: KPM_Tn
 # ============================================================
 
 """
-    KPM_Tn(H_mpo, N, sites; scale=nothing, center=0.0, maxdim=40,
-           dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim) -> (Tn_list, scale, center)
+    KPM_Tn(H_mpo::MPO, N::Int, sites; scale=nothing, center=0.0, identity_mpo=nothing,
+           maxdim=40, dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+           cutoff=1e-8, verbose=true) -> (Tn_list, scale, center)
 
 Build the list of Chebyshev MPOs `T_n((H−center·I)/scale)` for `n = 0…N`.
 
 ## Scale / center arguments
 - If `scale=nothing` (default): spectral bounds estimated automatically via
-  `_estimate_spectral_bounds` (two short DMRG runs).
+  `_estimate_spectral_bounds` (two short DMRG runs with `dmrg_nsweeps`,
+  `dmrg_maxdim`, `dmrg_linkdim`); the estimate replaces `center` too.
 - If `scale` is provided: used directly; `center` defaults to `0.0` but can be
   set explicitly for non-symmetric spectra.
+
+## Other keywords
+- `identity_mpo` : the MPO used as `I` (in the shift and as `T_0`). Default
+  `nothing` = `MPO(sites, "Id")`; the `TBHamiltonian` method passes
+  `physical_projector(H)`.
+- `maxdim`, `cutoff` : truncation of each recursion step. Defaults `40`, `1e-8`.
+- `verbose` : print the bond dimension every 5 orders and at the last. Default `true`.
 
 ## High-level overload
 Pass a `TBHamiltonian` as the first argument to skip manual rescaling entirely:
@@ -76,27 +94,30 @@ end
 
 
 """
-    KPM_Tn(H::TBHamiltonian, Ncheb; mode=:mpo, psi0=nothing,
-           maxdim=40, cutoff=1e-8, dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+    KPM_Tn(H::TBHamiltonian, Ncheb::Int; mode=:mpo, psi0=nothing,
+           maxdim=40, cutoff=1e-8, dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+           dmrg_linkdim=4, verbose=false)
         -> (Tn_list, scale, center)
 
 High-level Chebyshev expansion for a `TBHamiltonian`.
 
-Lazily determines `H.scale` and `H.center` via DMRG if not already set, builds
-the rescaled Chebyshev list, caches the result on `H`, and returns
-`(Tn_list, H.scale, H.center)`.
+Lazily determines `H.scale` and `H.center` via DMRG if not already set (the
+`dmrg_*` keywords, see `_ensure_scale!`), builds the rescaled Chebyshev list with
+`physical_projector(H)` as the identity, caches the result on `H`, and returns
+`(Tn_list, H.scale, H.center)`. `maxdim`, `cutoff` and `verbose` are passed to the
+raw-MPO method (`verbose` defaults to `false` here).
 
 **`mode` keyword**
 
 | `mode` | What is cached | Used by |
 |--------|---------------|---------|
-| `:mpo` (default) | MPO list `{T_n(H̃)}` in `H._tn_cache` | `get_ldos`, `get_ldos_spectrum`, `get_ldos_spatial` |
+| `:mpo` (default) | MPO list `{T_n(H̃)}` in `H._tn_cache` | `get_ldos` (`mode=:diag`, `:mpo`), `get_ldos_spectrum`, `get_density(…; method=:kpm)` |
 | `:mps` | MPS list `{T_n(H̃)|ψ₀⟩}` in `H._tn_mps_cache` | `get_ldos(…; mode=:mps, psi0=…)` |
 
 `mode=:mps` requires `psi0` (a reference MPS).  The MPS pathway is more
 memory-efficient when a single reference state is sufficient.
 
-**Overview of the three KPM pathways**
+**Overview of the four KPM pathways**
 
 ```
 Pathway 1 — MPO × MPO cache  [legacy / rarely used]
@@ -140,9 +161,11 @@ Pathway 4 — Online MPO × MPS  [single-particle default, most memory-efficient
 ```
 
 All pathways share the same KPM kernel and normalization.
-Aux-DOF projections (`spin_proj`, `nambu_proj`, `sublat_proj`, …) are supported
-in **Pathways 1, 3, and 4**.  Pathway 2 operates on a fixed reference state
-and does not expose per-DOF projection keywords.
+Aux-DOF projection keywords (`spin_proj`, `nambu_proj`, `layer_proj`,
+`sublat_proj` and their sector selectors) are accepted by `get_bands`,
+`get_ldos_spatial`, `get_ldos_online` and `get_dos_stochastic` (Pathways 3 and 4).
+The cached Pathways 1 and 2 (`get_ldos`, `get_ldos_spectrum`) and the exciton
+LDOS do not expose them.
 """
 function KPM_Tn(H::TBHamiltonian, Ncheb::Int;
                 mode::Symbol                  = :mpo,
@@ -184,13 +207,18 @@ end
 
 
 # ============================================================
-# Cached Chebyshev MPS recursion: KPM_Tn_mps
+# 2. Cached Chebyshev MPS recursion: KPM_Tn_mps
 # ============================================================
 
 """
-    KPM_Tn_mps(H_mpo, N, psi0, sites; scale=nothing, center=0.0, maxdim=40,
-               dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim, cutoff, verbose)
+    KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites; scale=nothing, center=0.0,
+               identity_mpo=nothing, maxdim=40, dmrg_nsweeps=5,
+               dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4, cutoff=1e-8, verbose=true)
     -> (Tn_mps_list, scale, center)
+    KPM_Tn_mps(H::TBHamiltonian, N::Int, psi0::MPS; maxdim=40, cutoff=1e-8,
+               dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4,
+               verbose=false)
+    -> (Tn_mps_list, H.scale, H.center)
 
 MPS-based Chebyshev expansion. Instead of storing Chebyshev MPOs T_n(H) (as
 `KPM_Tn` does), this builds the projected MPS states
@@ -207,7 +235,13 @@ weights are then obtained as `inner(ref_mps, Tn_mps_list[n+1])`.
 
 `psi0` is normalised internally. `scale`/`center` follow the same convention as
 `KPM_Tn`: if `scale=nothing` the spectral bounds are estimated via DMRG.
+`identity_mpo`, `maxdim` and `cutoff` are as in `KPM_Tn`; `verbose` prints the bond
+dimension every 10 orders and at the last.
 Returns `(Tn_mps_list, scale, center)` where `Tn_mps_list[n+1]` = |φ_n⟩.
+
+The `TBHamiltonian` method fills `H.scale`/`H.center` on demand (`_ensure_scale!`),
+uses `physical_projector(H)` as the identity, stores the list in `H._tn_mps_cache`
+(with `H._tn_Ncheb = N`) and returns `(Tn_mps_list, H.scale, H.center)`.
 """
 function KPM_Tn_mps(H_mpo::MPO, N::Int, psi0::MPS, sites;
                     scale::Union{Real, Nothing} = nothing,
@@ -278,7 +312,7 @@ end
 
 
 # ============================================================
-# Online MPS Chebyshev recursion (shared by the LDOS, DOS, exciton and band solvers)
+# 3. Online MPS Chebyshev recursion (shared by the LDOS, DOS and exciton solvers)
 # ============================================================
 
 """

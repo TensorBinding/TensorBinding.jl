@@ -1,39 +1,41 @@
-# DMRG.jl — Variational ground state and spectral DMRG utilities
+# solvers/DMRG.jl — variational DMRG: ground state, spectral DMRG, KPM spectral bounds
 #
-# Two physical functions:
-#   dmrg_gs       — ground state of H (standard DMRG energy minimisation)
-#   dmrg_spectral — ground state of K(ω,η) = (H−ωI)² + η²I
+# Contents: ground-state DMRG (dmrg_gs); the resolvent-squared MPO
+# K(ω,η) = (H−ωI)² + η²I (build_K) and its DMRG ground state (dmrg_spectral), whose
+# position weight |⟨i|ψ(ω)⟩|² (local_weight) is an LDoS proxy; and the DMRG estimate
+# of the Chebyshev rescaling (scale, center), used when H carries no analytic
+# estimate yet (_estimate_spectral_bounds, _ensure_scale!).
 #
-# LDoS connection:
-#   Minimising ⟨ψ|K|ψ⟩ forces |ψ(ω)⟩ to concentrate on whichever eigenstate
-#   of H lies closest to ω.  The local weight |⟨i|ψ(ω)⟩|² then approximates
-#   the LDoS at position i and energy ω (broadened by η).  Sweeping ω
-#   reconstructs the full site-resolved spectral function.
+# Entry points: dmrg_gs, dmrg_spectral, build_K, local_weight; _ensure_scale!
+#   (internal: the Chebyshev solvers call it before rescaling H).
+# Depends on: core/Utils.jl (binary_to_MPS), core/TBSystem.jl (TBHamiltonian).
 #
-# Helper:
-#   build_K        — assemble K as an MPO (useful standalone)
-#   local_weight   — |⟨i|ψ⟩|²  (LDoS proxy at a single site)
-#
-# KPM spectral bounds (last section, moved from solvers/kpm/recursion.jl):
-#   _estimate_spectral_bounds — two short DMRG runs give (scale, center)
-#   _ensure_scale!            — fill H.scale / H.center on demand
+# LDoS connection: minimising ⟨ψ|K|ψ⟩ forces |ψ(ω)⟩ onto the eigenstate of H
+# closest to ω, so |⟨i|ψ(ω)⟩|² approximates the LDoS at position i and energy ω
+# (broadened by η); sweeping ω reconstructs the site-resolved spectral function.
+# Section 5 moved here from solvers/kpm/recursion.jl in Tier 1.
 
 
-# ─────────────────────────────────────────────────────────────────
-# 1.  Ground-state DMRG
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 1. Ground-state DMRG
+# ============================================================
 
 """
-    dmrg_gs(H_mpo, sites; nsweeps, maxdim, cutoff, noise, linkdim_init) -> (E, ψ)
+    dmrg_gs(H_mpo::MPO, sites; linkdim_init=10, nsweeps=10,
+            maxdim=[10, 20, 50, 100, 200], cutoff=1e-8,
+            noise=[1e-6, 1e-7, 1e-8, 0.0], kwargs...) -> (E, ψ)
 
 Find the ground state and energy of `H_mpo` using DMRG.
 
 # Keyword arguments
-- `linkdim_init` : bond dimension of the random initial MPS
-- `nsweeps`      : total number of DMRG sweeps
-- `maxdim`       : max bond dimension per sweep (scalar or vector)
-- `cutoff`       : SVD truncation cutoff
-- `noise`        : perturbative noise per sweep (scalar or vector; aids convergence)
+- `linkdim_init` : bond dimension of the random initial MPS. Default `10`.
+- `nsweeps`      : total number of DMRG sweeps. Default `10`.
+- `maxdim`       : max bond dimension per sweep (scalar or vector). Default
+                   `[10, 20, 50, 100, 200]`.
+- `cutoff`       : SVD truncation cutoff. Default `1e-8`.
+- `noise`        : perturbative noise per sweep (scalar or vector; aids convergence).
+                   Default `[1e-6, 1e-7, 1e-8, 0.0]`.
+- `kwargs...`    : passed on to `ITensorMPS.dmrg` (e.g. `outputlevel=0`).
 
 Returns `(E, ψ)`.
 """
@@ -55,12 +57,12 @@ function dmrg_gs(H_mpo::MPO, sites;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 2.  Resolvent-squared MPO  K(ω,η) = (H−ωI)² + η²I
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 2. Resolvent-squared MPO K(ω,η) = (H−ωI)² + η²I
+# ============================================================
 
 """
-    build_K(H_mpo, sites, ω, η; maxdim_K, cutoff_K) -> MPO
+    build_K(H_mpo::MPO, sites, ω, η; maxdim_K=200, cutoff_K=1e-8) -> MPO
 
 Build the resolvent-squared MPO
 
@@ -83,12 +85,14 @@ function build_K(H_mpo::MPO, sites, ω::Real, η::Real;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 3.  Spectral DMRG  (minimise K)
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 3. Spectral DMRG (minimise K)
+# ============================================================
 
 """
-    dmrg_spectral(H_mpo, sites, ω, η; ...) -> (E_K, ψ)
+    dmrg_spectral(H_mpo::MPO, sites, ω, η; ψ0=nothing, maxdim_K=200, cutoff_K=1e-8,
+                  linkdim_init=10, nsweeps=10, maxdim=[10, 20, 50, 100, 200],
+                  cutoff=1e-8, noise=[1e-6, 1e-7, 1e-8, 0.0], kwargs...) -> (E_K, ψ)
 
 Find the ground state of `K(ω,η) = (H−ωI)² + η²I` using DMRG.
 
@@ -96,10 +100,14 @@ The ground state `|ψ(ω)⟩` concentrates on the eigenstate of H closest to ω.
 Use `local_weight(ψ, i, L, sites)` to read off the LDoS proxy `|⟨i|ψ(ω)⟩|²`.
 
 # Keyword arguments
-- `ψ0`                 : warm-start MPS (random if `nothing`)
-- `maxdim_K`, `cutoff_K` : truncation for building K (see `build_K`)
-- `linkdim_init`       : bond dimension of the random initial MPS (if ψ0=nothing)
-- `nsweeps`, `maxdim`, `cutoff`, `noise` : DMRG sweep parameters
+- `ψ0`                 : warm-start MPS (random if `nothing`, the default)
+- `maxdim_K`, `cutoff_K` : truncation for building K (see `build_K`). Defaults
+                         `200`, `1e-8`.
+- `linkdim_init`       : bond dimension of the random initial MPS (if ψ0=nothing).
+                         Default `10`.
+- `nsweeps`, `maxdim`, `cutoff`, `noise` : DMRG sweep parameters, with the same
+                         defaults as `dmrg_gs`.
+- `kwargs...`          : passed on to `ITensorMPS.dmrg` (e.g. `outputlevel=0`).
 
 Returns `(E_K, ψ)` where `E_K ≈ η²` at spectral peaks.
 """
@@ -125,9 +133,9 @@ function dmrg_spectral(H_mpo::MPO, sites, ω::Real, η::Real;
 end
 
 
-# ─────────────────────────────────────────────────────────────────
-# 4.  LDoS proxy: |⟨i|ψ⟩|²
-# ─────────────────────────────────────────────────────────────────
+# ============================================================
+# 4. LDoS proxy |⟨i|ψ⟩|²
+# ============================================================
 
 """
     local_weight(ψ, i, L, sites) -> Float64
@@ -152,11 +160,12 @@ end
 
 
 # ============================================================
-# Spectral bounds (DMRG estimate of the Chebyshev rescaling)
+# 5. KPM spectral bounds (DMRG estimate of the Chebyshev rescaling)
 # ============================================================
 
 """
-    _estimate_spectral_bounds(H_mpo, sites; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+    _estimate_spectral_bounds(H_mpo::MPO, sites; dmrg_nsweeps=5,
+                              dmrg_maxdim=[10, 20, 40], dmrg_linkdim=4)
         -> (scale, center)
 
 Run two short DMRG sweeps (minimising H and −H) to find the spectral edges
@@ -190,7 +199,8 @@ end
 
 
 """
-    _ensure_scale!(H::TBHamiltonian; dmrg_nsweeps, dmrg_maxdim, dmrg_linkdim)
+    _ensure_scale!(H::TBHamiltonian; dmrg_nsweeps=5, dmrg_maxdim=[10, 20, 40],
+                   dmrg_linkdim=4)
 
 If `H.scale == 0` (sentinel meaning "not yet determined"), run
 `_estimate_spectral_bounds` and store the results in `H.scale` and `H.center`.

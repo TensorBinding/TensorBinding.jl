@@ -19,7 +19,7 @@ using TensorBinding: tdvp_evolve, apply_mpo_to_mps, evolve_with_propagator, evol
 # Characterization ("golden") tests for the dynamics area: time evolution
 # (solvers/Timeev.jl, without build_tdvp_propagator_mpo / check_tdvp_vs_U_mpo),
 # DMRG (solvers/DMRG.jl), the Krylov Green's function (solvers/Krylov.jl)
-# and the Haydock recursion that Tier 1 moves there from physics/RPA_tk.jl, the
+# and the Haydock recursion that Tier 1 moved there from the former physics/RPA_tk.jl, the
 # exciton Hamiltonian and probes (physics/TwoParticle.jl), QPI
 # (physics/QPI.jl), and the core/Utils.jl helpers that
 # test/sampling_golden.jl does not cover.
@@ -497,7 +497,7 @@ case!("Utils", "utils_sigma_ops", 135) do
 end
 
 # ═════════════════════════════════════════════════════════════════════════════
-# solvers/DMRG.jl (+ _estimate_spectral_bounds, which Tier 1 moves there)
+# solvers/DMRG.jl (+ _estimate_spectral_bounds, which Tier 1 moved there)
 # ═════════════════════════════════════════════════════════════════════════════
 
 case!("DMRG", "dmrg_gs_defaults", 201) do

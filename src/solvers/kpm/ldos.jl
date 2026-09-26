@@ -1,16 +1,32 @@
-# solvers/kpm/ldos.jl — online real-space LDOS: get_ldos_online, get_ldos_spatial.
-# Moved verbatim from the former solvers/KPM_tk.jl (Tier 1 split); their helpers
-# _aux_setup and _ldos_make_psi0 live in core/AuxDOF.jl.
+# solvers/kpm/ldos.jl — online real-space LDOS (nothing cached on H)
+#
+# Contents: the LDOS at one position for all energies, from an MPS Chebyshev
+# recursion started at |X⟩ (get_ldos_online), and the spatially resolved LDOS map
+# over a sampling plan of positions (get_ldos_spatial), computed by one online MPO
+# recursion (mode=:mpo) or one MPS recursion per position and sector (mode=:mps).
+# Both sum or select auxiliary-DOF sectors (Nambu, spin, layer, sublattice).
+#
+# Entry points: get_ldos_online, get_ldos_spatial
+# Depends on: core/Utils.jl (spatial_sampling_plan, extract_diagonal_to_mps,
+#   _eval_block_mps, binary_to_MPS, mpsexciton), core/TBSystem.jl (TBHamiltonian,
+#   physical_projector, physical_site_state, site_permutation), core/AuxDOF.jl
+#   (_autoenable_proj, _aux_setup, _ldos_make_psi0, project_aux), solvers/DMRG.jl
+#   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_weight_matrix),
+#   solvers/kpm/recursion.jl (_run_kpm_mps!).
+#
+# Split from the former solvers/KPM_tk.jl in Tier 1.
 
 # ============================================================
-# Online LDOS at a single position: get_ldos_online
+# 1. Online LDOS at a single position: get_ldos_online
 # ============================================================
 
 """
     get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
-                    kernel, lambda, maxdim, cutoff, verbose,
-                    nambu_proj, proj_nambu, spin_proj, proj_s,
-                    layer_proj, proj_layer, sublat_proj, proj_sl)
+                    kernel=:jackson, lambda=4.0, maxdim=100, cutoff=1e-8,
+                    verbose=false,
+                    nambu_proj=false, proj_nambu=nothing, spin_proj=false,
+                    proj_s=nothing, layer_proj=false, proj_layer=nothing,
+                    sublat_proj=false, proj_sl=nothing)
         -> Vector{Float64}
 
 Online real-space LDOS at unit-cell position `X` for all physical energies in
@@ -22,10 +38,18 @@ Auxiliary DOF sectors are summed by running the recursion once per requested sec
 
 `X ∈ {1, …, H.N}` is the 1-indexed unit-cell position.
 
+**Keywords**
+
+- `kernel`, `lambda` — KPM kernel (`:jackson`, `:lorentz` with `lambda`, `:fejer`,
+  `:dirichlet`).
+- `maxdim`, `cutoff` — truncation of each MPS recursion step.
+- `verbose` — print the bond dimension every 10 Chebyshev steps and at the last.
+
 **Auxiliary DOF projections** (same interface as `get_bands` and `get_ldos_spatial`):
 
 - `spin_proj`, `nambu_proj`, `layer_proj`, `sublat_proj` — enable projection of the
-  corresponding auxiliary DOF auto-detected from `H`.
+  corresponding auxiliary DOF auto-detected from `H`. A DOF present on `H` is always
+  projected: its flag is switched on automatically, with an info line.
 - `proj_s`, `proj_nambu`, `proj_layer`, `proj_sl` — sector selector: `nothing` sums
   all sectors of that DOF; an integer selects a single sector (1-based).
 - Contributions from all requested sectors are accumulated into a single result vector.
@@ -99,15 +123,23 @@ end
 
 
 # ============================================================
-# Spatial LDOS at multiple x-positions (real-space analogue of get_bands)
+# 2. Spatial LDOS at multiple positions (real-space analogue of get_bands)
 # ============================================================
 
 """
-    get_ldos_spatial(H, Ncheb, ω_phys_vals;
-                     num_x, num_avg, mode, x_start, x_end, x_groups,
-                     kernel, lambda, maxdim, cutoff, verbose,
-                     nambu_proj, proj_nambu, spin_proj, proj_s,
-                     layer_proj, proj_layer, sublat_proj, proj_sl)
+    get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
+                     num_x=H.N, num_y=nothing, num_avg=1, mode=:mpo,
+                     x_start=1, x_end=H.N, x_groups=nothing,
+                     grid=false, xwin=nothing, ywin=nothing, box_half=0,
+                     reduce=:point, sublattice=:auto,
+                     kernel=:jackson, lambda=4.0, maxdim=100, cutoff=1e-8,
+                     verbose=false,
+                     ordering=:physical, conumber_orientation=:standard,
+                     conumber_centered=true, conumber_origin=0,
+                     conumber_alignment=:atomic,
+                     nambu_proj=false, proj_nambu=nothing, spin_proj=false,
+                     proj_s=nothing, layer_proj=false, proj_layer=nothing,
+                     sublat_proj=false, proj_sl=nothing)
         -> Matrix{Float64}
 
 Spatially-resolved LDOS, real-space analogue of `get_bands`.
@@ -140,7 +172,9 @@ stride (see `sublattice` below):
   sublattice is traced out into one value per unit cell (mean over the `n_sub`
   atoms).
 
-With no sublattice DOF the shape is always `(Nω × ng)`, `ng = num_x`.
+With no sublattice DOF the shape is always `(Nω × ng)`. `ng` is the number of
+sample groups of the plan: `num_x` for the default 1D sweep, `num_x × num_y` for
+`grid=true` or `reduce=:block`, `length(x_groups)` for explicit groups.
 
 **`sublattice` (resolve vs average)**
 
@@ -150,18 +184,27 @@ With no sublattice DOF the shape is always `(Nω × ng)`, `ng = num_x`.
 - `:resolve` — always emit per-atom columns. `:average` — always trace the
   sublattice to one value per cell. `proj_sl=k` always resolves that one atom.
 
-**Sampling parameters**
+**Sampling parameters** (passed to [`spatial_sampling_plan`](@ref))
 
 - `num_x`/`num_y` : sample counts (per axis for `grid=true`; `num_x` is the total
-  for the default 1D linear sweep). Default `H.N` = full resolution.
-- `num_avg`  : sub-samples per coarse block for local averaging (1D, default 1).
-- `x_start`, `x_end` : 1-indexed linear position range (1D layout).
+  for the default 1D linear sweep). `num_x` defaults to `H.N` = full resolution;
+  `num_y=nothing` (default) uses the same count as `num_x` (capped at the window).
+- `num_avg`  : sub-samples per coarse block for local averaging (1D, default `1`).
+- `x_start`, `x_end` : 1-indexed linear position range (1D layout; defaults `1`,
+  `H.N`).
 - `grid`     : `true` lays centers on a 2D `num_x × num_y` unit-cell grid.
+  Default `false`.
 - `xwin`, `ywin` : 0-indexed unit-cell `(lo, hi)` windows for `grid=true` (e.g.
-  zoom into a patch of a large system).
+  zoom into a patch of a large system). Default `nothing` = the full system.
 - `x_groups` : explicit `Vector{Vector{Int}}` override (treated as atomic).
+  Default `nothing`.
 - `box_half` : 2D neighbourhood half-width (averages, forces sublattice averaging).
-- `reduce`   : `:point` (sample/box) or `:block` (block-integrate; see above).
+  Default `0`.
+- `reduce`   : `:point` (default; sample/box) or `:block` (block-integrate; see
+  above).
+- `sublattice` : `:auto` (default), `:resolve` or `:average` (see above).
+
+`grid`, `xwin`, `ywin`, `box_half > 0` and `reduce=:block` need a 2D `H.geometry`.
 
 **Modes**
 
@@ -169,14 +212,39 @@ With no sublattice DOF the shape is always `(Nω × ng)`, `ng = num_x`.
   Cost `∝ Ncheb × (MPO×MPO)`, independent of `num_x` or `n_sub`.
 - `:mps` — independent MPS recursion per (position, sector) combination.
 
-**Other auxiliary DOF projections** (same interface as `get_bands`):
-`nambu_proj`/`proj_nambu`, `spin_proj`/`proj_s`, `layer_proj`/`proj_layer`.
+**Chebyshev keywords**
 
-For a Fibonacci position space, `ordering=:conumber` requires full-resolution
-point sampling. `conumber_alignment=:atomic` (default) places the `AA` sites in
-one central block; `:raw` exposes the unshifted modular residues. A recursive
-atomic zoom should slice the interval returned by `fibonacci_rg_partition`
-rather than re-conumbering its sites with a reduced `L`.
+- `kernel`, `lambda` : KPM kernel (`:jackson` default, `:lorentz` with `lambda`
+  (default `4.0`), `:fejer`, `:dirichlet`).
+- `maxdim`, `cutoff` : truncation of each recursion step (defaults `100`, `1e-8`).
+- `verbose` : print progress (every 15 steps in `:mpo` mode, every 15 positions in
+  `:mps` mode). Default `false`.
+
+**Auxiliary DOF projections** (same interface as `get_bands`):
+`nambu_proj`/`proj_nambu`, `spin_proj`/`proj_s`, `layer_proj`/`proj_layer`,
+`sublat_proj`/`proj_sl`. The flags default to `false` and the selectors to
+`nothing` (sum all sectors); an integer selector picks one 1-based sector. A DOF
+present on `H` is always projected: its flag is switched on automatically, with
+an info line (`sublat_proj` is kept only for backward compatibility).
+
+**Site ordering** (`ordering`, `conumber_*`)
+
+- `ordering=:physical` (default) samples positions in physical order.
+- `ordering=:conumber` (Fibonacci position spaces only) orders the columns by
+  conumber: the groups become `[[x] for x in site_permutation(H; ordering=:conumber,
+  …)]`, with `conumber_orientation` (`:standard` default, or `:reversed`),
+  `conumber_centered` (default `true`; it only relabels the conumbers around zero,
+  so the column order does not depend on it), `conumber_origin` (default `0`,
+  shifts the site index before conumbering) and `conumber_alignment` passed on as
+  `orientation`, `centered`, `origin` and `alignment`. It requires full-resolution
+  1D point sampling (`num_x`, `num_y`, `num_avg`, `x_start`, `x_end`, `x_groups`,
+  `grid`, `xwin`, `ywin`, `box_half`, `reduce` at their defaults) and no
+  auxiliary DOF.
+
+`conumber_alignment=:atomic` (default) places the `AA` sites in one central
+block; `:raw` exposes the unshifted modular residues. A recursive atomic zoom
+should slice the interval returned by `fibonacci_rg_partition` rather than
+re-conumbering its sites with a reduced `L`.
 
 Examples
 --------
