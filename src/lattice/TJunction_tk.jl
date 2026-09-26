@@ -35,39 +35,8 @@ tjunction_index() = Index(3, "TJunction")
 
 
 # ─────────────────────────────────────────────────────────────────
-# 2.  Real-space positions
+# 2.  Real-space positions: tjunction_positions lives in lattice/geometry.jl
 # ─────────────────────────────────────────────────────────────────
-
-"""
-    tjunction_positions(N, junction_site) -> Matrix{Float64}
-
-Return a `(3N × 2)` real-space position matrix for a Y-junction of three
-chains, each of length `N`, meeting at `junction_site` (0-indexed).
-
-**Atom index convention** (branch-fast, matching kagome):
-  atom `i` (1-indexed):
-    `n = (i-1) ÷ 3`      — 0-indexed chain position (0…N-1)
-    `s = (i-1) % 3 + 1`  — branch (1=|-1⟩, 2=|0⟩, 3=|+1⟩)
-
-**Branch directions** (branches radiate symmetrically from the junction):
-  branch 1: angle 0°
-  branch 2: angle 120°
-  branch 3: angle 240°
-
-The junction site is placed at the origin; position along each branch is
-the signed distance `n − junction_site` (positive = away from junction).
-"""
-function tjunction_positions(N::Int, junction_site::Int)
-    rs = Matrix{Float64}(undef, 3 * N, 2)
-    for i in 1:3*N
-        n   = (i - 1) ÷ 3           # 0-indexed chain position
-        s   = (i - 1) % 3 + 1       # branch (1, 2, 3)
-        θ   = (s - 1) * 2π / 3      # branch angle: 0°, 120°, 240°
-        d   = Float64(n - junction_site)   # signed distance from junction
-        rs[i, :] = [d * cos(θ), d * sin(θ)]
-    end
-    return rs
-end
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -360,39 +360,6 @@ function _resolve_layer_selection(layer_s::Index, layer)
     return layers
 end
 
-function _resolve_2d_geometry(H::TBHamiltonian, lattice, geometry, Lx::Int, Ly::Int)
-    if geometry !== nothing
-        if geometry isa AbstractMatrix
-            n_geom = H.sublattice_s === nothing ? H.N : dim(H.sublattice_s) * H.N
-            size(geometry, 1) == n_geom ||
-                error("geometry matrix has $(size(geometry, 1)) rows, expected $n_geom.")
-            return let m = Float64.(geometry)
-                i -> m[i, :]
-            end
-        elseif geometry isa Function
-            return geometry
-        else
-            error("geometry must be a function i -> r_i or an Nxd matrix.")
-        end
-    end
-
-    H.geometry !== nothing && return H.geometry
-
-    lattice !== nothing ||
-        error("Layered add_hopping_2D! needs `lattice=:square/:triangular/:honeycomb` " *
-              "or `geometry=...` because H.geometry is not set.")
-    lat = lattice isa Symbol ? lattice : Symbol(lattice)
-    rs = H.sublattice_s === nothing ? lattice_positions(lat, Lx, Ly) :
-         lat === :honeycomb         ? honeycomb_sublattice_positions(Lx, Ly) :
-         error("lattice=:$lat with H.sublattice_s is not supported by add_hopping_2D!.")
-    n_geom = H.sublattice_s === nothing ? H.N : dim(H.sublattice_s) * H.N
-    size(rs, 1) == n_geom ||
-        error("geometry for :$lat returned $(size(rs, 1)) sites, expected $n_geom.")
-    return let m = Float64.(rs)
-        i -> m[i, :]
-    end
-end
-
 
 # ============================================================
 # 4.  Displacement inspector

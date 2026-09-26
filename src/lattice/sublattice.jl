@@ -1,47 +1,12 @@
 # sublattice.jl — lattices with an explicit sublattice index (kagome, Lieb,
 # honeycomb, honeycomb NNN, dice/T3, SSH chain): the *_hamiltonian builders,
-# each returning a TBHamiltonian with the sublattice site postpended, and the
-# matching *_positions tables. Split from lattice/2Dlattice_tk.jl.
+# each returning a TBHamiltonian with the sublattice site postpended; the
+# matching *_positions tables live in lattice/geometry.jl. Split from
+# lattice/2Dlattice_tk.jl.
 
 # ============================================================
 # 1. Kagome lattice
 # ============================================================
-
-"""
-    kagome_positions(Lx, Ly) -> Matrix{Float64}
-
-Return the (3·2^L × 2) real-space atom-position matrix for a kagomé lattice
-of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
-
-For total 1-indexed site i:
-  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
-  s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
-
-Atom positions (lattice vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,        iy·√3/2       )
-  B: (ix + iy/2 + ½,    iy·√3/2       )
-  C: (ix + iy/2 + ¼,    iy·√3/2 + √3/4)
-"""
-function kagome_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 3 * N_uc, 2)
-    sq3_2 = sqrt(3) / 2
-    sq3_4 = sqrt(3) / 4
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 3n + 1
-        rs[base,   :] = [ax,        ay        ]   # A
-        rs[base+1, :] = [ax + 0.5,  ay        ]   # B
-        rs[base+2, :] = [ax + 0.25, ay + sq3_4]   # C
-    end
-    return rs
-end
-
 
 """
     kagome_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, t_BC, cutoff, maxdim) -> TBHamiltonian
@@ -133,38 +98,6 @@ end
 # ============================================================
 
 """
-    lieb_positions(Lx, Ly) -> Matrix{Float64}
-
-Return the (3·2^L × 2) real-space atom-position matrix for a Lieb lattice
-of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO site ordering.
-
-For total 1-indexed site i:
-  n_cell  = (i-1) ÷ 3          (0-indexed unit cell, row-major)
-  s       = (i-1) % 3 + 1      (sublattice: A=1, B=2, C=3)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
-
-Atom positions (lattice vectors a₁=(1,0), a₂=(0,1)):
-  A: (ix,       iy      )   corner
-  B: (ix + 0.5, iy      )   x-edge center
-  C: (ix,       iy + 0.5)   y-edge center
-"""
-function lieb_positions(Lx::Int, Ly::Int)
-    Nx   = 2^Lx
-    N_uc = 2^(Lx + Ly)
-    rs   = Matrix{Float64}(undef, 3 * N_uc, 2)
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        base = 3n + 1
-        rs[base,   :] = [ix,       iy       ]   # A
-        rs[base+1, :] = [ix + 0.5, iy       ]   # B
-        rs[base+2, :] = [ix,       iy + 0.5 ]   # C
-    end
-    return rs
-end
-
-
-"""
     lieb_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian
 
 Build a Lieb tight-binding Hamiltonian as a `TBHamiltonian`.
@@ -237,41 +170,6 @@ end
 # ============================================================
 # 3. Honeycomb sublattice lattice
 # ============================================================
-
-"""
-    honeycomb_sublattice_positions(Lx, Ly) -> Matrix{Float64}
-
-Return the (2·2^L × 2) real-space atom-position matrix for a honeycomb
-lattice of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
-site ordering.
-
-For total 1-indexed site i:
-  n_cell = (i-1) ÷ 2          (0-indexed unit cell, row-major)
-  s      = (i-1) % 2 + 1      (sublattice: A=1, B=2)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
-
-Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,       iy·√3/2          )
-  B: (ix + iy/2 + ½,   iy·√3/2 + √3/6  )   displaced along the intra-cell bond
-"""
-function honeycomb_sublattice_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 2 * N_uc, 2)
-    sq3_2 = sqrt(3) / 2
-    sq3_6 = sqrt(3) / 6
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 2n + 1
-        rs[base,   :] = [ax,        ay         ]   # A
-        rs[base+1, :] = [ax + 0.5,  ay + sq3_6 ]   # B
-    end
-    return rs
-end
-
 
 """
     honeycomb_sublattice_hamiltonian(Lx, Ly[, t]; cutoff, maxdim) -> TBHamiltonian
@@ -434,44 +332,6 @@ end
 # ============================================================
 # 4. Dice (T3) lattice
 # ============================================================
-
-"""
-    dice_positions(Lx, Ly) -> Matrix{Float64}
-
-Return the (3·2^L × 2) real-space atom-position matrix for a dice (T3)
-lattice of 2^Lx × 2^Ly unit cells (L = Lx+Ly), consistent with the MPO
-site ordering.
-
-For total 1-indexed site i:
-  n_cell = (i-1) ÷ 3          (0-indexed unit cell, row-major)
-  s      = (i-1) % 3 + 1      (sublattice: A=1 hub, B=2 rim, C=3 rim)
-  ix = n_cell % Nx,  iy = n_cell ÷ Nx
-
-Atom positions (triangular Bravais vectors a₁=(1,0), a₂=(½,√3/2)):
-  A: (ix + iy/2,        iy·√3/2        )   at 0·(a₁+a₂)/3
-  B: (ix + iy/2 + ½,    iy·√3/2 + √3/6)   at 1·(a₁+a₂)/3
-  C: (ix + iy/2 + 1,    iy·√3/2 + √3/3)   at 2·(a₁+a₂)/3
-"""
-function dice_positions(Lx::Int, Ly::Int)
-    Nx    = 2^Lx
-    N_uc  = 2^(Lx + Ly)
-    rs    = Matrix{Float64}(undef, 3 * N_uc, 2)
-    sq3_2 = sqrt(3) / 2
-    sq3_6 = sqrt(3) / 6
-    sq3_3 = sqrt(3) / 3
-    for n in 0:N_uc-1
-        ix   = n % Nx
-        iy   = div(n, Nx)
-        ax   = ix + iy * 0.5
-        ay   = iy * sq3_2
-        base = 3n + 1
-        rs[base,   :] = [ax,        ay        ]   # A: origin
-        rs[base+1, :] = [ax + 0.5,  ay + sq3_6]   # B: (a1+a2)/3
-        rs[base+2, :] = [ax + 1.0,  ay + sq3_3]   # C: 2(a1+a2)/3
-    end
-    return rs
-end
-
 
 """
     dice_hamiltonian(Lx, Ly[, t]; t_AB, t_AC, cutoff, maxdim) -> TBHamiltonian

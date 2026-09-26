@@ -195,9 +195,10 @@ the affected golden cases in the same commit.
 - [ ] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
 - [x] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
       (moved in tier1/move-auxdof; name kept: the rename is left to Tier 2's `_project_aux_sectors`)
-- [ ] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
+- [x] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
       junction geometry, `geometry_uc` closures) → `lattice/Geometry.jl` with one `(Lx, Ly)`
-      signature.
+      signature. (moved in tier1/move-geometry) Signatures unchanged (the one `(Lx, Ly)`
+      signature is Tier 3); the `geometry_uc` closures stay inline in their builders.
 - [x] `_reconstruct_ldos_moment_columns` (GPU) → `solvers/kpm/kernels.jl`; move its test out of
       `test/gpu_mps_ldos.jl`. (moved in tier1/move-solvers)
 

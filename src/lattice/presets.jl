@@ -1,6 +1,6 @@
 # presets.jl — preset QTCI model Hamiltonians, all returning an MPO: the 1D
 # HUniform/HSSH/HAAH chains and the 2D HUniform2D*, HChern8, H2DChernhex and
-# HQC2Dsquare lattices. Split from lattice/2Dlattice_tk.jl; model_registry.jl
+# HQC2Dsquare lattices. Split from lattice/2Dlattice_tk.jl; core/ModelRegistry.jl
 # builds them by name.
 
 # ============================================================

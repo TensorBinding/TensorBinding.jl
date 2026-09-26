@@ -414,47 +414,6 @@ end
 # Per-geometry builders (internal)
 # ============================================================
 
-# ---- Geometry functions (i -> position, 1-indexed) ----
-
-_chain_geometry() = i -> Float64[i]
-
-function _square_geometry(Nx)
-    return i -> Float64[(i-1) % Nx, (i-1) ÷ Nx]
-end
-
-function _tri_geometry(Nx)
-    function pos(i)
-        ix = (i-1) % Nx
-        iy = (i-1) ÷ Nx
-        x  = Float64(ix) + 0.5 * (iy % 2)
-        y  = iy * sqrt(3) / 2
-        return Float64[x, y]
-    end
-    return pos
-end
-
-function _tri_bravais_geometry(Nx)
-    function pos(i)
-        ix = (i-1) % Nx
-        iy = (i-1) ÷ Nx
-        x  = Float64(ix) + 0.5 * iy
-        y  = iy * sqrt(3) / 2
-        return Float64[x, y]
-    end
-    return pos
-end
-
-function _hex_geometry(Nx)
-    function pos(i)
-        ix = (i-1) % Nx
-        iy = (i-1) ÷ Nx
-        x  = 3.0*(ix÷2) + Float64(ix%2) + (iy%2) * (Float64(ix%2) - 0.5)
-        y  = iy * sqrt(3)/2
-        return Float64[x, y]
-    end
-    return pos
-end
-
 function _build_chain_1d(t, L, N, sites;
                          scale=nothing,
                          tol=1e-8,
@@ -740,16 +699,6 @@ function _build_sublattice(geometry, params, L;
     return H
 end
 
-
-function _preset_geometry(geometry, Nx)
-    geometry in ("uniform", "ssh", "aah", "chain_1d") && return _chain_geometry()
-    geometry == "square_2d"    && return _square_geometry(Nx)
-    geometry == "hex_2d"       && return _hex_geometry(Nx)
-    geometry == "triangular_2d"     && return _tri_geometry(Nx)
-    geometry == "triangular_bravais" && return _tri_bravais_geometry(Nx)
-    return nothing
-end
-
 # Rough scale estimates for known geometries (used when scale=nothing). `mparams` is the
 # parameter string _build_preset forwards to build_hamiltonian, if any.
 function _estimate_scale(geometry, params; mparams::AbstractString="")
@@ -784,79 +733,6 @@ function _chernhex_scale(params, mparams::AbstractString)
     return max(6.0 * t, 1.1 * (3.0 * t + 6.0 * abs(t2) + Mmax))
 end
 
-
-# ============================================================
-# Geometry helpers
-# ============================================================
-
-"""
-    honeycomb_positions(L; Lx=L÷2) -> Matrix{Float64}
-
-Generate `N = 2^L` physical honeycomb positions consistent with the
-quantics row-major encoding `n = ix + iy * 2^Lx`, bond length = 1.
-
-The lattice is an armchair ribbon: even rows have intra-row bonds
-`(2k, 2k+1)` and odd rows have intra-row bonds `(2k+1, 2k+2)`, with
-all inter-row bonds `(iy, ix) ↔ (iy+1, ix)`.
-
-Returns an `N × 2` matrix where row `i` (1-indexed) is the 2D position
-of quantics site `i-1`.
-"""
-function honeycomb_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _hex_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
-
-"""
-    square_positions(L; Lx=L÷2) -> Matrix{Float64}
-
-Physical positions for the `2^L`-site square lattice in quantics row-major
-encoding `n = ix + iy·2^Lx`.  Site `i` (1-indexed) maps to `(ix, iy)`.
-"""
-function square_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _square_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
-
-"""
-    triangular_positions(L; Lx=L÷2) -> Matrix{Float64}
-
-Physical positions for the `2^L`-site triangular lattice in quantics row-major
-encoding `n = ix + iy·2^Lx`, bond length = 1.  Odd rows are offset by 0.5 in x:
-`x = ix + 0.5·(iy % 2)`,  `y = iy·√3/2`.
-"""
-function triangular_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _tri_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
-
-"""
-    triangular_bravais_positions(L; Lx=L÷2) -> Matrix{Float64}
-
-Physical positions for the `2^L`-site Bravais triangular lattice in quantics
-row-major encoding `n = ix + iy·2^Lx`, bond length = 1.
-Bravais vectors a1=(1,0), a2=(1/2,√3/2):  `x = ix + iy/2`,  `y = iy·√3/2`.
-"""
-function triangular_bravais_positions(L::Int; Lx::Int = L ÷ 2)
-    N  = 2^L
-    Nx = 2^Lx
-    g  = _tri_bravais_geometry(Nx)
-    rs = Matrix{Float64}(undef, N, 2)
-    for i in 1:N; rs[i, :] = g(i); end
-    return rs
-end
 
 # ============================================================
 # Geometry utilities

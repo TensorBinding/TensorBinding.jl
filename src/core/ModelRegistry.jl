@@ -1,7 +1,7 @@
-# model_registry.jl — MODEL_REGISTRY and the build_hamiltonian dispatcher for
-# the preset builders in presets.jl, and the _geom_positions helpers that map a
-# geometry name to its *_positions table in sublattice.jl.
-# Split from lattice/2Dlattice_tk.jl.
+# ModelRegistry.jl — MODEL_REGISTRY and the build_hamiltonian dispatcher for
+# the preset builders in lattice/presets.jl. The _geom_positions helpers that
+# map a geometry name to its *_positions table live in lattice/geometry.jl.
+# Split from lattice/2Dlattice_tk.jl (as lattice/model_registry.jl).
 
 # ============================================================
 # 1. Model registry + build_hamiltonian dispatcher
@@ -96,13 +96,3 @@ function build_hamiltonian(model::AbstractString, Lx::Integer, Ly::Integer;
     extra = Dict(k=>v for (k,v) in p if !(k in required))
     return fn(Lx, Ly, pos...; kw_defaults..., extra...)
 end
-
-
-# ============================================================
-# 2. Geometry helpers for spatial LDOS plots
-# ============================================================
-
-_geom_positions(::Val{:honeycomb}, Lx, Ly) = honeycomb_sublattice_positions(Lx, Ly)
-_geom_positions(::Val{:kagome},    Lx, Ly) = kagome_positions(Lx, Ly)
-_geom_positions(::Val{:lieb},      Lx, Ly) = lieb_positions(Lx, Ly)
-_geom_positions(::Val{:dice},      Lx, Ly) = dice_positions(Lx, Ly)

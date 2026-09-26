@@ -38,3 +38,10 @@ Pages   = ["core/TBSystem.jl"]
 Modules = [TensorBinding]
 Pages   = ["core/AuxDOF.jl"]
 ```
+
+## Model Registry
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/ModelRegistry.jl"]
+```

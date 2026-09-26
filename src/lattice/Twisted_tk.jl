@@ -6,40 +6,8 @@
 # Depends on: utils.jl, Hamiltonian.jl, 2D_lattice.jl, TBSystem.jl
 
 # ─────────────────────────────────────────────────────────────────
-# 1.  Real-space lattice positions
+# 1.  Real-space lattice positions: lattice_positions lives in lattice/geometry.jl
 # ─────────────────────────────────────────────────────────────────
-
-"""
-    lattice_positions(lattice, Lx, Ly; angle_deg=0.0) -> Matrix{Float64}
-
-Return an N×2 matrix of real-space positions for a 2^Lx × 2^Ly patch of
-`lattice ∈ {:square, :triangular, :honeycomb}`, optionally rotated by
-`angle_deg` degrees about the geometric centroid of the lattice.
-
-Site ordering matches the quantics row-major encoding: `n = ix + iy·2^Lx` (0-indexed).
-"""
-function lattice_positions(lattice::Symbol, Lx::Int, Ly::Int;
-                           angle_deg::Real = 0.0)
-    L = Lx + Ly
-    rs = if lattice === :square
-        square_positions(L; Lx=Lx)
-    elseif lattice === :triangular
-        triangular_positions(L; Lx=Lx)
-    elseif lattice === :honeycomb
-        honeycomb_positions(L; Lx=Lx)
-    else
-        error("Unknown lattice :$lattice.  Choose :square, :triangular, or :honeycomb.")
-    end
-
-    if !iszero(angle_deg)
-        θ      = angle_deg * π / 180
-        c, s   = cos(θ), sin(θ)
-        R      = [c -s; s c]
-        center = vec(sum(rs, dims=1)) / size(rs, 1)
-        rs     = Matrix{Float64}(((R * (rs' .- center)) .+ center)')
-    end
-    return rs
-end
 
 
 # ─────────────────────────────────────────────────────────────────

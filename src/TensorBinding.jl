@@ -52,27 +52,33 @@ export MPO, MPS, OpSum, expect, inner, siteinds
 #   position_spaces/KBonacci.jl — projected k-bonacci spaces (Tribonacci,
 #                                   Tetranacci, …) on the binary register with
 #                                   no k consecutive ones (uses TBSystem, Fibonacci)
+#   lattice/geometry.jl        — real-space geometry: i -> position closures and
+#                                 _preset_geometry, the *_positions tables (preset,
+#                                 sublattice and T/Y-junction lattices),
+#                                 _geom_positions, lattice_positions and
+#                                 _resolve_2d_geometry (uses TBSystem)
 #   lattice/masks2d.jl         — diagonal row/column/checkerboard mask MPOs for
 #                                 the 2D row-major layout (uses Utils' sigma_d/u)
 #   lattice/hopping2d.jl       — binary shift MPOs and 2D kinetic/hopping MPO
 #                                 builders (uses Utils, masks2d)
 #   lattice/presets.jl         — preset QTCI model Hamiltonians H* (uses
 #                                 Hamiltonian, hopping2d)
+#   core/ModelRegistry.jl      — MODEL_REGISTRY, _parse_param_string and the
+#                                 build_hamiltonian dispatcher (uses presets)
 #   lattice/sublattice.jl      — kagome/Lieb/honeycomb/dice/SSH sublattice
-#                                 Hamiltonians and positions (uses Utils,
-#                                 TBSystem, masks2d, hopping2d)
-#   lattice/model_registry.jl  — MODEL_REGISTRY, build_hamiltonian and
-#                                 _geom_positions (uses presets, sublattice)
+#                                 Hamiltonians (uses Utils, TBSystem, masks2d,
+#                                 hopping2d, geometry)
 #   lattice/NNNeighbor_tk.jl   — generic nth-neighbor hopping accumulator
 #                                 add_hopping_2D! (uses TBSystem, masks2d,
-#                                 hopping2d, sublattice)
+#                                 hopping2d, sublattice, geometry)
 #   lattice/Flake_tk.jl        — smooth flake masking via QTCI SDFs (uses TBSystem)
 #   lattice/Bilayer_tk.jl      — bilayer/multilayer commensurate-stacking
-#                                 Hamiltonians (uses TBSystem, hopping2d, sublattice)
+#                                 Hamiltonians (uses TBSystem, hopping2d, sublattice,
+#                                 geometry)
 #   lattice/Twisted_tk.jl      — twisted multilayer Hamiltonians (uses TBSystem,
-#                                 Bilayer_tk)
+#                                 Bilayer_tk, geometry)
 #   lattice/TJunction_tk.jl    — T/Y-junction geometries (uses TBSystem, Hamiltonian,
-#                                 MPOTools)
+#                                 MPOTools, geometry)
 #   solvers/DMRG_tk.jl     — ground-state and spectral DMRG, and the DMRG spectral
 #                             bounds _estimate_spectral_bounds/_ensure_scale! that
 #                             every KPM caller uses (uses TBSystem)
@@ -141,11 +147,12 @@ include("core/AuxDOF.jl")
 include("position_spaces/Fibonacci.jl")
 include("position_spaces/MetallicMean.jl")
 include("position_spaces/KBonacci.jl")
+include("lattice/geometry.jl")
 include("lattice/masks2d.jl")
 include("lattice/hopping2d.jl")
 include("lattice/presets.jl")
+include("core/ModelRegistry.jl")
 include("lattice/sublattice.jl")
-include("lattice/model_registry.jl")
 include("lattice/NNNeighbor_tk.jl")
 include("lattice/Flake_tk.jl")
 include("lattice/Bilayer_tk.jl")
