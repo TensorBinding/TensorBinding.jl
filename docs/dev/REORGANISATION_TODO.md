@@ -191,6 +191,25 @@ the affected golden cases in the same commit.
       converged value and differ from each other by ~19 %, so these bubbles need a
       convergence check in `maxdim` on projected spaces.
 
+### Found by the Tier 2 aux and density kernels (2026-09-26; not fixed, decision needed)
+
+- [ ] `_project_spin_sector` on a spin site inside the MPO (`add_spin!(H; position=:post)`
+      followed by `add_superconductivity!(H, Δ; position=:post)`, sites `[pos…, spin, nambu]`)
+      drops every site after the spin site from the MPO, while the returned `sites` keep
+      the Nambu index; `_project_aux_block` keeps them. Kept as one explicit line in
+      `_project_spin_sector`.
+- [ ] The density helpers differ from `get_density` in more than their method symbols:
+      `_get_projector(:KPM)` expands any cached Chebyshev list, also one shorter than
+      `Nchebychev`, and with cutoff 1e-8 whatever its `cutoff`; its `:sp2` runs 40
+      iterations where `get_density` runs 30; RPA `P_method=:kpm` builds a fresh uncached
+      list on every call and prints "Computed T_n …" (the raw `KPM_Tn`'s `verbose=true`
+      default) even with `verbose=false`; `get_density` checks the density cache before the
+      method (a cached McWeeny matrix answers `method=:kpm`), the helpers for purification
+      only. All kept, as keyword choices of the shared dispatcher `_density_matrix`.
+- [ ] The projection chain takes the Nambu and spin sectors as `1:2`, the probe loops the
+      Nambu sectors as `1:dim(nambu index)` and the spin sectors as `1:2`: the same for every
+      Nambu index the package builds (dimension 2); kept as they were.
+
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
@@ -401,11 +420,32 @@ the affected golden cases in the same commit.
       record through a local definition. Not done: `_jackson_kernel` stays, because it is
       not `_kpm_kernel` under any normalisation (see "Found by the Tier 2 KPM kernels"), and
       no `normalize` keyword was added, since no caller would use it without changing values.*
-- [ ] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
+- [x] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
       8-keyword block copied into ~10 signatures; one `_project_aux_sectors` replacing the
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
       projectors (`project_aux`, `_project_aux_block`, `_project_spin_sector`, `contract_nh_block`).
-- [ ] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
+      *`core/AuxDOF.jl` §8–9 (tier2/aux). A struct, because the chain needs a flag, a
+      selector, an Index and a side per DOF and the low-level `get_bands` supplies its
+      indices instead of detecting them: `AuxProjection(nambu, spin, layer, sublat)` of
+      `AuxDOFProjection(on, sector, index, side)`, built by `_aux_projection(H; <the eight
+      keywords>, autoenable)` (`_autoenable_proj` + `aux_site` detection) in the seven
+      TBHamiltonian bodies, and from the explicit keywords in the low-level `get_bands`;
+      the public keywords are unchanged. `_project_aux_sectors(T, aux; project, spin_index,
+      sublattice)` is the chain of `get_bands`, `get_ldos_spatial(:mpo)`, `get_bands_gpu`
+      and `get_ldos_spatial_gpu` (the GPU passes `project=_project_aux_gpu`), in the old
+      accumulation order (the spin step's 2D comprehension included). Projectors: two
+      kernels, `_project_end_site` (one-hot pair, keeps real operators real) behind
+      `project_aux` and `contract_nh_block`, and `_block_projector` + `_absorb_aux_site`
+      (ComplexF64, any site) behind `_project_aux_block` and `_project_spin_sector`; they
+      stay apart because merging would change element types, and the wrappers keep how
+      the site is found, their checks and messages. `_aux_setup` is now a view of the
+      struct (golden-pinned); `get_ldos_spatial_mps_gpu` keeps its rejection test (building
+      the struct would run the index detection first). Outputs bit for bit unchanged.*
+- [x] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
+      *`core/AuxDOF.jl` §10 (tier2/aux): `probe_state(H, x)` (position probe, or |x, x⟩ on
+      an exciton register) and `probe_state(H, x, σ)` with `σ` from `_probe_sectors(aux)`
+      (`_ldos_make_psi0`), in `get_ldos_online`, `get_ldos_spatial` (`:mps` and the `:mpo`
+      probe dictionary) and both stochastic DOS.*
 - [x] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
       constructor; delete the six positional overloads.
       *tier2/ctor: the 19 positional calls in `src` (chain, Haldane, custom, the preset
@@ -457,8 +497,18 @@ the affected golden cases in the same commit.
       are bit for bit those of 0a8e5cb (2018 calls, tensor by tensor). One error type moved:
       `interlayer_mpo(:honeycomb, :Bernal, Lx, Ly, sites)` with `Lx + Ly == 1` and a `sites`
       vector of the wrong length throws DimensionMismatch instead of AssertionError.*
-- [ ] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
+- [x] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
       `_get_projector` in Topology); `_purified_pair` for the ρ± blocks in Purification.
+      *`physics/Purification.jl` §1 and §5 (tier2/aux): `get_density` keeps its position-space
+      and cache checks and calls `_density_matrix(H, method; …, Tn, store)`, the one dispatch
+      over `:mcweeny`/`:sp2`/`:kpm`. `_get_density_matrix` and `_get_projector` are not
+      deleted (golden-pinned by name, with their error texts) but are translation layers over
+      it: each keeps its accepted symbols (`:purification` + `purify_method`, `:KPM`), its
+      cache rule, prints and defaults (listed under "Found by the Tier 2 aux and density
+      kernels"), and the pending bugs stay (θ(x − μ) coefficients, RPA purification without
+      ϵF). `_purified_pair(guess, a₊, a₋; …)` purifies the two initial guesses of `sign_mpo`,
+      `get_ldos_drho` and `get_dos_drho`. Outputs, caches and prints bit for bit unchanged.
+      Not covered: `get_C_gpu`'s own GPU McWeeny/SP2 loops (the GPU-wrapper item below).*
 - [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
       driver (3 copies); magnon functions as `mode=:magnetic`.
       *`physics/rpa/cheb2d.jl` §2: `_cheb2d_setup`, the plain (m,n) sweep `_cheb2d_pair_sweep!`,
