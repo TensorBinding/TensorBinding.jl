@@ -367,11 +367,26 @@ the affected golden cases in the same commit.
       its analytic bound, the multi-atom lattices their builder defaults: see "Found by
       the Tier 2 scale maker"); test/scale_maker.jl.*
 
-- [ ] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
+- [x] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
       2D kinetic builders; retire `generate_kin_u/d` in favour of `shift_mpo`.
-- [ ] `_sublattice_bond` + `_sublattice_setup` replacing ~12 repeated bond blocks in
+      *af55259: `masked_shift_hopping` (lattice/hopping2d.jl) is the body of the seven NNN
+      builders (`kineticintra2DNNN` & co. keep their names and assertions); `src_mask` names
+      the mask (`:xplus`, `(:xplus, :even)`, `(:xplus, :checker)`, … or an MPO). The SSH
+      builder and `_bernal_interlayer_mpo` call `shift_mpo`. `generate_kin_u/d` stay as
+      public wrappers (documented; golden_lattice calls them by name), still used by
+      `add_hopping_2D!`, where their `num_site` assertion is the only thing that rejects a
+      projected (Fibonacci) position space, and by `add_soc!` (core/AuxDOF.jl).*
+- [x] `_sublattice_bond` + `_sublattice_setup` replacing ~12 repeated bond blocks in
       kagome/lieb/honeycomb/dice; `_basis_positions` replacing 4 identical position loops;
       `sum_mpos(terms; cutoff)`.
+      *af55259: all 18 bond blocks of the kagome/Lieb/honeycomb/honeycomb-NNN/dice/SSH
+      builders; `_basis_positions` (Bravais vectors + basis) for the four sublattice position
+      tables and `_closure_positions` for the four preset ones; `sum_mpos` (core/MPOTools.jl,
+      a left fold of `+(a, b; cutoff)`) in the sublattice builders, four presets, the
+      T-junction lattice and the multilayer/twisted layer sums, in their old order. Outputs
+      are bit for bit those of 0a8e5cb (2018 calls, tensor by tensor). One error type moved:
+      `interlayer_mpo(:honeycomb, :Bernal, Lx, Ly, sites)` with `Lx + Ly == 1` and a `sites`
+      vector of the wrong length throws DimensionMismatch instead of AssertionError.*
 - [ ] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
       `_get_projector` in Topology); `_purified_pair` for the ρ± blocks in Purification.
 - [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
