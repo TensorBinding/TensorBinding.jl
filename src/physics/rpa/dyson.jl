@@ -11,15 +11,16 @@
 # the Wynn ε-accelerated Neumann series (wynn_epsilon, rpa_wynn_from_bubbles,
 # get_rpa_susceptibility_wynn; its k-space readout get_spect_k is in
 # physics/qft/conjugation.jl) and the transverse-spin channel (get_magnon_*; its
-# spin-sector projector _project_spin_sector is in core/AuxDOF.jl).
-# Split verbatim from the former physics/RPA_tk.jl.
+# spin-sector projector _project_spin_sector is in core/AuxDOF.jl). The three Wynn
+# drivers are thin wrappers over one series kernel, _rpa_wynn_series.
+# Split from the former physics/RPA_tk.jl.
 #
 # Entry points: get_rpa_susceptibility, get_rpa_susceptibility_wynn,
 #   rpa_wynn_from_bubbles, rpa_from_bubble_diag, get_magnon_bubble,
 #   get_magnon_susceptibility, get_magnon_susceptibility_wynn.
 # Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, core/AuxDOF.jl,
-#   physics/rpa/bubble.jl, physics/qft/conjugation.jl* (* = included later; see the
-#   source map in src/TensorBinding.jl).
+#   physics/rpa/bubble.jl, physics/qft/conjugation.jl (see the source map in
+#   src/TensorBinding.jl).
 
 # ============================================================
 # 1. Dyson solve
@@ -176,6 +177,64 @@ function wynn_epsilon(s::AbstractVector{<:Number})
 end
 
 
+# The Wynn-accelerated Neumann series behind rpa_wynn_from_bubbles,
+# get_rpa_susceptibility_wynn and get_magnon_susceptibility_wynn. For the i-th entry x
+# of `items` (a bubble MPO or a frequency) it prints `label(i, x)` when verbose, takes
+# Π₀ = bubble(x) and builds T₀ = Π₀, Tₙ = Tₙ₋₁·V·Π₀ (n = 1…K_max, each product
+# truncated to maxdim_apply/cutoff_apply), reads out sₙ(q) = −Im⟨q|Tₙ|q⟩ with
+# get_spect_k, and stores the partial sums Σₙ₌₀ᵏ sₙ and their Wynn ε estimates.
+# Returns (chi_partial, chi_wynn) with the layout the public functions document;
+# (nothing, nothing) when `items` is empty.
+function _rpa_wynn_series(bubble, items, MPOV::MPO; K_max::Int, maxdim_apply::Int,
+                          cutoff_apply::Real, verbose::Bool, label)
+    nω     = length(items)
+    n_wynn = K_max ÷ 2
+
+    chi_partial = nothing
+    chi_wynn    = nothing
+
+    for (i, x) in enumerate(items)
+        verbose && println(label(i, x))
+
+        Π0   = bubble(x)
+        term = deepcopy(Π0)
+        s0   = -imag.(get_spect_k(term))
+        nq   = length(s0)
+
+        if chi_partial === nothing
+            chi_partial = zeros(Float64, K_max+1, nω, nq)
+            chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
+        end
+
+        # Individual term contributions: spect_terms[n+1, q]
+        spect_terms       = zeros(Float64, K_max+1, nq)
+        spect_terms[1, :] = s0
+
+        for n in 1:K_max
+            term                = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
+            term                = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
+            spect_terms[n+1, :] = -imag.(get_spect_k(term))
+        end
+
+        # Partial sums (Wynn input)
+        partial_sums         = cumsum(spect_terms; dims=1)
+        chi_partial[:, i, :] = partial_sums
+
+        # Apply Wynn ε per q-point
+        for q in 1:nq
+            ests = wynn_epsilon(complex.(partial_sums[:, q]))
+            for m in 1:min(n_wynn, length(ests))
+                chi_wynn[m, i, q] = real(ests[m])
+            end
+        end
+
+        verbose && println("  done ($(K_max+1) terms, $n_wynn Wynn estimates)")
+    end
+
+    return chi_partial, chi_wynn
+end
+
+
 """
     rpa_wynn_from_bubbles(Π0_list, MPOV; K_max=6, maxdim_apply=200, cutoff_apply=1e-8,
                           verbose=false) -> (chi_partial, chi_wynn)
@@ -202,46 +261,9 @@ function rpa_wynn_from_bubbles(Π0_list::Vector{<:MPO}, MPOV::MPO;
                                 maxdim_apply::Int  = 200,
                                 cutoff_apply::Real = 1e-8,
                                 verbose::Bool      = false)
-    nω     = length(Π0_list)
-    n_wynn = K_max ÷ 2
-
-    chi_partial = nothing
-    chi_wynn    = nothing
-
-    for (i, Π0) in enumerate(Π0_list)
-        verbose && println("rpa_wynn_from_bubbles: bubble $i/$nω")
-        term = deepcopy(Π0)
-        s0   = -imag.(get_spect_k(term))
-
-        if chi_partial === nothing
-            nq          = length(s0)
-            chi_partial = zeros(Float64, K_max+1, nω, nq)
-            chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
-        end
-
-        spect_terms       = zeros(Float64, K_max+1, length(s0))
-        spect_terms[1, :] = s0
-
-        for n in 1:K_max
-            term                = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
-            term                = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
-            spect_terms[n+1, :] = -imag.(get_spect_k(term))
-        end
-
-        partial_sums         = cumsum(spect_terms; dims=1)
-        chi_partial[:, i, :] = partial_sums
-
-        for q in 1:length(s0)
-            ests = wynn_epsilon(complex.(partial_sums[:, q]))
-            for m in 1:min(n_wynn, length(ests))
-                chi_wynn[m, i, q] = real(ests[m])
-            end
-        end
-
-        verbose && println("  done ($(K_max+1) terms, $n_wynn Wynn estimates)")
-    end
-
-    return chi_partial, chi_wynn
+    nω = length(Π0_list)
+    return _rpa_wynn_series(identity, Π0_list, MPOV; K_max, maxdim_apply, cutoff_apply,
+                            verbose, label=(i, _) -> "rpa_wynn_from_bubbles: bubble $i/$nω")
 end
 
 
@@ -313,55 +335,10 @@ function get_rpa_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
     H_dn = mode == :magnetic ? _project_spin_sector(H, 2) : nothing
 
     nω     = length(ωlist)
-    n_wynn = K_max ÷ 2
-
-    chi_partial = nothing
-    chi_wynn    = nothing
-
-    for (i, ω) in enumerate(ωlist)
-        verbose && println("Wynn RPA (mode=$mode): ω $i/$nω  (ω = $ω)")
-
-        Π0 = if mode == :charge
-            get_bubble_mpo(H, H, ω; bubble_kw...)
-        else
-            get_bubble_mpo(H_up, H_dn, ω; bubble_kw...)
-        end
-
-        term = deepcopy(Π0)
-        s0   = -imag.(get_spect_k(term))
-        nq   = length(s0)
-
-        if chi_partial === nothing
-            chi_partial = zeros(Float64, K_max+1, nω, nq)
-            chi_wynn    = zeros(Float64, n_wynn,  nω, nq)
-        end
-
-        # Individual term contributions: spect_terms[n+1, i_ω, q]
-        spect_terms          = zeros(Float64, K_max+1, nq)
-        spect_terms[1, :]    = s0
-
-        for n in 1:K_max
-            term             = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
-            term             = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
-            spect_terms[n+1, :] = -imag.(get_spect_k(term))
-        end
-
-        # Partial sums (Wynn input)
-        partial_sums = cumsum(spect_terms; dims=1)
-        chi_partial[:, i, :] = partial_sums
-
-        # Apply Wynn ε per q-point
-        for q in 1:nq
-            ests = wynn_epsilon(complex.(partial_sums[:, q]))
-            for m in 1:min(n_wynn, length(ests))
-                chi_wynn[m, i, q] = real(ests[m])
-            end
-        end
-
-        verbose && println("  done ($(K_max+1) terms, $(n_wynn) Wynn estimates)")
-    end
-
-    return chi_partial, chi_wynn
+    bubble = mode == :charge ? (ω -> get_bubble_mpo(H, H, ω; bubble_kw...)) :
+                               (ω -> get_bubble_mpo(H_up, H_dn, ω; bubble_kw...))
+    return _rpa_wynn_series(bubble, ωlist, MPOV; K_max, maxdim_apply, cutoff_apply, verbose,
+                            label=(i, ω) -> "Wynn RPA (mode=$mode): ω $i/$nω  (ω = $ω)")
 end
 
 # ============================================================
@@ -455,46 +432,8 @@ function get_magnon_susceptibility_wynn(H::TBHamiltonian, MPOV::MPO,
     H_up = _project_spin_sector(H, 1)
     H_dn = _project_spin_sector(H, 2)
 
-    nω     = length(ωlist)
-    n_wynn = K_max ÷ 2
-
-    chi_partial = nothing
-    chi_wynn    = nothing
-
-    for (i, ω) in enumerate(ωlist)
-        verbose && println("Magnon Wynn RPA: ω $i/$nω  (ω = $ω)")
-
-        Π0   = get_bubble_mpo(H_up, H_dn, ω; verbose, kwargs...)
-        term = deepcopy(Π0)
-        s0   = -imag.(get_spect_k(term))
-        nq   = length(s0)
-
-        if chi_partial === nothing
-            chi_partial = zeros(Float64, K_max + 1, nω, nq)
-            chi_wynn    = zeros(Float64, n_wynn,    nω, nq)
-        end
-
-        spect_terms       = zeros(Float64, K_max + 1, nq)
-        spect_terms[1, :] = s0
-
-        for n in 1:K_max
-            term             = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
-            term             = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
-            spect_terms[n+1, :] = -imag.(get_spect_k(term))
-        end
-
-        partial_sums         = cumsum(spect_terms; dims=1)
-        chi_partial[:, i, :] = partial_sums
-
-        for q in 1:nq
-            ests = wynn_epsilon(complex.(partial_sums[:, q]))
-            for m in 1:min(n_wynn, length(ests))
-                chi_wynn[m, i, q] = real(ests[m])
-            end
-        end
-
-        verbose && println("  done ($(K_max+1) terms, $(n_wynn) Wynn estimates)")
-    end
-
-    return chi_partial, chi_wynn
+    nω = length(ωlist)
+    return _rpa_wynn_series(ω -> get_bubble_mpo(H_up, H_dn, ω; verbose, kwargs...),
+                            ωlist, MPOV; K_max, maxdim_apply, cutoff_apply, verbose,
+                            label=(i, ω) -> "Magnon Wynn RPA: ω $i/$nω  (ω = $ω)")
 end

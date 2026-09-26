@@ -374,8 +374,14 @@ the affected golden cases in the same commit.
       `sum_mpos(terms; cutoff)`.
 - [ ] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
       `_get_projector` in Topology); `_purified_pair` for the ρ± blocks in Purification.
-- [ ] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
+- [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
       driver (3 copies); magnon functions as `mode=:magnetic`.
+      *`physics/rpa/cheb2d.jl` §2: `_cheb2d_setup`, the plain (m,n) sweep `_cheb2d_pair_sweep!`,
+      `_tucker_bases`, `_tucker_components`, `_tucker_hadamard`, `_tucker_accumulate`;
+      `physics/rpa/dyson.jl`: `_rpa_wynn_series` behind `rpa_wynn_from_bubbles`,
+      `get_rpa_susceptibility_wynn` and `get_magnon_susceptibility_wynn` (tier2/rpa). Outputs and
+      verbose lines unchanged. The magnon functions stay public: folding them into
+      `mode=:magnetic` changes the API, so it moved to Tier 3.*
 - [ ] Timeev: `_rk4_step(rhs, …)` (2 copies), one `evolve_rk4_dm_*`, one trajectory loop;
       remove the double normalisation after `tdvp(normalize=true)`.
 - [ ] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
@@ -402,6 +408,10 @@ the affected golden cases in the same commit.
       `get_ldos_spatial_mps_gpu` four shapes, `get_ldos` MPS/MPO/Real/nothing, `thouless_pump`,
       `nh_spectrum_grid`, the four SCF drivers); an `SCFResult` struct.
 - [ ] Split `mode` into `output=:operator|:diagonal` and `algorithm=:mpo|:mps`.
+- [ ] RPA: `get_magnon_susceptibility(_wynn)` as deprecated aliases of
+      `get_rpa_susceptibility(_wynn)(…; mode=:magnetic)`, which already compute the same channel
+      (today the magnon functions forward any `kwargs...` to `get_bubble_mpo` and have their own
+      error messages); `get_magnon_bubble` likewise. Moved from Tier 2's RPA item.
 - [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases),
       `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
       `exciton_mpo` for `Exciton_Hamiltonian`, fix `get_bublle_expanded_from_Tn`.
