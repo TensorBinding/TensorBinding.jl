@@ -159,7 +159,9 @@ the affected golden cases in the same commit.
       `geometry_uc` uses a triangular basis; `get_Hamiltonian` silently ignores `ref_sites` for
       several geometries.
 - [ ] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
-- [ ] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
+- [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
+      *Gone with the single GPU warning threshold (tier2/gpuwrap): its extra `cutoff < 1e-5`
+      warning is deleted; like every GPU entry point it warns for a 32-bit type below 1e-6.*
 - [ ] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
 - [ ] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
 - [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
@@ -553,7 +555,8 @@ the affected golden cases in the same commit.
       kernels"), and the pending bugs stay (θ(x − μ) coefficients, fixed since by the v0.1.1
       merge; RPA purification without ϵF). `_purified_pair(guess, a₊, a₋; …)` purifies the two initial guesses of `sign_mpo`,
       `get_ldos_drho` and `get_dos_drho`. Outputs, caches and prints bit for bit unchanged.
-      Not covered: `get_C_gpu`'s own GPU McWeeny/SP2 loops (the GPU-wrapper item below).*
+      Not covered: `get_C_gpu`'s own GPU McWeeny/SP2 loops (the GPU-wrapper item below;
+      since tier2/gpuwrap they are `mcweeny_purify`'s and `sp2_purify`'s loops).*
 - [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
       driver (3 copies); magnon functions as `mode=:magnetic`.
       *`physics/rpa/cheb2d.jl` §2: `_cheb2d_setup`, the plain (m,n) sweep `_cheb2d_pair_sweep!`,
@@ -572,10 +575,58 @@ the affected golden cases in the same commit.
       `get_state_amplitude_trajectory_gpu`: `tdvp` already ends each half-sweep with
       `normalize!`, so only `tdvp_evolve` moved, by ≤ 4.5e-16. The two GPU sampled-trajectory
       loops keep their own loops (they sample on the fly instead of storing states).*
-- [ ] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
+- [x] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
       `_resolve_gpu_type` with a single warning threshold; `_gpu_log`.
+      *tier2/gpuwrap. The hook is `to_device(x, T)`: a shared kernel moves every tensor it
+      builds itself (one-hot and summing vectors, deltas, identities, probe states, position
+      operators) with it; the CPU default `_on_host` (core/Utils.jl) returns `x`, the GPU
+      wrappers pass `_to_gpu`. Kernels, each behind its CPU function and its GPU twin:
+      `_extract_diagonal` (`extract_diagonal_to_mps(_gpu)`); `_mps_to_diagonal`
+      (`mps_to_diagonal_mpo`, `_mps_to_diagonal_mpo_gpu`: `delta_type` keeps the GPU's
+      ComplexF32 deltas, `one_site` its one-site MPS, which the CPU still rejects with the
+      golden-pinned BoundsError); `_eval_block_mps` (also the GPU point, 1D-block and
+      all-sites evaluators: six copies gone, `value` gives the complex amplitudes);
+      `_dos_stochastic` (solvers/kpm/dos.jl: sampling and normalisation of both stochastic
+      DOS; the GPU's `continuum_only`, progress lines and GPU memory release are keywords);
+      `_mcweeny_iterate`, `_sp2_iterate`, `_linear_density_guess` (physics/Purification.jl:
+      `mcweeny_purify`, `sp2_purify`, `purification_initial_guess`, and on GPU `get_C_gpu`,
+      `_mcweeny_purify_gpu`, `_mcweeny_purify_mpo_gpu`, `_purification_initial_guess_gpu`;
+      the GPU truncates squares and updates with `cutoff` only and sums the SP2 expansion
+      with both: keywords `trunc`, `add_trunc`); `_chern_marker` (physics/Topology.jl:
+      `get_C_op_MPO_from_P` and `get_C_gpu`; keywords for the GPU's truncations of Q, C1–C4
+      and the flat operator, `Ck = +(Ck, -ck)` for both since `-1.0 * ck` would promote a
+      ComplexF32 site); `_project_end_site` (`project_aux`, `contract_nh_block`,
+      `_contract_nh_block_gpu`); `_nh_product_probe` (the ket/bra MPS of both stochastic NH
+      traces). `_to_gpu(x, T)` (ITensor, MPO, MPS) replaces `_to_gpu_mpo`/`_to_gpu_mps`
+      (six methods; the one-argument ones meant ComplexF32), `_mpo_to_f32`, `_onehot_gpu`
+      and every `cu` call (the evaluators' and `_project_aux_gpu`'s 0/1 vectors now keep the
+      tensor's element type instead of `cu`'s 32-bit cast); `_ensure_gpu(x, T; caller)` the
+      four `_ensure_gpu_mp*`. `_resolve_gpu_type` = `_gpu_type` + `_warn_gpu_cutoff` (32-bit
+      type with cutoff < 1e-6, `_resolve_gpu_type`'s old text), now also behind
+      `get_bands_gpu`, `get_ldos_spatial_gpu` (which still warns just before its recursion),
+      `get_exciton_ldos_spatial_gpu` and the two stochastic NH entry points (changelog).
+      `_gpu_log(msg; indent)` prints the "[gpu] " progress lines, text unchanged.
+      Checked old vs new on 175 cases (43 CPU, 132 GPU in ComplexF64/ComplexF32/Float64/Float32,
+      small `maxdim` so truncation binds): every value bit for bit, tensor by tensor, and
+      every printed line; only the intended warnings differ.
+      Left, and why: `density_profile_from_dm_gpu`'s `:complement` branch (it truncates
+      1 − diag with `maxdim`/`cutoff`, uploads the constant profile as ComplexF32 and
+      defaults `sites` to the diagonal's; the CPU subtracts without truncation); the NH
+      recurrences `_nh_diag_trace_scalar_online_gpu`, `_nh_diag_trace_online_gpu`,
+      `_nh_stochastic_online_gpu` (the CPU ones trace through `nh_ones_mps` without
+      truncating the diagonal, do not re-truncate P_k, weight with Float64 instead of
+      ComplexF64 factors and draw their probes from the global RNG in another order: a
+      wrapper would move the GPU results; they already share `chebyshev_foreach` and
+      `_nh_partial_step`); `_eval_diag_mps_gpu` (LSB-first; `_eval_diag_mps` uses `setelt`,
+      which has no element type to match); `_project_aux_gpu` (a dense |σ⟩⟨σ| projector, and
+      it accepts a one-site MPO, where `_project_end_site` has no neighbour to absorb into);
+      the LDOS/bands accumulations, trajectories, the exciton LDOS and convergence check and
+      the conductivity helpers (GPU code with no CPU kernel of the same operations). The
+      NH diagonal-trace entry points still have no precision warning (none was added). An
+      invalid `block_row`/`block_col` on the GPU NH path now throws ITensors' `onehot`
+      BoundsError instead of `_onehot_gpu`'s ErrorException.*
 - [x] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
       changing its output (decided 2026-09-25); a balanced tiler may come later as an opt-in
       keyword with today's behaviour as the default.
