@@ -406,9 +406,36 @@ the affected golden cases in the same commit.
       `get_bands` and `KPM_Tn_gpu` (no position space to ask) and the NH recursions
       (`A = Hh.mpo / scale`, no centre, a division: a different formula; hermitized
       Hamiltonians are binary-only).*
-- [ ] `chebyshev_foreach(f!, H̃, T₀; maxdim, cutoff)` working for MPO and MPS on any device,
+- [x] `chebyshev_foreach(f!, H̃, T₀; maxdim, cutoff)` working for MPO and MPS on any device,
       replacing ~22 hand-written three-term loops (6 KPM, 14 GPU, QFT, QPI) and 5 NH partial
       recurrences; one truncation policy.
+      *`solvers/kpm/recursion.jl` §2 (tier2/cheb): `chebyshev_foreach(f!, H̃, T₀, N; maxdim,
+      cutoff, T1, apply_trunc, add_trunc, post_trunc, two, negone)` calls `f!(n, T_n)` for
+      n = 0…N−1 (T₀ and T₁ always, as the loops did); each later term is one
+      `_chebyshev_step`. Not one truncation policy, which would move results: the loops
+      differ in which of `cutoff`/`maxdim` the product `apply(H̃, T)`, the sum and an extra
+      `truncate!` receive (five combinations), in the factor (`2`, `2.0`, GPU-typed `T(2)`)
+      and in `-T` vs `T(-1) * T`. Each is a keyword (the docstring tables them per caller),
+      so every output is bit for bit unchanged: checked old vs new, tensor by tensor, on
+      51 cases at small `maxdim` (CPU, and GPU in ComplexF64/ComplexF32/Float64;
+      `get_qpi` with the RNG seeded, since the scale of its impurity Hamiltonian is a
+      DMRG estimate from a random start and differs run to run). Routed: `KPM_Tn`,
+      `KPM_Tn_mps`, `_run_kpm_mps!`, `get_dos_trace`, `get_ldos_spatial(:mpo)` (the other
+      solvers/kpm sites already called `_run_kpm_mps!`), `get_bands`, `get_qpi`,
+      `KPM_Tn_gpu`, `get_ldos_spatial_gpu`, `get_ldos_spatial_mps_gpu`, `get_bands_gpu`;
+      the GPU exciton LDOS and stochastic DOS loops were copies of `_run_kpm_mps!` and now
+      call it with GPU tensors. NH: the T_k(A) of the five CPU (`nh_kpm_partials`,
+      `_nh_kpm_mps_ldos`, `_nh_scalar_online`, `_nh_diag_online`, `_nh_stochastic_online`)
+      and three GPU recurrences run on `chebyshev_foreach`; the partial recurrence P_k is
+      not a Chebyshev recursion and rides in `f!` in the old order (after T_k; before
+      T_{k+1} in `nh_kpm_partials`), its step shared as `_nh_partial_step` by six of them
+      (`nh_kpm_partials` writes `apply(2S, T)` and a second sum, the GPU stochastic trace
+      skips the S product at odd k by parity: both keep their own). Left as a loop:
+      `get_exciton_cheb_convergence_gpu`, whose two recursions run in lockstep and are
+      compared order by order; each of its steps is `_chebyshev_step`. The GPU loops keep
+      their `_gpu_gc!()` after each step; since the recursion drops T_{n−1} before calling
+      `f!`, a GC inside the callback (the LDOS and bands accumulators have one) can
+      already reclaim it.*
 - [x] `_kpm_energy_grid(H, ωs; kernel, …) -> (ω_r, W, denom, valid)` replacing 14 copies of the
       rescale/weights/valid block and 7 hand-written `π²·N·√(1−ω²)` normalisations.
       *`solvers/kpm/kernels.jl` §6 (tier2/kpmkernels): `_kpm_energy_grid(H, Ncheb, ωs; …)`
