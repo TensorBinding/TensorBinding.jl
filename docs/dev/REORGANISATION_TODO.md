@@ -170,6 +170,27 @@ the affected golden cases in the same commit.
 - [ ] `dice_hamiltonian` docstring says the bands reach ±3t; they reach ±3√2 t (the
       4.5|t| default still bounds them).
 
+### Found by the Tier 2 KPM kernels (2026-09-26; not fixed, decision needed)
+
+- [ ] `_jackson_kernel(N)` (rpa/cheb2d.jl, the `kernel=:jackson` option of the SVD/Tucker
+      cheb2d bubbles) has `(N − m)` where the Jackson kernel for N moments has `(N − m + 1)`:
+      it is the textbook g_m minus `cos(πm/(N+1))/(N+1)`, so g_0 = N/(N+1) instead of 1
+      (max deviation 1/(N+1): 0.1 at N = 9, 0.0066 at N = 151). Fixing it moves the pinned
+      `jackson_kernel_*` and low-rank cheb2d golden cases.
+- [ ] `get_qpi` accepts projected position spaces but is binary-only (the impurity sits
+      at the binary address `x0 − 1`, the QFT is over the binary register). With
+      `physical_projector` as T₀ a Fibonacci call now throws in the diagonal accumulation
+      (the projector leg-order bug listed under "Crashes"); before, it returned maps that
+      included the unphysical register states. A `_require_binary_position_space` guard
+      would give a clear error.
+- [ ] RPA bubbles on projected spaces: the density (`P_method=:kpm`) now has an empty
+      unphysical block, but `_build_heff`, the numerator and the 2L-site Green's function
+      (`KPM_Tn(Heff, …, sites_combined)`) still use ambient identities. On an L = 4
+      Fibonacci chain the physical block of `get_bubble_mpo` is the same before and after
+      the switch without truncation (3e-12); at `maxdim = 30` both are ~30 % off that
+      converged value and differ from each other by ~19 %, so these bubbles need a
+      convergence check in `maxdim` on projected spaces.
+
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
@@ -330,18 +351,56 @@ the affected golden cases in the same commit.
 
 ## Tier 2 — shared kernels (internal behaviour only)
 
-- [ ] `_scaled_hamiltonian(H; cutoff)` = `(1/scale)·(H − center·physical_projector(H))`,
+- [x] `_scaled_hamiltonian(H; cutoff)` = `(1/scale)·(H − center·physical_projector(H))`,
       replacing ~20 inline copies (some use `MPO(sites,"Id")` and mishandle projected spaces:
       `KPM_tk.jl` 1799, 1917, 1675; `QPI_tk.jl` 155).
+      *`solvers/kpm/recursion.jl` §1 (tier2/kpmkernels): a raw-MPO method
+      `(H_mpo, scale, center, identity; cutoff)` and a `TBHamiltonian` method (identity =
+      `physical_projector(H)` unless passed), both `(1 / scale) * +(H, (-center)·I; cutoff)`,
+      the only form in use; no `maxdim` option (no site truncates the shift by bond
+      dimension). 20 call sites (KPM_Tn(_mps), ldos, dos, exciton, qft/bands,
+      exciton_spectra, QPI, gpu/kpm ×4, gpu/bands, gpu/exciton ×2); binary outputs bit for
+      bit unchanged. Switched from `MPO(H.sites, "Id")` to `physical_projector`: the CPU and
+      GPU exciton LDOS, `get_exciton_bands/continuum`, `get_qpi`, `get_bands_gpu`,
+      `get_ldos_spatial_gpu`, `get_dos_stochastic_gpu`, and (as `identity_mpo` of the raw
+      `KPM_Tn`) the RPA `_get_density_matrix(:kpm)` and `_cheb2d_setup`. Reachable with a
+      projected space: only `get_qpi` and the RPA bubbles with `P_method=:kpm` (changelog);
+      the others are behind `_require_binary_position_space` or need a 2L-site exciton
+      register, which only binary spaces build. Left on the ambient identity: the raw-MPO
+      `get_bands` and `KPM_Tn_gpu` (no position space to ask) and the NH recursions
+      (`A = Hh.mpo / scale`, no centre, a division: a different formula; hermitized
+      Hamiltonians are binary-only).*
 - [ ] `chebyshev_foreach(f!, H̃, T₀; maxdim, cutoff)` working for MPO and MPS on any device,
       replacing ~22 hand-written three-term loops (6 KPM, 14 GPU, QFT, QPI) and 5 NH partial
       recurrences; one truncation policy.
-- [ ] `_kpm_energy_grid(H, ωs; kernel, …) -> (ω_r, W, denom, valid)` replacing 14 copies of the
+- [x] `_kpm_energy_grid(H, ωs; kernel, …) -> (ω_r, W, denom, valid)` replacing 14 copies of the
       rescale/weights/valid block and 7 hand-written `π²·N·√(1−ω²)` normalisations.
-- [ ] `_chebyshev_sum(Tn, coeffs; …)` replacing 6 weighted-sum copies; HODC variants become a
+      *`solvers/kpm/kernels.jl` §6 (tier2/kpmkernels): `_kpm_energy_grid(H, Ncheb, ωs; …)`
+      and `(Ncheb, ω_r; …)` for energies already rescaled, with `_rescaled_energies(H, ωs)`;
+      `allow_hodc=true` is `_dos_weight_matrix`, the default keeps the convolution kernels
+      and their `:hodc` error. 17 call sites (ldos ×2, dos ×2, exciton ×2,
+      `get_ldos_diag_from_Tn`, low-level `get_bands`, exciton_spectra ×2, QPI ×2, gpu ×5)
+      and 8 normalisations now `denom[iω]` (same expression, bit for bit).
+      `get_ldos_from_mun` (one scalar E) keeps its own.*
+- [x] `_chebyshev_sum(Tn, coeffs; …)` replacing 6 weighted-sum copies; HODC variants become a
       coefficient choice.
-- [ ] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
+      *`solvers/kpm/cached.jl` §3 (tier2/kpmkernels): each coefficient is a number or a
+      tuple of factors applied left to right, so `2 * T * g * k` stays `((T·2)·g)·k`;
+      `A = +(A, term; maxdim)` then `truncate!(A; cutoff)` as before. Used by
+      `get_density_from_Tn` (coefficients kept: the θ(x − μ) bug is still pending),
+      `get_Green_retarded_from_Tn`, `get_ldos_w_from_Tn`, both `_hodc` variants (their
+      weight vectors) and `_weighted_mpo_sum` (rpa/cheb2d.jl, after dropping |w| < tol).
+      The per-energy diagonal accumulators (`get_ldos_diag_from_Tn`, QPI, cheb2d
+      `_accumulate_scaled!`) and the NH reconstructions (no truncation, first term
+      unweighted) keep their loops; `_weighted_mpo_sum_gpu` (conductivity only) too.*
+- [x] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
       (RPA) and `nh_jackson_weights` (NH).
+      *tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
+      :jackson)[1:N]` (checked element by element for N = 1…4000) and is deleted; its eight
+      callers (nh/kpm.jl ×5, gpu/nh.jl ×3) call `_kpm_kernel`, and the golden case keeps its
+      record through a local definition. Not done: `_jackson_kernel` stays, because it is
+      not `_kpm_kernel` under any normalisation (see "Found by the Tier 2 KPM kernels"), and
+      no `normalize` keyword was added, since no caller would use it without changing values.*
 - [ ] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
       8-keyword block copied into ~10 signatures; one `_project_aux_sectors` replacing the
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
