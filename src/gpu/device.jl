@@ -5,8 +5,9 @@
 # it also carries the overview of the whole GPU toolkit (below) that opened that file.
 #
 # Main entry points (internal; every other src/gpu/ file uses them): _check_gpu,
-# _gpu_gc!, _to_gpu_mpo / _to_gpu_mps, _to_cpu_mpo / _to_cpu_mps, _resolve_gpu_type,
-# _ensure_gpu_mpo / _ensure_gpu_mps.
+# _gpu_gc!, _to_gpu (the one upload, also the `to_device` hook of the CPU kernels the
+# GPU wrappers call), _to_cpu_mpo / _to_cpu_mps, _resolve_gpu_type (with its halves
+# _gpu_type and _warn_gpu_cutoff), _ensure_gpu, _gpu_log.
 # Depends on: no other file of the package (ITensors/NDTensors only, and CUDA.jl
 # found through Base.loaded_modules).
 #
@@ -80,18 +81,31 @@
 #   (_weighted_mpo_sum_gpu and _hadamard_mpo_gpu are in gpu/conductivity.jl.)
 #
 # PRECISION (ELEMENT TYPES)
-#   The one-argument uploads _to_gpu_mpo(mpo) / _to_gpu_mps(mps) cast to
-#   ComplexF32 before cu(); the two-argument methods _to_gpu_mpo(mpo, T) /
-#   _to_gpu_mps(mps, T) upload with element type T. The entry points take T
+#   Every upload is _to_gpu(x, T), with element type T. The entry points take T
 #   from their `type` keyword (alias `dtype`), or from `dtype` alone for
 #   get_C_gpu and the NH-DOS and time-evolution entry points: ComplexF32 by
 #   default (ComplexF64 for the NH-DOS entry points), and a real type only
-#   where the docstring allows it, for a real Hamiltonian. Results moved back
-#   via _to_cpu_mpo / _to_cpu_mps are promoted to ComplexF64. ComplexF32
-#   eigendecomposition can produce NaN at very tight `cutoff` on large
-#   systems — functions on this path warn (without altering the value) if
-#   `cutoff` is below a recommended floor, typically 1e-4 to 1e-6 depending
-#   on the routine.
+#   where the docstring allows it, for a real Hamiltonian. A few internal steps
+#   upload with ComplexF32 whatever the entry point's type (a CPU MPO passed to
+#   density_profile_from_dm_gpu and its constant profile, the SCF Hartree deltas,
+#   the identity of _purification_initial_guess_gpu, _mcweeny_purify_gpu, the
+#   conductivity helpers). Results moved back via _to_cpu_mpo /
+#   _to_cpu_mps are promoted to ComplexF64. ComplexF32 eigendecomposition can
+#   produce NaN at very tight `cutoff` on large systems: the entry points warn
+#   (without altering the value) for a 32-bit element type with `cutoff < 1e-6`
+#   (_resolve_gpu_type; the NH diagonal-trace entry points do not warn).
+#
+# SHARED KERNELS
+#   Where a CPU kernel runs unchanged on GPU tensors, the GPU function is a thin
+#   wrapper that calls it with `to_device = _to_gpu`: diagonal extraction, the
+#   diagonal MPO of a profile and the block/point evaluators (core/Utils.jl), the
+#   stochastic DOS (solvers/kpm/dos.jl), the McWeeny/SP2 iterations and the
+#   linear initial guess (physics/Purification.jl), the Chern operator assembly
+#   (physics/Topology.jl), the NH block contraction and probe states
+#   (core/AuxDOF.jl, physics/nh/kpm.jl). Keywords of those kernels carry the
+#   truncations and element types in which the GPU steps differ. The rest is GPU
+#   code over the shared recursion chebyshev_foreach: the LDOS/bands accumulations,
+#   the NH recurrences, the exciton convergence check and the trajectories.
 #
 # REAL-SPACE / BIT-ORDERING CONVENTIONS
 #   Real-space sampling (_eval_mps_bigendian_gpu, _eval_block_mps_gpu, used by
@@ -142,103 +156,66 @@ end
 
 
 # ============================================================
-# 2. CPU ↔ GPU transfers and the element-type keyword
+# 2. CPU ↔ GPU transfers, the element-type keyword, progress lines
 # ============================================================
 
-# CPU F64 → CPU F32  (prerequisite before cu())
-function _mpo_to_f32(mpo::MPO)
-    return MPO([
-        let idx = inds(mpo[i])
-            ITensor(ComplexF32.(Array(mpo[i], idx...)), idx)
-        end
-        for i in 1:length(mpo)
-    ])
-end
+# The entries of an upload with element type T: a complex T casts them directly; a
+# real T drops their imaginary parts first, which is only valid for a tensor known
+# to be real-valued.
+_gpu_cast(::Type{T}, arr) where {T<:Complex} = T.(arr)
+_gpu_cast(::Type{T}, arr) where {T<:Real}    = T.(real.(arr))
 
-# CPU F64  →  GPU F32
-function _to_gpu_mpo(mpo::MPO)
-    _check_gpu("_to_gpu_mpo")
-    return _tb_cuda_module().cu(_mpo_to_f32(mpo))
-end
+"""
+    _to_gpu(x, T) -> x on the GPU
 
-# CPU MPO → GPU with explicit dtype (complex or real).
-# Complex: T.(arr) casts ComplexF64 → T directly.
-# Real:    real.(arr) discards zero imaginary parts, then casts to T.
-#          Only valid when the MPO is known to be real-valued.
-function _to_gpu_mpo(mpo::MPO, T::Type{<:Complex})
-    _check_gpu("_to_gpu_mpo")
-    cuda = _tb_cuda_module()
-    return MPO([
-        let idx = inds(mpo[i])
-            ITensors.itensor(cuda.CuArray(T.(Array(mpo[i], idx...))), idx...)
-        end
-        for i in 1:length(mpo)
-    ])
+Upload a CPU ITensor, MPO or MPS with element type `T` (each tensor copied densely;
+an MPO/MPS comes back with fresh orthogonality limits). The only CPU → GPU transfer
+of the package, and the `to_device` hook the GPU wrappers pass to the kernels they
+share with the CPU (whose CPU default `_on_host(x, T)` returns `x`).
+"""
+function _to_gpu(t::ITensor, ::Type{T}) where {T<:Number}
+    _check_gpu("_to_gpu")
+    idx  = inds(t)
+    data = _gpu_cast(T, vec(Array(dense(t), idx...)))   # vec: also a 0-dim (scalar) tensor
+    return ITensors.itensor(NDTensors.tensor(
+        NDTensors.Dense(_tb_cuda_module().CuArray(data)), idx))
 end
+_to_gpu(W::MPO, ::Type{T}) where {T<:Number} = MPO([_to_gpu(W[i], T) for i in 1:length(W)])
+_to_gpu(ψ::MPS, ::Type{T}) where {T<:Number} = MPS([_to_gpu(ψ[i], T) for i in 1:length(ψ)])
 
-function _to_gpu_mpo(mpo::MPO, T::Type{<:Real})
-    _check_gpu("_to_gpu_mpo")
-    cuda = _tb_cuda_module()
-    return MPO([
-        let idx = inds(mpo[i])
-            ITensors.itensor(cuda.CuArray(T.(real.(Array(mpo[i], idx...)))), idx...)
-        end
-        for i in 1:length(mpo)
-    ])
-end
-
-# CPU MPS  →  GPU F32 MPS
-function _to_gpu_mps(mps::MPS)
-    _check_gpu("_to_gpu_mps")
-    m      = _tb_cuda_module()
-    result = similar(mps)
-    for j in 1:length(mps)
-        idx    = inds(mps[j])
-        arr    = Array(mps[j], idx...)        # CPU: typeassert safe
-        result[j] = ITensors.itensor(m.cu(ComplexF32.(arr)), idx...)
-    end
-    return result
-end
-
-function _to_gpu_mps(mps::MPS, T::Type{<:Complex})
-    _check_gpu("_to_gpu_mps")
-    cuda = _tb_cuda_module()
-    result = similar(mps)
-    for j in 1:length(mps)
-        idx = inds(mps[j])
-        arr = Array(mps[j], idx...)
-        result[j] = ITensors.itensor(cuda.CuArray(T.(arr)), idx...)
-    end
-    return result
-end
-
-function _to_gpu_mps(mps::MPS, T::Type{<:Real})
-    _check_gpu("_to_gpu_mps")
-    cuda = _tb_cuda_module()
-    result = similar(mps)
-    for j in 1:length(mps)
-        idx = inds(mps[j])
-        arr = Array(mps[j], idx...)
-        result[j] = ITensors.itensor(cuda.CuArray(T.(real.(arr))), idx...)
-    end
-    return result
-end
-
-# Resolve the type/dtype kwarg pair into a single GPU element type and emit a
-# tight-cutoff NaN warning for 32-bit types. Called with the pair by the entry
-# points that accept real OR complex element types (KPM_Tn_gpu,
-# get_ldos_spatial_mps_gpu, get_dos_stochastic_gpu,
-# get_exciton_cheb_convergence_gpu, scf_magnetic_hubbard_gpu: ComplexF32 default;
-# ComplexF64 / Float32 / Float64 also valid — real types only for real H), and
-# with `dtype, nothing` by the complex-only get_C_gpu and trajectory entry points.
-function _resolve_gpu_type(caller::String, type, dtype, cutoff)
+# The GPU element type of an entry point: its `type` keyword, or the alias `dtype`
+# when given; both at once is an error unless they agree or `type` is left at its
+# default ComplexF32. The complex-only entry points (get_C_gpu, the NH-DOS and
+# trajectory entry points) have only `dtype` and pass `dtype, nothing`.
+function _gpu_type(caller::String, type, dtype)
     gpu_type = dtype === nothing ? type : dtype
     dtype !== nothing && dtype != type && type != ComplexF32 &&
         error("$caller: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
-    (gpu_type == ComplexF32 || gpu_type == Float32) && cutoff < 1e-6 &&
-        @warn "$caller: cutoff=$cutoff with 32-bit $gpu_type may produce NaN on large systems; use a 64-bit dtype or cutoff ≥ 1e-4."
     return gpu_type
 end
+
+# The one precision warning of the GPU entry points: a 32-bit element type
+# (ComplexF32 or Float32) with `cutoff < 1e-6`, where ComplexF32 eigendecompositions
+# can produce NaN on large systems. The cutoff is used as given.
+function _warn_gpu_cutoff(caller::String, gpu_type, cutoff)
+    (gpu_type == ComplexF32 || gpu_type == Float32) && cutoff < 1e-6 &&
+        @warn "$caller: cutoff=$cutoff with 32-bit $gpu_type may produce NaN on large systems; use a 64-bit dtype or cutoff ≥ 1e-4."
+    return nothing
+end
+
+# `_gpu_type` then `_warn_gpu_cutoff`: the GPU entry points resolve their element-type
+# keyword here (get_bands_gpu checks the type is complex in between,
+# get_ldos_spatial_gpu warns just before its recursion, as they did; the NH
+# diagonal-trace entry points take `dtype` as given and never warned).
+function _resolve_gpu_type(caller::String, type, dtype, cutoff)
+    gpu_type = _gpu_type(caller, type, dtype)
+    _warn_gpu_cutoff(caller, gpu_type, cutoff)
+    return gpu_type
+end
+
+# A progress line of the GPU entry points, "[gpu] msg" indented by `indent` steps
+# of two spaces; the callers guard it with their `verbose`/`printinfo` flags.
+_gpu_log(msg::AbstractString; indent::Integer = 1) = println(" "^(2 * indent), "[gpu] ", msg)
 
 function _to_cpu_mps(mps::MPS)
     result = similar(mps)
@@ -281,32 +258,12 @@ function _is_gpu_tensor(T::ITensor)
     return occursin("CuArray", string(typeof(data)))
 end
 
-function _ensure_gpu_mpo(W::MPO; caller::String = "_ensure_gpu_mpo")
-    flags = [_is_gpu_tensor(W[i]) for i in 1:length(W)]
-    all(flags) && return W
-    any(flags) && error("$caller: mixed CPU/GPU MPO tensors are not supported.")
-    return _to_gpu_mpo(W)
-end
-
-# Upload a CPU MPO with an explicit element type; already-GPU MPOs are returned
-# untouched (the caller chose their type at upload time).
-function _ensure_gpu_mpo(W::MPO, T::Type{<:Number}; caller::String = "_ensure_gpu_mpo")
-    flags = [_is_gpu_tensor(W[i]) for i in 1:length(W)]
-    all(flags) && return W
-    any(flags) && error("$caller: mixed CPU/GPU MPO tensors are not supported.")
-    return _to_gpu_mpo(W, T)
-end
-
-function _ensure_gpu_mps(ψ::MPS; caller::String = "_ensure_gpu_mps")
-    flags = [_is_gpu_tensor(ψ[i]) for i in 1:length(ψ)]
-    all(flags) && return ψ
-    any(flags) && error("$caller: mixed CPU/GPU MPS tensors are not supported.")
-    return _to_gpu_mps(ψ)
-end
-
-function _ensure_gpu_mps(ψ::MPS, T::Type{<:Number}; caller::String = "_ensure_gpu_mps")
-    flags = [_is_gpu_tensor(ψ[i]) for i in 1:length(ψ)]
-    all(flags) && return ψ
-    any(flags) && error("$caller: mixed CPU/GPU MPS tensors are not supported.")
-    return _to_gpu_mps(ψ, T)
+# An MPO or MPS on the GPU: returned untouched when all its tensors already are
+# (the caller chose their element type at upload time), uploaded with element type
+# `T` when none is; a mix of CPU and GPU tensors is an error.
+function _ensure_gpu(x::Union{MPO,MPS}, ::Type{T}; caller::String) where {T<:Number}
+    flags = [_is_gpu_tensor(x[i]) for i in 1:length(x)]
+    all(flags) && return x
+    any(flags) && error("$caller: mixed CPU/GPU $(x isa MPO ? "MPO" : "MPS") tensors are not supported.")
+    return _to_gpu(x, T)
 end

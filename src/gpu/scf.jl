@@ -75,8 +75,8 @@ Hamiltonians, densities and background profile are uploaded with; `ComplexF64`
 is safer at tight cutoffs. A real `type` is accepted for a real `H0`, but the
 ComplexF32 deltas of the Hartree MPOs then promote the loop to the matching
 complex type. ComplexF32 eigen-decompositions can NaN at very tight
-cutoffs: a warning is emitted whenever `cutoff < 1e-5` (whatever the `type`) and,
-for a 32-bit `type`, also below 1e-6; the requested `cutoff` is used as-is.
+cutoffs: a warning is emitted for a 32-bit `type` with `cutoff < 1e-6`; the
+requested `cutoff` is used as-is.
 
 The result carries `converged`, `iterations`, `rms_error`, `history`, the CPU
 fields `rho_up`, `rho_dn`, `density_up_mpo`, `density_dn_mpo`, `H_up`, `H_dn`,
@@ -108,7 +108,6 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
                                   verbose::Bool = true)
     _check_gpu("scf_magnetic_hubbard_gpu")
     gpu_type = _resolve_gpu_type("scf_magnetic_hubbard_gpu", type, dtype, cutoff)
-    cutoff < 1e-5 && @warn "scf_magnetic_hubbard_gpu: cutoff=$cutoff is below 1e-5; ComplexF32 eigen-decomposition may produce NaN — consider cutoff ≥ 1e-5."
 
     H0_up, H0_dn = _split_spin_channels(H0)
     sites = H0_up.sites
@@ -125,13 +124,13 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
         rho_up, rho_dn = initial_up, initial_dn
     end
 
-    rho_up_gpu = _to_gpu_mps(rho_up, gpu_type)
-    rho_dn_gpu = _to_gpu_mps(rho_dn, gpu_type)
-    bg_gpu = _to_gpu_mps(constant_mps(collect(sites), background), gpu_type)
-    H0_up_gpu = _to_gpu_mpo(H0_up.mpo, gpu_type)
-    H0_dn_gpu = _to_gpu_mpo(H0_dn.mpo, gpu_type)
-    Id_gpu = _to_gpu_mpo(MPO(collect(sites), "Id"), gpu_type)
-    U_gpu = U isa MPO ? _to_gpu_mpo(U, gpu_type) : nothing
+    rho_up_gpu = _to_gpu(rho_up, gpu_type)
+    rho_dn_gpu = _to_gpu(rho_dn, gpu_type)
+    bg_gpu = _to_gpu(constant_mps(collect(sites), background), gpu_type)
+    H0_up_gpu = _to_gpu(H0_up.mpo, gpu_type)
+    H0_dn_gpu = _to_gpu(H0_dn.mpo, gpu_type)
+    Id_gpu = _to_gpu(MPO(collect(sites), "Id"), gpu_type)
+    U_gpu = U isa MPO ? _to_gpu(U, gpu_type) : nothing
 
     history = NamedTuple[]
     density_up_mpo_gpu = nothing

@@ -408,6 +408,45 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                               quenched::Bool  = true,
                               sequential::Bool = false,
                               pk_mpo          = nothing)
+    return _chern_marker(P, L, sites, xfunc, yfunc; l, Λ, maxdim, cutoff, quenched,
+                         sequential, pk_mpo)
+end
+
+"""
+    _chern_marker(P, L, sites, xfunc, yfunc; l, Λ, maxdim, cutoff, quenched,
+                  sequential, pk_mpo, to_device=_on_host, device_type=ComplexF64,
+                  q_add=(), q_trunc=(), c_trunc=(), flat_trunc=(:maxdim, :cutoff),
+                  progress=nothing, after_step=nothing) -> Function
+
+The Chern-marker assembly of `get_C_op_MPO_from_P` (documented there), also run on
+GPU MPOs by `get_C_gpu`. The operators the kernel builds itself (the identity of
+`Q = I − P`, the four quenched or two flat position operators, the basis states of
+the closure) are moved by `to_device(·, device_type)` (see `_on_host`). The keywords
+name the truncation parameters (see `_trunc_kwargs`) of the steps in which the GPU
+differs, with the CPU values as defaults: `q_add` for the sum `Q = +(I, −1.0·P)` and
+`q_trunc` for a `truncate!` of Q after it (none on the CPU); `c_trunc` for a
+`truncate!` of each of C1–C4 (none); `flat_trunc` for the one of the flat operator.
+`progress(stage, M)` is called with `:positions` (quenched position operators
+built), `:products` (the eight P/Q products), `:C1` … `:C4` (with that operator)
+and `after_step()` after Q, the products, each of C1–C4 and the flat operator.
+"""
+function _chern_marker(P, L, sites, xfunc, yfunc;
+                       l               = nothing,
+                       Λ::Real         = 10,
+                       maxdim::Int     = 500,
+                       cutoff::Real    = 1e-8,
+                       quenched::Bool  = true,
+                       sequential::Bool = false,
+                       pk_mpo          = nothing,
+                       to_device       = _on_host,
+                       device_type::Type = ComplexF64,
+                       q_add::Tuple    = (),
+                       q_trunc::Tuple  = (),
+                       c_trunc::Tuple  = (),
+                       flat_trunc::Tuple = (:maxdim, :cutoff),
+                       progress        = nothing,
+                       after_step      = nothing)
+    step!() = after_step === nothing || after_step()
     l_bits  = l === nothing ? div(L, 2) : l
     L_chain = 2^l_bits
 
@@ -434,7 +473,11 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
     a2y = yfunc_pos(L_chain, L_chain) - yfunc_pos(0, L_chain)
     A_cell = abs(a1x * a2y - a1y * a2x)
 
-    Q = MPO(sites, "Id") - P
+    # Q = I − P (-1.0 * P is -P: the same values on the CPU, while on a 32-bit GPU MPO
+    # the Float64 factor promotes that site, as get_C_gpu always did).
+    Q = +(to_device(MPO(sites, "Id"), device_type), -1.0 * P; _trunc_kwargs(q_add, maxdim, cutoff)...)
+    isempty(q_trunc) || ITensorMPS.truncate!(Q; _trunc_kwargs(q_trunc, maxdim, cutoff)...)
+    step!()
 
     # Closure that builds the basis MPS for physical site alpha (1-indexed).
     # For sublattice: big-endian position bits + sublattice index via _product_state_mps.
@@ -444,10 +487,10 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             n_cell   = (alpha - 1) ÷ n_sub
             sub      = (alpha - 1) % n_sub + 1
             pos_bits = [((n_cell >> (L - i)) & 1) + 1 for i in 1:L]
-            _product_state_mps(all_sites, [pos_bits; sub])
+            to_device(_product_state_mps(all_sites, [pos_bits; sub]), device_type)
         end
     else
-        alpha -> binary_to_MPS(alpha - 1, L, sites)
+        alpha -> to_device(binary_to_MPS(alpha - 1, L, sites), device_type)
     end
 
     if quenched
@@ -456,10 +499,11 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         sinY_op_p = get_siny_op(L, pos_sites, L_chain, Λ, yfunc_pos)
         cosY_op_p = get_cosy_op(L, pos_sites, L_chain, Λ, yfunc_pos)
 
-        sinX_op = has_sub ? postpend_op(sinX_op_p, sub_s, I_mat) : sinX_op_p
-        cosX_op = has_sub ? postpend_op(cosX_op_p, sub_s, I_mat) : cosX_op_p
-        sinY_op = has_sub ? postpend_op(sinY_op_p, sub_s, I_mat) : sinY_op_p
-        cosY_op = has_sub ? postpend_op(cosY_op_p, sub_s, I_mat) : cosY_op_p
+        sinX_op = to_device(has_sub ? postpend_op(sinX_op_p, sub_s, I_mat) : sinX_op_p, device_type)
+        cosX_op = to_device(has_sub ? postpend_op(cosX_op_p, sub_s, I_mat) : cosX_op_p, device_type)
+        sinY_op = to_device(has_sub ? postpend_op(sinY_op_p, sub_s, I_mat) : sinY_op_p, device_type)
+        cosY_op = to_device(has_sub ? postpend_op(cosY_op_p, sub_s, I_mat) : cosY_op_p, device_type)
+        progress === nothing || progress(:positions, nothing)
 
         if sequential
             # Sequential mode: skip C1–C4 MPO construction; instead apply MPOs to
@@ -519,38 +563,57 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
             Q_sinX = apply(Q,  sinX_op; maxdim=maxdim, cutoff=cutoff)
             Q_cosX = apply(Q,  cosX_op; maxdim=maxdim, cutoff=cutoff)
             @debug "get_C_op_MPO_from_P: quenched operator products done"
+            progress === nothing || progress(:products, nothing)
+            step!()
+
+            # Each Ck is +(Ck, -ck) (the same values as -1.0 * ck on the CPU; on a
+            # 32-bit GPU MPO the Int factor of -ck keeps the element type), then
+            # truncated with `c_trunc` when it is not empty.
+            c_kwargs = _trunc_kwargs(c_trunc, maxdim, cutoff)
 
             # C1 = Q sinX P sinY Q − P sinX Q sinY P
             C1 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
             C1 = apply(C1,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
             c1 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
             c1 = apply(c1,     sinY_P; maxdim=maxdim, cutoff=cutoff)
-            C1 = +(C1, -1.0 * c1; maxdim=maxdim, cutoff=cutoff)
+            C1 = +(C1, -c1; maxdim=maxdim, cutoff=cutoff)
+            isempty(c_kwargs) || ITensorMPS.truncate!(C1; c_kwargs...)
             @debug "get_C_op_MPO_from_P: C1 done"
+            progress === nothing || progress(:C1, C1)
+            step!()
 
             # C2 = Q cosX P cosY Q − P cosX Q cosY P
             C2 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
             C2 = apply(C2,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
             c2 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
             c2 = apply(c2,     cosY_P; maxdim=maxdim, cutoff=cutoff)
-            C2 = +(C2, -1.0 * c2; maxdim=maxdim, cutoff=cutoff)
+            C2 = +(C2, -c2; maxdim=maxdim, cutoff=cutoff)
+            isempty(c_kwargs) || ITensorMPS.truncate!(C2; c_kwargs...)
             @debug "get_C_op_MPO_from_P: C2 done"
+            progress === nothing || progress(:C2, C2)
+            step!()
 
             # C3 = Q sinX P cosY Q − P sinX Q cosY P
             C3 = apply(Q_sinX, P;      maxdim=maxdim, cutoff=cutoff)
             C3 = apply(C3,     cosY_Q; maxdim=maxdim, cutoff=cutoff)
             c3 = apply(P_sinX, Q;      maxdim=maxdim, cutoff=cutoff)
             c3 = apply(c3,     cosY_P; maxdim=maxdim, cutoff=cutoff)
-            C3 = +(C3, -1.0 * c3; maxdim=maxdim, cutoff=cutoff)
+            C3 = +(C3, -c3; maxdim=maxdim, cutoff=cutoff)
+            isempty(c_kwargs) || ITensorMPS.truncate!(C3; c_kwargs...)
             @debug "get_C_op_MPO_from_P: C3 done"
+            progress === nothing || progress(:C3, C3)
+            step!()
 
             # C4 = Q cosX P sinY Q − P cosX Q sinY P
             C4 = apply(Q_cosX, P;      maxdim=maxdim, cutoff=cutoff)
             C4 = apply(C4,     sinY_Q; maxdim=maxdim, cutoff=cutoff)
             c4 = apply(P_cosX, Q;      maxdim=maxdim, cutoff=cutoff)
             c4 = apply(c4,     sinY_P; maxdim=maxdim, cutoff=cutoff)
-            C4 = +(C4, -1.0 * c4; maxdim=maxdim, cutoff=cutoff)
+            C4 = +(C4, -c4; maxdim=maxdim, cutoff=cutoff)
+            isempty(c_kwargs) || ITensorMPS.truncate!(C4; c_kwargs...)
             @debug "get_C_op_MPO_from_P: C4 done"
+            progress === nothing || progress(:C4, C4)
+            step!()
 
             if pk_mpo !== nothing
                 wrap(C) = apply(pk_mpo, apply(C, pk_mpo; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
@@ -582,8 +645,8 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         # Flat mode: build global position MPOs directly from xfunc/yfunc
         x_op_p = get_diagonal_mpo(L, pos_sites, i -> xfunc_pos(i - 1, L_chain))
         y_op_p = get_diagonal_mpo(L, pos_sites, i -> yfunc_pos(i - 1, L_chain))
-        x_op   = has_sub ? postpend_op(x_op_p, sub_s, I_mat) : x_op_p
-        y_op   = has_sub ? postpend_op(y_op_p, sub_s, I_mat) : y_op_p
+        x_op   = to_device(has_sub ? postpend_op(x_op_p, sub_s, I_mat) : x_op_p, device_type)
+        y_op   = to_device(has_sub ? postpend_op(y_op_p, sub_s, I_mat) : y_op_p, device_type)
 
         T1   = apply(Q, apply(x_op, apply(P, apply(y_op, Q;
                      maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff);
@@ -595,7 +658,8 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
         if pk_mpo !== nothing
             C_op = apply(pk_mpo, apply(C_op, pk_mpo; maxdim=maxdim, cutoff=cutoff); maxdim=maxdim, cutoff=cutoff)
         end
-        ITensorMPS.truncate!(C_op; maxdim=maxdim, cutoff=cutoff)
+        ITensorMPS.truncate!(C_op; _trunc_kwargs(flat_trunc, maxdim, cutoff)...)
+        step!()
 
         calculate_chern_number = uc -> begin
             sum(sub -> begin

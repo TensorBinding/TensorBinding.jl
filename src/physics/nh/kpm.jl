@@ -629,41 +629,46 @@ end
 # state. Used by the stochastic trace estimator.
 function _nh_random_probes(sites::Vector{<:Index}, block_s::Index,
                             ket_block::Int, bra_block::Int)
-    N = length(sites)
     pos_rand = Dict(s => normalize(randn(ComplexF64, dim(s)))
                     for s in sites if s != block_s)
+    return _nh_product_probe(sites, block_s, pos_rand, ket_block, ComplexF64),
+           _nh_product_probe(sites, block_s, pos_rand, bra_block, ComplexF64)
+end
 
-    function _make(block_state)
-        links = [Index(1, "Link,l=$i") for i in 1:N-1]
-        tensors = Vector{ITensor}(undef, N)
-        for i in 1:N
-            s = sites[i]
-            inds_i = Index[]
-            i > 1 && push!(inds_i, links[i-1])
-            push!(inds_i, s)
-            i < N && push!(inds_i, links[i])
-            T = ITensor(ComplexF64, inds_i...)
-            if s == block_s
+# The product-state probe of the stochastic NH traces, element type T and bond
+# dimension 1: the block site in `block_state`, each position site `s` in its local
+# state `pos_rand[s]`. _nh_random_probes and the GPU _nh_random_probes_gpu_seed
+# (gpu/nh.jl) draw `pos_rand` differently and build their ket and bra here.
+function _nh_product_probe(sites::Vector{<:Index}, block_s::Index, pos_rand,
+                           block_state::Int, ::Type{T}) where {T<:Number}
+    N = length(sites)
+    links = [Index(1, "Link,l=$i") for i in 1:N-1]
+    tensors = Vector{ITensor}(undef, N)
+    for i in 1:N
+        s = sites[i]
+        inds_i = Index[]
+        i > 1 && push!(inds_i, links[i-1])
+        push!(inds_i, s)
+        i < N && push!(inds_i, links[i])
+        t = ITensor(T, inds_i...)
+        if s == block_s
+            p = Pair{Index,Int}[]
+            i > 1 && push!(p, links[i-1] => 1)
+            push!(p, s => block_state)
+            i < N && push!(p, links[i] => 1)
+            t[p...] = one(T)
+        else
+            for (v, c) in enumerate(pos_rand[s])
                 p = Pair{Index,Int}[]
                 i > 1 && push!(p, links[i-1] => 1)
-                push!(p, s => block_state)
+                push!(p, s => v)
                 i < N && push!(p, links[i] => 1)
-                T[p...] = 1.0
-            else
-                for (v, c) in enumerate(pos_rand[s])
-                    p = Pair{Index,Int}[]
-                    i > 1 && push!(p, links[i-1] => 1)
-                    push!(p, s => v)
-                    i < N && push!(p, links[i] => 1)
-                    T[p...] = c
-                end
+                t[p...] = c
             end
-            tensors[i] = T
         end
-        return MPS(tensors)
+        tensors[i] = t
     end
-
-    return _make(ket_block), _make(bra_block)
+    return MPS(tensors)
 end
 
 

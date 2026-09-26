@@ -7,42 +7,34 @@
 #
 # Main entry points: get_nh_dos_grid_gpu, get_nh_dos_points_gpu,
 # get_nh_dos_points_diag_trace_gpu, get_nh_dos_grid_diag_trace_gpu.
-# Depends on: core/TBSystem.jl, solvers/kpm/kernels.jl (_kpm_kernel: the NH Jackson
-# weights), solvers/kpm/recursion.jl (chebyshev_foreach: the T_k(A) recursions),
+# The block contraction and the probe states are the CPU kernels (_project_end_site,
+# _nh_product_probe) on GPU tensors. The recurrences stay GPU code: the CPU ones
+# (physics/nh/kpm.jl) trace without truncating, do not re-truncate P_k, draw their
+# probes from the global RNG in another order and build CPU one-hot/ones MPS.
+# Depends on: core/AuxDOF.jl (_project_end_site), core/TBSystem.jl,
+# solvers/kpm/kernels.jl (_kpm_kernel: the NH Jackson weights),
+# solvers/kpm/recursion.jl (chebyshev_foreach: the T_k(A) recursions),
 # physics/nh/model.jl (NonHermitianHamiltonian, hermitize), physics/nh/kpm.jl
-# (nh_kpm_scale, nh_block_source, _nh_partial_step), gpu/device.jl, gpu/primitives.jl.
+# (nh_kpm_scale, nh_block_source, _nh_partial_step, _nh_product_probe),
+# gpu/device.jl, gpu/primitives.jl.
 
 
 # ============================================================
 # 1. NH block contraction and trace
 # ============================================================
 
+# GPU twin of contract_nh_block (physics/nh/kpm.jl): the same end-site contraction
+# _project_end_site (core/AuxDOF.jl) with GPU one-hot vectors of element type `dtype`.
 function _contract_nh_block_gpu(W::MPO, block_s::Index;
                                 row::Int = 2,
                                 col::Int = 1,
                                 dtype::Type{<:Complex} = ComplexF64)
     M = length(W)
     M >= 2 || error("_contract_nh_block_gpu requires an MPO with a block site and at least one physical site.")
-
-    if siteind(W, M) == block_s
-        bt = W[M] *
-             _onehot_gpu(block_s => col, dtype) *
-             _onehot_gpu(block_s' => row, dtype)
-        tensors = ITensor[W[i] for i in 1:M-2]
-        push!(tensors, W[M-1] * bt)
-        return MPO(tensors)
-    elseif siteind(W, 1) == block_s
-        bt = W[1] *
-             _onehot_gpu(block_s => col, dtype) *
-             _onehot_gpu(block_s' => row, dtype)
-        tensors = ITensor[W[2] * bt]
-        for i in 3:M
-            push!(tensors, W[i])
-        end
-        return MPO(tensors)
-    end
-
-    error("NH block index must be the first or last MPO site for _contract_nh_block_gpu.")
+    side = siteind(W, M) == block_s ? :post :
+           siteind(W, 1) == block_s ? :pre  :
+           error("NH block index must be the first or last MPO site for _contract_nh_block_gpu.")
+    return _project_end_site(W, block_s, row, col, side; to_device=_to_gpu, device_type=dtype)
 end
 
 function _trace_nh_block_diagonal_gpu(P_gpu::MPO, block_s::Index;
@@ -84,9 +76,9 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     n > 0 || error("_nh_diag_trace_scalar_online_gpu requires n > 0.")
 
     gpu_cutoff = Float64(cutoff)
-    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
-    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
-    I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
+    A_op_gpu = _to_gpu(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    I_gpu    = _to_gpu(MPO(Hh.sites, "Id"), dtype)
     weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     two      = dtype(2)
     negone   = dtype(-1)
@@ -125,7 +117,7 @@ function _nh_diag_trace_scalar_online_gpu(NH::NonHermitianHamiltonian, n::Int;
             Pkm1 = Pk
 
             (verbose || (printinfo && k % 15 == 0)) &&
-                println("    [gpu] NH scalar-diag cheb $k/$N  maxlinkdim(T)=$(maxlinkdim(Tk))  maxlinkdim(P)=$(maxlinkdim(Pkm1))")
+                _gpu_log("NH scalar-diag cheb $k/$N  maxlinkdim(T)=$(maxlinkdim(Tk))  maxlinkdim(P)=$(maxlinkdim(Pkm1))"; indent=2)
         end
         Tkm1 = Tk
     end
@@ -155,9 +147,9 @@ function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     n > 0 || error("_nh_diag_trace_online_gpu requires n > 0.")
 
     ak       = (cutoff=Float64(cutoff), maxdim=maxdim)
-    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
-    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
-    I_gpu    = _to_gpu_mpo(MPO(Hh.sites, "Id"), dtype)
+    A_op_gpu = _to_gpu(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    I_gpu    = _to_gpu(MPO(Hh.sites, "Id"), dtype)
     weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     two      = dtype(2)
     negone   = dtype(-1)
@@ -193,7 +185,7 @@ function _nh_diag_trace_online_gpu(NH::NonHermitianHamiltonian, n::Int;
             Pkm2 = Pkm1
             Pkm1 = Pk
 
-            verbose && println("    [gpu] NH diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(P)=$(eltype(Pkm1[1]))")
+            verbose && _gpu_log("NH diag order $k/$N  maxlinkdim(P)=$(maxlinkdim(Pkm1)) dtype(P)=$(eltype(Pkm1[1]))"; indent=2)
         end
         Tkm1 = Tk
     end
@@ -212,42 +204,13 @@ end
 function _nh_random_probes_gpu_seed(sites::Vector{<:Index}, block_s::Index,
                                     ket_block::Int, bra_block::Int, rng,
                                     dtype::Type{<:Complex}=ComplexF64)
-    N = length(sites)
+    # The local states come from `rng` (real parts, then imaginary parts); the
+    # probes are the CPU _nh_product_probe (physics/nh/kpm.jl) in `dtype`, uploaded.
     pos_rand = Dict(s => normalize(dtype.(randn(rng, Float64, dim(s)) .+
                                            1im .* randn(rng, Float64, dim(s))))
                     for s in sites if s != block_s)
-
-    function _make(block_state)
-        links = [Index(1, "Link,l=$i") for i in 1:N-1]
-        tensors = Vector{ITensor}(undef, N)
-        for i in 1:N
-            s = sites[i]
-            inds_i = Index[]
-            i > 1 && push!(inds_i, links[i-1])
-            push!(inds_i, s)
-            i < N && push!(inds_i, links[i])
-            T = ITensor(dtype, inds_i...)
-            if s == block_s
-                p = Pair{Index,Int}[]
-                i > 1 && push!(p, links[i-1] => 1)
-                push!(p, s => block_state)
-                i < N && push!(p, links[i] => 1)
-                T[p...] = one(dtype)
-            else
-                for (v, c) in enumerate(pos_rand[s])
-                    p = Pair{Index,Int}[]
-                    i > 1 && push!(p, links[i-1] => 1)
-                    push!(p, s => v)
-                    i < N && push!(p, links[i] => 1)
-                    T[p...] = c
-                end
-            end
-            tensors[i] = T
-        end
-        return MPS(tensors)
-    end
-
-    return _to_gpu_mps(_make(ket_block), dtype), _to_gpu_mps(_make(bra_block), dtype)
+    return _to_gpu(_nh_product_probe(sites, block_s, pos_rand, ket_block, dtype), dtype),
+           _to_gpu(_nh_product_probe(sites, block_s, pos_rand, bra_block, dtype), dtype)
 end
 
 function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
@@ -262,9 +225,7 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
                                    dtype::Type{<:Complex} = ComplexF64,
                                    rng = Random.default_rng(),
                                    verbose::Bool = false)
-    _check_gpu("_nh_stochastic_online_gpu")
-    dtype == ComplexF32 && cutoff < 1e-4 &&
-        @warn "_nh_stochastic_online_gpu: cutoff=$cutoff with ComplexF32 may produce NaN; use dtype=ComplexF64 for large NH runs."
+    _check_gpu("_nh_stochastic_online_gpu")   # the entry points warn about the cutoff, once
 
     N  = 2 * n
     Hh = NH.hermitized
@@ -272,8 +233,8 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
     sc == 0.0 && error("_nh_stochastic_online_gpu requires a nonzero scale.")
     n_random > 0 || error("_nh_stochastic_online_gpu requires n_random > 0.")
 
-    A_op_gpu = _to_gpu_mpo(Hh.mpo / sc, dtype)
-    S_gpu    = _to_gpu_mpo(nh_block_source(NH; row=source_row, col=source_col), dtype)
+    A_op_gpu = _to_gpu(Hh.mpo / sc, dtype)
+    S_gpu    = _to_gpu(nh_block_source(NH; row=source_row, col=source_col), dtype)
     weights  = _kpm_kernel(N + 1, :jackson)[1:N]   # Jackson weights, N moments
     D        = NH.parent.N
 
@@ -322,7 +283,7 @@ function _nh_stochastic_online_gpu(NH::NonHermitianHamiltonian, n::Int;
         end
         dos_acc += val
 
-        verbose && println("    [gpu] NH probe $ir/$n_random  maxlinkdim=$(maxlinkdim(t_last))")
+        verbose && _gpu_log("NH probe $ir/$n_random  maxlinkdim=$(maxlinkdim(t_last))"; indent=2)
         _gpu_gc!()
     end
 
@@ -353,7 +314,7 @@ One universal scale from `nh_kpm_scale` (`scale`, `nh_scale_padding`, `dmrg_*`)
 is used for every point; one random-number generator (`seed`, or the global RNG
 for `seed=nothing`) is shared by the whole grid. `dtype` is the GPU element type,
 complex only: `ComplexF64` (default) or `ComplexF32` (warned below
-`cutoff = 1e-4`).
+`cutoff = 1e-6`).
 
 The integer `n` follows the existing NH convention: the partial recurrence runs
 to order `2n`.
@@ -374,8 +335,7 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
                              verbose::Bool           = false,
                              printinfo::Bool         = false)
     _check_gpu("get_nh_dos_grid_gpu")
-    dtype == ComplexF32 && cutoff < 1e-4 &&
-        @warn "get_nh_dos_grid_gpu: cutoff=$cutoff with ComplexF32 may be unstable; use dtype=ComplexF64 for large NH runs."
+    _resolve_gpu_type("get_nh_dos_grid_gpu", dtype, nothing, cutoff)
     n > 0 || error("get_nh_dos_grid_gpu: n must be positive.")
     n_random > 0 || error("get_nh_dos_grid_gpu: n_random must be positive.")
 
@@ -400,7 +360,7 @@ function get_nh_dos_grid_gpu(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n
 
     for (ix, x) in enumerate(xgrid)
         (verbose || printinfo) &&
-            println("  [gpu] NH grid col $(lpad(ix, ndigits(nx)))/$nx  Re(z)=$(round(x, digits=4))")
+            _gpu_log("NH grid col $(lpad(ix, ndigits(nx)))/$nx  Re(z)=$(round(x, digits=4))")
         for (iy, y) in enumerate(ygrid)
             NH = hermitize(H; z=x + 1im*y, scale=nh_scale, maxdim=maxdim,
                            cutoff=cutoff, convention=convention,
@@ -458,8 +418,7 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
                                verbose::Bool            = false,
                                printinfo::Bool          = false)
     _check_gpu("get_nh_dos_points_gpu")
-    dtype == ComplexF32 && cutoff < 1e-4 &&
-        @warn "get_nh_dos_points_gpu: cutoff=$cutoff with ComplexF32 may be unstable; use dtype=ComplexF64 for large NH runs."
+    _resolve_gpu_type("get_nh_dos_points_gpu", dtype, nothing, cutoff)
     n > 0 || error("get_nh_dos_points_gpu: n must be positive.")
     n_random > 0 || error("get_nh_dos_points_gpu: n_random must be positive.")
 
@@ -487,7 +446,7 @@ function get_nh_dos_points_gpu(H::TBHamiltonian, z_points, n::Int;
         z = ComplexF64(z_list[j])
         point_id = Int(ids[j])
         (verbose || printinfo) &&
-            println("  [gpu] NH point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
+            _gpu_log("NH point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
 
         rng = if seed === nothing
             Random.default_rng()
@@ -586,7 +545,7 @@ function get_nh_dos_points_diag_trace_gpu(H::TBHamiltonian, z_points, n::Int;
         z = ComplexF64(z_list[j])
         point_id = Int(ids[j])
         (verbose || (printinfo && (j == 1 || j % 15 == 0 || j == Nz))) &&
-            println("  [gpu] NH diag-trace point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
+            _gpu_log("NH diag-trace point $j/$Nz  id=$point_id  z=$(round(real(z), digits=4)) + $(round(imag(z), digits=4))im")
 
         NH = hermitize(H; z=z, scale=nh_scale, maxdim=maxdim,
                        cutoff=cutoff, convention=convention,

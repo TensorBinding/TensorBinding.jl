@@ -81,14 +81,11 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     _require_binary_position_space(H, "get_bands_gpu")
     _check_gpu("get_bands_gpu")
-    gpu_type = dtype === nothing ? type : dtype
-    dtype !== nothing && dtype != type && type != ComplexF32 &&
-        error("get_bands_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
+    gpu_type = _gpu_type("get_bands_gpu", type, dtype)
     gpu_type <: Complex || throw(ArgumentError(
         "get_bands_gpu: the quantics Fourier transform is complex; " *
         "use type=ComplexF32 or type=ComplexF64 (got $gpu_type)."))
-    gpu_type == ComplexF32 && cutoff < 1e-6 &&
-        @warn "get_bands_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
+    _warn_gpu_cutoff("get_bands_gpu", gpu_type, cutoff)
 
     _ensure_scale!(H)
 
@@ -144,12 +141,12 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # and sublattice=false, so this block is skipped entirely.
     if sublattice
         if D == 1
-            mask_A_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:odd), gpu_type)
-            mask_B_gpu = _to_gpu_mpo(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:even), gpu_type)
+            mask_A_gpu = _to_gpu(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:odd), gpu_type)
+            mask_B_gpu = _to_gpu(_col_select_mpo(L_pos, 0, pos_sites_cpu; keep=:even), gpu_type)
         else
             Ly_pos = L_pos - Lx_pos
-            mask_A_gpu = _to_gpu_mpo(_row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu), gpu_type)
-            mask_B_gpu = _to_gpu_mpo(MPO(pos_sites_cpu, "Id") -
+            mask_A_gpu = _to_gpu(_row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu), gpu_type)
+            mask_B_gpu = _to_gpu(MPO(pos_sites_cpu, "Id") -
                                      _row_checker_mpo(Lx_pos, Ly_pos, pos_sites_cpu), gpu_type)
         end
     end
@@ -157,20 +154,20 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── GPU Ham and QFT operators ────────────────────────────────────────────
     I_mpo_cpu = physical_projector(H)
     Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff, identity=I_mpo_cpu)
-    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    I_mpo_gpu = _to_gpu(I_mpo_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu(Ham_n_cpu, gpu_type)
 
     # QFT operators sized for pos_sites_cpu (the post-projection site list).
     # Calling fix_sites maps the abstract QFT indices onto the actual pos_sites.
     R_pos      = length(pos_sites_cpu)
-    FTirev_gpu = _to_gpu_mpo(fix_sites(
+    FTirev_gpu = _to_gpu(fix_sites(
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R_pos; sign=-1.0, normalize=true))),
         pos_sites_cpu), gpu_type)
-    FTrev_gpu  = _to_gpu_mpo(fix_sites(
+    FTrev_gpu  = _to_gpu(fix_sites(
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R_pos; sign=+1.0, normalize=true))),
         pos_sites_cpu), gpu_type)
 
-    printinfo && println("  [gpu] bands dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
+    printinfo && _gpu_log("bands dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
     # ── Online accumulation — fully on GPU ──────────────────────────────────
     # Workflow: prebuild everything on CPU (done above), then T_n stays on GPU
@@ -229,7 +226,7 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         if k >= 3
             _gpu_gc!()
             printinfo && (k % 10 == 0 || k == Ncheb) &&
-                println("  [gpu] bands step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
+                _gpu_log("bands step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
         end
     end
 

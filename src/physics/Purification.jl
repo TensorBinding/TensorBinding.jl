@@ -35,14 +35,15 @@
 # ============================================================
 
 """
-    _mpo_sq(ρ; maxdim, cutoff) -> MPO
+    _mpo_sq(ρ; maxdim, cutoff, trunc=(:maxdim, :cutoff)) -> MPO
 
 Compute `ρ²` via `apply` and truncate immediately.  The intermediate
-bond dimension of `apply` is controlled by `maxdim`.
+bond dimension of `apply` is controlled by `maxdim`; the truncation receives the
+parameters named in `trunc` (`(:cutoff,)` in the GPU purifications).
 """
-function _mpo_sq(ρ::MPO; maxdim::Int, cutoff::Float64)
+function _mpo_sq(ρ::MPO; maxdim::Int, cutoff::Real, trunc::Tuple = (:maxdim, :cutoff))
     ρ2 = apply(ρ, ρ; maxdim, cutoff)
-    ITensorMPS.truncate!(ρ2; maxdim, cutoff)
+    ITensorMPS.truncate!(ρ2; _trunc_kwargs(trunc, maxdim, cutoff)...)
     return ρ2
 end
 
@@ -107,18 +108,39 @@ function mcweeny_purify(ρ0::MPO;
                         cutoff::Float64 = 1e-8,
                         tol::Float64    = 1e-5,
                         verbose::Bool   = false)
-    ρ = deepcopy(ρ0)
-    for iter in 1:maxiters
-        ρ2  = _mpo_sq(ρ; maxdim, cutoff)
-        err = _idempotency_error(ρ, ρ2)
-        if iter%15 == 0 && verbose
+    progress = verbose ? function (iter, err, ρ)
+        iter % 15 == 0 &&
             println("McWeeny iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
-        end
+    end : nothing
+    return _mcweeny_iterate(deepcopy(ρ0); maxiters, maxdim, cutoff, tol, progress)
+end
+
+"""
+    _mcweeny_iterate(ρ; maxiters, maxdim, cutoff, tol, trunc=(:maxdim, :cutoff),
+                     progress=nothing, after_step=nothing) -> MPO
+
+The McWeeny loop of `mcweeny_purify`, also run on GPU MPOs by `get_C_gpu` and the
+GPU purifications of gpu/purification.jl. Each iteration: `ρ² = apply(ρ, ρ; maxdim,
+cutoff)`, `truncate!(ρ²; <trunc>)`, the residual ‖ρ² − ρ‖/‖ρ‖, `progress(iter, err, ρ)`,
+a stop when it is below `tol`, then `ρ ← apply(ρ, +(3ρ, −2ρ²; cutoff); maxdim, cutoff)`,
+`truncate!(ρ; <trunc>)` and `after_step()`. `<trunc>` passes the parameters named in
+`trunc` (see `_trunc_kwargs`): both on the CPU, `(:cutoff,)` on the GPU. `ρ` is not
+copied.
+"""
+function _mcweeny_iterate(ρ::MPO; maxiters::Int, maxdim::Int, cutoff::Real, tol::Real,
+                          trunc::Tuple = (:maxdim, :cutoff),
+                          progress = nothing, after_step = nothing)
+    trunc_kwargs = _trunc_kwargs(trunc, maxdim, cutoff)
+    for iter in 1:maxiters
+        ρ2  = _mpo_sq(ρ; maxdim, cutoff, trunc)
+        err = _idempotency_error(ρ, ρ2)
+        progress === nothing || progress(iter, err, ρ)
         err < tol && break
         # 3ρ² - 2ρ³ = ρ·(3ρ - 2ρ²)
         ρ_inte = +(3.0 * ρ , -2.0 * ρ2; cutoff)
-        ρ  = apply(ρ, ρ_inte; maxdim, cutoff) 
-        ITensorMPS.truncate!(ρ; maxdim, cutoff)
+        ρ  = apply(ρ, ρ_inte; maxdim, cutoff)
+        ITensorMPS.truncate!(ρ; trunc_kwargs...)
+        after_step === nothing || after_step()
     end
     return ρ
 end
@@ -155,11 +177,33 @@ function sp2_purify(ρ0::MPO, Nel::Real;
                     cutoff::Float64 = 1e-8,
                     tol::Float64    = 1e-5,
                     verbose::Bool   = false)
-    ρ = deepcopy(ρ0)
+    progress = verbose ? function (iter, err, ρ)
+        println("SP2 iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+    end : nothing
+    return _sp2_iterate(deepcopy(ρ0), Nel; maxiters, maxdim, cutoff, tol, progress)
+end
+
+"""
+    _sp2_iterate(ρ, Nel; maxiters, maxdim, cutoff, tol, trunc=(:maxdim, :cutoff),
+                 add_trunc=(:cutoff,), progress=nothing, after_step=nothing) -> MPO
+
+The SP2 loop of `sp2_purify`, also run on GPU MPOs by `get_C_gpu`. Each iteration:
+`ρ² = apply(ρ, ρ; maxdim, cutoff)`, `truncate!(ρ²; <trunc>)`, the residual,
+`progress(iter, err, ρ)`, a stop below `tol`, then `ρ ← ρ²` when Tr ρ² ≥ `Nel`, else
+`ρ ← +(2ρ, −ρ²; <add_trunc>)` and `truncate!(ρ; <trunc>)`; `after_step()` ends every
+iteration that did not stop. The CPU truncates with both parameters and sums with
+`cutoff`; the GPU truncates with `cutoff` and sums with both. `ρ` is not copied.
+"""
+function _sp2_iterate(ρ::MPO, Nel::Real; maxiters::Int, maxdim::Int, cutoff::Real,
+                      tol::Real, trunc::Tuple = (:maxdim, :cutoff),
+                      add_trunc::Tuple = (:cutoff,), progress = nothing,
+                      after_step = nothing)
+    trunc_kwargs = _trunc_kwargs(trunc, maxdim, cutoff)
+    add_kwargs   = _trunc_kwargs(add_trunc, maxdim, cutoff)
     for iter in 1:maxiters
-        ρ2  = _mpo_sq(ρ; maxdim, cutoff)
+        ρ2  = _mpo_sq(ρ; maxdim, cutoff, trunc)
         err = _idempotency_error(ρ, ρ2)
-        verbose && println("SP2 iter $iter: ‖ρ²-ρ‖/‖ρ‖ = $err, maxlinkdim = $(ITensorMPS.maxlinkdim(ρ))")
+        progress === nothing || progress(iter, err, ρ)
         err < tol && break
         tr_ρ2 = real(tr(ρ2))
         if tr_ρ2 >= Nel
@@ -167,9 +211,10 @@ function sp2_purify(ρ0::MPO, Nel::Real;
             ρ = ρ2
         else
             # expand toward 1: 2ρ - ρ²
-            ρ = +(2.0 * ρ, -1.0 * ρ2; cutoff)
-            ITensorMPS.truncate!(ρ; maxdim, cutoff)
+            ρ = +(2.0 * ρ, -1.0 * ρ2; add_kwargs...)
+            ITensorMPS.truncate!(ρ; trunc_kwargs...)
         end
+        after_step === nothing || after_step()
     end
     return ρ
 end
@@ -206,10 +251,18 @@ function purification_initial_guess(H::TBHamiltonian; ϵF::Real=0.0,
                                     maxdim::Int=40, cutoff::Float64=1e-8)
     _require_binary_position_space(H, "purification_initial_guess")
     _ensure_scale!(H)
-    Id       = MPO(H.sites, "Id")
-    coeff_I  = 0.5 + (ϵF + H.center) / (2 * H.scale)
-    coeff_H  = -0.5 / H.scale
-    ρ0       = +(coeff_I * Id, coeff_H * H.mpo; cutoff)
+    return _linear_density_guess(H.mpo, MPO(H.sites, "Id"); ϵF=ϵF, center=H.center,
+                                 scale=H.scale, maxdim=maxdim, cutoff=cutoff)
+end
+
+# ρ₀ = (1/2 + (ϵF + center)/(2 scale))·Id − H/(2 scale), summed with `cutoff` and
+# truncated with `maxdim` and `cutoff`: the guess of the TBHamiltonian method above,
+# also formed from GPU MPOs by _purification_initial_guess_gpu (gpu/purification.jl).
+function _linear_density_guess(H_mpo::MPO, Id::MPO; ϵF::Real, center::Real, scale::Real,
+                               maxdim::Int, cutoff::Real)
+    coeff_I  = 0.5 + (ϵF + center) / (2 * scale)
+    coeff_H  = -0.5 / scale
+    ρ0       = +(coeff_I * Id, coeff_H * H_mpo; cutoff)
     ITensorMPS.truncate!(ρ0; maxdim=maxdim, cutoff)
     return ρ0
 end

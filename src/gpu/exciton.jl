@@ -48,7 +48,7 @@ Other kernels: `:jackson` (default), `:lorentz` (`lambda`), `:fejer`, `:dirichle
 
 Use `type=ComplexF32` (default, faster) or `type=ComplexF64` (safer at tight cutoffs
 or on large systems where F32 eigendecomposition can produce NaN; a warning is
-emitted for ComplexF32 with `cutoff < 1e-6`), or `Float32`/`Float64` for a real `H`.
+emitted for a 32-bit type with `cutoff < 1e-6`), or `Float32`/`Float64` for a real `H`.
 `dtype` is accepted as an alias for `type` for consistency with other GPU entry points.
 
 `return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`, where
@@ -89,11 +89,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
                                        return_maxlinkdim::Bool = false)
 
     _check_gpu("get_exciton_ldos_spatial_gpu")
-    gpu_type = dtype === nothing ? type : dtype
-    dtype !== nothing && dtype != type && type != ComplexF32 &&
-        error("get_exciton_ldos_spatial_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
-    gpu_type == ComplexF32 && cutoff < 1e-6 &&
-        @warn "get_exciton_ldos_spatial_gpu: cutoff=$cutoff with ComplexF32 may produce NaN — use type=ComplexF64 or cutoff ≥ 1e-4."
+    gpu_type = _resolve_gpu_type("get_exciton_ldos_spatial_gpu", type, dtype, cutoff)
     reduce === :block &&
         error("get_exciton_ldos_spatial_gpu: reduce=:block is not supported for the exciton LDOS. " *
               "Block averaging requires O(block_size) independent Chebyshev recursions per pixel, " *
@@ -140,7 +136,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     Xs = first.(groups)
 
     Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu(Ham_n_cpu, gpu_type)
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                kernel=kernel, lambda=lambda, eta=eta,
@@ -150,7 +146,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     nX           = length(groups)
     result       = zeros(Float64, Nω, nX)
 
-    printinfo && println("  [gpu] exciton ldos dtype=$gpu_type")
+    printinfo && _gpu_log("exciton ldos dtype=$gpu_type")
 
     linkdims = zeros(Int, nX)   # reached MPS bond dim per output column (see return_maxlinkdim)
 
@@ -158,7 +154,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
         last_linkdim = 0
 
         for X in group
-            psi0_gpu = _to_gpu_mps(mpsexciton(X, H.sites), gpu_type)
+            psi0_gpu = _to_gpu(mpsexciton(X, H.sites), gpu_type)
             accum    = zeros(Float64, Nω)
 
             # The CPU online recursion on GPU tensors; weight 1.0 leaves each
@@ -178,7 +174,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
         end
         linkdims[j] = last_linkdim
         (verbose || printinfo) && (j % 5 == 0 || j == nX) &&
-            println("  [gpu] exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
+            _gpu_log("exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
     return return_maxlinkdim ? (result, linkdims) : result
@@ -247,9 +243,9 @@ function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::I
     _ensure_scale!(H)
 
     Ham_n_cpu  = _scaled_hamiltonian(H; cutoff=Float64(cutoff))
-    Ham_n_gpu  = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    Ham_n_gpu  = _to_gpu(Ham_n_cpu, gpu_type)
 
-    psi0_gpu   = _to_gpu_mps(mpsexciton(X, H.sites), gpu_type)
+    psi0_gpu   = _to_gpu(mpsexciton(X, H.sites), gpu_type)
 
     ak_ref  = (cutoff=Float64(cutoff), maxdim=maxdim_ref)
     ak_test = (cutoff=Float64(cutoff), maxdim=maxdim_test)

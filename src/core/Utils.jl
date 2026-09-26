@@ -378,17 +378,32 @@ function _eval_diag_mps(A::MPS, x::Int)
     return real(scalar(acc))
 end
 
+# The device hook of the kernels shared with src/gpu/: a kernel moves each tensor it
+# builds itself (one-hot and summing vectors, deltas, probe states, identities) with
+# `to_device(x, T)`, T the element type the tensor must have there. On the CPU that
+# is `_on_host`, which returns `x` unchanged (T is ignored); the GPU wrappers pass
+# `_to_gpu` (gpu/device.jl), so the same kernel runs on GPU tensors.
+_on_host(x, T) = x
+
 # Block-integrated MPS element (reduce=:block): the sum of `A` over one coarse
 # block, obtained by tracing out the within-block position bits (contracted with
 # [1,1]) and pinning the kept top a/b block bits to the coarse pixel (ixp, iyp).
 # Big-endian site order [iy_MSB..iy_LSB, ix_MSB..ix_LSB]: sites 1..Ly carry iy,
 # Ly+1..L carry ix. See [`spatial_sampling_plan`](@ref) `reduce=:block`.
+#
+# Also the point and all-sites evaluators of src/gpu/ (gpu/primitives.jl): Ly = b = 0
+# pins the top `a` of the Lx bits (a = Lx: one element, big-endian; a = 0: the sum of
+# all elements). The local vectors have the element type of `A` and are moved by
+# `to_device(·, eltype(A))` (the GPU passes `_to_gpu`; the CPU default `_on_host`
+# leaves them); `value` maps the contracted scalar to the result (`real`, or
+# `ComplexF64` for complex amplitudes).
 function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
-                         a::Int, b::Int, Lx::Int, Ly::Int)
+                         a::Int, b::Int, Lx::Int, Ly::Int;
+                         to_device = _on_host, value = real)
     s   = siteinds(A)
     ElT = eltype(A[1])
     L   = Lx + Ly
-    acc = ITensor(one(ElT))
+    acc = to_device(ITensor(one(ElT)), ElT)
     for i in 1:L
         v_arr = zeros(ElT, dim(s[i]))
         if i <= b                       # keep: iy block bit (b - i)
@@ -400,9 +415,9 @@ function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
         else                            # sum: ix within-block bit
             v_arr .= one(real(ElT))
         end
-        acc *= A[i] * ITensor(v_arr, s[i])
+        acc *= A[i] * to_device(ITensor(v_arr, s[i]), ElT)
     end
-    return real(scalar(acc))
+    return value(scalar(acc))
 end
 
 # ============================================================
@@ -1189,17 +1204,24 @@ Extract the diagonal of an MPO `M` as an MPS by projecting each local bra/ket
 pair onto equal physical values. This is shared by KPM trace/LDOS, SCF, RPA,
 QFT, and purification routines.
 """
-function extract_diagonal_to_mps(M::MPO)::MPS
+extract_diagonal_to_mps(M::MPO)::MPS = _extract_diagonal(M)
+
+# The kernel of extract_diagonal_to_mps and extract_diagonal_to_mps_gpu: the one-hot
+# vectors are moved by `to_device(·, eltype(M[i]))` (see `_on_host`), so on the GPU
+# they are dense GPU vectors of the site tensor's element type.
+function _extract_diagonal(M::MPO; to_device = _on_host)::MPS
     N = length(M)
     new_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         tensor = M[i]
+        ElT = eltype(tensor)
         bra, ket = siteinds(M, i)
         diagonal_inds = uniqueinds(tensor, ket, bra)
         result = ITensor(diagonal_inds..., ket)
         for value in 1:dim(ket)
-            slice = tensor * onehot(ket => value) * onehot(bra => value)
-            result += slice * onehot(ket => value)
+            ket_v = to_device(onehot(ket => value), ElT)
+            slice = tensor * ket_v * to_device(onehot(bra => value), ElT)
+            result += slice * ket_v
         end
         new_tensors[i] = result
     end
@@ -1215,12 +1237,22 @@ index with a bra-ket pair tied by a 3-leg delta.  Used to convert the
 output of a 2D QTCI (encoded as a flat MPS) into a diagonal MPO on the
 interleaved (e.g. electron-hole) site space.
 """
-function mps_to_diagonal_mpo(mps, sites)
+mps_to_diagonal_mpo(mps, sites) = _mps_to_diagonal(mps, sites)
+
+# The kernel of mps_to_diagonal_mpo and its GPU twin _mps_to_diagonal_mpo_gpu: each
+# delta is moved by `to_device(·, delta_type)` (see `_on_host`; the GPU makes it a
+# dense ComplexF32 tensor, whatever the element type of the MPS). `one_site=true`
+# accepts a one-site MPS (the GPU twin does); mps_to_diagonal_mpo throws a
+# BoundsError there (golden-pinned).
+function _mps_to_diagonal(mps, sites; to_device = _on_host, delta_type::Type = ComplexF32,
+                          one_site::Bool = false)
     N          = length(mps)
     mpo_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         mps_t = mps[i]
-        old_s = if i == 1
+        old_s = if one_site && N == 1
+            only(siteinds(mps))
+        elseif i == 1
             uniqueind(mps_t, mps[i+1])
         elseif i == N
             uniqueind(mps_t, mps[i-1])
@@ -1229,7 +1261,8 @@ function mps_to_diagonal_mpo(mps, sites)
         end
         s              = sites[i]
         s_temp         = Index(dim(s), "temp")
-        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) * delta(s_temp, s, s')
+        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) *
+                         to_device(delta(s_temp, s, s'), delta_type)
     end
     return MPO(mpo_tensors)
 end

@@ -5,14 +5,16 @@
 # _reconstruct_ldos_moment_columns it uses lives in solvers/kpm/kernels.jl.
 #
 # Main entry points: KPM_Tn_gpu, get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu,
-# get_dos_stochastic_gpu.
-# Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan,
-# basis-state and exciton MPS builders), core/TBSystem.jl (position-space interface), core/AuxDOF.jl (the
-# aux projection _aux_projection/_project_aux_sectors, projected probes
-# _probe_sectors/probe_state), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
+# get_dos_stochastic_gpu (a thin wrapper over the CPU sampling kernel
+# _dos_stochastic of solvers/kpm/dos.jl, run on GPU tensors).
+# Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan),
+# core/TBSystem.jl (position-space interface), core/AuxDOF.jl (the
+# aux projection _aux_projection/_project_aux_sectors),
+# solvers/DMRG.jl (spectral bounds, _ensure_scale!),
 # solvers/kpm/kernels.jl (energy grid, moment-column reconstruction),
-# solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach, _run_kpm_mps!:
-# the recurrences run on GPU tensors), gpu/device.jl, gpu/primitives.jl.
+# solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach: the recurrences
+# run on GPU tensors), solvers/kpm/dos.jl (_dos_stochastic), gpu/device.jl,
+# gpu/primitives.jl.
 
 
 # ============================================================
@@ -66,8 +68,8 @@ function KPM_Tn_gpu(H_mpo::MPO, N::Int, sites;
     I_mpo = MPO(sites, "Id")
     Ham_n = _scaled_hamiltonian(H_mpo, scale, center, I_mpo; cutoff = cutoff)
 
-    I_mpo = _to_gpu_mpo(I_mpo, gpu_type)
-    Ham_n = _to_gpu_mpo(Ham_n, gpu_type)
+    I_mpo = _to_gpu(I_mpo, gpu_type)
+    Ham_n = _to_gpu(Ham_n, gpu_type)
 
     keep = keep_indices
     Tn_list = Vector{Union{MPO,Nothing}}(undef, N + 1)
@@ -79,7 +81,7 @@ function KPM_Tn_gpu(H_mpo::MPO, N::Int, sites;
         if k >= 3
             _gpu_gc!()
             if verbose && (k % 5 == 0 || k == N+1)
-                println("  [gpu] T_$n maxlinkdim=$(ITensorMPS.maxlinkdim(T_n))")
+                _gpu_log("T_$n maxlinkdim=$(ITensorMPS.maxlinkdim(T_n))")
             end
         end
     end
@@ -137,7 +139,7 @@ The keywords shared with `get_ldos_spatial` mean the same. There is no `mode`
 `type` (alias `dtype`) is the GPU tensor datatype used consistently throughout
 the MPO recurrence, projections, and diagonal extraction: `ComplexF32`
 (default), `ComplexF64`, or `Float32`/`Float64` for a real `H`. A warning is
-emitted for `ComplexF32` with `cutoff < 1e-6`.
+emitted for a 32-bit `type` with `cutoff < 1e-6`.
 
 Usage
 -----
@@ -184,9 +186,7 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     _require_binary_position_space(H, "get_ldos_spatial_gpu")
 
     _check_gpu("get_ldos_spatial_gpu")
-    gpu_type = dtype === nothing ? type : dtype
-    dtype !== nothing && dtype != type && type != ComplexF32 &&
-        error("get_ldos_spatial_gpu: received both type=$type and dtype=$dtype; pass only one datatype keyword.")
+    gpu_type = _gpu_type("get_ldos_spatial_gpu", type, dtype)   # warned below, before the recursion
 
     # ── Geometry-aware sampling plan (same convention as get_ldos_spatial) ────
     if box_half > 0 || grid || xwin !== nothing || ywin !== nothing || reduce === :block
@@ -238,8 +238,8 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # ── GPU operators ────────────────────────────────────────────────────────
     I_mpo_cpu = physical_projector(H)
     Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff, identity=I_mpo_cpu)
-    I_mpo_gpu = _to_gpu_mpo(I_mpo_cpu, gpu_type)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    I_mpo_gpu = _to_gpu(I_mpo_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu(Ham_n_cpu, gpu_type)
 
     # The spin Index to project; sites[1] for a Hamiltonian without spin.
     spin_idx = isnothing(aux.spin.index) ? H.sites[1] : aux.spin.index
@@ -284,14 +284,13 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     end
 
     # ── Chebyshev recurrence (GPU) ───────────────────────────────────────────
-    gpu_type == ComplexF32 && cutoff < 1e-6 &&
-        @warn "get_ldos_spatial_gpu: cutoff=$cutoff with ComplexF32 may produce NaN on large systems; use type=ComplexF64 or cutoff ≥ 1e-4."
+    _warn_gpu_cutoff("get_ldos_spatial_gpu", gpu_type, cutoff)
     gpu_cutoff = Float64(cutoff)
     two = gpu_type(2)
     negone = gpu_type(-1)
 
     (verbose || printinfo) &&
-        println("  [gpu] ldos dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
+        _gpu_log("ldos dtype=$gpu_type  eltype(H)=$(eltype(Ham_n_gpu[1]))")
 
     chebyshev_foreach(Ham_n_gpu, I_mpo_gpu, Ncheb; T1=Ham_n_gpu, maxdim=maxdim,
                       cutoff=gpu_cutoff, post_trunc=(:cutoff,),
@@ -301,7 +300,7 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         if k >= 3
             _gpu_gc!()
             (verbose || printinfo) && (k % 10 == 0 || k == Ncheb) &&
-                println("  [gpu] ldos step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
+                _gpu_log("ldos step $k/$Ncheb  maxlinkdim=$(maxlinkdim(Tn))")
         end
     end
 
@@ -474,7 +473,7 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # identity, is essential for projected position spaces: invalid register
     # states must remain zero under the spectral shift.
     Ham_n_cpu = _scaled_hamiltonian(H; cutoff=Float64(cutoff))
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu(Ham_n_cpu, gpu_type)
 
     ω_vals, W, denom, valid = _kpm_energy_grid(
         H, Ncheb, ω_phys_vals; kernel=kernel, lambda=lambda, eta=eta, m_order=m_order,
@@ -489,8 +488,8 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     two = gpu_type(2)
     negone = gpu_type(-1)
-    printinfo && println(
-        "  [gpu] spatial MPS LDOS dtype=$gpu_type, groups=$(length(groups)), " *
+    printinfo && _gpu_log(
+        "spatial MPS LDOS dtype=$gpu_type, groups=$(length(groups)), " *
         "projected=$( !(H.position_space isa BinaryPositionSpace) )",
     )
 
@@ -500,7 +499,7 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         group_maxlinkdim = 0
 
         for x in group
-            psi0_gpu = _to_gpu_mps(physical_site_state(H, x), gpu_type)
+            psi0_gpu = _to_gpu(physical_site_state(H, x), gpu_type)
 
             chebyshev_foreach(Ham_n_gpu, psi0_gpu, Ncheb; maxdim=maxdim,
                               cutoff=Float64(cutoff), two=two, negone=negone) do n, phi
@@ -514,8 +513,8 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
         linkdims[j] = group_maxlinkdim
         (verbose || printinfo) && (j % 5 == 0 || j == length(groups)) &&
-            println(
-                "  [gpu] spatial MPS LDOS $j/$(length(groups)) " *
+            _gpu_log(
+                "spatial MPS LDOS $j/$(length(groups)) " *
                 "(x=$(first(group)), n_avg=$(length(group))) " *
                 "maxlinkdim=$group_maxlinkdim",
             )
@@ -605,15 +604,12 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     N_sample >= 0 || error("get_dos_stochastic_gpu: N_sample must be non-negative.")
     N_bound >= 0 || error("get_dos_stochastic_gpu: N_bound must be non-negative.")
 
-    Ham_n_cpu = _scaled_hamiltonian(H; cutoff=cutoff)
-    Ham_n_gpu = _to_gpu_mpo(Ham_n_cpu, gpu_type)
+    Ham_n_gpu = _to_gpu(_scaled_hamiltonian(H; cutoff=cutoff), gpu_type)
 
-    D      = prod(ITensors.dim(s) for s in H.sites)
-    N_phys = H.N
     is_exc = length(H.sites) == 2 * H.L
     continuum_only && !is_exc &&
         error("get_dos_stochastic_gpu: continuum_only=true requires an exciton Hamiltonian.")
-    continuum_only && N_phys < 2 &&
+    continuum_only && H.N < 2 &&
         error("get_dos_stochastic_gpu: continuum_only=true requires H.N >= 2.")
 
     # Projections are not switched on automatically (as in get_dos_stochastic).
@@ -621,120 +617,21 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                              layer_proj, proj_layer, sublat_proj, proj_sl,
                              autoenable=false)
 
-    ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
-                                               kernel=kernel, lambda=lambda, eta=eta,
-                                               m_order=m_order, allow_hodc=true)
-    Nω     = length(ω_vals)
-
-    rng         = seed === nothing ? Random.default_rng() : Random.MersenneTwister(seed)
-    accum_full  = zeros(Float64, Nω)
-    accum_bound = zeros(Float64, Nω)
-
-    # The CPU online recursion on GPU tensors (the moment μ_n, real part of a GPU
-    # inner product, enters W[n, iω] * μ_n * weight promoted to Float64 either way).
-    function _run_kpm_mps_gpu!(psi0_gpu, accum, weight)
-        χ = _run_kpm_mps!(Ham_n_gpu, psi0_gpu, Ncheb, W, valid, accum;
-                          weight=weight, cutoff=Float64(cutoff), maxdim=maxdim)
-        _gpu_gc!()
-        return χ
-    end
-
-    function _exciton_pair_mps_gpu_seed(xe::Int, xh::Int)
-        Lphys = div(length(H.sites), 2)
-        bits_e = to_binary_vector(xe - 1, Lphys)
-        bits_h = to_binary_vector(xh - 1, Lphys)
-        state = Vector{String}(undef, 2 * Lphys)
-        for b in 1:Lphys
-            state[2b - 1] = bits_e[b]
-            state[2b]     = bits_h[b]
-        end
-        return MPS(H.sites, state)
-    end
-
-    if _any_projected(aux)
-        continuum_only &&
-            error("get_dos_stochastic_gpu: continuum_only is not supported together with auxiliary projections.")
-        D_eff = N_phys
-        if N_sample > 0
-            sectors = _probe_sectors(aux)
-            xs = rand(rng, 1:N_phys, N_sample)
-            for (i, x) in enumerate(xs)
-                for σ in sectors
-                    psi0_gpu = _to_gpu_mps(probe_state(H, x, σ), gpu_type)
-                    χ = _run_kpm_mps_gpu!(psi0_gpu, accum_full, 1.0/N_sample)
-                    (verbose || printinfo) && i % 10 == 0 && σ == first(sectors) &&
-                        println("  [gpu] dos sample $i/$N_sample (projected)  maxlinkdim=$χ")
-                end
-            end
-        end
-
-        result = zeros(Float64, Nω)
-        for iω in 1:Nω
-            valid[iω] || continue
-            if dos_weighting == :sample
-                result[iω] = accum_full[iω] / denom[iω]
-            else
-                result[iω] = D_eff * accum_full[iω] / denom[iω]
-            end
-        end
-        normalize && dos_weighting == :trace && (result ./= D_eff)
-        return result
-    end
-
-    # ── Full / continuum Hilbert-space sampling ───────────────────────────────
-    if N_sample > 0
-        if continuum_only
-            xs_e = rand(rng, 1:N_phys, N_sample)
-            ys_h = rand(rng, 1:(N_phys - 1), N_sample)
-            for i in 1:N_sample
-                xe = xs_e[i]
-                xh = ys_h[i] < xe ? ys_h[i] : ys_h[i] + 1
-                psi0_gpu = _to_gpu_mps(_exciton_pair_mps_gpu_seed(xe, xh), gpu_type)
-                χ = _run_kpm_mps_gpu!(psi0_gpu, accum_full, 1.0/N_sample)
-                (verbose || printinfo) && i % 10 == 0 &&
-                    println("  [gpu] dos continuum sample $i/$N_sample (xe=$xe, xh=$xh)  maxlinkdim=$χ")
-            end
-        else
-            samples = rand(rng, 0:(D - 1), N_sample)
-            for (i, k) in enumerate(samples)
-                psi0_gpu = _to_gpu_mps(_basis_state_mps(k, H.sites), gpu_type)
-                χ = _run_kpm_mps_gpu!(psi0_gpu, accum_full, 1.0/N_sample)
-                (verbose || printinfo) && i % 10 == 0 &&
-                    println("  [gpu] dos sample $i/$N_sample  maxlinkdim=$χ")
-            end
-        end
-    end
-
-    # ── Bound-sector enrichment (exciton) ─────────────────────────────────────
-    if N_bound > 0 && is_exc
-        xs = rand(rng, 1:N_phys, N_bound)
-        for (i, x) in enumerate(xs)
-            psi0_gpu = _to_gpu_mps(mpsexciton(x, H.sites), gpu_type)
-            χ = _run_kpm_mps_gpu!(psi0_gpu, accum_bound, 1.0/N_bound)
-            (verbose || printinfo) && i % 10 == 0 &&
-                println("  [gpu] dos bound sample $i/$N_bound (x=$x)  maxlinkdim=$χ")
-        end
-    end
-
-    # ── Normalise ─────────────────────────────────────────────────────────────
-    result = zeros(Float64, Nω)
-    for iω in 1:Nω
-        valid[iω] || continue
-        if dos_weighting == :sample
-            result[iω] = (accum_full[iω] +
-                          ((N_bound > 0 && is_exc) ? accum_bound[iω] : 0.0)) / denom[iω]
-        elseif N_bound > 0 && is_exc
-            result[iω] = ((D - N_phys) * accum_full[iω] +
-                          N_phys       * accum_bound[iω]) / denom[iω]
-        elseif continuum_only && is_exc
-            result[iω] = (D - N_phys) * accum_full[iω] / denom[iω]
-        else
-            result[iω] = D * accum_full[iω] / denom[iω]
-        end
-    end
-    if normalize && dos_weighting == :trace
-        norm_dim = (continuum_only && is_exc && N_bound == 0) ? (D - N_phys) : D
-        result ./= norm_dim
-    end
-    return result
+    # The CPU sampling kernel on GPU tensors: each probe uploaded with gpu_type, GPU
+    # memory freed after each recursion (the moment μ_n, real part of a GPU inner
+    # product, enters W[n, iω] * μ_n * weight promoted to Float64 either way).
+    progress = (verbose || printinfo) ? function (kind, i, n, χ, info)
+        i % 10 == 0 || return nothing
+        kind === :projected ? _gpu_log("dos sample $i/$n (projected)  maxlinkdim=$χ") :
+        kind === :continuum ? _gpu_log("dos continuum sample $i/$n (xe=$(info[1]), xh=$(info[2]))  maxlinkdim=$χ") :
+        kind === :full      ? _gpu_log("dos sample $i/$n  maxlinkdim=$χ") :
+                              _gpu_log("dos bound sample $i/$n (x=$info)  maxlinkdim=$χ")
+        return nothing
+    end : nothing
+    return _dos_stochastic(H, Ham_n_gpu, Ncheb, ω_phys_vals, aux;
+                           N_sample, N_bound, seed, normalize, dos_weighting, kernel,
+                           lambda, eta, m_order, maxdim, cutoff=Float64(cutoff),
+                           continuum_only, caller="get_dos_stochastic_gpu",
+                           to_device=_to_gpu, device_type=gpu_type,
+                           after_run=_gpu_gc!, progress)
 end

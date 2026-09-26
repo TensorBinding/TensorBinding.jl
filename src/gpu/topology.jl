@@ -1,13 +1,13 @@
 # gpu/topology.jl — the GPU real-space Chern marker get_C_gpu, the GPU mirror of
-# get_C (physics/Topology.jl), with the McWeeny/SP2 purification loops run on GPU.
-# One entry point, so the file has no sections. Moved from the former
-# gpu/GPU_tk.jl.
+# get_C (physics/Topology.jl): a thin wrapper that runs the CPU kernels on GPU MPOs,
+# the McWeeny/SP2 loops (_mcweeny_iterate, _sp2_iterate) and the marker assembly
+# (_chern_marker), with the GPU truncations as keywords. One entry point, so the
+# file has no sections. Moved from the former gpu/GPU_tk.jl.
 #
 # Main entry point: get_C_gpu.
-# Depends on: core/Utils.jl (basis MPS, diagonal MPOs, postpend_op),
-# core/TBSystem.jl, solvers/DMRG.jl (_ensure_scale!), physics/Topology.jl
-# (position operators, _get_projector), physics/Purification.jl
-# (purification_initial_guess), gpu/device.jl.
+# Depends on: core/TBSystem.jl, solvers/DMRG.jl (_ensure_scale!), physics/Topology.jl
+# (_chern_marker, _get_projector), physics/Purification.jl
+# (purification_initial_guess, _mcweeny_iterate, _sp2_iterate), gpu/device.jl.
 
 """
     get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
@@ -56,7 +56,6 @@ function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
     _check_gpu("get_C_gpu")
     gpu_type = _resolve_gpu_type("get_C_gpu", dtype, nothing, cutoff)
     Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)
-    ak    = (cutoff=Float64(cutoff), maxdim=maxdim)
 
     # ── geometry ──────────────────────────────────────────────────────────────
     if xfunc === nothing || yfunc === nothing
@@ -67,195 +66,58 @@ function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
         yfunc === nothing && (yfunc = (i, _) -> geom(i + 1)[2])
     end
 
-    # ── sublattice bookkeeping (mirrors get_C_op_MPO_from_P) ──────────────────
-    L       = H.L
-    l_bits  = l === nothing ? div(L, 2) : l
-    L_chain = 2^l_bits
-    sites   = H.sites
-    n_sub   = length(sites) > L ? dim(sites[L+1]) : 1
-    has_sub = n_sub > 1
-    pos_sites = has_sub ? collect(sites[1:L]) : collect(sites)
-    sub_s     = has_sub ? sites[L+1] : nothing
-    I_mat     = has_sub ? Matrix{Float64}(LinearAlgebra.I, n_sub, n_sub) : nothing
-
-    xfunc_pos = has_sub ? ((i, Lc) -> xfunc(i * n_sub, Lc)) : xfunc
-    yfunc_pos = has_sub ? ((i, Lc) -> yfunc(i * n_sub, Lc)) : yfunc
-
-    a1x = xfunc_pos(1, L_chain) - xfunc_pos(0, L_chain)
-    a1y = yfunc_pos(1, L_chain) - yfunc_pos(0, L_chain)
-    a2x = xfunc_pos(L_chain, L_chain) - xfunc_pos(0, L_chain)
-    a2y = yfunc_pos(L_chain, L_chain) - yfunc_pos(0, L_chain)
-    A_cell = abs(a1x * a2y - a1y * a2x)
-
     # ── projector: build initial guess on CPU, purify on GPU ──────────────────
-    printinfo && println("[gpu] Building initial projector guess (CPU)...")
+    printinfo && _gpu_log("Building initial projector guess (CPU)..."; indent=0)
     _ensure_scale!(H)
     P0_cpu = purification_initial_guess(H; ϵF=fermi, maxdim=maxdim, cutoff=cutoff)
-    P = _to_gpu_mpo(P0_cpu, gpu_type)
+    P = _to_gpu(P0_cpu, gpu_type)
 
+    # The CPU McWeeny/SP2 loops (physics/Purification.jl) on GPU MPOs, with the GPU
+    # truncations: each square and update truncated with `cutoff` only, the SP2
+    # expansion 2P − P² summed with `cutoff` and `maxdim`; GPU memory is freed after
+    # every iteration.
     if method == :mcweeny
-        printinfo && println("[gpu] McWeeny purification on GPU...")
-        maxiters_mc = 30
-        tol_mc      = 1e-5
-        for iter in 1:maxiters_mc
-            P2   = apply(P, P; ak...)
-            ITensorMPS.truncate!(P2; cutoff=Float64(cutoff))
-            err  = let diff = +(P2, -1.0 * P; cutoff=1e-12)
-                       n = norm(diff); d = norm(P); d > 0 ? n / d : n
-                   end
-            printinfo && iter % 5 == 0 &&
-                println("  McWeeny iter $iter: err=$err  maxlinkdim=$(maxlinkdim(P))")
-            err < tol_mc && break
-            P_inte = +(3.0 * P, -2.0 * P2; cutoff=Float64(cutoff))
-            P = apply(P, P_inte; ak...)
-            ITensorMPS.truncate!(P; cutoff=Float64(cutoff))
-            _gpu_gc!()
-        end
+        printinfo && _gpu_log("McWeeny purification on GPU..."; indent=0)
+        P = _mcweeny_iterate(P; maxiters=30, maxdim, cutoff=Float64(cutoff), tol=1e-5,
+                             trunc=(:cutoff,), after_step=_gpu_gc!,
+                             progress = printinfo ? function (iter, err, ρ)
+                                 iter % 5 == 0 &&
+                                     println("  McWeeny iter $iter: err=$err  maxlinkdim=$(maxlinkdim(ρ))")
+                             end : nothing)
         H._density_cache = nothing   # don't cache GPU MPO in CPU field
     elseif method == :sp2
         Nel_val = Nel === nothing ? H.N ÷ 2 : Int(Nel)
-        printinfo && println("[gpu] SP2 purification on GPU (Nel=$Nel_val)...")
-        maxiters_sp = 40
-        tol_sp      = 1e-5
-        for iter in 1:maxiters_sp
-            P2  = apply(P, P; ak...)
-            ITensorMPS.truncate!(P2; cutoff=Float64(cutoff))
-            err = let diff = +(P2, -1.0 * P; cutoff=1e-12)
-                      n = norm(diff); d = norm(P); d > 0 ? n / d : n
-                  end
-            printinfo && println("  SP2 iter $iter: err=$err  maxlinkdim=$(maxlinkdim(P))")
-            err < tol_sp && break
-            tr_P2 = real(tr(P2))
-            if tr_P2 >= Nel_val
-                P = P2
-            else
-                P = +(2.0 * P, -1.0 * P2; ak...)
-                ITensorMPS.truncate!(P; cutoff=Float64(cutoff))
-            end
-            _gpu_gc!()
-        end
+        printinfo && _gpu_log("SP2 purification on GPU (Nel=$Nel_val)..."; indent=0)
+        P = _sp2_iterate(P, Nel_val; maxiters=40, maxdim, cutoff=Float64(cutoff), tol=1e-5,
+                         trunc=(:cutoff,), add_trunc=(:cutoff, :maxdim), after_step=_gpu_gc!,
+                         progress = printinfo ? function (iter, err, ρ)
+                             println("  SP2 iter $iter: err=$err  maxlinkdim=$(maxlinkdim(ρ))")
+                         end : nothing)
     elseif method == :KPM
         # KPM: use CPU projector, just move to GPU
         P_cpu = _get_projector(H; method=:KPM, fermi=fermi, Nchebychev=Nchebychev,
                                maxdim=maxdim, cutoff=cutoff)
-        P = _to_gpu_mpo(P_cpu, gpu_type)
+        P = _to_gpu(P_cpu, gpu_type)
     else
         error("get_C_gpu: unknown method :$method. Choose :mcweeny, :sp2, or :KPM")
     end
-    printinfo && println("[gpu] Projector ready, maxlinkdim=$(maxlinkdim(P))")
+    printinfo && _gpu_log("Projector ready, maxlinkdim=$(maxlinkdim(P))"; indent=0)
 
-    # ── Q = I − P on GPU ──────────────────────────────────────────────────────
-    I_gpu = _to_gpu_mpo(MPO(collect(sites), "Id"), gpu_type)
-    Q = +(I_gpu, -1.0 * P; ak...)
-    ITensorMPS.truncate!(Q; cutoff=Float64(cutoff))
-    _gpu_gc!()
-
-    # ── basis MPS closure (returns GPU MPS) ───────────────────────────────────
-    make_alpha_gpu = if has_sub
-        all_sites = collect(sites)
-        alpha -> begin
-            n_cell   = (alpha - 1) ÷ n_sub
-            sub      = (alpha - 1) % n_sub + 1
-            pos_bits = [((n_cell >> (L - i)) & 1) + 1 for i in 1:L]
-            _to_gpu_mps(_product_state_mps(all_sites, [pos_bits; sub]), gpu_type)
-        end
-    else
-        alpha -> _to_gpu_mps(binary_to_MPS(alpha - 1, L, collect(sites)), gpu_type)
-    end
-
-    if quenched
-        # ── position operators on GPU ──────────────────────────────────────────
-        sinX_gpu = _to_gpu_mpo(has_sub ?
-            postpend_op(get_sinx_op(L, pos_sites, L_chain, Λ_val, xfunc_pos), sub_s, I_mat) :
-            get_sinx_op(L, pos_sites, L_chain, Λ_val, xfunc_pos), gpu_type)
-        cosX_gpu = _to_gpu_mpo(has_sub ?
-            postpend_op(get_cosx_op(L, pos_sites, L_chain, Λ_val, xfunc_pos), sub_s, I_mat) :
-            get_cosx_op(L, pos_sites, L_chain, Λ_val, xfunc_pos), gpu_type)
-        sinY_gpu = _to_gpu_mpo(has_sub ?
-            postpend_op(get_siny_op(L, pos_sites, L_chain, Λ_val, yfunc_pos), sub_s, I_mat) :
-            get_siny_op(L, pos_sites, L_chain, Λ_val, yfunc_pos), gpu_type)
-        cosY_gpu = _to_gpu_mpo(has_sub ?
-            postpend_op(get_cosy_op(L, pos_sites, L_chain, Λ_val, yfunc_pos), sub_s, I_mat) :
-            get_cosy_op(L, pos_sites, L_chain, Λ_val, yfunc_pos), gpu_type)
-        printinfo && println("[gpu] Position operators on GPU.")
-
-        # ── 8 intermediate MPO products ────────────────────────────────────────
-        sinY_P = apply(sinY_gpu, P; ak...); cosY_P = apply(cosY_gpu, P; ak...)
-        P_sinX = apply(P, sinX_gpu; ak...); P_cosX = apply(P, cosX_gpu; ak...)
-        sinY_Q = apply(sinY_gpu, Q; ak...); cosY_Q = apply(cosY_gpu, Q; ak...)
-        Q_sinX = apply(Q, sinX_gpu; ak...); Q_cosX = apply(Q, cosX_gpu; ak...)
-        printinfo && println("[gpu] 8 intermediate MPO products done.")
-        _gpu_gc!()
-
-        # C1 = Q sinX P sinY Q − P sinX Q sinY P
-        C1 = +(apply(apply(Q_sinX, P; ak...), sinY_Q; ak...),
-               -apply(apply(P_sinX, Q; ak...), sinY_P; ak...); ak...)
-        ITensorMPS.truncate!(C1; cutoff=Float64(cutoff))
-        printinfo && println("[gpu] C1 done, maxlinkdim=$(maxlinkdim(C1))")
-        _gpu_gc!()
-
-        # C2 = Q cosX P cosY Q − P cosX Q cosY P
-        C2 = +(apply(apply(Q_cosX, P; ak...), cosY_Q; ak...),
-               -apply(apply(P_cosX, Q; ak...), cosY_P; ak...); ak...)
-        ITensorMPS.truncate!(C2; cutoff=Float64(cutoff))
-        printinfo && println("[gpu] C2 done, maxlinkdim=$(maxlinkdim(C2))")
-        _gpu_gc!()
-
-        # C3 = Q sinX P cosY Q − P sinX Q cosY P
-        C3 = +(apply(apply(Q_sinX, P; ak...), cosY_Q; ak...),
-               -apply(apply(P_sinX, Q; ak...), cosY_P; ak...); ak...)
-        ITensorMPS.truncate!(C3; cutoff=Float64(cutoff))
-        printinfo && println("[gpu] C3 done, maxlinkdim=$(maxlinkdim(C3))")
-        _gpu_gc!()
-
-        # C4 = Q cosX P sinY Q − P cosX Q sinY P
-        C4 = +(apply(apply(Q_cosX, P; ak...), sinY_Q; ak...),
-               -apply(apply(P_cosX, Q; ak...), sinY_P; ak...); ak...)
-        ITensorMPS.truncate!(C4; cutoff=Float64(cutoff))
-        printinfo && println("[gpu] C4 done. Closure ready.")
-        _gpu_gc!()
-
-        calculate_chern_number = uc -> begin
-            sum(sub -> begin
-                alpha    = (uc - 1) * n_sub + sub
-                α        = make_alpha_gpu(alpha)
-                x        = xfunc(alpha - 1, L_chain)
-                y        = yfunc(alpha - 1, L_chain)
-                cos_x, sin_x = cos(x / Λ_val), sin(x / Λ_val)
-                cos_y, sin_y = cos(y / Λ_val), sin(y / Λ_val)
-                ch  =  cos_x * cos_y * inner(α', C1, α)
-                ch +=  sin_x * sin_y * inner(α', C2, α)
-                ch -=  cos_x * sin_y * inner(α', C3, α)
-                ch -=  sin_x * cos_y * inner(α', C4, α)
-                ch * 2im * π * Λ_val^2
-            end, 1:n_sub) / A_cell
-        end
-
-    else
-        # flat (non-quenched) mode
-        x_op = has_sub ?
-            postpend_op(get_diagonal_mpo(L, pos_sites, i -> xfunc_pos(i-1, L_chain)), sub_s, I_mat) :
-            get_diagonal_mpo(L, pos_sites, i -> xfunc_pos(i-1, L_chain))
-        y_op = has_sub ?
-            postpend_op(get_diagonal_mpo(L, pos_sites, i -> yfunc_pos(i-1, L_chain)), sub_s, I_mat) :
-            get_diagonal_mpo(L, pos_sites, i -> yfunc_pos(i-1, L_chain))
-        x_gpu = _to_gpu_mpo(x_op, gpu_type)
-        y_gpu = _to_gpu_mpo(y_op, gpu_type)
-
-        T1 = apply(Q, apply(x_gpu, apply(P, apply(y_gpu, Q; ak...); ak...); ak...); ak...)
-        T2 = apply(P, apply(x_gpu, apply(Q, apply(y_gpu, P; ak...); ak...); ak...); ak...)
-        C_op = 2im * π * +(T1, -1.0 * T2; ak...)
-        ITensorMPS.truncate!(C_op; cutoff=Float64(cutoff))
-        _gpu_gc!()
-
-        calculate_chern_number = uc -> begin
-            sum(sub -> begin
-                alpha = (uc - 1) * n_sub + sub
-                α     = make_alpha_gpu(alpha)
-                inner(α', C_op, α)
-            end, 1:n_sub) / A_cell
-        end
-    end
-
-    return calculate_chern_number
+    # ── the CPU marker assembly on GPU MPOs ──────────────────────────────────
+    # Q = I − P summed with `maxdim` and `cutoff`, then truncated with `cutoff`, as
+    # are C1–C4 and the flat operator; operators and basis states uploaded with
+    # gpu_type; GPU memory freed after each step.
+    progress = printinfo ? function (stage, M)
+        stage === :positions && _gpu_log("Position operators on GPU."; indent=0)
+        stage === :products  && _gpu_log("8 intermediate MPO products done."; indent=0)
+        stage in (:C1, :C2, :C3) && _gpu_log("$stage done, maxlinkdim=$(maxlinkdim(M))"; indent=0)
+        stage === :C4        && _gpu_log("C4 done. Closure ready."; indent=0)
+        return nothing
+    end : nothing
+    return _chern_marker(P, H.L, H.sites, xfunc, yfunc;
+                         l, Λ=Λ_val, maxdim, cutoff=Float64(cutoff), quenched,
+                         to_device=_to_gpu, device_type=gpu_type,
+                         q_add=(:cutoff, :maxdim), q_trunc=(:cutoff,),
+                         c_trunc=(:cutoff,), flat_trunc=(:cutoff,),
+                         progress, after_step=_gpu_gc!)
 end

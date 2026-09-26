@@ -144,15 +144,15 @@ function get_nh_density_trajectory_gpu(H, rho0::MPO;
     density = Matrix{Float64}(undef, length(centers), length(sample_steps))
     maxlinks = Vector{Int}(undef, length(sample_steps))
 
-    H_gpu = _ensure_gpu_mpo(H_mpo, gpu_type; caller="get_nh_density_trajectory_gpu")
+    H_gpu = _ensure_gpu(H_mpo, gpu_type; caller="get_nh_density_trajectory_gpu")
     Hdag_gpu = conj(swapprime(H_gpu, 0, 1))
-    rho_gpu = _ensure_gpu_mpo(rho0, gpu_type; caller="get_nh_density_trajectory_gpu")
+    rho_gpu = _ensure_gpu(rho0, gpu_type; caller="get_nh_density_trajectory_gpu")
 
     sample_idx = 1
     density[:, sample_idx] = _sample_density_diag_gpu(rho_gpu, plan;
         maxdim=maxdim, cutoff=cutoff)
     maxlinks[sample_idx] = maxlinkdim(rho_gpu)
-    printinfo && println("  [gpu] NH density sample step 0/$nsteps  t=0.0  maxlinkdim=$(maxlinks[sample_idx])")
+    printinfo && _gpu_log("NH density sample step 0/$nsteps  t=0.0  maxlinkdim=$(maxlinks[sample_idx])")
 
     for step in 1:nsteps
         rho_gpu = rk4_step_dm_nh_gpu(H_gpu, Hdag_gpu, rho_gpu, dt;
@@ -164,9 +164,9 @@ function get_nh_density_trajectory_gpu(H, rho0::MPO;
                 maxdim=maxdim, cutoff=cutoff)
             maxlinks[sample_idx] = maxlinkdim(rho_gpu)
             (verbose || printinfo) &&
-                println("  [gpu] NH density sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+                _gpu_log("NH density sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  maxlinkdim=$(maxlinks[sample_idx])")
         elseif verbose
-            println("  [gpu] NH density RK4 step $step/$nsteps  maxlinkdim=$(maxlinkdim(rho_gpu))")
+            _gpu_log("NH density RK4 step $step/$nsteps  maxlinkdim=$(maxlinkdim(rho_gpu))")
         end
     end
 
@@ -312,20 +312,20 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
     norms = Vector{Float64}(undef, length(sample_steps))
     maxlinks = Vector{Int}(undef, length(sample_steps))
 
-    H_gpu = _ensure_gpu_mpo(H_mpo, gpu_type; caller="get_state_amplitude_trajectory_gpu")
+    H_gpu = _ensure_gpu(H_mpo, gpu_type; caller="get_state_amplitude_trajectory_gpu")
     # ITensorMPS.tdvp(operator, t, init) computes exp(t*operator)*init (generator
     # form, no implicit sign flip), so -im*H gives dψ/dt = -im*Hψ, matching
     # evolve_with_tdvp(H::TBHamiltonian,...) (-im*H.mpo) and the NH RK4 convention
     # dρ/dt = -i(Hρ - ρH†). For H = H0 - iΓ this makes Γ>=0 lossy.
     generator_gpu = gpu_type(0, -1) * H_gpu
-    ψ_gpu = _ensure_gpu_mps(psi0, gpu_type; caller="get_state_amplitude_trajectory_gpu")
+    ψ_gpu = _ensure_gpu(psi0, gpu_type; caller="get_state_amplitude_trajectory_gpu")
 
     sample_idx = 1
     amplitude[:, sample_idx] = _sample_state_amplitudes_gpu(ψ_gpu, plan;
         component=component, pointavg=pointavg)
     norms[sample_idx] = _state_norm_gpu(ψ_gpu)
     maxlinks[sample_idx] = maxlinkdim(ψ_gpu)
-    printinfo && println("  [gpu] state sample step 0/$nsteps  t=0.0  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+    printinfo && _gpu_log("state sample step 0/$nsteps  t=0.0  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
 
     for step in 1:nsteps
         ψ_gpu = _tdvp_step(
@@ -347,10 +347,10 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
             norms[sample_idx] = _state_norm_gpu(ψ_gpu)
             maxlinks[sample_idx] = maxlinkdim(ψ_gpu)
             (verbose || printinfo) &&
-                println("  [gpu] state sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
+                _gpu_log("state sample step $step/$nsteps  t=$(round(step * Float64(dt), digits=6))  norm=$(round(norms[sample_idx], sigdigits=6))  maxlinkdim=$(maxlinks[sample_idx])")
             _gpu_gc!()
         elseif verbose
-            println("  [gpu] state TDVP step $step/$nsteps  maxlinkdim=$(maxlinkdim(ψ_gpu))")
+            _gpu_log("state TDVP step $step/$nsteps  maxlinkdim=$(maxlinkdim(ψ_gpu))")
         end
     end
 

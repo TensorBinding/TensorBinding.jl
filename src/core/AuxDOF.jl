@@ -657,26 +657,31 @@ end
 # wrappers keep what else differs: how
 # the site is found (given side, detected end, index or tag, "Spin" tag), their
 # checks and error messages, and _project_spin_sector's TBHamiltonian copy. The
-# GPU twins _project_aux_gpu (gpu/primitives.jl) and _contract_nh_block_gpu
-# (gpu/nh.jl) build dense device projectors instead (one-hot tensors do not move
-# to the GPU) and stay with the GPU code.
+# GPU twin _contract_nh_block_gpu (gpu/nh.jl) runs _project_end_site on GPU
+# one-hot vectors (`to_device`); _project_aux_gpu (gpu/primitives.jl) contracts a
+# dense device projector instead and stays with the GPU code.
 
 """
-    _project_end_site(W, s, row, col, side) -> MPO
+    _project_end_site(W, s, row, col, side; to_device=_on_host, device_type=Float64) -> MPO
 
 Contract the end site of `W` that carries `s` (the first site for `side=:pre`,
 the last for any other `side`) with the one-hot pair ⟨row| on `s'` and |col⟩ on
 `s`, and absorb the link tensor left over into the neighbouring site, as
 `W[neighbour] * block`. Returns the MPO without that site. Nothing is checked:
 the caller guarantees that `s` sits there (see project_aux, contract_nh_block).
+The one-hot vectors are moved by `to_device(·, device_type)` (see `_on_host`; the
+GPU twin _contract_nh_block_gpu passes `_to_gpu` and its `dtype`).
 """
-function _project_end_site(W::MPO, s::Index, row::Integer, col::Integer, side::Symbol)
+function _project_end_site(W::MPO, s::Index, row::Integer, col::Integer, side::Symbol;
+                           to_device = _on_host, device_type::Type = Float64)
     L = length(W)
+    bra = to_device(onehot(s' => row), device_type)
+    ket = to_device(onehot(s => col), device_type)
     if side === :pre
-        block = W[1] * onehot(s' => row) * onehot(s => col)
+        block = W[1] * bra * ket
         return MPO(ITensor[W[2] * block; [W[i] for i in 3:L]])
     else
-        block = W[L] * onehot(s' => row) * onehot(s => col)
+        block = W[L] * bra * ket
         return MPO(ITensor[[W[i] for i in 1:L-2]; W[L-1] * block])
     end
 end

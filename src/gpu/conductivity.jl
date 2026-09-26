@@ -25,7 +25,7 @@ function _build_qft_ops_gpu(H::TBHamiltonian)
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true))), pos_s))
     FTrev_cpu  = _embed_in_full_sites(H, fix_sites(
         MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true))), pos_s))
-    return _to_gpu_mpo(FTirev_cpu), _to_gpu_mpo(FTrev_cpu)
+    return _to_gpu(FTirev_cpu, ComplexF32), _to_gpu(FTrev_cpu, ComplexF32)
 end
 
 # GPU-safe Hadamard product: the site-wise product of hadamard_mpo (core/Utils.jl),
@@ -124,7 +124,7 @@ function _get_density_matrix_gpu(H::TBHamiltonian, ϵF::Real,
     P = _get_density_matrix(H, ϵF, P_method, Ncheb, maxdim, cutoff,
                              purify_method, purify_maxdim, purify_maxiters,
                              purify_tol, verbose)
-    return _to_gpu_mpo(P)
+    return _to_gpu(P, ComplexF32)
 end
 
 

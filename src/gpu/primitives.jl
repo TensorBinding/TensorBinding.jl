@@ -1,13 +1,16 @@
 # gpu/primitives.jl — GPU-safe building blocks shared by the src/gpu/ entry points:
-# the QFT sandwich used by get_bands_gpu, dense GPU delta/one-hot tensors, MPS
-# element evaluation (point, block, all-sites sum), diagonal extraction and density
-# profiles, diagonal-MPO embedding and auxiliary-site projection. Moved from the
-# former gpu/GPU_tk.jl.
+# the QFT sandwich used by get_bands_gpu, a dense GPU delta, MPS element evaluation
+# (point, block, all-sites sum), diagonal extraction and density profiles,
+# diagonal-MPO embedding and auxiliary-site projection. Moved from the former
+# gpu/GPU_tk.jl. The evaluators, the extraction and the embedding are thin wrappers
+# over the CPU kernels of core/Utils.jl (_eval_block_mps, _extract_diagonal,
+# _mps_to_diagonal) with `to_device = _to_gpu`.
 #
 # Main entry points: extract_diagonal_to_mps_gpu and density_profile_from_dm_gpu
-# (documented); internal: _apply_qft_conj_gpu, _make_delta_gpu, _onehot_gpu, the
-# _eval_*_gpu samplers, _mps_to_diagonal_mpo_gpu, _project_aux_gpu.
-# Depends on: core/Utils.jl (constant_mps), gpu/device.jl (CUDA bridge, uploads).
+# (documented); internal: _apply_qft_conj_gpu, _make_delta_gpu, the _eval_*_gpu
+# samplers, _mps_to_diagonal_mpo_gpu, _project_aux_gpu.
+# Depends on: core/Utils.jl (the kernels above, constant_mps), gpu/device.jl (CUDA
+# bridge, uploads).
 
 
 # ============================================================
@@ -25,31 +28,12 @@ end
 
 
 # ============================================================
-# 2. Dense GPU delta and one-hot tensors
+# 2. Dense GPU delta
 # ============================================================
 
-# delta() produces a DiagTensor{Float64} (CPU).  When contracted with a
-# Dense{ComplexF32} GPU tensor, NDTensors promotes the output to ComplexF64
-# and the _contract! dispatch fails (all tensors in these contractions should
-# share the GPU ComplexF32 element type).
-# Fix: materialise the delta as a dense ComplexF32 GPU tensor.
-function _make_delta_gpu(i::Index, j::Index, k::Index)
-    d_dense = dense(delta(i, j, k))          # DiagStorage → DenseStorage
-    idx     = inds(d_dense)
-    arr     = Array(d_dense, idx...)
-    return _tb_cuda_module().cu(ITensor(ComplexF32.(arr), idx))
-end
-
-# Dense GPU one-hot vector on `p.first` with element type `T`, real or complex,
-# so it matches the tensor it is contracted with (see extract_diagonal_to_mps_gpu).
-function _onehot_gpu(p::Pair{<:Index,<:Integer}, T::Type{<:Number}=ComplexF32)
-    i = p.first
-    v = Int(p.second)
-    1 <= v <= dim(i) || error("_onehot_gpu: state $v is outside index dimension $(dim(i)).")
-    arr = zeros(T, dim(i))
-    arr[v] = one(T)
-    return ITensors.itensor(_tb_cuda_module().CuArray(arr), i)
-end
+# A dense ComplexF32 GPU delta (delta() is a CPU DiagTensor{Float64}); the Hadamard
+# product of gpu/conductivity.jl contracts it into ComplexF32 GPU tensors.
+_make_delta_gpu(i::Index, j::Index, k::Index) = _to_gpu(delta(i, j, k), ComplexF32)
 
 
 # ============================================================
@@ -62,149 +46,55 @@ end
 # Basis vectors are built as explicit dense arrays matching the element type of
 # A so that the contraction is GPU×GPU with a consistent dtype throughout.
 function _eval_diag_mps_gpu(A::MPS, idx::Int)
-    cuda = _tb_cuda_module()
     s    = siteinds(A)
     ElT  = eltype(A[1])
-    acc  = cuda.cu(ITensor(one(ElT)))
+    acc  = _to_gpu(ITensor(one(ElT)), ElT)
     for i in 1:length(s)
         b     = (idx >> (i - 1)) & 1
         v_arr = zeros(ElT, dim(s[i]))
         v_arr[b + 1] = one(real(ElT))
-        v   = cuda.cu(ITensor(v_arr, s[i]))
+        v   = _to_gpu(ITensor(v_arr, s[i]), ElT)
         acc *= A[i] * v
     end
     return real(scalar(acc))
 end
 
-# Real-space MPS element evaluation on GPU, matching binary_to_MPS/eval_mps:
-# `idx` is encoded big-endian across the site order.
-function _eval_mps_bigendian_gpu(A::MPS, idx::Int)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    n    = length(s)
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:n
-        b     = (idx >> (n - i)) & 1
-        v_arr = zeros(ElT, dim(s[i]))
-        v_arr[b + 1] = one(real(ElT))
-        v   = cuda.cu(ITensor(v_arr, s[i]))
-        acc *= A[i] * v
-    end
-    return real(scalar(acc))
-end
+# The real-space samplers are the CPU block evaluator _eval_block_mps (core/Utils.jl)
+# on GPU vectors. Big-endian site order [iy_MSB..iy_LSB, ix_MSB..ix_LSB]; the kept
+# top bits are pinned to the pixel, the lower ones summed with [1, 1].
+#   _eval_block_mps_gpu            one coarse 2D block (reduce=:block)
+#   _eval_block_mps_1d_gpu         one 1D block: the top `a` of the L bits pinned
+#   _eval_mps_bigendian_gpu        one element (every bit pinned), matching
+#                                  binary_to_MPS/eval_mps
+#   _eval_fullsum_mps_1d_gpu       the sum of all elements (no bit pinned), the
+#                                  trace of the NH diagonal-trace DOS (gpu/nh.jl)
+# The `_complex` variants return the ComplexF64 amplitude instead of its real part.
+_eval_block_mps_gpu(A::MPS, ixp::Int, iyp::Int, a::Int, b::Int, Lx::Int, Ly::Int) =
+    _eval_block_mps(A, ixp, iyp, a, b, Lx, Ly; to_device=_to_gpu)
 
-function _eval_mps_bigendian_complex_gpu(A::MPS, idx::Int)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    n    = length(s)
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:n
-        b     = (idx >> (n - i)) & 1
-        v_arr = zeros(ElT, dim(s[i]))
-        v_arr[b + 1] = one(real(ElT))
-        v   = cuda.cu(ITensor(v_arr, s[i]))
-        acc *= A[i] * v
-    end
-    return ComplexF64(scalar(acc))
-end
-
-# Block-integrated MPS element on GPU (reduce=:block): sum the profile over one
-# coarse block by tracing out the within-block position bits and pinning the
-# block to the coarse pixel (ixp, iyp).  The big-endian position site order is
-# [iy_MSB..iy_LSB, ix_MSB..ix_LSB] (sites 1..Ly carry iy, Ly+1..L carry ix), so
-# we keep the top b bits of iy (sites 1..b) and top a bits of ix (sites
-# Ly+1..Ly+a) as onehot, and contract every lower bit with [1,1] (a sum).
-function _eval_block_mps_gpu(A::MPS, ixp::Int, iyp::Int,
-                             a::Int, b::Int, Lx::Int, Ly::Int)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    L    = Lx + Ly
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:L
-        v_arr = zeros(ElT, dim(s[i]))
-        if i <= b                       # keep: iy block bit (b - i)
-            v_arr[((iyp >> (b - i)) & 1) + 1] = one(real(ElT))
-        elseif i <= Ly                  # sum: iy within-block bit
-            v_arr .= one(real(ElT))
-        elseif i <= Ly + a              # keep: ix block bit (a - (i - Ly))
-            v_arr[((ixp >> (a - (i - Ly))) & 1) + 1] = one(real(ElT))
-        else                            # sum: ix within-block bit
-            v_arr .= one(real(ElT))
-        end
-        v   = cuda.cu(ITensor(v_arr, s[i]))
-        acc *= A[i] * v
-    end
-    return real(scalar(acc))
-end
-
-# 1D block-integrated MPS element on GPU. Pins the top `a` big-endian bits to
-# the coarse block index `ixp` and traces the remaining lower bits with [1, 1].
 function _eval_block_mps_1d_gpu(A::MPS, ixp::Int, a::Int, L::Int)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    length(s) == L || error("_eval_block_mps_1d_gpu: MPS has $(length(s)) sites but L=$L.")
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:L
-        v_arr = zeros(ElT, dim(s[i]))
-        if i <= a
-            v_arr[((ixp >> (a - i)) & 1) + 1] = one(real(ElT))
-        else
-            v_arr .= one(real(ElT))
-        end
-        v = cuda.cu(ITensor(v_arr, s[i]))
-        acc *= A[i] * v
-    end
-    return real(scalar(acc))
+    length(A) == L || error("_eval_block_mps_1d_gpu: MPS has $(length(A)) sites but L=$L.")
+    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu)
 end
 
 function _eval_block_mps_1d_complex_gpu(A::MPS, ixp::Int, a::Int, L::Int)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    length(s) == L || error("_eval_block_mps_1d_complex_gpu: MPS has $(length(s)) sites but L=$L.")
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:L
-        v_arr = zeros(ElT, dim(s[i]))
-        if i <= a
-            v_arr[((ixp >> (a - i)) & 1) + 1] = one(real(ElT))
-        else
-            v_arr .= one(real(ElT))
-        end
-        v = cuda.cu(ITensor(v_arr, s[i]))
-        acc *= A[i] * v
-    end
-    return ComplexF64(scalar(acc))
+    length(A) == L || error("_eval_block_mps_1d_complex_gpu: MPS has $(length(A)) sites but L=$L.")
+    return _eval_block_mps(A, ixp, 0, a, 0, L, 0; to_device=_to_gpu, value=ComplexF64)
 end
 
-# Sum of all MPS elements on GPU (every site contracted with [1, 1, …]); the
-# trace of the diagonal in the NH diagonal-trace DOS (gpu/nh.jl).
-function _eval_fullsum_mps_1d_gpu(A::MPS)
-    cuda = _tb_cuda_module()
-    s    = siteinds(A)
-    ElT  = eltype(A[1])
-    acc  = cuda.cu(ITensor(one(ElT)))
-    for i in 1:length(s)
-        v_arr = fill(one(ElT), dim(s[i]))
-        v = ITensors.itensor(cuda.CuArray(v_arr), s[i])
-        acc *= A[i] * v
-    end
-    return real(scalar(acc))
-end
+_eval_mps_bigendian_gpu(A::MPS, idx::Int) =
+    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu)
+
+_eval_mps_bigendian_complex_gpu(A::MPS, idx::Int) =
+    _eval_block_mps(A, idx, 0, length(A), 0, length(A), 0; to_device=_to_gpu, value=ComplexF64)
+
+_eval_fullsum_mps_1d_gpu(A::MPS) = _eval_block_mps(A, 0, 0, 0, 0, length(A), 0; to_device=_to_gpu)
 
 
 # ============================================================
 # 4. Diagonal extraction, density profiles and diagonal MPOs
 # ============================================================
 
-# extract_diagonal_to_mps (in core/Utils.jl) uses plain onehot() which returns a
-# CPU DiagBlockSparse tensor.  Contracting a GPU MPO tensor with a CPU onehot
-# fails (GPU×CPU mismatch). Here the one-hot basis vectors are explicitly dense
-# GPU tensors with the same element type as the input MPO tensor.
-# (Kept above the docstring: a comment in between would detach it.)
 """
     extract_diagonal_to_mps_gpu(M::MPO) -> MPS
 
@@ -214,27 +104,14 @@ the input tensor element type.
 """
 function extract_diagonal_to_mps_gpu(M::MPO)::MPS
     _check_gpu("extract_diagonal_to_mps_gpu")
-    N    = length(M)
-    new_tensors = Vector{ITensor}(undef, N)
-    for i in 1:N
-        t      = M[i]
-        s2, s1 = siteinds(M, i)   # s2 = bra (primed), s1 = ket
-        d_s    = dim(s1)
-        ElT    = eltype(t)
-        v_inds = uniqueinds(t, s1, s2)
-
-        res = ITensor(v_inds..., s1)   # zero tensor; type determined by first +=
-        for v in 1:d_s
-            ket_v = _onehot_gpu(s1 => v, ElT)
-            bra_v = _onehot_gpu(s2 => v, ElT)
-            slice = t * ket_v * bra_v
-            res  += slice * ket_v
-        end
-        new_tensors[i] = res
-    end
-    return MPS(new_tensors)
+    return _extract_diagonal(M; to_device=_to_gpu)
 end
 
+# The diagonal comes from the shared extraction kernel. The :complement branch is
+# not density_profile_from_dm's: that one subtracts without truncation on the sites
+# it is given, this one truncates the sum 1 − diag with `maxdim`/`cutoff`, uploads
+# the constant profile as ComplexF32 and defaults `sites` to the diagonal's own.
+# (Kept above the docstring: a comment in between would detach it.)
 """
     density_profile_from_dm_gpu(density_mpo, sites=nothing; mode=:direct,
                                 maxdim=100, cutoff=1e-8) -> MPS
@@ -250,40 +127,21 @@ function density_profile_from_dm_gpu(density_mpo::MPO, sites=nothing;
                                      maxdim::Int = 100,
                                      cutoff::Real = 1e-8)
     _check_gpu("density_profile_from_dm_gpu")
-    dm_gpu = _ensure_gpu_mpo(density_mpo; caller="density_profile_from_dm_gpu")
+    dm_gpu = _ensure_gpu(density_mpo, ComplexF32; caller="density_profile_from_dm_gpu")
     diag_mps = extract_diagonal_to_mps_gpu(dm_gpu)
     mode === :direct && return diag_mps
     if mode === :complement
         profile_sites = sites === nothing ? collect(siteinds(diag_mps)) : collect(sites)
-        one_mps = _to_gpu_mps(constant_mps(profile_sites, 1.0))
+        one_mps = _to_gpu(constant_mps(profile_sites, 1.0), ComplexF32)
         return +(one_mps, -diag_mps; maxdim=maxdim, cutoff=cutoff)
     end
     error("Unsupported density extraction mode :$mode. Use :direct or :complement.")
 end
 
-# GPU analogue of mps_to_diagonal_mpo (core/Utils.jl): embed a profile MPS as the
-# diagonal of an MPO on `sites`, with dense GPU deltas from _make_delta_gpu.
-function _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO
-    N = length(mps)
-    mpo_tensors = Vector{ITensor}(undef, N)
-    for i in 1:N
-        mps_t = mps[i]
-        old_s = if N == 1
-            only(siteinds(mps))
-        elseif i == 1
-            uniqueind(mps_t, mps[i+1])
-        elseif i == N
-            uniqueind(mps_t, mps[i-1])
-        else
-            uniqueind(mps_t, mps[i-1], mps[i+1])
-        end
-        s = sites[i]
-        s_temp = Index(dim(s), "temp")
-        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) *
-                         _make_delta_gpu(s_temp, s, s')
-    end
-    return MPO(mpo_tensors)
-end
+# GPU analogue of mps_to_diagonal_mpo (core/Utils.jl), through its kernel: dense
+# ComplexF32 GPU deltas, and a one-site MPS is accepted.
+_mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO =
+    _mps_to_diagonal(mps, sites; to_device=_to_gpu, delta_type=ComplexF32, one_site=true)
 
 
 # ============================================================
@@ -300,7 +158,6 @@ end
 # setelt() produces a DiagBlockSparse ITensor that cu() leaves on CPU — we
 # therefore build the |sec><sec| projector as an explicit dense array instead.
 function _project_aux_gpu(T::MPO, idx::Index, sec::Int; side::Symbol=:post)
-    cuda = _tb_cuda_module()
     L    = length(T)
     n    = side == :post ? L : 1
 
@@ -310,7 +167,7 @@ function _project_aux_gpu(T::MPO, idx::Index, sec::Int; side::Symbol=:post)
     d          = dim(idx)
     proj_arr   = zeros(ElT, d, d)
     proj_arr[sec, sec] = one(ElT)
-    proj       = cuda.cu(ITensor(proj_arr, idx, idx'))
+    proj       = _to_gpu(ITensor(proj_arr, idx, idx'), ElT)
     contracted = T[n] * proj   # removes idx & idx' from T[n]; leaves bond indices only
 
     L == 1 && return MPO([contracted])

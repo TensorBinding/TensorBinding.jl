@@ -84,6 +84,19 @@ constructor that takes all 21 fields in order, caches included, remains.
   The spinless s-wave → p-wave notice of `add_superconductivity!` is an `@info` message.
 - `get_Hamiltonian` looks every geometry up in one model registry (`MODELS` in
   `core/ModelRegistry.jl`); `MODEL_REGISTRY` and `build_hamiltonian` are unchanged.
+- **GPU precision warning**: the GPU entry points that warn about a tight `cutoff` now
+  follow one rule, a 32-bit element type (`ComplexF32`, `Float32`) with `cutoff < 1e-6`,
+  in one wording. Before, `get_bands_gpu`, `get_ldos_spatial_gpu` and
+  `get_exciton_ldos_spatial_gpu` warned for `ComplexF32` only, `get_nh_dos_grid_gpu` and
+  `get_nh_dos_points_gpu` below `cutoff = 1e-4` (and once more for every point), and
+  `scf_magnetic_hubbard_gpu` also for any type below `1e-5`. No value changes.
+- The GPU functions now run the CPU kernels on GPU tensors wherever those kernels apply
+  unchanged (stochastic DOS, McWeeny/SP2 purification, Chern-marker assembly, diagonal
+  extraction and embedding, block evaluation, the non-Hermitian block contraction and
+  probes); their results and printed progress are unchanged. The internal upload helpers
+  `_to_gpu_mpo`/`_to_gpu_mps` and `_ensure_gpu_mpo`/`_ensure_gpu_mps` are replaced by
+  `TensorBinding._to_gpu(x, T)` and `_ensure_gpu(x, T; caller)`; a script that called the
+  one-argument `_to_gpu_mps(ψ)` (ComplexF32) calls `TensorBinding._to_gpu(ψ, ComplexF32)`.
 
 ### Changed results
 

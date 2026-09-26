@@ -1,12 +1,13 @@
 # solvers/kpm/dos.jl — total density of states
 #
 # Contents: the stochastic trace estimate over random basis states, with optional
-# aux-DOF projections and exciton bound-sector stratification (get_dos_stochastic),
+# aux-DOF projections and exciton bound-sector stratification (get_dos_stochastic,
+# whose sampling kernel _dos_stochastic is also the body of get_dos_stochastic_gpu),
 # and the deterministic trace of each online Chebyshev MPO (get_dos_trace).
 #
 # Entry points: get_dos_stochastic, get_dos_trace
 # Depends on: core/Utils.jl (_basis_state_mps, extract_diagonal_to_mps,
-#   mpsexciton), core/TBSystem.jl (TBHamiltonian, physical_projector,
+#   mpsexciton, to_binary_vector, _on_host), core/TBSystem.jl (TBHamiltonian, physical_projector,
 #   physical_site_state, _is_binary_position_space), core/AuxDOF.jl
 #   (_aux_projection, _probe_sectors, probe_state), solvers/DMRG.jl
 #   (_ensure_scale!), solvers/kpm/kernels.jl
@@ -120,15 +121,57 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     Ham_n = _scaled_hamiltonian(H; cutoff=cutoff)
 
-    projected_position_space = !_is_binary_position_space(H)
-    D      = projected_position_space ? H.N : prod(ITensors.dim(s) for s in H.sites)
-    N_phys = H.N
-    is_exc = length(H.sites) == 2 * H.L
-
     # Projections are not switched on automatically here (see the docstring).
     aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
                              layer_proj, proj_layer, sublat_proj, proj_sl,
                              autoenable=false)
+
+    progress = verbose ? function (kind, i, n, χ, info)
+        i % 15 == 0 || return nothing
+        kind === :projected ? println("Projected DOS sample $i/$n  maxlinkdim=$χ") :
+        kind === :full      ? println("Full sample $i/$n  maxlinkdim=$χ") :
+                              println("Bound sample $i/$n  (x=$info)  maxlinkdim=$χ")
+        return nothing
+    end : nothing
+    return _dos_stochastic(H, Ham_n, Ncheb, ω_phys_vals, aux;
+                           N_sample, N_bound, seed, normalize, dos_weighting, kernel,
+                           lambda, eta, m_order, maxdim, cutoff, progress)
+end
+
+"""
+    _dos_stochastic(H, H̃, Ncheb, ω_phys_vals, aux; N_sample, N_bound, seed, normalize,
+                    dos_weighting, kernel, lambda, eta, m_order, maxdim, cutoff,
+                    continuum_only=false, caller="get_dos_stochastic",
+                    to_device=_on_host, device_type=ComplexF64, after_run=nothing,
+                    progress=nothing) -> Vector{Float64}
+
+The sampling and normalisation of `get_dos_stochastic` (documented there), also the
+body of `get_dos_stochastic_gpu`, from the rescaled Hamiltonian `H̃` (on the device)
+and the aux projection `aux` (`autoenable=false`). Each probe state is built on the
+CPU, moved by `to_device(·, device_type)` (see `_on_host`) and run through
+`_run_kpm_mps!`; `after_run()` follows each run and `progress(kind, i, n, χ, info)`
+reports it, with `kind` one of `:projected` (first sector of sample `i` only),
+`:full`, `:continuum` (`info = (x_e, x_h)`) and `:bound` (`info = x`).
+
+`continuum_only=true` (the GPU option; exciton Hamiltonians, checked by the caller)
+draws the `N_sample` probes as ordered electron-hole pairs `x_e ≠ x_h`, weighted by
+`D − N_phys`; together with aux projections it is an error, reported as `caller`'s.
+"""
+function _dos_stochastic(H::TBHamiltonian, Ham_n::MPO, Ncheb::Int, ω_phys_vals,
+                         aux::AuxProjection;
+                         N_sample::Int, N_bound::Int, seed, normalize::Bool,
+                         dos_weighting::Symbol, kernel::Symbol, lambda::Real, eta::Real,
+                         m_order::Int, maxdim::Int, cutoff::Real,
+                         continuum_only::Bool = false,
+                         caller::String       = "get_dos_stochastic",
+                         to_device            = _on_host,
+                         device_type::Type    = ComplexF64,
+                         after_run            = nothing,
+                         progress             = nothing)
+    projected_position_space = !_is_binary_position_space(H)
+    D      = projected_position_space ? H.N : prod(ITensors.dim(s) for s in H.sites)
+    N_phys = H.N
+    is_exc = length(H.sites) == 2 * H.L
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                kernel=kernel, lambda=lambda, eta=eta,
@@ -139,7 +182,18 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     accum_full  = zeros(Float64, Nω)
     accum_bound = zeros(Float64, Nω)
 
+    # One probe: moved to the device, run, followed by after_run(); returns the
+    # largest bond dimension of its recursion.
+    function run!(psi0, accum, weight)
+        χ = _run_kpm_mps!(Ham_n, to_device(psi0, device_type), Ncheb, W, valid, accum;
+                           weight=weight, cutoff=cutoff, maxdim=maxdim)
+        after_run === nothing || after_run()
+        return χ
+    end
+
     if _any_projected(aux)
+        continuum_only &&
+            error("$caller: continuum_only is not supported together with auxiliary projections.")
         # ── Projected DOS: sample position states with fixed aux sectors ─────
         # Trace over position basis only, with aux dofs projected to selected
         # sectors.  Effective dimension = N_phys × n_sectors.
@@ -151,10 +205,9 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         xs = rand(rng, 1:N_phys, N_sample)
         for (i, x) in enumerate(xs)
             for σ in sectors
-                χ = _run_kpm_mps!(Ham_n, probe_state(H, x, σ), Ncheb, W, valid, accum_full;
-                                   weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
-                verbose && i % 15 == 0 && σ == first(sectors) &&
-                    println("Projected DOS sample $i/$N_sample  maxlinkdim=$χ")
+                χ = run!(probe_state(H, x, σ), accum_full, 1.0/N_sample)
+                progress !== nothing && σ == first(sectors) &&
+                    progress(:projected, i, N_sample, χ, x)
             end
         end
 
@@ -171,25 +224,34 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         return result
     end
 
-    # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────────
-    samples = projected_position_space ?
-        rand(rng, 1:H.N, N_sample) : rand(rng, 0:(D - 1), N_sample)
-    for (i, sample) in enumerate(samples)
-        psi0 = projected_position_space ?
-            physical_site_state(H, sample) : _basis_state_mps(sample, H.sites)
-        χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_full;
-                           weight=1.0/N_sample, cutoff=cutoff, maxdim=maxdim)
-        verbose && i % 15 == 0 && println("Full sample $i/$N_sample  maxlinkdim=$χ")
+    if continuum_only
+        # ── Continuum samples: ordered electron-hole pairs x_e ≠ x_h ──────────
+        xs_e = rand(rng, 1:N_phys, N_sample)
+        ys_h = rand(rng, 1:(N_phys - 1), N_sample)
+        for i in 1:N_sample
+            xe = xs_e[i]
+            xh = ys_h[i] < xe ? ys_h[i] : ys_h[i] + 1
+            χ = run!(_exciton_pair_state(H, xe, xh), accum_full, 1.0/N_sample)
+            progress === nothing || progress(:continuum, i, N_sample, χ, (xe, xh))
+        end
+    else
+        # ── Full Hilbert space samples (weight = D / N_sample per sample) ─────
+        samples = projected_position_space ?
+            rand(rng, 1:H.N, N_sample) : rand(rng, 0:(D - 1), N_sample)
+        for (i, sample) in enumerate(samples)
+            psi0 = projected_position_space ?
+                physical_site_state(H, sample) : _basis_state_mps(sample, H.sites)
+            χ = run!(psi0, accum_full, 1.0/N_sample)
+            progress === nothing || progress(:full, i, N_sample, χ, sample)
+        end
     end
 
     # ── Bound-sector samples (exciton: random |x,x⟩, weight = N_phys/N_bound) ─
     if N_bound > 0 && is_exc
         xs = rand(rng, 1:N_phys, N_bound)
         for (i, x) in enumerate(xs)
-            psi0 = mpsexciton(x, H.sites)
-            χ = _run_kpm_mps!(Ham_n, psi0, Ncheb, W, valid, accum_bound;
-                               weight=1.0/N_bound, cutoff=cutoff, maxdim=maxdim)
-            verbose && i % 15 == 0 && println("Bound sample $i/$N_bound  (x=$x)  maxlinkdim=$χ")
+            χ = run!(mpsexciton(x, H.sites), accum_bound, 1.0/N_bound)
+            progress === nothing || progress(:bound, i, N_bound, χ, x)
         end
     end
 
@@ -204,12 +266,31 @@ function get_dos_stochastic(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         elseif N_bound > 0 && is_exc
             result[iω] = ((D - N_phys) * accum_full[iω] +
                           N_phys       * accum_bound[iω]) / denom[iω]
+        elseif continuum_only && is_exc
+            result[iω] = (D - N_phys) * accum_full[iω] / denom[iω]
         else
             result[iω] = D * accum_full[iω] / denom[iω]
         end
     end
-    normalize && dos_weighting == :trace && (result ./= D)
+    if normalize && dos_weighting == :trace
+        norm_dim = (continuum_only && is_exc && N_bound == 0) ? (D - N_phys) : D
+        result ./= norm_dim
+    end
     return result
+end
+
+# The electron-hole product state |x_e, x_h⟩ (1-based positions) on the interleaved
+# register [e₁, h₁, e₂, h₂, …] of an exciton Hamiltonian, big-endian bits.
+function _exciton_pair_state(H::TBHamiltonian, xe::Int, xh::Int)
+    Lphys = div(length(H.sites), 2)
+    bits_e = to_binary_vector(xe - 1, Lphys)
+    bits_h = to_binary_vector(xh - 1, Lphys)
+    state = Vector{String}(undef, 2 * Lphys)
+    for b in 1:Lphys
+        state[2b - 1] = bits_e[b]
+        state[2b]     = bits_h[b]
+    end
+    return MPS(H.sites, state)
 end
 
 
