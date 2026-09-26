@@ -1222,9 +1222,12 @@ single `get_*` style entry point for notebooks.
 - `Ncheb=100`, `scale=nothing`, `purification_scale_padding=1.05`, `maxdim=100`,
   `cutoff=1e-8`, `purif_maxiter=40`, `purif_tol=1e-6`, `verbose=true`.
 - `tol=1e-6`, `maxiters=30`, `mixing=0.4`: passed to the drivers as `scf_tol`,
-  `max_scf_iter` and `mix` (`tol` is also the QTCI tolerance of the CDW builders).
-- `builder_kwargs...`: to the CDW Hartree builder for `:cdw`, to the driver
-  (`scf_magnetic_hubbard`, `scf_swave_hubbard`, `scf_pwave_equalspin`) otherwise.
+  `max_scf_iter` and `mix`. For `:cdw` with `interaction=:dense` or `:distance`, `tol` is
+  also the QTCI tolerance of the Hartree builder (`:local` does not use it).
+- `builder_kwargs...`: for `:cdw`, forwarded only to `dense_hartree_builder`
+  (`interaction=:dense`) and ignored by the `:local` and `:distance` builders; for the
+  other channels, forwarded to the driver (`scf_magnetic_hubbard`, `scf_swave_hubbard`,
+  `scf_pwave_equalspin`).
 """
 function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                  interaction::Symbol = :local,
