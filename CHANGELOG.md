@@ -146,7 +146,7 @@ constructor that takes all 21 fields in order, caches included, remains.
     Fourier transform are binary.
   Binary position spaces are unaffected, bit for bit.
 
-## [0.1.1] — unreleased
+## [0.1.1] — 2026-09-26
 
 This release keeps the v0.1 API. Every entry under **Changed results** is a bug fix
 that moves numbers; reproduce an old result by pinning v0.1.0 or by passing the
