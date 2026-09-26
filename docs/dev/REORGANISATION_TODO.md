@@ -393,9 +393,9 @@ the affected golden cases in the same commit.
       The per-energy diagonal accumulators (`get_ldos_diag_from_Tn`, QPI, cheb2d
       `_accumulate_scaled!`) and the NH reconstructions (no truncation, first term
       unweighted) keep their loops; `_weighted_mpo_sum_gpu` (conductivity only) too.*
-- [x] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
+- [ ] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
       (RPA) and `nh_jackson_weights` (NH).
-      *tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
+      *Partly done in tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
       :jackson)[1:N]` (checked element by element for N = 1…4000) and is deleted; its eight
       callers (nh/kpm.jl ×5, gpu/nh.jl ×3) call `_kpm_kernel`, and the golden case keeps its
       record through a local definition. Not done: `_jackson_kernel` stays, because it is

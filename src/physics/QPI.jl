@@ -126,6 +126,8 @@ function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                  cutoff::Real        = 1e-8,
                  verbose::Bool       = false)
 
+    _require_binary_position_space(H, "get_qpi")
+
     # ── Sanity: no aux DOFs ───────────────────────────────────────────────────
     (H.spin_s !== nothing || H.nambu_s !== nothing ||
      H.layer_s !== nothing || H.sublattice_s !== nothing) &&

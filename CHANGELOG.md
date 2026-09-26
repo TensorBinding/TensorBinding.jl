@@ -92,9 +92,13 @@ constructor that takes all 21 fields in order, caches included, remains.
     `"haldane"`, `"chernhex"`, the multi-atom lattices, `"custom"` and the projected spaces
     keep their builders' defaults.
   Pass `scale=` explicitly to reproduce an old result.
+- **`get_qpi`** on a projected position space raises a clear `ArgumentError` (QPI needs a
+  binary register). It used to return maps that included the unphysical register states.
 - **Projected position spaces** (Fibonacci, metallic-mean, k-bonacci): every KPM path that
   accepts one now shifts the spectrum and starts its Chebyshev recursion with
-  `physical_projector(H)`, as most of them already did. The last ones that used the
+  `physical_projector(H)`, as most of them already did. (The Green's-function recursion of the RPA
+  bubble on the doubled 2L-site register still uses that register's identity: there is no
+  projected space for it.) The last ones that used the
   identity of the whole register:
   - the RPA bubbles with `P_method=:kpm` (`get_bubble_mpo`, `get_bubble_mpo_haydock`,
     the cheb2d bubbles and the susceptibilities built on them): the density matrix is now
