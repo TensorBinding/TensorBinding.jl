@@ -297,16 +297,20 @@ the affected golden cases in the same commit.
       (examples/manybody/scf_examples.ipynb, golden_scftopo). Not decided yet: the four open
       items below. Modified_GPU_funcs.jl only defines its own copies of
       `_onehot_gpu_f32`/`nh_spectrum_grid_gpu` and is included nowhere.*
-- [ ] Decide on `get_valley_projectors` (Topology_tk.jl): no library code calls it, but
+- [x] Decide on `get_valley_projectors` (Topology_tk.jl): no library code calls it, but
       golden_scftopo pins it without a skip-on-delete rule, so deleting it means deleting its
       scftopo case in the same commit.
-- [ ] Decide on `initial_guess_trivial_up_1D` / `initial_guess_trivial_down_1D` (SCF_tk.jl):
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `initial_guess_trivial_up_1D` / `initial_guess_trivial_down_1D` (SCF_tk.jl):
       unused by the library, pinned by golden_scftopo (same situation).
-- [ ] Decide on `spin_hamiltonian` (Supercond_tk.jl): unused by the library, pinned by
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `spin_hamiltonian` (Supercond_tk.jl): unused by the library, pinned by
       golden_scftopo (same situation).
-- [ ] Decide on `bdg_hamiltonian` (Supercond_tk.jl): unused by the library (TBSystem builds
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `bdg_hamiltonian` (Supercond_tk.jl): unused by the library (TBSystem builds
       the BdG MPO inline), pinned by golden_scftopo (same situation); its docstring example
       was fixed for v0.1.1 and the `pairingNNN`/`pairing2MPO` docstrings point to it.
+      *Decided 2026-09-26: keep (may be useful later).*
 - [x] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
       `Purification_tk.jl:95–96`, unreachable code after early `return` in
       `2Dlattice_tk.jl` (`generate_kin_u/d` l.33–63, six kinetic builders l.388–543).
