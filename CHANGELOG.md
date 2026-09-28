@@ -7,9 +7,13 @@ bugs without breaking the API.
 
 ## [Unreleased]
 
-Work towards v0.2.0: the code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md`.
+Work towards v0.2.0: the code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md`,
+and fixes for the bugs it found. A fix that moves numbers is listed under **Changed results**.
 
 ### Removed
+
+- The `Arpack` dependency, which the package never used (a script that relies on it being
+  installed alongside TensorBinding adds it to its own environment).
 
 Functions with no caller in the package, its examples or its tests. They were not exported,
 but could be called as `TensorBinding.name`:
@@ -132,19 +136,21 @@ constructor that takes all 21 fields in order, caches included, remains.
   accepts one now shifts the spectrum and starts its Chebyshev recursion with
   `physical_projector(H)`, as most of them already did. (The Green's-function recursion of the RPA
   bubble on the doubled 2L-site register still uses that register's identity: there is no
-  projected space for it.) The last ones that used the
-  identity of the whole register:
-  - the RPA bubbles with `P_method=:kpm` (`get_bubble_mpo`, `get_bubble_mpo_haydock`,
-    the cheb2d bubbles and the susceptibilities built on them): the density matrix is now
-    zero on the unphysical register states, where it used to hold spurious weight. The
-    physical block is the same up to truncation (without truncation the two agree to
-    ~1e-12; with a binding `maxdim` it moves within the truncation error, e.g. ~20 % at
-    `maxdim = 30` on an L = 4 Fibonacci chain). The cheb2d bubbles move by ~1e-13.
-  - `get_qpi` now throws on a projected space, in the diagonal-LDOS accumulation (a known
-    issue with the leg order of the projector). It used to return maps that included the
-    unphysical register states. It was never valid there: the impurity address and the
-    Fourier transform are binary.
-  Binary position spaces are unaffected, bit for bit.
+  projected space for it.) The last ones that used the identity of the whole register are
+  the RPA bubbles with `P_method=:kpm` (`get_bubble_mpo`, `get_bubble_mpo_haydock`, the
+  cheb2d bubbles and the susceptibilities built on them): the density matrix is now zero on
+  the unphysical register states, where it used to hold spurious weight. The physical block
+  is the same up to truncation (without truncation the two agree to ~1e-12; with a binding
+  `maxdim` it moves within the truncation error, e.g. ~20 % at `maxdim = 30` on an L = 4
+  Fibonacci chain). The cheb2d bubbles move by ~1e-13. (`get_qpi` stops earlier, with the
+  `ArgumentError` above.) Binary position spaces are unaffected, bit for bit.
+### Fixed
+
+- Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
+  `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of
+  it); the notebook now defines the helper itself. `examples/manybody/excitons.ipynb` used
+  an undefined `H_exc_band` for the momentum-resolved spectrum; it is now built in that
+  cell, as the confined exciton without its confinement potential.
 
 ## [0.1.1] — 2026-09-26
 

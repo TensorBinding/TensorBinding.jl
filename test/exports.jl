@@ -22,7 +22,6 @@ const CHECKED_PACKAGES = [
     ("QuanticsTCI", "b11687fd-3a1c-4c41-97d0-998ab401d50e"),
     ("TensorCrossInterpolation", "b261b2ec-6378-4871-b32e-9173bb050604"),
     ("FFTW", "7a1cc6ca-52ef-59f5-83cd-3a7055c09341"),
-    ("Arpack", "7d9fca2a-8960-54d3-9f78-7d1dccf2cb97"),
     ("LinearAlgebra", "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"),
     ("Random", "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"),
     ("SparseArrays", "2f01184e-e22b-5df5-ae63-d93ebab69eaf"),

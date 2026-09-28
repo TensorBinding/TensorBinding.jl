@@ -88,7 +88,8 @@ Line numbers refer to the working tree on that date and will drift.
 - [ ] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
       asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
 - [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
-- [ ] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
+- [x] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
+      *The cell builds it: the chain exciton of `H_exc` without its confinement potential.*
 
 ### Found by the Tier 1 characterization sweep (2026-09-26; pinned as-is, not fixed)
 
@@ -185,12 +186,13 @@ the affected golden cases in the same commit.
       it is the textbook g_m minus `cos(πm/(N+1))/(N+1)`, so g_0 = N/(N+1) instead of 1
       (max deviation 1/(N+1): 0.1 at N = 9, 0.0066 at N = 151). Fixing it moves the pinned
       `jackson_kernel_*` and low-rank cheb2d golden cases.
-- [ ] `get_qpi` accepts projected position spaces but is binary-only (the impurity sits
+- [x] `get_qpi` accepts projected position spaces but is binary-only (the impurity sits
       at the binary address `x0 − 1`, the QFT is over the binary register). With
       `physical_projector` as T₀ a Fibonacci call now throws in the diagonal accumulation
       (the projector leg-order bug listed under "Crashes"); before, it returned maps that
       included the unphysical register states. A `_require_binary_position_space` guard
       would give a clear error.
+      *Done in 492fac4 (Tier 2): `get_qpi` raises that `ArgumentError`.*
 - [ ] RPA bubbles on projected spaces: the density (`P_method=:kpm`) now has an empty
       unphysical block, but `_build_heff`, the numerator and the 2L-site Green's function
       (`KPM_Tn(Heff, …, sites_combined)`) still use ambient identities. On an L = 4
@@ -220,10 +222,13 @@ the affected golden cases in the same commit.
 
 ### Found by the export-list checks (2026-09-26; not fixed)
 
-- [ ] `examples/spectral/aux_ldos_examples.ipynb` calls `TensorBinding.plot_ldos_2d`, which the
+- [x] `examples/spectral/aux_ldos_examples.ipynb` calls `TensorBinding.plot_ldos_2d`, which the
       package does not define (the notebook's stored output already shows the UndefVarError).
-- [ ] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
+      *The notebook defines the helper in its second cell (a copy of the untracked
+      plotting helper's); the stale error output is cleared.*
+- [x] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
       uses; dropping it would remove a dependency (a Project.toml change, fine in any release).
+      *Dropped from `[deps]` and `[compat]`, and from the packages `test/exports.jl` checks.*
 
 ## Tier 1 — mechanical, no behaviour change
 
