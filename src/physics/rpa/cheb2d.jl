@@ -1,7 +1,7 @@
 # physics/rpa/cheb2d.jl — double Chebyshev decomposition of the polarization bubble:
 # chebyshev2d_gf_coeffs, the full-MPO bubbles get_bubble_mpo_cheb2d(_tucker), the
 # k-space diagonal bubbles get_bubble_diag_cheb2d(_svd, _tucker), and their helpers
-# (_cheb2d_out_sites, _cheb2d_require_position_sites, _jackson_kernel, _weighted_mpo_sum).
+# (_cheb2d_out_sites, _cheb2d_require_position_sites, _weighted_mpo_sum).
 # Split from the former physics/RPA_tk.jl. The five bubbles share the kernels of
 # section 2: the prologue _cheb2d_setup, the plain (m,n) sweep _cheb2d_pair_sweep!, the
 # Tucker steps _tucker_bases, _tucker_components, _tucker_hadamard and _tucker_accumulate,
@@ -11,7 +11,8 @@
 #   get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker,
 #   chebyshev2d_gf_coeffs.
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
-#   solvers/kpm/cached.jl (_chebyshev_sum), physics/rpa/bubble.jl,
+#   solvers/kpm/kernels.jl (_kpm_kernel), solvers/kpm/cached.jl (_chebyshev_sum),
+#   physics/rpa/bubble.jl,
 #   physics/qft/conjugation.jl (see the source map in src/TensorBinding.jl).
 
 # ============================================================
@@ -39,9 +40,12 @@ function chebyshev2d_gf_coeffs(ω::Real, scale1::Real, center1::Real,
     ω_eff = ω - center2 + center1 + im * η
     F = [1.0 / (ω_eff + scale1 * nodes[j1+1] - scale2 * nodes[k1+1])
          for j1 in 0:N-1, k1 in 0:N-1]
+    # REDFT10 along each dimension is Y_k = 2 Σ_j F_j cos(πk(j + ½)/N), and the
+    # Chebyshev interpolant has c_k = (2/N) Σ_j F_j cos(πk(j + ½)/N) with c_0 halved:
+    # c = Y/N per dimension, Y/N² in 2D. (It was Y/(2N)², a quarter of f.)
     Cr = FFTW.r2r(real.(F), FFTW.REDFT10, [1, 2])
     Ci = FFTW.r2r(imag.(F), FFTW.REDFT10, [1, 2])
-    C  = (Cr .+ im .* Ci) ./ (2N)^2
+    C  = (Cr .+ im .* Ci) ./ N^2
     C[1, :] ./= 2   # m = 0 row
     C[:, 1] ./= 2   # n = 0 column
     return C
@@ -172,7 +176,10 @@ function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVec
 
     if lowrank
         if kernel == :jackson
-            g_jk  = _jackson_kernel(N)
+            # The textbook Jackson kernel g_n (g_0 = 1) for the N moments T_0 … T_Ncheb:
+            # _kpm_kernel(N + 1, :jackson) is (N + 1)·g_n for n = 0…N (see its comment).
+            # Suppresses Gibbs oscillations; broadening ≈ π·scale/N.
+            g_jk  = _kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)
             G_jk  = g_jk * g_jk'         # N×N outer product, applied element-wise
             C_all = [G_jk .* C for C in C_all]
             verbose && println("$tag: Jackson kernel applied")
@@ -410,7 +417,8 @@ c_{mn}(ω). This matches the KPM "online" paradigm: the expensive MPO work
 - `Ncheb`         : Chebyshev expansion order. Default `50`.
 - `maxdim`        : Max bond dimension throughout. Default `200`.
 - `cutoff`        : SVD truncation cutoff. Default `1e-8`.
-- `ϵF`            : Fermi energy. Default `0.0`.
+- `ϵF`            : Fermi energy. Default `0.0`. It reaches the density matrices as
+                    in `get_bubble_mpo`.
 - `P_method`      : `:purification` (default) or `:kpm`.
 - `purify_method` : `:mcweeny` (default) or `:sp2`.
 - `purify_maxdim`, `purify_maxiters`, `purify_tol` : purification controls.
@@ -620,20 +628,12 @@ end
 
 
 # ============================================================
-# 5. Shared helpers: Jackson kernel, weighted MPO sum
+# 5. Shared helper: weighted MPO sum
 # ============================================================
 
-# Jackson kernel weights for Chebyshev order N:
-# g[m+1] = ((N-m)cos(πm/(N+1)) + sin(πm/(N+1))/tan(π/(N+1))) / (N+1)
-# Suppresses Gibbs oscillations from truncation; broadening ≈ π·scale/N.
-# Not the _kpm_kernel formula under any normalisation: the textbook kernel for N
-# moments has (N−m+1) where this has (N−m), so g[m+1] = textbook g_m − cos(πm/(N+1))/(N+1)
-# (g[1] = N/(N+1), not 1). Kept as it is: the cheb2d bubbles are pinned with it.
-function _jackson_kernel(N::Int)
-    m = 0:N-1
-    return @. ((N - m) * cos(π * m / (N+1)) +
-               sin(π * m / (N+1)) / tan(π / (N+1))) / (N+1)
-end
+# (The Jackson kernel of the low-rank variants is the shared _kpm_kernel, see
+# _cheb2d_setup. The RPA-only _jackson_kernel(N) it replaced had (N − m) where the
+# kernel for N moments has (N − m + 1), so its g_0 was N/(N + 1).)
 
 # Weighted MPO sum  Σ_i w_i · mpos[i]  with online truncation (_chebyshev_sum,
 # solvers/kpm/cached.jl), over the pairs with |w_i| ≥ weight_tol; `nothing` if none.

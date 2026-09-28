@@ -601,9 +601,10 @@ case!("Haydock", "haydock_identity_seed", 310) do
        resolve = dense(TB.haydock_resolve_mpo(a, b, basis, HAYDOCK_Z[1]; maxdim=32)))
 end
 
-# A non-symmetric seed |3><3|: haydock_cf's inner product tr(apply(dag(A), B)) is
-# Σ conj(A_ij) B_ji, not the Frobenius Σ conj(A_ij) B_ij, so here the first
-# residual H|3><3| gets "norm" <3|H|3> = 0 and the recursion stops after one step.
+# A seed |3><3| whose Krylov vectors H^n|3><3| are not symmetric: haydock_cf's inner
+# product was tr(apply(dag(A), B)) = Σ conj(A_ij) B_ji, not the Frobenius
+# Σ conj(A_ij) B_ij, so the first residual H|3><3| got "norm" <3|H|3> = 0 and the
+# recursion stopped after one step; with tr(A†B) it runs all five.
 case!("Haydock", "haydock_projector_seed", 311) do
     H    = chain(3)
     ψ    = TB.binary_to_MPS(3, 3, H.sites)

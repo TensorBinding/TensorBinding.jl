@@ -175,8 +175,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            → Utils, MPOTools, TBSystem, DMRG, kpm/recursion, kpm/cached,
 #                              Krylov, Purification
 # physics/rpa/cheb2d.jl      double-Chebyshev bubbles (full MPO, k-space diagonal)
-#                            → Utils, TBSystem, DMRG, kpm/recursion, kpm/cached, rpa/bubble,
-#                              qft/conjugation
+#                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, kpm/cached,
+#                              rpa/bubble, qft/conjugation
 # physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
 #                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump

@@ -19,12 +19,16 @@
 # physics/Purification.jl) with the bubbles' own method symbols and rules.
 #
 #   P_method=:purification  purify_method (:mcweeny or :sp2), reusing the density
-#                           cache; ϵF is not passed, so the purification is always
-#                           at half filling (a pending bug, see
-#                           docs/dev/REORGANISATION_TODO.md), and SP2 targets H.N ÷ 2.
+#                           cache whatever ϵF (as get_density does). McWeeny is
+#                           purified at ϵF, with mcweeny_purify's convention: the
+#                           level of its initial guess is H.center + ϵF. SP2 fixes
+#                           the filling through Nel = H.N ÷ 2 instead, so it refuses
+#                           ϵF ≠ 0. (Until the fix ϵF was not passed and every
+#                           purification ran at ϵF = 0.)
 #   P_method=:kpm           a fresh Chebyshev list of order Ncheb from the raw
-#                           KPM_Tn (not cached on H; it prints its progress), no
-#                           density cache read or written.
+#                           KPM_Tn (not cached on H; its progress lines follow
+#                           `verbose`), no density cache read or written; the
+#                           level is ϵF.
 function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
                               P_method::Symbol, Ncheb::Int,
                               maxdim::Int, cutoff::Real,
@@ -38,10 +42,14 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
         end
         purify_method in (:mcweeny, :sp2) ||
             error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
+        purify_method == :sp2 && !iszero(ϵF) &&
+            throw(ArgumentError("purify_method=:sp2 fixes the filling at Nel = H.N ÷ 2 " *
+                                "and cannot take a Fermi level (got ϵF = $ϵF); use " *
+                                "purify_method=:mcweeny or P_method=:kpm"))
         Nel = H.N ÷ 2
         verbose && println(purify_method == :mcweeny ? "  Running McWeeny purification" :
                                                        "  Running SP2 purification (Nel=$Nel)")
-        return _density_matrix(H, purify_method; Nel=Nel, maxiters=purify_maxiters,
+        return _density_matrix(H, purify_method; ϵF=ϵF, Nel=Nel, maxiters=purify_maxiters,
                                maxdim=purify_maxdim, cutoff=cutoff, tol=purify_tol,
                                verbose=verbose)
     elseif P_method == :kpm
@@ -49,7 +57,7 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
         Tn_list, _, _ = KPM_Tn(H.mpo, Ncheb, H.sites;
                                  scale=H.scale, center=H.center,
                                  identity_mpo=physical_projector(H),
-                                 maxdim=maxdim, cutoff=cutoff)
+                                 maxdim=maxdim, cutoff=cutoff, verbose=verbose)
         return _density_matrix(H, :kpm; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff,
                                Tn=(Tn_list, Ncheb), store=false)
     else
@@ -79,9 +87,13 @@ end
 Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
 
 **Keyword arguments**
-- `ϵF`             : Fermi energy (physical units). Default `0.0`.
+- `ϵF`             : Fermi energy (physical units). Default `0.0`. The `:kpm` density is
+  θ(ϵF − H); McWeeny purification starts from the level `H.center + ϵF` (the
+  convention of `mcweeny_purify`, the same level when `H.center = 0`);
+  `purify_method=:sp2` fixes the filling instead and requires `ϵF = 0`.
 - `P_method`       : `:purification` (default) or `:kpm` — how to compute density matrices.
-  With `:purification`, `H._density_cache` is reused if present.
+  With `:purification`, `H._density_cache` is reused if present, whatever `ϵF`
+  (set `H._density_cache = nothing` after changing it).
 - `GF_method`      : `:kpm` (default) or `:krylov` — how to compute G_eff(ω).
 - `Ncheb`          : Chebyshev order (KPM methods only). Default `150`.
 - `maxdim`         : Maximum bond dimension. Default `200`.
@@ -161,7 +173,8 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
     if GF_method == :kpm
         # Auto-estimate Heff spectral bounds via DMRG (scale=0 triggers estimator)
         Tn_listeff, scaleeff, centereff = KPM_Tn(Heff, Ncheb, sites_combined;
-                                                   maxdim=maxdim, cutoff=cutoff)
+                                                   maxdim=maxdim, cutoff=cutoff,
+                                                   verbose=verbose)
         GF_mpo = (1/scaleeff) * get_Green_retarded_from_Tn(
             Tn_listeff, Ncheb, (ω - centereff)/scaleeff;
             η = η/scaleeff, maxdim=maxdim, cutoff=cutoff)
@@ -211,7 +224,8 @@ Returns a `Vector{MPO}` compatible with `rpa_wynn_from_bubbles`.
 - `η`              : Lorentzian broadening. Default `1e-2`.
 - `maxdim`         : Maximum bond dimension. Default `200`.
 - `cutoff`         : SVD truncation cutoff. Default `1e-8`.
-- `ϵF`             : Fermi energy. Default `0.0`.
+- `ϵF`             : Fermi energy. Default `0.0`. It reaches the density matrices
+  as in `get_bubble_mpo`.
 - `P_method`       : `:purification` (default) or `:kpm`.
 - `purify_method`  : `:mcweeny` (default) or `:sp2`.
 - `purify_maxdim`  : Max bond dim during purification. Default `40`.

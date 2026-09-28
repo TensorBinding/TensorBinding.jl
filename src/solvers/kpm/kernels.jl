@@ -31,7 +31,8 @@
 # :jackson is N·g_n, where g_n = [(M−n+1)cos(πn/(M+1)) + sin(πn/(M+1))cot(π/(M+1))]/(M+1)
 # is the textbook Jackson kernel for M = N−1 moments (its weight at n = N−1 vanishes
 # up to rounding). The NH KPM (physics/nh/kpm.jl, gpu/nh.jl) uses the textbook kernel
-# for all N moments, unnormalised, (N+1)·g_n with M = N: _kpm_kernel(N + 1, :jackson)[1:N].
+# for all N moments, unnormalised, (N+1)·g_n with M = N: _kpm_kernel(N + 1, :jackson)[1:N];
+# the low-rank cheb2d bubbles (physics/rpa/cheb2d.jl) the same divided by N + 1 (g_0 = 1).
 function _kpm_kernel(N::Int, kernel::Symbol; lambda::Real = 4.0)
     if kernel == :jackson
         return [(N - n) * cos(π * n / N) + sin(π * n / N) / tan(π / N) for n in 0:N-1]

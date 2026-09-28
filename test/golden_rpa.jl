@@ -37,7 +37,7 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, TBHamiltonian, rep
 #   * floating-point scalars and arrays: same size and element type, and every
 #     entry isapprox(rtol=RTOL, atol=ATOL) on its own -- entry by entry, not
 #     norm-wise, so that a small entry next to a large one (the 1e30 that
-#     wynn_epsilon returns once a sequence has converged exactly, say) is pinned
+#     wynn_epsilon returns for a singular table, say) is pinned
 #     to its own size; NaN/Inf entries must sit at the same positions with the
 #     same value;
 #   * everything else (Int, Bool, Symbol, String, types, `nothing`): `==` and the
@@ -505,7 +505,11 @@ function _run_case(fn::Symbol, @nospecialize(S::NamedTuple),
     elseif fn === :chebyshev2d_gf_coeffs
         return (; value=TB.chebyshev2d_gf_coeffs(args...))
     elseif fn === :_jackson_kernel
-        return (; value=TB._jackson_kernel(args[1]))
+        # The Jackson weights of the low-rank cheb2d bubbles for N moments:
+        # _jackson_kernel(N) until it was deleted, now the textbook kernel from the
+        # shared _kpm_kernel that _cheb2d_setup uses (same record).
+        N = args[1]
+        return (; value=TB._kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1))
     elseif fn === :_weighted_mpo_sum                   # args = (weights,)
         r = TB._weighted_mpo_sum(args[1], S.mpos; kw...)
         return r === nothing ? (; is_nothing=true) :

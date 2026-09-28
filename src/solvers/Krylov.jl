@@ -176,6 +176,13 @@ end
 # 2. Haydock recursion (operator-level Krylov)
 # ============================================================
 
+# The Hilbert-Schmidt (Frobenius) inner product Tr[A† B] of two MPOs on the same
+# sites, contracted exactly: ITensorMPS's `inner` pairs dag(A[j]) with B[j] over both
+# site legs. Until the fix haydock_cf took tr(apply(dag(A), B)) = Tr[conj(A)·B], which
+# is Tr[A† B] only for symmetric A (and is negative for A = B imaginary Hermitian, so
+# the seed norm threw a DomainError), with the product truncated before the trace.
+_hs_inner(A::MPO, B::MPO) = inner(A, B)
+
 """
     haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int; maxdim=200, cutoff=1e-8,
                verbose=false)
@@ -198,6 +205,9 @@ Returns:
 The scalar projected GF ⟨seed|(z−H)⁻¹|seed⟩ is recovered via
 `eval_haydock_cf(a, b, z)`.  The full resolvent MPO (z−H)⁻¹|seed⟩ is
 recovered via `haydock_resolve_mpo(a, b, basis, z)`.
+
+`H_mpo` must be Hermitian (then H· is Hermitian for Tr[A† B] and every aₙ is real);
+the seed may be any MPO on the same sites, real or complex.
 """
 function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
                     maxdim::Int   = 200,
@@ -208,7 +218,7 @@ function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
     b     = zeros(Float64, N_steps)
     basis = Vector{MPO}(undef, N_steps)
 
-    norm0    = sqrt(real(tr(apply(dag(seed), seed; cutoff=cutoff, maxdim=maxdim))))
+    norm0    = sqrt(real(_hs_inner(seed, seed)))
     b[1]     = norm0
     Phi_prev = nothing
     Phi_curr = (1.0 / norm0) * seed
@@ -218,7 +228,7 @@ function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
         basis[n] = Phi_curr
 
         HPhi = apply(H_mpo, Phi_curr; maxdim=maxdim, cutoff=cutoff)
-        a[n] = real(tr(apply(dag(Phi_curr), HPhi; cutoff=cutoff, maxdim=maxdim)))
+        a[n] = real(_hs_inner(Phi_curr, HPhi))
 
         r = +(HPhi, (-a[n]) * Phi_curr; maxdim=maxdim)
         ITensorMPS.truncate!(r; cutoff=cutoff)
@@ -227,7 +237,7 @@ function haydock_cf(H_mpo::MPO, seed::MPO, N_steps::Int;
             ITensorMPS.truncate!(r; cutoff=cutoff)
         end
 
-        b_next = sqrt(max(0.0, real(tr(apply(dag(r), r; cutoff=cutoff, maxdim=maxdim)))))
+        b_next = sqrt(max(0.0, real(_hs_inner(r, r))))
         verbose && println("  step $n: a=$(round(a[n];digits=5))  b_next=$(round(b_next;digits=5))  chi=$(maxlinkdim(Phi_curr))")
 
         if b_next < 1e-12

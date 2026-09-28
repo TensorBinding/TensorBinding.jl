@@ -40,7 +40,9 @@ but could be called as `TensorBinding.name`:
   and `nh_spectrum_grid_gpu` (use `get_nh_dos_grid_gpu`);
 - `nh_jackson_weights(N)`: the NH KPM now takes its Jackson weights from the shared KPM
   kernel, `TensorBinding._kpm_kernel(N + 1, :jackson)[1:N]`, which gives the same values
-  bit for bit.
+  bit for bit;
+- `_jackson_kernel(N)` (RPA): the low-rank cheb2d bubbles take the textbook Jackson kernel
+  `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)` instead (see **Changed results**).
 
 The positional `TBHamiltonian` constructors with 13, 14, 15, 16, 17 and 20 arguments (the
 "backward-compatible" forms, which filled in the fields added since) are removed. Use the
@@ -164,6 +166,29 @@ constructor that takes all 21 fields in order, caches included, remains.
   second leg as the ket and returned the transpose. It now maps legs by prime level, so
   only such MPOs change (the physical projector of a projected position space is one);
   QTCI tensor trains and MPOs stored `(s', s)` are mapped as before.
+- **cheb2d bubbles are 4× larger.** `chebyshev2d_gf_coeffs` divided the 2D cosine
+  transform by `(2N)²` instead of `N²`, so its expansion reproduced `f/4`. This scales
+  `get_bubble_mpo_cheb2d(_tucker)` and `get_bubble_diag_cheb2d(_svd, _tucker)`: with
+  `kernel=:none` and no binding `coeff_tol`, by exactly 4. `coeff_tol` is an absolute
+  threshold on the coefficients, so a given value now keeps more terms.
+- **Jackson kernel of the low-rank cheb2d bubbles** (`kernel=:jackson`, the default of the
+  Tucker and SVD variants): the textbook kernel for the `Ncheb + 1` moments (`g₀ = 1`),
+  from the shared `_kpm_kernel`. The RPA-only `_jackson_kernel` had `(N − m)` for
+  `(N − m + 1)`, so `g₀ = N/(N + 1)`; the bubbles move by up to `(N + 1)²/N²` on top of the
+  factor 4 (e.g. ×4.16 at `Ncheb = 50`).
+- **RPA bubbles with `P_method=:purification` use `ϵF`.** It was never passed, so every
+  purification ran at `ϵF = 0`. McWeeny now starts from the level `H.center + ϵF`, the
+  convention of `mcweeny_purify` (the `:kpm` density is `θ(ϵF − H)`: the same level when
+  `H.center = 0`). `ϵF = 0` is unchanged, bit for bit. A cached `H._density_cache` is
+  still returned whatever `ϵF`, as in `get_density`: clear it when scanning `ϵF`.
+- **`haydock_cf`** (and `get_bubble_mpo_haydock`, `haydock_resolve_mpo`) measures with the
+  Frobenius product `Tr[A†B]`, contracted exactly. It took `Tr[conj(A)·B]` of a truncated
+  product, which is `Tr[A†B]` only for symmetric `A`: wrong for complex `H` and for seeds
+  whose Krylov vectors are not symmetric (a projector seed stopped after one step).
+  Real symmetric cases move only at the truncation level.
+- **`wynn_epsilon`** returns the limit of an exactly converged sequence (a constant or
+  geometric one) instead of the `1e30` sentinel; a singular table (an arithmetic
+  sequence) keeps the sentinel. The Wynn RPA drivers' pinned results are unchanged.
 
 ### Fixed
 
@@ -189,6 +214,13 @@ constructor that takes all 21 fields in order, caches included, remains.
 - `kernel=:hodc` in a function without `eta`/`m_order` keywords (`get_ldos_spatial`,
   `get_bands`, `get_qpi`, …) still raises "Unknown KPM kernel", now saying which
   functions take it.
+- `haydock_cf` threw a `DomainError` for complex Hermitian seeds (e.g. `Y ⊗ I`).
+- RPA bubbles with `P_method=:purification, purify_method=:sp2` and `ϵF ≠ 0` raise an
+  `ArgumentError`: SP2 fixes the filling at `Nel = H.N ÷ 2`, and ignored `ϵF` silently.
+- RPA `P_method=:kpm` and the Green's-function recursion of `get_bubble_mpo` printed
+  "Computed T_n …" with `verbose=false`.
+- The `get_magnon_bubble` docstring had the spin-flip energy reversed (the code computes
+  `ω − (ε↓ − ε↑)`).
 
 - Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
   `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of

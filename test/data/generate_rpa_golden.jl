@@ -63,15 +63,23 @@
 #     (get_density_from_Tn) returned the projector onto the states ABOVE ϵF
 #     (tr(P·H) > 0), :purification the one below, so the sign of every bubble
 #     flipped with P_method;
-#   * ϵF does not reach the :purification path (density_mcweeny and
-#     density_mcweeny_ef03 are identical);
-#   * the expansion Σ C[m,n] T_m(x) T_n(y) of chebyshev2d_gf_coeffs reproduces
-#     f(x, y)/4 (it divides by (2N)^2), so every cheb2d bubble is 4x smaller
-#     than the same Chebyshev formula with correctly normalised coefficients;
-#   * wynn_epsilon returns 1e30 for the higher estimates once a sequence is
-#     exactly converged (wynn_geometric_len7, wynn_constant_len5);
-#   * haydock_cf measures with tr(conj(A)·B) instead of tr(A†B)
-#     (haydock_cf_chain2_imaginary_hermitian_seed throws DomainError).
+#   * (fixed, cases regenerated) ϵF did not reach the :purification path
+#     (density_mcweeny and density_mcweeny_ef03 were identical); McWeeny now
+#     starts from the level H.center + ϵF and SP2 refuses ϵF ≠ 0;
+#   * (fixed, cases regenerated) the expansion Σ C[m,n] T_m(x) T_n(y) of
+#     chebyshev2d_gf_coeffs reproduced f(x, y)/4 (it divided by (2N)^2), so every
+#     cheb2d bubble was 4x smaller than its Chebyshev formula;
+#   * (fixed, cases regenerated) the RPA-only _jackson_kernel(N) had g_0 = N/(N+1);
+#     the low-rank cheb2d bubbles now use the textbook kernel of the shared
+#     _kpm_kernel, which the jackson_kernel_* cases record;
+#   * (fixed, cases regenerated) wynn_epsilon returned 1e30 for the higher
+#     estimates once a sequence was exactly converged (wynn_geometric_len7,
+#     wynn_constant_len5); wynn_int_len5 keeps it (a genuinely singular table);
+#   * (fixed, cases regenerated) haydock_cf measured with tr(conj(A)·B) instead of
+#     tr(A†B) (haydock_cf_chain2_imaginary_hermitian_seed threw DomainError);
+#   * for real H the cheb2d bubbles are −1 × get_bubble_mpo (their D_mn has the
+#     numerator P₁⊗I − I⊗P₂), and for complex H they take the Hadamard product
+#     of T_m(H̃₁) itself where get_bubble_mpo has its transpose.
 
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Random
 const TB = TensorBinding
@@ -156,8 +164,8 @@ add!("haydock_cf_chain2_N3", :haydock_cf, :hay_chain2, (3,), kw(maxdim=20, cutof
 # Seed = identity: the Krylov space of I under H closes (invariant-subspace exit).
 add!("haydock_cf_chain2_identity_N6", :haydock_cf, :hay_chain2_id, (6,), kw(maxdim=20, cutoff=1e-10))
 add!("haydock_cf_chain2_N1_defaults_verbose", :haydock_cf, :hay_chain2, (1,), kw(verbose=true))
-# tr(apply(dag(A), B)) is tr(conj(A)·B), not the Frobenius product tr(A†B): for the
-# Hermitian seed Y ⊗ I it is -4, so norm0 = sqrt(-4) throws.
+# The Hermitian seed Y ⊗ I: norm0 = sqrt(tr(conj(A)·A)) = sqrt(-4) threw until
+# haydock_cf used the Frobenius product tr(A†B).
 add!("haydock_cf_chain2_imaginary_hermitian_seed", :haydock_cf, :hay_chain2_imag, (2,),
      kw(maxdim=20, cutoff=1e-10))
 add!("haydock_resolve_N3", :haydock_resolve_mpo, :hay_chain2, (3, 3, 0.3 + 0.1im), kw(maxdim=20, cutoff=1e-10))

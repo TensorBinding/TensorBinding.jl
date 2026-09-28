@@ -160,17 +160,26 @@ end
 Wynn ε-algorithm applied to a scalar sequence `s = [s₀, s₁, ..., sK]`.
 Returns the even-column first-row Padé estimates `[ε₂(0), ε₄(0), ...]`.
 Uses only additions and reciprocals — no matrix operations.
+
+Two equal entries (|difference| < 1e-30) make the next entry infinite, stored as the
+sentinel `1e30`. Two infinite entries in a column make the correction 1/(∞ − ∞)
+vanish, so the entry after them is the one two columns back: an exactly converged
+sequence returns its limit, not the sentinel. A sentinel is still returned where
+the table is genuinely singular (e.g. an arithmetic sequence).
 """
 function wynn_epsilon(s::AbstractVector{<:Number})
-    n   = length(s)
-    eps = zeros(ComplexF64, n+1, n+1)
+    n        = length(s)
+    sentinel = complex(1e30)
+    eps      = zeros(ComplexF64, n+1, n+1)
     for k in 1:n
         eps[2, k] = s[k]
     end
     for j in 1:n-1
         for k in 1:n-j
             d = eps[j+1, k+1] - eps[j+1, k]
-            eps[j+2, k] = abs(d) < 1e-30 ? complex(1e30) : eps[j, k+1] + 1/d
+            eps[j+2, k] = abs(d) < 1e-30 ?
+                          (eps[j+1, k] == sentinel ? eps[j, k+1] : sentinel) :
+                          eps[j, k+1] + 1/d
         end
     end
     return [eps[j+2, 1] for j in 2:2:n-1]
@@ -356,7 +365,7 @@ spin-↓ blocks of `H` become two independent L-qubit Hamiltonians `H_↑`
 and `H_↓`, which are passed to `get_bubble_mpo(H_↑, H_↓, ω)`.
 This corresponds to the Kubo S⁺S⁻ bubble
 
-    Π₀^{+−}(ω) = ∑_k (f_{k↓} − f_{k↑}) / (ω − (ε_{k↑} − ε_{k↓}) + iη)
+    Π₀^{+−}(ω) = ∑_k (f_{k↓} − f_{k↑}) / (ω − (ε_{k↓} − ε_{k↑}) + iη)
 
 Errors if `H.spin_s === nothing`.  All `get_bubble_mpo` keyword arguments
 are accepted and forwarded.
