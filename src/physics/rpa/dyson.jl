@@ -19,8 +19,8 @@
 #   rpa_wynn_from_bubbles, rpa_from_bubble_diag, get_magnon_bubble,
 #   get_magnon_susceptibility, get_magnon_susceptibility_wynn.
 # Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, core/AuxDOF.jl,
-#   physics/rpa/bubble.jl, physics/qft/conjugation.jl (see the source map in
-#   src/TensorBinding.jl).
+#   solvers/Krylov.jl (_vec_mps_from_mpo), physics/rpa/bubble.jl,
+#   physics/qft/conjugation.jl (see the source map in src/TensorBinding.jl).
 
 # ============================================================
 # 1. Dyson solve
@@ -33,30 +33,28 @@
 Solve the RPA Dyson equation  (I − Π₀V) χ = Π₀  for the interacting
 susceptibility χ using DMRG-style linear solve.
 
-Returns a 2L-site MPS encoding the diagonal χ_{iijj}^RPA. The operator `I − Π₀V`
-acts, untransposed, on the even sites of `finalsites`, and the right-hand side is
-the diagonal of `Π₀` there (the same for every state of the odd sites), so the
-solution is `(I − Π₀V)⁻¹ diag(Π₀)` on the even sites, broadcast over the odd ones.
+`Π` (Π₀) and `MPOV` (V) are MPOs on the L indices `finalfinalsites`; `finalsites` are
+2L indices, sites 2n−1 and 2n of the dimension of `finalfinalsites[n]`
+(`_rpa_pair_sites`). Returns vec(χ), χ = (I − Π₀V)⁻¹Π₀ the full L-site response
+matrix χ_ij, as a 2L-site MPS on `finalsites` in the layout of `_vec_mps_from_mpo`:
+the row index i on the odd sites, the column index j on the even ones (site n of
+`finalfinalsites` on sites 2n−1 and 2n), so that `custom_mpo(χ, finalfinalsites)` is
+χ as an MPO. The solve is [(I − Π₀V) ⊗ I] vec(χ) = vec(Π₀), with I − Π₀V on the odd
+sites, started from vec(Π₀).
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=20, maxdim=400, cutoff=1e-8)
-    L   = length(finalfinalsites)
     Id  = MPO(finalfinalsites, "Id")
     ΠV  = apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
     A   = Id - ΠV
 
-    Aop = interleave_mpo(A, finalsites, 0)
-    Πop = interleave_mpo(Π, finalsites, 0)
-    b   = extract_diagonal_to_mps(Πop)
-
-    # Align site indices between Aop and b
-    for j in 1:2L
-        sA = siteind(Aop, j)
-        sb = siteind(b, j)
-        if sb != sA
-            replaceinds!(b[j], sb => noprime(sb))
-        end
-    end
+    # vec(χ) holds χ[i, j] with i on the odd and j on the even sites (_vec_mps_from_mpo,
+    # the layout custom_mpo reads back), and (I − Π₀V)χ = Π₀ acts on i: A on the odd
+    # sites. (Until the fix the right-hand side was diag(Π₀) on the even sites, the same
+    # for every state of the odd ones, and the result the rank-1 array
+    # [(I − Π₀V)⁻¹ diag Π₀]_j in every row i, not χ.)
+    Aop = interleave_mpo(A, finalsites, 1)
+    b   = _vec_mps_from_mpo(Π, finalsites)
 
     x0 = deepcopy(b)
     return ITensorMPS.linsolve(Aop, b, x0;
@@ -87,8 +85,10 @@ end
                            rpa_maxdim=400, rpa_cutoff=1e-8, <get_bubble_mpo keywords>) -> MPS
 
 Compute the RPA susceptibility χ(ω) for a system described by `H` with
-interaction MPO `MPOV`.  Returns a 2L-site MPS encoding the diagonal
-χ_{iijj}^RPA.
+interaction MPO `MPOV`.  Returns χ = (I − Π₀V)⁻¹Π₀, the full response matrix
+χ_ij on the sites of Π₀, vectorized as the 2L-site MPS of `rpa_from_bubble_diag`
+(row index i on the odd sites, column index j on the even ones; `custom_mpo(χ, sites)`
+turns it into an MPO on those `sites`).
 
 **`mode` keyword**
 - `:charge` (default) — density–density bubble χ^{ρρ}: calls
@@ -391,7 +391,9 @@ RPA transverse spin susceptibility χ^{+−}_RPA(ω) for a spinful
 
 Builds Π₀^{+−}(ω) via `get_magnon_bubble`, then solves the Dyson
 equation (I − Π₀ V) χ = Π₀.  For a Hubbard-like interaction the
-interaction MPO is `MPOV = U · Id` on the orbital sites.
+interaction MPO is `MPOV = U · Id` on the orbital sites. Returns the full matrix χ
+on the spin-projected sites (`H.sites` without the spin index), vectorized as in
+`rpa_from_bubble_diag` (row index on the odd sites, column index on the even ones).
 
 **Keyword arguments**
 - `rpa_nsweeps`, `rpa_maxdim`, `rpa_cutoff` : Dyson linsolve parameters.

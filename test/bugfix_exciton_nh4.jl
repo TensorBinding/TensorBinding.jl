@@ -125,19 +125,17 @@ end
                        krylov_maxdim=64, krylov_cutoff=1e-12, cutoff=1e-12, maxdim=64)
     @test dmat_x(Π, H.sites) ≈ ΠL atol=1e-8
 
-    # Dyson solve: the documented (I − Π₀V) x = diag(Π₀), not (I − Π₀V)ᵀ x = diag(Π₀)
-    # (they differ for complex Π₀, and for a real V that does not commute with Π₀).
+    # Dyson solve: (I − Π₀V) χ = Π₀, not (I − Π₀V)ᵀ (they differ for complex Π₀, and
+    # for a real V that does not commute with Π₀). The result is vec(χ), rows on the odd
+    # and columns on the even sites (test/bugfix_rpa6.jl has the full check).
     Dπ = 0.3 * randn(ComplexF64, 4, 4)
     Dv = Diagonal([0.5, 0.8, 0.2, 0.6])
     out = siteinds("Qubit", 2)
     fs  = TBX._rpa_pair_sites(out)
     x   = rpa_from_bubble_diag(mpo_x(Dπ, out), mpo_x(Matrix{ComplexF64}(Dv), out), fs, out;
                                nsweeps=6, maxdim=32, cutoff=1e-14)
-    xv  = reshape(dvec_x(x, [fs[1:2:end]; fs[2:2:end]]), 4, 4)   # [even reg, odd reg]
-    want = (I - Dπ * Dv) \ diag(Dπ)
-    for c in 1:4
-        @test xv[:, c] ≈ want atol=1e-10
-    end
+    χv  = reshape(dvec_x(x, [fs[2:2:end]; fs[1:2:end]]), 4, 4)   # [column reg, row reg]
+    @test χv ≈ (I - Dπ * Dv) \ Dπ atol=1e-10
 end
 
 @testset "NH: Z_spatial keeps its imaginary part; hermitize(NH) and aux_side" begin

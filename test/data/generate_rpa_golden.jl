@@ -61,8 +61,13 @@
 #     level, so interleave_mpo_L2_n1 and ..._ketfirst give the same output for the
 #     same operator. The bubbles built on it (get_bubble_mpo, Haydock, the magnon
 #     and RPA drivers) returned Π₀ᵀ for complex H and now return the Lindhard Π₀,
-#     like the cheb2d bubbles; rpa_from_bubble_diag solves (I − Π₀V)x = diag(Π₀)
-#     instead of its transpose;
+#     like the cheb2d bubbles;
+#   * (fixed, cases regenerated) rpa_from_bubble_diag returned the rank-1
+#     [(I − Π₀V)⁻¹ diag Π₀]_j in every row; it returns vec(χ), χ = (I − Π₀V)⁻¹Π₀ (rows
+#     on the odd, columns on the even sites), and so do the Dyson drivers;
+#   * (fixed, cases regenerated) get_green_krylov started from vec(I) and stalled on
+#     the real two-register Heff (~50 % off); it starts from a global Krylov
+#     expansion of vec(I) (the truncated *_krylov cases moved);
 #   * (fixed in v0.1.1, cases regenerated) _get_density_matrix(:kpm)
 #     (get_density_from_Tn) returned the projector onto the states ABOVE ϵF
 #     (tr(P·H) > 0), :purification the one below, so the sign of every bubble

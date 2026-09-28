@@ -178,7 +178,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, kpm/cached,
 #                              rpa/bubble, qft/conjugation
 # physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
-#                            → Utils, MPOTools, TBSystem, AuxDOF, rpa/bubble, qft/conjugation
+#                            → Utils, MPOTools, TBSystem, AuxDOF, Krylov, rpa/bubble,
+#                              qft/conjugation
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
 #                            → Utils, TBSystem, NNNeighbor, kpm/recursion, Purification
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*

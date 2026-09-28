@@ -97,7 +97,14 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
     # operator is embedded transposed (interleave_mpo embeds it as given).
     Lop   = interleave_mpo(swapprime(ω_mpo, 0 => 1), sites2, 0)
     rhs   = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
-    x0    = isnothing(x0_mpo) ? deepcopy(rhs) :
+    # Default start: |I⟩⟩ with its bond bases enlarged by a global Krylov expansion
+    # (ITensorMPS.expand, krylovdim = 2: directions Lop^k|I⟩⟩ folded in). From |I⟩⟩
+    # itself (bond dimension 1 between the sites of H) the two-site sweeps stalled on
+    # real two-register operators such as the bubble's H_eff = I⊗H₂ − H₁⊗I: residual
+    # ~0.9 and bonds capped below the solution's whatever nsweeps, a ~50 % error in G.
+    # Converged results elsewhere move by ~1e-14.
+    x0    = isnothing(x0_mpo) ?
+                ITensorMPS.expand(rhs, Lop; alg="global_krylov", krylovdim=2, cutoff=cutoff) :
                 _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
 
     verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps)",
@@ -135,7 +142,9 @@ unscaled — no KPM Chebyshev expansion required.
 - `cutoff`      : SVD truncation cutoff. Default `1e-8`.
 - `x0_mpo`      : Optional MPO initial guess for G(ω).  When provided it is
                   vectorized via `_vec_mps_from_mpo` and passed as `x0` to
-                  `linsolve`, replacing the default identity-matrix guess.
+                  `linsolve`, replacing the default guess (the vectorized identity
+                  with its bonds enlarged by a global Krylov expansion,
+                  `ITensorMPS.expand`).
                   Typical use: pass a low-accuracy KPM Green's function to
                   warm-start the Krylov iteration.  Default `nothing`.
 - `ishermitian` : Set `true` only when the shifted operator is Hermitian

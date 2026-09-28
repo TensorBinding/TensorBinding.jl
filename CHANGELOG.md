@@ -264,8 +264,19 @@ constructor that takes all 21 fields in order, caches included, remains.
   Hamiltonians and now return the Lindhard Π₀, like the cheb2d bubbles: the k-resolved
   Wynn χ(q) becomes χ(−q) there. Real models move at the truncation level, and by ~1e-5
   from the slight asymmetry of the purified density at the default tolerance.
-  `rpa_from_bubble_diag` solves `(I − Π₀V)x = diag(Π₀)` instead of its transpose (it
-  differs for complex Π₀ and for a V that does not commute with Π₀).
+- **`get_rpa_susceptibility`, `get_magnon_susceptibility` and `rpa_from_bubble_diag`
+  return χ = (I − Π₀V)⁻¹Π₀**, the full response matrix χ_ij vectorized as a 2L-site MPS
+  (row index on the odd sites, column index on the even ones; `custom_mpo(χ, sites)` gives
+  the MPO). The Dyson solve had the right-hand side diag(Π₀) broadcast over the odd sites
+  (and, until the `interleave_mpo` fix, the transposed operator), so the result was the
+  rank-1 array [(I − Π₀V)⁻¹ diag Π₀]_j in every row, 1.4 to 3.1 off χ on the pinned
+  cases. The return type is unchanged.
+- **`get_green_krylov`** without `x0_mpo` starts from the vectorized identity enlarged by
+  a global Krylov expansion (`ITensorMPS.expand`, `krylovdim = 2`). From the identity
+  itself the solver stalled on the real two-register operator of the RPA bubble:
+  `get_bubble_mpo(GF_method=:krylov)` on a real Hamiltonian was ~50 % off whatever
+  `krylov_nsweeps`. Converged results elsewhere move by ~1e-14; runs stopped early by a
+  small `nsweeps` or `maxdim` end elsewhere.
 - **Non-Hermitian scale**: `scale = 0.0` in the `NonHermitianHamiltonian` methods means
   "not given", like `nothing`: a scale stored on `NH.hermitized` is used, as everywhere
   else in the package (it was re-estimated).
