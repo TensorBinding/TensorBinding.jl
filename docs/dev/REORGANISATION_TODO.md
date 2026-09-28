@@ -92,8 +92,11 @@ Line numbers refer to the working tree on that date and will drift.
       *They raise an error on T-junctions (`_is_tjunction`, the "TJunction" branch index),
       87f6562. Haldane and custom 2D models keep the `L ÷ 2` fallback, the split of
       `honeycomb_positions`' default layout.*
-- [ ] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
+- [x] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
       after the first Hartree step.
+      *Fixed in bf9a6a1: the Hartree deltas take the real type (`delta_type`). 32-bit types
+      are still promoted to 64 bits after the first step by Float64 scalars in shared
+      kernels (casting them would move ComplexF32 results).*
 - [x] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
       asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
       *Fixed in 87f6562: `[xmin]`, and the 2D plan places `min(num_x, window)` points.*
@@ -137,7 +140,10 @@ the affected golden cases in the same commit.
       *Fixed in 11a4e3c: not QTCI but ITensors' density-matrix `+` (non-orthonormal LAPACK
       eigenvectors at a near-degenerate pair, Lx = 2, Ly = 1, |t| = 1 only);
       `_checked_sum_mpos` falls back to the exact direct sum.*
-- [ ] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
+- [x] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
+      *Fixed in bf9a6a1: not the cell geometry — C = 2πi(QXPYQ − PXQYP) is not Hermitian and
+      its traceless anti-Hermitian part gave the imaginary parts (single-orbital staggered
+      models too); the markers are the diagonal of the Hermitian part, the real part.*
 - [x] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
       bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
       *Fixed in 11a4e3c; `intrachain_hopping` was not Hermitian for real t either (row break
@@ -153,8 +159,10 @@ the affected golden cases in the same commit.
       tr(conj(A)B) instead of tr(A†B).
       *Fixed in ead1d66: McWeeny starts from `H.center + ϵF` (the `mcweeny_purify` level), SP2
       refuses `ϵF ≠ 0`; `haydock_cf` takes the exact Frobenius product `inner(A, B)`.*
-- [ ] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
+- [x] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
       states (quarter filling on sublattice/spin/BdG models).
+      *Fixed in bf9a6a1: stop once Tr ρ² > Tr ρ (the truncation floor) with the best
+      iterate, error if still far from a projector; default Nel = `_half_filling(H)`.*
 - [x] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
       *Fixed in 87f6562: the moments take `ψ₀/‖ψ₀‖`, like the cache `KPM_Tn_mps` builds.*
 - [ ] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
@@ -195,10 +203,15 @@ the affected golden cases in the same commit.
 **Minor / API**
 - [ ] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
       `get_density`/`get_scf` only `:kpm` (Tier 3).
-- [ ] `add_superconductivity!`'s scale update is dead (`_invalidate_cache!` resets it);
+- [x] `add_superconductivity!`'s scale update is dead (`_invalidate_cache!` resets it);
       `get_scf` passes `scale=nothing`, overriding `scf_magnetic_hubbard`'s default.
-- [ ] `rms_error`/`_rms_error_gpu` and several `inner` calls rely on ITensors' deprecated index
+      *Fixed in bf9a6a1: scale |center| + scale + 1.1‖Δ̂‖ when H had one and Δ is a number
+      (the literal scale + 1.1|Δ| is not a bound for p-wave); `get_scf` forwards `scale`
+      only when given.*
+- [x] `rms_error`/`_rms_error_gpu` and several `inner` calls rely on ITensors' deprecated index
       matching ("will error in ITensors v0.4").
+      *Fixed in bf9a6a1: a --depwarn scan of 23 entry points found only these two; the
+      3-argument `inner(α', C, α)` of Topology is the documented form.*
 - [x] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
       *Fixed in ead1d66: 1/(∞ − ∞) is taken as 0; singular tables keep the sentinel.*
 - [x] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
@@ -276,7 +289,7 @@ the affected golden cases in the same commit.
       the Nambu index; `_project_aux_block` keeps them. Kept as one explicit line in
       `_project_spin_sector`.
       *Fixed in 4954a37: every other site is kept.*
-- [ ] The density helpers differ from `get_density` in more than their method symbols:
+- [x] The density helpers differ from `get_density` in more than their method symbols:
       `_get_projector(:KPM)` expands any cached Chebyshev list, also one shorter than
       `Nchebychev`, and with cutoff 1e-8 whatever its `cutoff`; its `:sp2` runs 40
       iterations where `get_density` runs 30; RPA `P_method=:kpm` builds a fresh uncached
@@ -284,6 +297,10 @@ the affected golden cases in the same commit.
       default) even with `verbose=false`; `get_density` checks the density cache before the
       method (a cached McWeeny matrix answers `method=:kpm`), the helpers for purification
       only. All kept, as keyword choices of the shared dispatcher `_density_matrix`.
+      *Fixed in bf9a6a1 and ead1d66: `_get_projector(:KPM)` rebuilds a short cached list and
+      honours `cutoff`; a density cache answers only its own method (weak side table
+      `_DENSITY_METHOD`), in `get_density`, `_get_projector` and the RPA purification; RPA's
+      verbose leak fixed. SP2's 40 vs 30 iterations stay (documented).*
 - [x] The projection chain takes the Nambu and spin sectors as `1:2`, the probe loops the
       Nambu sectors as `1:dim(nambu index)` and the spin sectors as `1:2`: the same for every
       Nambu index the package builds (dimension 2); kept as they were.
@@ -317,6 +334,13 @@ the affected golden cases in the same commit.
       `get_magnon_susceptibility`).
 - [ ] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
       2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
+- [ ] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
+      `Nel_up = Nel_dn = H0.N ÷ 2` (`scf_magnetic_hubbard(_gpu)`): half the unit cells, a
+      quarter filling if `H0` carries a sublattice or layer index. The drivers are built
+      for single-orbital `H0` (every manuscript model is); either support multi-atom `H0`
+      (per-spin half filling of the non-spin states) or reject it.
+- [ ] RPA: `_get_density_matrix(:purification)` and the SCF drivers keep a cached density
+      whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented).
 
 ## Tier 1 — mechanical, no behaviour change
 
