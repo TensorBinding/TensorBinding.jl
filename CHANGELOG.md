@@ -322,6 +322,13 @@ constructor that takes all 21 fields in order, caches included, remains.
 - Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
   positional `cyclic=true` default of `build_shift_mpo`, never reachable (a two-argument
   call takes the keyword method, `cyclic=false`), is gone.
+- `add_zeeman!` and `add_soc!` failed on every Hamiltonian with a layer or sublattice index
+  (bilayers, honeycomb, kagome, …: the term lacked those sites, and the MPO sum threw), and
+  `add_soc!` on a BdG model; `add_superconductivity!` did the same, and lifted the pairing
+  to the spin on the side of the Nambu index rather than of the spin (a postpended spin
+  with `position=:pre` threw). The terms are now built on the site layout of `H.sites`:
+  the operator on the spin, τ_z on a Nambu site, the identity on every other auxiliary
+  site. Chains are unchanged, bit for bit.
 - `scf_magnetic_hubbard_gpu` with a real `type` (`Float64`) switched to complex arithmetic
   after the first Hartree step (its ComplexF32 Hartree deltas); it now stays real.
 - `rms_error` and the GPU SCF residual used ITensors' deprecated index matching

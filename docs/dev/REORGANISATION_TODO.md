@@ -343,9 +343,12 @@ the affected golden cases in the same commit.
       whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented). The
       `scf_meanfield` initial density is `Nel / H0.N` per site, another single-orbital
       assumption.
-- [ ] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
+- [x] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
       fails at build time (ITensors' "not the same site indices"); `add_zeeman!` fails on
       layered models. (Noticed by the aux-projection fixes, 4954a37.)
+      *Fixed: add_zeeman!, add_soc! and add_superconductivity! lift their terms to the
+      layout of H.sites (`_lift_to_aux_sites`); both failures, and the same on every
+      sublattice or layered model, are gone.*
 - [ ] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
       twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
       and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for

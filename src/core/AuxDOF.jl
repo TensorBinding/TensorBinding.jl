@@ -219,6 +219,28 @@ Equivalent to `postpend_op(H, s, op)`.
 postpend_nambu(H::MPO, s::Index, op::Symbol)          = postpend_op(H, s, op)
 postpend_nambu(H::MPO, s::Index, mat::AbstractMatrix) = postpend_op(H, s, mat)
 
+# The position-space MPO `M` (on _pos_sites(H)) lifted to the site layout of H: on every
+# auxiliary site of H.sites, `ops[s]` (a Symbol of prepend_op/postpend_op or a matrix)
+# where `ops` lists that site, the identity otherwise; each site is attached on the side
+# H.sites puts it, innermost first. The term builders of add_zeeman!, add_soc! and
+# add_superconductivity! lift their terms with it, so that they fit H.mpo whatever
+# auxiliary sites H carries (they assumed [spin, (nambu,) pos…] on H.aux_side).
+function _lift_to_aux_sites(H, M::MPO, ops::AbstractDict)
+    pos   = _pos_sites(H)
+    first_pos = findfirst(==(first(pos)), H.sites)
+    last_pos  = findfirst(==(last(pos)), H.sites)
+    op(s) = get(ops, s) do
+        Matrix{Float64}(I, dim(s), dim(s))
+    end
+    for s in reverse(H.sites[1:first_pos - 1])
+        M = prepend_op(M, s, op(s))
+    end
+    for s in H.sites[last_pos + 1:end]
+        M = postpend_op(M, s, op(s))
+    end
+    return M
+end
+
 
 # ============================================================
 # 3. Spin extension
@@ -298,13 +320,10 @@ function add_zeeman!(H::TBHamiltonian, h;
     h_mpo   = h isa Number ? h * MPO(pos_s, "Id") :
                              get_diagonal_mpo(H.L, pos_s, h)
 
-    if H.aux_side === :pre
-        H_Z = prepend_spin(h_mpo, H.spin_s, spin_op)
-        H.nambu_s !== nothing && (H_Z = prepend_nambu(H_Z, H.nambu_s, :tz))
-    else
-        H_Z = postpend_spin(h_mpo, H.spin_s, spin_op)
-        H.nambu_s !== nothing && (H_Z = postpend_nambu(H_Z, H.nambu_s, :tz))
-    end
+    # h σ on the spin, τ_z on a Nambu site, the identity on any other aux site
+    ops = Dict{Index,Any}(H.spin_s => spin_op)
+    H.nambu_s === nothing || (ops[H.nambu_s] = :tz)
+    H_Z = _lift_to_aux_sites(H, h_mpo, ops)
 
     H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=tol)
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
@@ -412,13 +431,11 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
         error("Unknown pairing type :$type.  Use :swave, :pwave, or :custom.")
     end
 
-    # ── Lift pairing to spin space if needed ─────────────────────────────────
-    H_pair = if H.spin_s !== nothing
-        pos === :pre ? prepend_spin(H_pair_pos,  H.spin_s, :iSy) :
-                       postpend_spin(H_pair_pos, H.spin_s, :iSy)
-    else
-        H_pair_pos
-    end
+    # ── Lift pairing to spin space (iσ_y) and any other aux site (identity) ──
+    # on the side H.sites puts each, which need not be that of the Nambu index
+    H_pair = _lift_to_aux_sites(H, H_pair_pos,
+                                H.spin_s === nothing ? Dict{Index,Any}() :
+                                                       Dict{Index,Any}(H.spin_s => :iSy))
 
     H_pair_adj = swapprime(dag(H_pair), 0, 1)
 
@@ -501,7 +518,13 @@ function add_soc!(H::TBHamiltonian, λ;
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
 
-    spin_prepend = H.aux_side === :pre ? prepend_spin : postpend_spin
+    # The SOC term on the spin (op), τ_z on a Nambu site, the identity on any other
+    # aux site, each on the side H.sites puts it.
+    function spin_prepend(M, _, op)
+        ops = Dict{Index,Any}(H.spin_s => op)
+        H.nambu_s === nothing || (ops[H.nambu_s] = :tz)
+        return _lift_to_aux_sites(H, M, ops)
+    end
 
     H_soc = if type === :ising
         λ_mpo = λ isa Number ? λ * MPO(pos_s, "Id") :

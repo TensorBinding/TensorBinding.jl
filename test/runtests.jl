@@ -134,6 +134,7 @@ include("bugfix_rpa4.jl")
 include("bugfix_rpa5.jl")
 include("bugfix_aux4.jl")
 include("bugfix_scftopo4.jl")
+include("bugfix_aux5.jl")
 include("bugfix_lattice4.jl")
 
 # The keyword TBHamiltonian constructor (the positional overloads are gone).
