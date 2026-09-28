@@ -345,11 +345,15 @@ the affected golden cases in the same commit.
       bubble has P_aᵀ ⊙ P_b: 44 % off on a complex L = 2 chain, and ‖Σ_j Π_ij‖ = 0.34 for
       ‖Π‖ = 0.62 (particle number not conserved).
       *Fixed in 2eebb32: the H₁ factors are transposed (skipped for real H₁, bit for bit).*
-- [ ] `rpa_from_bubble_diag` does not return χ: its output is rank one,
+- [x] `rpa_from_bubble_diag` does not return χ: its output is rank one,
       x[(i,j)] = [(Aᵀ)⁻¹ diag Π₀]_j with A = I − Π₀V (behind `get_rpa_susceptibility` and
       `get_magnon_susceptibility`).
-- [ ] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
+      *Fixed (right-hand side vec(Π₀), operator on the row sites after the interleave_mpo
+      fix): returns vec(χ) in the _vec_mps_from_mpo layout.*
+- [x] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
       2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
+      *Fixed: the default start is a global Krylov expansion of vec(I) (the stall was the
+      solver, not the formulation: a dense solve of the same system is exact).*
 - [ ] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
       `Nel_up = Nel_dn = H0.N ÷ 2` (`scf_magnetic_hubbard(_gpu)`): half the unit cells, a
       quarter filling if `H0` carries a sublattice or layer index. The drivers are built
