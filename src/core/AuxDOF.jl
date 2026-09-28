@@ -8,6 +8,10 @@
 #   [nambu_s, spin_s, pos_qubits...]   ← BdG with spin (call prepend_spin first)
 #   [spin_s,  pos_qubits...]           ← spin-resolved tight-binding
 #   [nambu_s, pos_qubits...]           ← spinless BdG
+#   [pos_qubits..., spin_s, nambu_s]   ← BdG with spin, both postpended
+#
+# The projections remove the aux sites from the ends inwards (Nambu, spin,
+# layer, sublattice), each from the side of H.sites it sits at (aux_site).
 #
 # Operator convention (both spin and Nambu use 2-state 1-indexed basis):
 #   spin:  state 1 = ↑,        state 2 = ↓
@@ -25,24 +29,28 @@
 #         prepend_nambu/postpend_nambu            ← physics/Supercond.jl
 #   3–6.  add_spin!, add_zeeman!, add_superconductivity!, add_soc!
 #                                                 ← core/TBSystem.jl
-#   7.    project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl
+#   7.    project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl;
+#         _require_end_site (the end-site check of project_aux and
+#         _project_aux_gpu)
 #   8.    the sector projectors: _project_end_site (behind project_aux and
 #         contract_nh_block), _block_projector and _absorb_aux_site (behind
 #         _project_aux_block ← physics/SCF.jl and _project_spin_sector
 #         ← physics/rpa/dyson.jl)
-#   9.    AuxProjection, _aux_projection, _project_aux_sectors, _probe_sectors,
-#         _aux_setup (the spectral methods' eight aux keywords, in one value)
+#   9.    AuxProjection, _aux_projection, _project_aux_sectors (with its check
+#         _require_aux_index), _probe_sectors, _aux_setup (the spectral
+#         methods' eight aux keywords, in one value)
 #   10.   _ldos_make_psi0 (← solvers/kpm/ldos.jl), probe_state
 #
 # Depends on: Utils, Hamiltonian, TBSystem, hopping2d*, Supercond* (a * marks a
 # file included later; see the source map in TensorBinding.jl).  Included right
 # after core/TBSystem.jl, this file needs only the ITensors types and
 # TBHamiltonian at definition time.  Its callees are resolved at run time: the
-# matrix-form prepend_op/postpend_op, get_diagonal_mpo, _basis_state_mps and
-# mpsexciton (core/Utils.jl), hopping2MPO (core/Hamiltonian.jl), _pos_sites,
-# _invalidate_cache!, _require_binary_position_space and physical_site_state
-# (core/TBSystem.jl), generate_kin_u/d (lattice/hopping2d.jl) and
-# pairingNNN/pairing2MPO (physics/Supercond.jl).
+# matrix-form prepend_op/postpend_op, get_diagonal_mpo, _basis_state_mps,
+# _mpo_site_pair and mpsexciton (core/Utils.jl), hopping2MPO
+# (core/Hamiltonian.jl), _pos_sites, _invalidate_cache!,
+# _require_binary_position_space and physical_site_state (core/TBSystem.jl),
+# generate_kin_u/d (lattice/hopping2d.jl) and pairingNNN/pairing2MPO
+# (physics/Supercond.jl).
 
 
 # ============================================================
@@ -528,21 +536,24 @@ end
 # ============================================================
 #
 # Any auxiliary DOF (spin, Nambu, layer, sublattice) added with prepend_op /
-# postpend_op lives at the first or last site of the MPO as a dim-1-bonded
-# tensor.  project_aux is the removal step of the projection chain
-# _project_aux_sectors (section 9), which get_bands (physics/qft/bands.jl) and
-# get_ldos_spatial (solvers/kpm/ldos.jl) apply to every Chebyshev operator.
+# postpend_op lives in a block of aux sites at the start or the end of the MPO,
+# each a dim-1-bonded tensor.  project_aux is the removal step of the projection
+# chain _project_aux_sectors (section 9), which get_bands (physics/qft/bands.jl)
+# and get_ldos_spatial (solvers/kpm/ldos.jl) apply to every Chebyshev operator.
 #
 # project_aux(W, aux_s, sec; side)
 #   Contracts the projector |sec⟩⟨sec| onto the bra (aux_s') and ket (aux_s)
 #   physical indices of the aux tensor (the kernel _project_end_site,
 #   section 8).  The resulting link is absorbed into the adjacent position
 #   site, returning an (L−1)-site MPO.
-#   `side=:pre` for prepended indices (spin, Nambu, layer);
-#   `side=:post` for postpended indices (sublattice).
+#   `side=:pre` when aux_s is on the first tensor of W, `side=:post` when it is
+#   on the last; any other placement is an error.  The builders prepend the
+#   layer and postpend the sublattice; spin and Nambu go on the side chosen by
+#   add_spin!/add_superconductivity! (`position`).
 #
 # aux_site(H, which) -> (Index, Symbol)
-#   Extracts the auxiliary Index and its side (:pre or :post) from H.sites.
+#   Extracts the auxiliary Index and its side (:pre or :post) from H.sites:
+#   the side of the block of aux sites that holds it.
 #   `which` ∈ :spin, :nambu, :layer, :sublattice.
 #   Used by _aux_projection (section 9) to auto-detect the auxiliary indices
 #   of a TBHamiltonian without user intervention.
@@ -558,14 +569,40 @@ Remove an auxiliary site from MPO `W` by projecting onto state `σ`.
 Contracts the projector |σ⟩⟨σ| on both bra and ket physical indices of the
 aux tensor; the resulting dim-1 link is absorbed into the adjacent position
 site.  Returns an (L−1)-site MPO suitable for `conjugate_by_qft`.
+
+Errors if `aux_s` is not the site index of that end tensor (`aux_site(H, which)`
+returns the side of an auxiliary index of a `TBHamiltonian`).
 """
-project_aux(W::MPO, aux_s::Index, σ::Integer; side::Symbol = :pre) =
-    _project_end_site(W, aux_s, σ, σ, side)
+function project_aux(W::MPO, aux_s::Index, σ::Integer; side::Symbol = :pre)
+    _require_end_site(W, aux_s, side === :pre ? 1 : length(W), side, "project_aux")
+    return _project_end_site(W, aux_s, σ, σ, side)
+end
 
 # Nothing-overloads: give Julia a compilable method when the Index is nothing,
-# so branches in get_bands can be type-checked without a MethodError.
+# so branches in get_bands can be type-checked without a MethodError.  The
+# projection chain names the DOF whose index is missing before it gets here
+# (_project_aux_sectors); a direct call only knows that no Index was given.
 project_aux(::MPO, ::Nothing, ::Integer; side::Symbol=:pre) =
-    error("sublat_proj=true requires sublat_s to be set (detected from H.sublattice_s)")
+    error("project_aux: the auxiliary Index is nothing (no such DOF on the Hamiltonian); " *
+          "pass H.spin_s, H.nambu_s, H.layer_s or H.sublattice_s (aux_site(H, which) " *
+          "returns it with its side).")
+
+# The check of project_aux and _project_aux_gpu: `s` must be the site index of
+# tensor `n` of `W`, the end tensor (first for `side=:pre`, last for `:post`)
+# the kernels contract.  Without it a wrong side contracted a position tensor
+# with the aux projector and left `s` on the other end (get_bands then died
+# with a segfault).
+function _require_end_site(W::MPO, s::Index, n::Integer, side::Symbol,
+                           caller::AbstractString)
+    hasind(W[n], s) && first(_mpo_site_pair(W, n)) == s && return nothing
+    where_s = findfirst(i -> hasind(W[i], s), eachindex(W))
+    found   = isnothing(where_s) ? "it is not on the MPO" :
+              "it is on tensor $where_s of $(length(W))"
+    # The message leads with the tags, not the Index (whose id changes run to run).
+    error("$caller: the auxiliary index tagged $(tags(s)) is not the site of tensor $n " *
+          "of the MPO (side=:$side); $found. Project the auxiliary sites from the ends " *
+          "of the MPO inwards, each from the side it sits at (aux_site). Index: $s")
+end
 
 
 """
@@ -612,6 +649,11 @@ the named auxiliary degree of freedom in `H`.
 
 `which` ∈ `:spin`, `:sublattice`, `:nambu`, `:layer`.
 
+The auxiliary sites sit in a block before (`:pre`) or after (`:post`) the
+position sites of `H.sites`, e.g. `[nambu, spin, pos…]` (BdG with spin, both
+`:pre`) or `[pos…, spin, nambu]` (both `:post`); the side is that of the block
+holding the index. An index with position sites on both sides is an error.
+
 Useful for passing the correct arguments to `project_aux` without manually
 inspecting `H.sites`.
 
@@ -629,8 +671,10 @@ function aux_site(H::TBHamiltonian, which::Symbol)
     isnothing(s) && error("H has no $which auxiliary index.")
     pos  = findfirst(==(s), H.sites)
     isnothing(pos) && error("Auxiliary index not found in H.sites — this is a bug.")
-    side = pos == 1             ? :pre  :
-           pos == length(H.sites) ? :post :
+    aux  = filter(!isnothing, Any[H.nambu_s, H.spin_s, H.layer_s, H.sublattice_s])
+    is_aux(i) = any(==(i), aux)
+    side = all(is_aux, H.sites[1:pos-1])   ? :pre  :
+           all(is_aux, H.sites[pos+1:end]) ? :post :
            error("Auxiliary $which index found at interior position $pos (unsupported).")
     return s, side
 end
@@ -735,8 +779,10 @@ Project a spinful `TBHamiltonian` onto spin sector `sector` (1 = ↑, 2 = ↓)
 by contracting the spin site tensor with the projector |sector⟩⟨sector|.
 
 The spin index is identified by its "Spin" tag, so the function is robust
-to whether spin is prepended or postpended.  The contracted tensor is
-absorbed into its neighbour, leaving a valid L-qubit MPO.
+to whether spin is prepended or postpended, also inside a block of aux sites
+(`[nambu, spin, pos…]`, `[pos…, spin, nambu]`).  The contracted tensor is
+absorbed into its neighbour, leaving a valid MPO on every other site of `H`
+(the L position qubits when spin is the only aux index).
 
 Returns a new `TBHamiltonian` with `spin_s = nothing` and fresh (empty)
 caches; `scale` and `center` are reset to 0.0 so `_ensure_scale!` will
@@ -752,11 +798,9 @@ function _project_spin_sector(H::TBHamiltonian, sector::Int)
                          1:length(H.mpo))
     spin_pos === nothing && error("_project_spin_sector: spin Index not found in MPO")
 
-    kept = _absorb_aux_site(H.mpo, spin_pos, _block_projector(s, sector, sector))
-    # For a spin site inside the MPO (a postpended spin followed by a postpended
-    # Nambu site) the sites after it are dropped, as they always were; see
-    # docs/dev/REORGANISATION_TODO.md.
-    new_tensors = spin_pos == 1 ? kept : kept[1:spin_pos - 1]
+    # Every other site is kept, matching new_sites (a spin site inside the MPO,
+    # as in [pos…, spin, nambu], used to lose every site after it).
+    new_tensors = _absorb_aux_site(H.mpo, spin_pos, _block_projector(s, sector, sector))
 
     new_sites = filter(i -> !hastags(i, "Spin"), H.sites)
 
@@ -826,10 +870,12 @@ end
 The auxiliary projection a spectral method applies to `H`, from its eight
 public keywords. With `autoenable=true` the flag of every DOF present on `H` is
 switched on (`_autoenable_proj`, one `@info` per flag it enables); the stochastic
-DOS passes `false`. The Nambu, layer and sublattice sites are located with
-`aux_site`. The spin site is always taken to be the first one (`side = :pre`):
-its side is not detected, which is the postpended-spin segfault listed in
-docs/dev/REORGANISATION_TODO.md.
+DOS passes `false`. Every auxiliary site present on `H` is located with
+`aux_site`, which also gives the side it is projected from (a spin index added
+with `add_spin!(H; position=:post)` is `:post`). An absent DOF gets the side
+`:pre` (`:post` for the sublattice); only the spin fallback `sites[1]` of
+`get_bands` and the GPU methods (`spin_proj=true` without a spin index) is
+projected from it.
 """
 function _aux_projection(H::TBHamiltonian;
                          nambu_proj::Bool  = false, proj_nambu = nothing,
@@ -842,12 +888,22 @@ function _aux_projection(H::TBHamiltonian;
             _autoenable_proj(H, nambu_proj, spin_proj, layer_proj, sublat_proj)
     end
     nambu_s,  nambu_side  = !isnothing(H.nambu_s)      ? aux_site(H, :nambu)      : (nothing, :pre)
+    spin_s,   spin_side   = !isnothing(H.spin_s)       ? aux_site(H, :spin)       : (nothing, :pre)
     layer_s,  layer_side  = !isnothing(H.layer_s)      ? aux_site(H, :layer)      : (nothing, :pre)
     sublat_s, sublat_side = !isnothing(H.sublattice_s) ? aux_site(H, :sublattice) : (nothing, :post)
     return AuxProjection(AuxDOFProjection(nambu_proj,  proj_nambu, nambu_s,  nambu_side),
-                         AuxDOFProjection(spin_proj,   proj_s,     H.spin_s, :pre),
+                         AuxDOFProjection(spin_proj,   proj_s,     spin_s,   spin_side),
                          AuxDOFProjection(layer_proj,  proj_layer, layer_s,  layer_side),
                          AuxDOFProjection(sublat_proj, proj_sl,    sublat_s, sublat_side))
+end
+
+# The check of _project_aux_sectors for a projected DOF: its Index must be set.
+# `flag` is the public keyword, `field` the TBHamiltonian field it is read from
+# and `kw` the keyword the low-level get_bands takes it as.
+function _require_aux_index(idx, flag, name, field, kw)
+    idx isa Index && return nothing
+    error("$flag=true, but there is no $name index to project ($field is nothing; " *
+          "the low-level get_bands takes it as $kw).")
 end
 
 # Whether any DOF is projected (the probe-state methods then fix the aux sectors).
@@ -879,12 +935,21 @@ when it is called, each sublattice projection when the iteration reaches it.
   their fallback, `sites[1]` for a Hamiltonian without spin.
 - `sublattice`: get_bands projects the sublattice when `sublat_proj` is on, the
   spatial LDOS whenever `H` has a sublattice index.
+
+Each DOF is projected from the side its `AuxDOFProjection` records. A projected
+DOF without an Index is an error that names it.
 """
 function _project_aux_sectors(T::MPO, aux::AuxProjection;
                               project          = project_aux,
                               spin_index       = nothing,
                               sublattice::Bool = aux.sublat.on)
     (; nambu, spin, layer, sublat) = aux
+    nambu.on   && _require_aux_index(nambu.index, "nambu_proj", "Nambu", "H.nambu_s", "nambu_s")
+    spin.on    && isnothing(spin_index) &&
+                  _require_aux_index(spin.index, "spin_proj", "spin", "H.spin_s", "spin_s_aux")
+    layer.on   && _require_aux_index(layer.index, "layer_proj", "layer", "H.layer_s", "layer_s")
+    sublattice && _require_aux_index(sublat.index, "sublat_proj", "sublattice",
+                                     "H.sublattice_s", "sublat_s")
     Ts = nambu.on ?
         [project(T, nambu.index::Index, σ; side=nambu.side)
          for σ in _sector_range(nambu.sector, 2)] :

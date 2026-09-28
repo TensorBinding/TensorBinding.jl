@@ -9,8 +9,8 @@
 # Main entry points: extract_diagonal_to_mps_gpu and density_profile_from_dm_gpu
 # (documented); internal: _apply_qft_conj_gpu, _make_delta_gpu, the _eval_*_gpu
 # samplers, _mps_to_diagonal_mpo_gpu, _project_aux_gpu.
-# Depends on: core/Utils.jl (the kernels above, constant_mps), gpu/device.jl (CUDA
-# bridge, uploads).
+# Depends on: core/Utils.jl (the kernels above, constant_mps), core/AuxDOF.jl
+# (_require_end_site), gpu/device.jl (CUDA bridge, uploads).
 
 
 # ============================================================
@@ -162,13 +162,15 @@ _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO =
 # with the element type of T, so every contraction stays on the GPU.  The
 # contracted site is absorbed into the neighbouring site, returning an MPO with
 # one fewer site.  get_bands_gpu and get_ldos_spatial_gpu pass it as the
-# `project` step of _project_aux_sectors (core/AuxDOF.jl).
+# `project` step of _project_aux_sectors (core/AuxDOF.jl).  As project_aux, it
+# errors unless idx is the site of that end tensor (_require_end_site).
 #
 # setelt() produces a DiagBlockSparse ITensor that cu() leaves on CPU — we
 # therefore build the |sec><sec| projector as an explicit dense array instead.
 function _project_aux_gpu(T::MPO, idx::Index, sec::Int; side::Symbol=:post)
     L    = length(T)
     n    = side == :post ? L : 1
+    _require_end_site(T, idx, n, side, "_project_aux_gpu")
 
     # Build dense |sec><sec| projector matching the element type of T so the
     # contraction is GPU×GPU with a consistent dtype throughout.

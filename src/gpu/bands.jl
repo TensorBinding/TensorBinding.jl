@@ -7,8 +7,8 @@
 # core/AuxDOF.jl (_aux_projection, _project_aux_sectors), lattice/masks2d.jl (legacy sublattice
 # masks), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
 # (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
-# chebyshev_foreach), physics/qft/kpath.jl (kpath_setup), gpu/device.jl,
-# gpu/primitives.jl.
+# chebyshev_foreach), physics/qft/kpath.jl (kpath_setup), physics/qft/bands.jl
+# (_bands_L_pos, _bands_num_x), gpu/device.jl, gpu/primitives.jl.
 
 """
     get_bands_gpu(H, Ncheb, ω_phys_vals;
@@ -35,7 +35,8 @@ entry points. ComplexF32 is faster, while ComplexF64 is safer at tight cutoffs
 on large systems (a warning is emitted for ComplexF32 with `cutoff < 1e-6`).
 
 The other keyword arguments are identical to the TBHamiltonian overload of
-`get_bands`; as in `get_bands(H, Ncheb, ω_phys_vals)`, the dimension D is taken
+`get_bands` (the default `num_x = 60` is clamped in 1D to the momenta of the
+window, as there); as in `get_bands(H, Ncheb, ω_phys_vals)`, the dimension D is taken
 from `H.geometry`, which must be set.  The return value is also identical: a
 plain `Matrix{Float64}` when no `kpath` is given, or a
 `NamedTuple(Ak, ticks, labels)` when a high-symmetry path is requested.
@@ -65,7 +66,7 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        k_groups_override = nothing,
                        xmin::Int         = 0,
                        xmax              = nothing,
-                       num_x::Int        = 60,
+                       num_x::Union{Nothing,Int} = nothing,
                        num_avg::Int      = 1,
                        ymin::Int         = 0,
                        ymax              = nothing,
@@ -104,9 +105,7 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     # excludes the aux indices, so subtracting them from it would drop one too many.
     isnothing(H.geometry) && error("get_bands_gpu: H.geometry must be set (needed to infer D).")
     D     = length(H.geometry(1))
-    L     = length(H.sites)
-    L_pos = L - (aux.spin.on ? 1 : 0) - (!isnothing(aux.nambu.index) ? 1 : 0) -
-                (!isnothing(aux.layer.index) ? 1 : 0) - (!isnothing(aux.sublat.index) ? 1 : 0)
+    L_pos = _bands_L_pos(H, aux)
 
     # ── k-path shortcut ──────────────────────────────────────────────────────
     kpath_ticks = nothing; kpath_labels = nothing
@@ -115,8 +114,12 @@ function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
         Lx_kp = isnothing(kpath_Lx) ? H.L ÷ 2 : Int(kpath_Lx)
         Ly_kp = H.L - Lx_kp
         k_groups_override, kpath_ticks, kpath_labels =
-            kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath; npts_per_segment=num_x)
+            kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath;
+                        npts_per_segment=something(num_x, _BANDS_NUM_X))
     end
+    # The default num_x (60) is clamped as in get_bands (a 1D register with fewer
+    # momenta samples every one); an explicit num_x is used as given.
+    num_x = _bands_num_x(num_x, D, L_pos, xmin, xmax, kpath)
 
     # ── k-groups (shared planner in core/Utils.jl, same as CPU get_bands) ────
     Lx_pos   = D == 2 ? div(L_pos, 2) : 0

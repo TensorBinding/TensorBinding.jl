@@ -48,7 +48,9 @@
 # removes it by contracting |σ⟩⟨σ| onto the auxiliary tensor, returning an
 # (L−1)-site position-only MPO ready for `conjugate_by_qft`; the chain of these
 # removals over all requested sectors is `_project_aux_sectors`, shared with
-# get_ldos_spatial and the GPU methods.
+# get_ldos_spatial and the GPU methods.  Each aux site is removed from the side
+# it sits at, which `aux_site` reads from H.sites (the low-level method takes
+# it as the `*_side` keywords).
 #
 # When `H::TBHamiltonian` is passed to `get_bands`, all auxiliary indices are
 # auto-detected from the struct fields (H.spin_s, H.nambu_s, H.layer_s,
@@ -92,7 +94,9 @@
 #   3. k-space diagonal of an MPO        get_spect_k
 # bands.jl (this file)
 #   1. Online band structure             get_bands (low-level MPO method)
-#   2. High-level overloads              get_bands(H, Ncheb, D, ω), get_bands(H, Ncheb, ω)
+#   2. High-level overloads              get_bands(H, Ncheb, D, ω), get_bands(H, Ncheb, ω);
+#                                        _bands_L_pos, _bands_num_x (shared with
+#                                        get_bands_gpu)
 # kpath.jl
 #   1. High-symmetry k-points and paths  kpath_2d, hsk_honeycomb/square/triangular
 #   2. Symbol-based path setup           _hs_label, _hsk, kpath_setup
@@ -123,13 +127,14 @@
 # sampled, and its contribution added to Ak_w.
 #
 #   Step 0  nambu_proj  — Nambu (BdG particle/hole) aux index
-#       Outermost aux (prepended last), projected first.
+#       Outermost aux (added last), projected first.
 #       Sectors: 1=particle, 2=hole.  kwarg: proj_nambu.
 #
 #   Step 1  spin_proj   — spin aux index
-#       After Nambu removal, spin is at site 1 of the reduced MPO.
-#       spin_s_aux carries the explicit spin Index to avoid ambiguity when
-#       both Nambu and spin are prepended.
+#       After Nambu removal, spin is the end site of the reduced MPO on its
+#       side (spin_side: :pre for add_spin!'s default, :post for
+#       position=:post).  spin_s_aux carries the explicit spin Index to avoid
+#       ambiguity when both Nambu and spin are on the same side.
 #       Channels: 1=↑, 2=↓.  kwarg: proj_s.
 #
 #   Step 1c layer_proj  — layer aux index (bilayer / multilayer)
@@ -181,7 +186,11 @@ See the block comment of section 1 above for the projection pipeline (Steps 0–
 - `ω_vals`       : rescaled energies ∈ (−1, 1) at which to evaluate A(k,ω).
 
 # Projection keyword arguments
-Each projection flag is independent; any combination is valid.
+Each projection flag is independent; any combination is valid. An index passed
+as `nambu_s`, `layer_s` or `sublat_s` is not a position qubit, so it must be
+projected: with its flag (`nambu_proj`, `layer_proj`, `sublat_proj`) off the
+QFT would treat the aux site as one more momentum bit, and `get_bands` throws
+an `ArgumentError` instead.
 
 **Nambu (BdG particle/hole) projection — Step 0:**
 - `nambu_proj`   : project each T_n onto Nambu sectors (default `false`).
@@ -197,6 +206,9 @@ Each projection flag is independent; any combination is valid.
                    `sites[1]`.  Set automatically by the `TBHamiltonian` overload
                    so that spin is correctly identified even when Nambu is also
                    prepended at site 1.
+- `spin_side`    : `:pre` (default) or `:post` — position of the spin site
+                   (`add_spin!(H; position=:post)` postpends it; the
+                   `TBHamiltonian` overload passes it).
 
 **Layer projection — Step 1c (bilayer / multilayer):**
 - `layer_proj`   : project each T_n onto individual layers (default `false`).
@@ -237,6 +249,7 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           spin_proj::Bool   = false,
                           proj_s            = nothing,
                           spin_s_aux        = nothing,
+                          spin_side::Symbol   = :pre,
                           nambu_proj::Bool  = false,
                           proj_nambu        = nothing,
                           nambu_s           = nothing,
@@ -264,6 +277,19 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           maxdim::Int     = 100,
                           cutoff::Real    = 1e-10,
                           printinfo::Bool = false)
+
+    # An aux index is counted out of the position qubits (L_pos below) whether or
+    # not it is projected; unprojected, its site would reach the QFT as one more
+    # momentum bit, of which the k-grid (labels below 2^L_pos) reads only the
+    # half where that bit is 0.
+    for (flag, on, idx, kw) in (("nambu_proj",  nambu_proj,  nambu_s,  "nambu_s"),
+                                ("layer_proj",  layer_proj,  layer_s,  "layer_s"),
+                                ("sublat_proj", sublat_proj, sublat_s, "sublat_s"))
+        (isnothing(idx) || on) || throw(ArgumentError(
+            "get_bands: $kw is set but $flag=false; an auxiliary site must be projected " *
+            "before the QFT. Pass $flag=true (its proj_* selector nothing sums the sectors) " *
+            "or leave $kw unset."))
+    end
 
     L = length(sites)
     # Nambu and sublattice are always internal aux DOFs, never position qubits.
@@ -302,8 +328,10 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     # pos_sites = position qubits only, for legacy sublattice mask building.
     # All known aux indices are excluded regardless of whether their projection
     # is active — a "Kagome" or "Spin" tagged index must never reach OpSum.
+    # The spin site projected is spin_s_aux, or sites[1] when it is not given.
+    local _spin_idx = isnothing(spin_s_aux) ? sites[1] : spin_s_aux
     aux_to_drop = Set{Index}()
-    spin_proj             && push!(aux_to_drop, sites[1])
+    spin_proj             && push!(aux_to_drop, _spin_idx::Index)
     !isnothing(nambu_s)   && push!(aux_to_drop, nambu_s::Index)
     !isnothing(layer_s)   && push!(aux_to_drop, layer_s::Index)
     !isnothing(sublat_s)  && push!(aux_to_drop, sublat_s::Index)
@@ -331,14 +359,13 @@ function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
     #
     # Steps 0–1b are _project_aux_sectors (core/AuxDOF.jl), which projects the
     # aux sites in outermost-first order (nambu → spin → layer → sublat).  After
-    # each removal the next aux moves to position 1 of the reduced MPO, so
-    # project_aux(:pre) always lands on the right site.  The spin step uses
-    # spin_s_aux (explicit Index) when provided, else sites[1].
+    # each removal the next aux is the end site of the reduced MPO on its side,
+    # so project_aux(side) lands on it (and errors if the side is wrong).  The
+    # spin step uses spin_s_aux (explicit Index) when provided, else sites[1].
     aux = AuxProjection(AuxDOFProjection(nambu_proj,  proj_nambu, nambu_s,    nambu_side),
-                        AuxDOFProjection(spin_proj,   proj_s,     spin_s_aux, :pre),
+                        AuxDOFProjection(spin_proj,   proj_s,     spin_s_aux, spin_side),
                         AuxDOFProjection(layer_proj,  proj_layer, layer_s,    layer_side),
                         AuxDOFProjection(sublat_proj, proj_sl,    sublat_s,   sublat_side))
-    local _spin_idx = isnothing(spin_s_aux) ? sites[1] : spin_s_aux
     function accumulate_Tn!(ak_accum, Tn, n)
         # Steps 0, 1, 1c, 1b: proj_*=nothing sums every sector, an integer selects one.
         after_sl_aux = _project_aux_sectors(Tn, aux; spin_index=_spin_idx)
@@ -395,6 +422,27 @@ end
 # 2. High-level overloads — get_bands(H::TBHamiltonian, …)
 # ============================================================
 
+# The default num_x of the TBHamiltonian method and of get_bands_gpu.
+const _BANDS_NUM_X = 60
+
+# The position qubits the low-level get_bands counts for H under `aux` (every
+# site but the projected spin and the Nambu, layer and sublattice sites).
+_bands_L_pos(H::TBHamiltonian, aux::AuxProjection) =
+    length(H.sites) - (aux.spin.on ? 1 : 0) - (!isnothing(aux.nambu.index) ? 1 : 0) -
+    (!isnothing(aux.layer.index) ? 1 : 0) - (!isnothing(aux.sublat.index) ? 1 : 0)
+
+# num_x as the TBHamiltonian methods pass it on: an explicit value unchanged; by
+# default _BANDS_NUM_X, clamped in 1D (without kpath, where num_x counts the points
+# per segment) to the momenta of the window [xmin, xmax] of the 2^L_pos register,
+# since ilinspace allows at most one centre per momentum. The 2D planner clamps
+# num_x itself.
+function _bands_num_x(num_x, D::Int, L_pos::Int, xmin::Int, xmax, kpath)
+    isnothing(num_x) || return num_x
+    (D == 1 && isnothing(kpath)) || return _BANDS_NUM_X
+    n_window = (isnothing(xmax) ? 2^L_pos - 1 : Int(xmax)) - xmin + 1
+    return min(_BANDS_NUM_X, n_window)
+end
+
 """
     get_bands(H, Ncheb, D, ω_phys_vals; kwargs...)
         -> Matrix{Float64}  or  NamedTuple(Ak, ticks, labels)
@@ -416,7 +464,10 @@ record per flag it enables).
 The k-point sampling and truncation keywords (`k_groups_override`, `xmin`, `xmax`,
 `num_x`, `num_avg`, `ymin`, `ymax`, `num_y`, `kernel`, `lambda`, `tol`, `maxdim`,
 `cutoff`, `printinfo`) are those of the low-level method, with the same defaults
-except `num_x = 60`.
+except `num_x`, which defaults to 60. In 1D (without `kpath`) that default is
+clamped to the number of momenta in `[xmin, xmax]`, so a chain with fewer than
+60 momenta (L < 6) samples every one of them; an explicit `num_x` is used as
+given (in 2D the planner clamps it to the window).
 
 **High-symmetry k-path shortcut** — replaces the manual `hsk_*` + `kpath_2d`
 + `k_groups_override` boilerplate with a single call:
@@ -458,7 +509,7 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           k_groups_override   = nothing,
                           xmin::Int       = 0,
                           xmax            = nothing,
-                          num_x::Int      = 60,
+                          num_x::Union{Nothing,Int} = nothing,
                           num_avg::Int    = 1,
                           ymin::Int       = 0,
                           ymax            = nothing,
@@ -485,7 +536,8 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
         Lx_kp = isnothing(kpath_Lx) ? H.L ÷ 2 : Int(kpath_Lx)
         Ly_kp = H.L - Lx_kp
         k_groups_override, kpath_ticks, kpath_labels =
-            kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath; npts_per_segment = num_x)
+            kpath_setup(kpath_lattice, Lx_kp, Ly_kp, kpath;
+                        npts_per_segment = something(num_x, _BANDS_NUM_X))
     end
 
     # Switch on the projection of every aux DOF on H and detect all aux indices,
@@ -495,10 +547,11 @@ function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
     aux = _aux_projection(H; nambu_proj, proj_nambu, spin_proj, proj_s,
                              layer_proj, proj_layer, sublat_proj, proj_sl)
     (; nambu, spin, layer, sublat) = aux
+    num_x = _bands_num_x(num_x, D, _bands_L_pos(H, aux), xmin, xmax, kpath)
 
     Ak_w = get_bands(H.mpo, H.scale, H.center, H.sites, Ncheb, D, ω_resc;
                             spin_proj  = spin.on,     proj_s     = proj_s,
-                            spin_s_aux = spin.index,
+                            spin_s_aux = spin.index,  spin_side  = spin.side,
                             nambu_proj = nambu.on,    proj_nambu = proj_nambu,
                             nambu_s    = nambu.index, nambu_side = nambu.side,
                             layer_proj = layer.on,    proj_layer  = proj_layer,

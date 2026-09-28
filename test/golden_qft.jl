@@ -31,10 +31,11 @@ using TensorBinding: get_Hamiltonian, get_bands, conjugate_by_qft, conjugate_by_
 # marked `requires`; those cases are skipped once the function is gone, and the
 # generator leaves them out of regenerated data.
 #
-# Not pinned, because the process dies with a segfault instead of raising:
 # get_bands on a spin index added with add_spin!(H; position=:post), and the
-# low-level get_bands with sublat_side=:pre on a postpended sublattice index
-# (both make project_aux(side=:pre) project a site that is not at position 1).
+# low-level get_bands with sublat_side=:pre on a postpended sublattice index,
+# used to kill the process with a segfault (both made project_aux(side=:pre)
+# project a site that is not at position 1); they are pinned since the fix
+# (bandsH_spinpost3_*, bands_low_sublat_side_pre_on_post_index).
 #
 # Runtime: ~2 min from a cold start, almost all of it first-call compilation of
 # the code under test (ITensorMPS arithmetic, apply, the QFT MPO, the MPS-KPM).
@@ -400,6 +401,10 @@ end
 fixture!(:bdgspin3, 23) do
     H = chain(3); add_spin!(H); add_superconductivity!(H, 0.2); H.scale = 3.0; H
 end
+# [pos..., spin, nambu]: both aux indices postpended.
+fixture!(:bdgspinpost3, 33) do
+    H = chain(3); add_spin!(H; position=:post); add_superconductivity!(H, 0.2); H.scale = 3.0; H
+end
 # 1D bilayer chain: a prepended Qubit layer index (as bilayer_hamiltonian uses),
 # intralayer chain hopping and interlayer hopping 0.3.
 fixture!(:layer3, 24) do
@@ -665,13 +670,22 @@ end
 case!("bands_low_sublat_proj_post") do
     H = fx(:honeycomb4); lowbands(H, 2; num_x=4, sublat_proj=true, sublat_s=H.sublattice_s)
 end
-# Not pinned: sublat_side=:pre with the (postpended) honeycomb index makes
-# project_aux contract a position tensor with the aux projector, and the
-# process then dies with a segfault (exit 139) instead of raising an error.
-# sublat_s given with sublat_proj=false: L_pos drops the aux site but the QFT is
-# applied to the full 5-site MPO (pinned as it is today).
-case!("bands_low_sublat_index_without_projection") do
+# sublat_side=:pre with the (postpended) honeycomb index: project_aux refuses a
+# site that is not on the first tensor (it used to contract a position tensor
+# with the aux projector, and the process died with a segfault).
+case!("bands_low_sublat_side_pre_on_post_index"; throws=true) do
+    H = fx(:honeycomb4)
+    lowbands(H, 2; num_x=4, sublat_proj=true, sublat_s=H.sublattice_s, sublat_side=:pre)
+end
+# sublat_s given with sublat_proj=false: L_pos drops the aux site, which the QFT
+# would take for a momentum bit; an ArgumentError since the fix (it used to
+# return the QFT of the full 5-site MPO).
+case!("bands_low_sublat_index_without_projection"; throws=true) do
     H = fx(:honeycomb4); lowbands(H, 2; num_x=4, sublat_s=H.sublattice_s)
+end
+case!("bands_low_spin_proj_post_side") do
+    H = fx(:spinpost3)
+    lowbands(H, 1; num_x=4, spin_proj=true, spin_s_aux=H.spin_s, spin_side=:post)
 end
 case!("bands_low_printinfo") do; lowbands(fx(:chain4p), 1; num_x=3, printinfo=true) end
 case!("bands_low_hodc_kernel"; throws=true) do; lowbands(fx(:chain4p), 1; num_x=3, kernel=:hodc) end
@@ -682,8 +696,10 @@ hbands_nt(name, D; kw...) = let r = get_bands(fx(name), NB, D, WPHYS; kw...)
     (; Ak = r.Ak, ticks = r.ticks, labels = r.labels)
 end
 
-# The TBHamiltonian method's default num_x=60 exceeds 2^L for L < 6 (1D).
-case!("bandsH_chain4p_default_numx60_exceeds_N"; throws=true) do; hbands(:chain4p, 1) end
+# The TBHamiltonian method's default num_x=60 is clamped to the 2^L momenta for
+# L < 6 (1D; it used to trip ilinspace's assertion); an explicit num_x is not.
+case!("bandsH_chain4p_default_numx_clamped") do; hbands(:chain4p, 1) end
+case!("bandsH_chain4p_explicit_numx60_exceeds_N"; throws=true) do; hbands(:chain4p, 1; num_x=60) end
 case!("bandsH_chain4p_numx16_full_grid") do; hbands(:chain4p, 1; num_x=16) end
 case!("bandsH_chain4p_numx5_navg2") do; hbands(:chain4p, 1; num_x=5, num_avg=2) end
 case!("bandsH_chain4c_center") do; hbands(:chain4c, 1; num_x=5) end
@@ -708,14 +724,18 @@ case!("bandsH_chain4p_sublattice_mask_B_1d") do; hbands(:chain4p, 1; num_x=4, su
 case!("bandsH_spin3_auto_both") do; hbands(:spin3, 1; num_x=4) end
 case!("bandsH_spin3_up") do; hbands(:spin3, 1; num_x=4, proj_s=1) end
 case!("bandsH_spin3_down_explicit_flag") do; hbands(:spin3, 1; num_x=4, spin_proj=true, proj_s=2) end
-# Not pinned: get_bands on a spin index added with add_spin!(H; position=:post)
-# projects the spin with side=:pre (hard-coded) and the process dies with a
-# segfault (exit 139), like the sublat_side case above.
+# A spin index added with add_spin!(H; position=:post) is projected from the last
+# site (the spin side used to be hard-coded :pre, and the process died with a
+# segfault, like the sublat_side case above).
+case!("bandsH_spinpost3_auto_both") do; hbands(:spinpost3, 1; num_x=4) end
+case!("bandsH_spinpost3_down") do; hbands(:spinpost3, 1; num_x=4, proj_s=2) end
 case!("bandsH_spinsq4_auto_2d") do; hbands(:spinsq4, 2; num_x=3) end
 case!("bandsH_bdg3_auto_both") do; hbands(:bdg3, 1; num_x=4) end
 case!("bandsH_bdg3_hole") do; hbands(:bdg3, 1; num_x=4, proj_nambu=2) end
 case!("bandsH_bdgspin3_auto_all") do; hbands(:bdgspin3, 1; num_x=3) end
 case!("bandsH_bdgspin3_particle_down") do; hbands(:bdgspin3, 1; num_x=3, proj_nambu=1, proj_s=2) end
+case!("bandsH_bdgspinpost3_auto_all") do; hbands(:bdgspinpost3, 1; num_x=3) end
+case!("bandsH_bdgspinpost3_particle_down") do; hbands(:bdgspinpost3, 1; num_x=3, proj_nambu=1, proj_s=2) end
 case!("bandsH_layer3_auto") do; hbands(:layer3, 1; num_x=4) end
 case!("bandsH_layer3_layer2") do; hbands(:layer3, 1; num_x=4, proj_layer=2) end
 case!("bandsH_bilayer_hc_auto") do; hbands(:bilayer_hc, 2; num_x=3) end
@@ -817,6 +837,10 @@ case!("project_aux_bdgspin3_nambu_then_spin") do
        after_spin = densemat(project_aux(W1, H.spin_s, 1), TB._pos_sites(H)))
 end
 case!("project_aux_nothing_index"; throws=true) do; project_aux(fx(:chain3).mpo, nothing, 1) end
+# A side the index is not at is an error (it used to return a corrupt MPO).
+case!("project_aux_spinpost3_wrong_side"; throws=true) do
+    H = fx(:spinpost3); project_aux(H.mpo, H.spin_s, 1)
+end
 
 # ---- aux_site -------------------------------------------------------------------------
 case!("aux_site_all_models") do
@@ -828,9 +852,13 @@ case!("aux_site_all_models") do
        honeycomb4 = auxinfo(fx(:honeycomb4), :sublattice),
        kagome4 = auxinfo(fx(:kagome4), :sublattice), ssh3 = auxinfo(fx(:ssh3), :sublattice))
 end
-# BdG on a spinful model puts the spin index second ([nambu, spin, pos...]), so
-# aux_site(H, :spin) refuses it as interior (get_bands reads H.spin_s instead).
-case!("aux_site_bdgspin3_spin_interior"; throws=true) do; aux_site(fx(:bdgspin3), :spin) end
+# BdG on a spinful model puts the spin index second ([nambu, spin, pos...]), or
+# second to last with both postpended; aux_site takes the side of the aux block
+# that holds it (it used to refuse the index as interior).
+case!("aux_site_bdgspin3_spin") do
+    (; bdgspin3 = auxinfo(fx(:bdgspin3), :spin),
+       bdgspinpost3 = (auxinfo(fx(:bdgspinpost3), :spin), auxinfo(fx(:bdgspinpost3), :nambu)))
+end
 case!("aux_site_unknown_kind"; throws=true) do; aux_site(fx(:spin3), :orbital) end
 case!("aux_site_missing_index"; throws=true) do; aux_site(fx(:chain3), :spin) end
 case!("aux_site_interior_position"; throws=true) do; aux_site(fx(:sl_interior), :sublattice) end

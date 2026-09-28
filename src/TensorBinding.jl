@@ -192,13 +192,13 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            GPU toolkit overview
 #                            → —
 # gpu/primitives.jl          delta, MPS evaluation, diagonals, aux projection, QFT sandwich
-#                            → Utils, gpu/device
+#                            → Utils, AuxDOF, gpu/device
 # gpu/kpm.jl                 KPM_Tn_gpu, spatial LDOS, stochastic DOS
 #                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion,
 #                              kpm/dos, gpu/device, gpu/primitives
 # gpu/bands.jl               get_bands_gpu
 #                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
-#                              kpm/recursion, qft/kpath, gpu/device, gpu/primitives
+#                              kpm/recursion, qft/kpath, qft/bands, gpu/device, gpu/primitives
 # gpu/topology.jl            get_C_gpu
 #                            → TBSystem, DMRG, Topology, Purification, gpu/device
 # gpu/purification.jl        McWeeny purification

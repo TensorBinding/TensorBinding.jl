@@ -287,6 +287,32 @@ constructor that takes all 21 fields in order, caches included, remains.
 - Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
   positional `cyclic=true` default of `build_shift_mpo`, never reachable (a two-argument
   call takes the keyword method, `cyclic=false`), is gone.
+- A spin index added with `add_spin!(H; position=:post)` (alone or with a postpended Nambu
+  index) was always projected from the first site: `get_bands` crashed Julia with a
+  segfault, `get_ldos_spatial(mode=:mpo)` threw inside ITensors, and the GPU twins did
+  the same. Every auxiliary index is now projected from the side `H.sites` puts it on
+  (`aux_site`); the low-level `get_bands` takes the spin's side as the new keyword
+  `spin_side` (default `:pre`). `project_aux` and its GPU twin check that the index is the
+  site of the end tensor they contract, and throw a clear error instead of returning a
+  corrupt MPO (also for a wrong `sublat_side` in the low-level `get_bands`).
+- `aux_site(H, :spin)` on BdG models with spin, and `aux_site(H, :layer)` on spinful
+  layered models, refused the index as "interior", so every spectral method threw on
+  those models; the side is now that of the block of auxiliary sites holding the index.
+- `get_bands(H, …)` and `get_bands_gpu` with the default `num_x` failed on 1D systems with
+  fewer than 60 momenta (L < 6): the default 60 is clamped to the momenta of the window;
+  an explicit `num_x` behaves as before (the keyword's type is now
+  `Union{Nothing, Int}`, `nothing` meaning the default).
+- The low-level `get_bands` with `nambu_s`, `layer_s` or `sublat_s` given but its
+  projection flag off transformed the auxiliary site as one more momentum bit (a
+  meaningless result); it raises an `ArgumentError`. The `TBHamiltonian` methods always
+  switch those flags on.
+- `_project_spin_sector` (the RPA and SCF spin channels) on a spin index inside the
+  auxiliary block dropped sites from the MPO: the Nambu site for `[pos…, spin, nambu]`,
+  every position site for `[nambu, spin, pos…]`.
+- A projection flag without its index (`nambu_proj=true` on a model without Nambu index,
+  `spin_proj=true` in `get_ldos_spatial(mode=:mpo)` without spin) threw a `TypeError`; the
+  error now names the DOF. `project_aux(W, nothing, σ)` no longer blames `sublat_proj`
+  whatever the DOF.
 
 - Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
   `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of
