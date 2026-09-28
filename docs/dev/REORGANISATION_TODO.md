@@ -81,12 +81,16 @@ Line numbers refer to the working tree on that date and will drift.
       QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
 - [ ] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
       field is identically zero (e.g. `uniformsemenoff=true, ms=0`).
-- [ ] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
+- [x] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
       `Lx = H.L ÷ 2` silently; `tjunction_lattice_hamiltonian` has no meaningful `Lx`.
+      *They raise an error on T-junctions (`_is_tjunction`, the "TJunction" branch index),
+      87f6562. Haldane and custom 2D models keep the `L ÷ 2` fallback, the split of
+      `honeycomb_positions`' default layout.*
 - [ ] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
       after the first Hartree step.
-- [ ] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
+- [x] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
       asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
+      *Fixed in 87f6562: `[xmin]`, and the 2D plan places `min(num_x, window)` points.*
 - [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
 - [x] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
       *The cell builds it: the chain exciton of `H_exc` without its confinement potential.*
@@ -110,8 +114,13 @@ the affected golden cases in the same commit.
 - [ ] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
 - [ ] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
       electron sites (`interleave_mpo(..., 0)` targets even sites).
-- [ ] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
+- [x] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
       the kx = ky diagonal.
+      *By design: its docstring calls it the legacy diagonal cut (`kpath_2d` gives paths; a
+      full 2D grid would change the output shape, Tier 3). The bug inside it is fixed
+      (87f6562): it took the first `num_x` points of a full-resolution grid, so
+      `num_x = 4` on a 16 × 16 zone sampled k = 0…3; the points now span the cut, which on
+      odd-`L` registers follows the physical kx = ky line.*
 - [x] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
       *The default is now max(that, 1.1 × dense radius at L ≤ 10) (tier2/registry); the
       formula itself stays in `_estimate_scale` (golden-pinned).*
@@ -126,13 +135,16 @@ the affected golden cases in the same commit.
       tr(conj(A)B) instead of tr(A†B).
 - [ ] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
       states (quarter filling on sublattice/spin/BdG models).
-- [ ] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
+- [x] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
+      *Fixed in 87f6562: the moments take `ψ₀/‖ψ₀‖`, like the cache `KPM_Tn_mps` builds.*
 - [ ] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
       `hermitize(NH)` forgets the convention and scale; `hermitized_hamiltonian` reports
       `aux_side=:pre` and the parent's `L`/`N`.
 - [ ] `rk4_step_dm_nh_gpu` casts `dt/2`, `dt`, `dt/6` to Float32 even for ComplexF64 (~1e-8 error).
 - [ ] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
       (see the memory note on interleave_mpo).
+      *`fix_sites` fixed in 87f6562 (legs by prime level, `_mpo_site_pair`); the exciton QFT
+      conjugation is unchanged by it. `interleave_mpo` still open.*
 
 **Crashes and unhelpful errors**
 - [ ] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
@@ -141,9 +153,12 @@ the affected golden cases in the same commit.
 - [ ] `get_bands(H)` default `num_x=60` fails for 1D systems with L < 6; low-level `get_bands`
       with `sublat_s` but `sublat_proj=false` silently transforms the sublattice index.
 - [ ] `aux_site(H, :spin)` errors on every BdG+spin model.
-- [ ] `get_ldos(:diag)` and `get_ldos_spectrum` throw on Fibonacci (projector leg order).
-- [ ] Empty-group checks in `get_exciton_ldos_spatial`/`get_exciton_bands` are unreachable
+- [x] `get_ldos(:diag)` and `get_ldos_spectrum` throw on Fibonacci (projector leg order).
+      *Fixed in 87f6562: `extract_diagonal_to_mps` takes the unprimed leg whatever the order.*
+- [x] Empty-group checks in `get_exciton_ldos_spatial`/`get_exciton_bands` are unreachable
       (BoundsError first); `mps_to_diagonal_mpo` fails on a 1-site MPS.
+      *Fixed in 87f6562: `spatial_sampling_plan` rejects empty groups (the callers' dead
+      checks are gone); `mps_to_diagonal_mpo` takes a one-site MPS.*
 - [ ] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
 - [ ] `haydock_cf` throws DomainError for complex Hermitian seeds.
 
@@ -163,8 +178,13 @@ the affected golden cases in the same commit.
 - [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
       *Fixed with the shared GPU warning (tier2/gpuwrap): its extra `cutoff < 1e-5` warning for
       every type is deleted; it now warns for a 32-bit type below 1e-5, its old 32-bit range.*
-- [ ] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
-- [ ] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
+- [x] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
+      *Fixed in 87f6562: `_is_exciton_register` (2L sites and no auxiliary index) behind every
+      exciton check; any aux index could bring a one-particle model to 2L sites.*
+- [x] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
+      *By design: the functions behind `_kpm_weight_matrix` have no `eta`/`m_order` keywords
+      and document the four damping kernels. The error now says which functions take
+      `:hodc` (87f6562).*
 - [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
       `project_aux` error message names sublattice for every aux index.
 
