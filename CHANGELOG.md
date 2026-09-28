@@ -183,6 +183,12 @@ constructor that takes all 21 fields in order, caches included, remains.
   from the shared `_kpm_kernel`. The RPA-only `_jackson_kernel` had `(N − m)` for
   `(N − m + 1)`, so `g₀ = N/(N + 1)`; the bubbles move by up to `(N + 1)²/N²` on top of the
   factor 4 (e.g. ×4.16 at `Ncheb = 50`).
+- **cheb2d bubbles on a complex `H₁`**: the Hadamard product takes the transpose of the
+  `H₁` factors, so the bubble has the Lindhard form `(P_a)ᵀ ⊙ P_b` of `get_bubble_mpo`
+  and conserves particles; it was `P_a ⊙ P_b` (44 % off on a complex L = 2 chain, row
+  sums 0.35‖Π‖). Real `H₁` results are unchanged, bit for bit. The cheb2d bubbles carry
+  the opposite sign to `get_bubble_mpo`; their docstrings now say so (which sign `Π₀`
+  should have is open).
 - **RPA bubbles with `P_method=:purification` use `ϵF`.** It was never passed, so every
   purification ran at `ϵF = 0`. McWeeny now starts from the level `H.center + ϵF`, the
   convention of `mcweeny_purify` (the `:kpm` density is `θ(ϵF − H)`: the same level when

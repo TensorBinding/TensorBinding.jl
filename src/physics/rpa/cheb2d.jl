@@ -99,8 +99,8 @@ end
 #   diagonal = true  the output indices are siteinds("Qubit", H.L), made after P₂.
 #
 # `fname` names the caller in errors, `tag` starts its progress lines.
-# Returns (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites) with N = Ncheb + 1, and
-# TP1 = TP2 = nothing when lowrank.
+# Returns (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites, transpose1) with N = Ncheb + 1,
+# TP1 = TP2 = nothing when lowrank, and transpose1 the flag of _hadamard_difference.
 function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVector{<:Real},
                        fname::AbstractString, tag::AbstractString;
                        diagonal::Bool, lowrank::Bool, kernel::Symbol = :none,
@@ -188,15 +188,43 @@ function _cheb2d_setup(H1::TBHamiltonian, H2::TBHamiltonian, ωlist::AbstractVec
         end
     end
 
-    return (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites)
+    # Transpose the H₁-side Hadamard factors unless H₁ and P₁ are real (see
+    # _hadamard_difference).
+    transpose1 = !(_real_mpo(H1.mpo) && _real_mpo(P1))
+
+    return (; N, Tn1, Tn2, P1, P2, TP1, TP2, C_all, out_sites, transpose1)
 end
 
 
-# D = (A ⊙ B) − (C ⊙ E) on `out_sites`, the ω-independent term of every cheb2d bubble:
-# D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n] in the plain sweep, the same built from
-# weighted sums of the moments in the SVD and Tucker variants.
+# The transpose of an MPO: the ket and bra legs of every tensor exchanged.
+function _transpose_mpo(M::MPO)
+    T = copy(M)
+    for i in eachindex(M)
+        ket, bra = _mpo_site_pair(M, i)
+        T[i] = replaceinds(M[i], (ket, bra), (bra, ket))
+    end
+    return T
+end
+
+# Whether every tensor of an MPO stores real numbers.
+_real_mpo(M::MPO) = all(T -> eltype(T) <: Real, M)
+
+
+# D = (Aᵀ ⊙ B) − (Cᵀ ⊙ E) on `out_sites`, the ω-independent term of every cheb2d bubble:
+# D_mn = TP1[m]ᵀ ⊙ Tn2[n] − Tn1[m]ᵀ ⊙ TP2[n] in the plain sweep, the same built from
+# weighted sums of the moments in the SVD and Tucker variants. The H₁-side factors A
+# and C are transposed so that Σ c_mn D_mn = Σ_ab f(ε_a, ε_b)(f_a − f_b) P_aᵀ ⊙ P_b,
+# the Lindhard structure of get_bubble_mpo (Π_ij ∝ ⟨j|a⟩⟨a|i⟩⟨i|b⟩⟨b|j⟩). With
+# `transpose1 = false` (_cheb2d_setup's choice for a real H₁ and P₁, whose spectral
+# projectors are symmetric, so that the transpose would change only rounding) they are
+# used as they are. (Until the fix they were never transposed: for a complex H₁ the
+# bubble was P_a ⊙ P_b, which does not conserve particles.)
 function _hadamard_difference(A::MPO, B::MPO, C::MPO, E::MPO, out_sites;
-                              maxdim::Int, cutoff::Real)
+                              transpose1::Bool, maxdim::Int, cutoff::Real)
+    if transpose1
+        A = _transpose_mpo(A)
+        C = _transpose_mpo(C)
+    end
     had_A = hadamard_mpo(A, B, out_sites; maxdim=maxdim, cutoff=cutoff)
     had_B = hadamard_mpo(C, E, out_sites; maxdim=maxdim, cutoff=cutoff)
     return ITensorMPS.truncate!(+(had_A, -1 * had_B; maxdim=maxdim); cutoff=cutoff)
@@ -329,13 +357,15 @@ end
 
 
 # The r_m × r_n ω-independent Tucker terms
-#   D[s₁,s₂] = post((A_tuck[s₁] ⊙ B_tuck[s₂]) − (C_tuck[s₁] ⊙ E_tuck[s₂]))
+#   D[s₁,s₂] = post((A_tuck[s₁]ᵀ ⊙ B_tuck[s₂]) − (C_tuck[s₁]ᵀ ⊙ E_tuck[s₂]))
 #            = post(Σ_{m,n} U[m,s₁] conj(V[n,s₂]) · D_mn),
 # with post = identity for the MPO bubble and the k-space diagonal (_cheb2d_kdiag) for
-# the diagonal one. Returns a Matrix{Union{Nothing, T}}, `nothing` where a component is.
+# the diagonal one (the transposes as `transpose1` says, see _hadamard_difference).
+# Returns a Matrix{Union{Nothing, T}}, `nothing` where a component is.
 function _tucker_hadamard(post, A_tuck::AbstractVector, B_tuck::AbstractVector,
                           C_tuck::AbstractVector, E_tuck::AbstractVector, out_sites,
-                          ::Type{T}; maxdim::Int, cutoff::Real, verbose::Bool) where {T}
+                          ::Type{T}; transpose1::Bool, maxdim::Int, cutoff::Real,
+                          verbose::Bool) where {T}
     r_m = length(A_tuck); r_n = length(B_tuck)
     D   = Matrix{Union{Nothing, T}}(nothing, r_m, r_n)
     for s1 in 1:r_m, s2 in 1:r_n
@@ -343,7 +373,8 @@ function _tucker_hadamard(post, A_tuck::AbstractVector, B_tuck::AbstractVector,
          isnothing(C_tuck[s1]) || isnothing(E_tuck[s2])) && continue
 
         D[s1, s2] = post(_hadamard_difference(A_tuck[s1], B_tuck[s2], C_tuck[s1], E_tuck[s2],
-                                              out_sites; maxdim=maxdim, cutoff=cutoff))
+                                              out_sites; transpose1=transpose1, maxdim=maxdim,
+                                              cutoff=cutoff))
         if verbose
             idx = (s1 - 1) * r_n + s2
             (idx % 10 == 0 || idx == r_m * r_n) &&
@@ -391,6 +422,9 @@ using the **double Chebyshev decomposition**.
 is resolved in those indices, as the result of `get_bubble_mpo` is. `H1` and `H2`
 must have the same site structure.
 
+Sign: the cheb2d bubbles carry the opposite sign to `get_bubble_mpo` (Π₀ here is
+`−get_bubble_mpo(H1, H2, ω)` up to the expansion error).
+
 Instead of building the 2L-site effective Hamiltonian Heff = I⊗H₂ − H₁⊗I and
 running KPM on it (where bond dimension grows at each Chebyshev step due to
 entanglement between subsystems), this routine decomposes G_eff as
@@ -402,10 +436,13 @@ and c_{mn}(ω) are scalar 2D Chebyshev coefficients (cheap, via DCT-II).
 
 The bubble on L-site MPOs is assembled as
 
-    Π₀(ω) = Σ_{mn} c_{mn}(ω) · D_{mn}
+    Π₀(ω) = Σ_{mn} c_{mn}(ω) · D_{mn},
 
-where D_{mn} = (T_m(H̃₁)·P₁) ⊙ T_n(H̃₂) − T_m(H̃₁) ⊙ (T_n(H̃₂)·P₂)
-and ⊙ is the site-wise Hadamard product (`hadamard_mpo`).
+where D_{mn} = (T_m(H̃₁)·P₁)ᵀ ⊙ T_n(H̃₂) − T_m(H̃₁)ᵀ ⊙ (T_n(H̃₂)·P₂)
+and ⊙ is the site-wise Hadamard product (`hadamard_mpo`). The transposes give the
+Lindhard structure Π₀ = Σ_ab (f_a − f_b)/(ω + iη − (ε_b − ε_a)) · (P_a)ᵀ ⊙ P_b of the
+eigenprojectors P_a of H₁ and P_b of H₂ (f the occupations of P₁, P₂); for a real H₁
+(and P₁) they change nothing and are skipped.
 
 **Online multi-ω sweep**: All coefficient matrices `C[m,n](ω)` are precomputed
 at once (cheap DCT scalars). The (m,n) double loop runs once; each D_{mn} is
@@ -453,9 +490,9 @@ function get_bubble_mpo_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
     Π = Vector{Union{Nothing, MPO}}(nothing, nω)
     n_computed, n_skipped = _cheb2d_pair_sweep!(Π, S.C_all, N; coeff_tol, maxdim, cutoff,
                                                 verbose) do m, n
-        # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
+        # D_mn = TP1[m]ᵀ ⊙ Tn2[n] − Tn1[m]ᵀ ⊙ TP2[n]  (ω-independent)
         _hadamard_difference(S.TP1[m], S.Tn2[n], S.Tn1[m], S.TP2[n], S.out_sites;
-                             maxdim, cutoff)
+                             transpose1=S.transpose1, maxdim, cutoff)
     end
 
     verbose && println("cheb2d: done — $(n_computed)/$(N*N) (m,n) pairs computed, $n_skipped skipped")
@@ -491,7 +528,7 @@ r_m × r_n cheap scalar-weighted MPO additions.
 Speedup over `get_bubble_mpo_cheb2d`: N²→r_m·r_n Hadamard products.
 
 As in `get_bubble_mpo_cheb2d`, Π₀ lives on `H1.sites`, including any spin, Nambu,
-layer or sublattice index.
+layer or sublattice index, and carries the opposite sign to `get_bubble_mpo`.
 
 **Additional keyword arguments** (beyond `get_bubble_mpo_cheb2d`):
 - `tucker_tol`    : relative singular-value cutoff for both mode SVDs. Default `1e-3`.
@@ -536,7 +573,7 @@ function get_bubble_mpo_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     # ── ω-independent Hadamard products: r_m × r_n total ────────────────────
     verbose && println("cheb2d_mpo_tucker: computing $(r_m*r_n) Hadamard products...")
     D_tuck = _tucker_hadamard(identity, A_tuck, B_tuck, C_tuck, E_tuck, S.out_sites, MPO;
-                              maxdim, cutoff, verbose)
+                              transpose1=S.transpose1, maxdim, cutoff, verbose)
 
     # ── Per-ω accumulation: Π(ω) = Σ_{s₁,s₂} G[s₁,s₂,ω] · D[s₁,s₂] ──────────
     Π = _tucker_accumulate(A_core, D_tuck, MPO; coeff_tol, maxdim, cutoff)
@@ -562,6 +599,7 @@ Diagonal-only variant of `get_bubble_mpo_cheb2d`.
 Returns the k-space diagonal of the non-interacting polarization bubble,
     diag_Π₀(k, ω) = ⟨k| Π₀(ω) |k⟩,
 as a `Vector{MPS}` (one MPS per ω in `ωlist`) ready for direct plotting.
+Π₀ is that of `get_bubble_mpo_cheb2d`, with the opposite sign to `get_bubble_mpo`.
 
 Compared to `get_bubble_mpo_cheb2d`, this function:
 
@@ -615,9 +653,9 @@ function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
     diag_Π = Vector{Union{Nothing, MPS}}(nothing, nω)
     n_computed, n_skipped = _cheb2d_pair_sweep!(diag_Π, S.C_all, N; coeff_tol, maxdim,
                                                 cutoff, verbose) do m, n
-        # D_mn = TP1[m] ⊙ Tn2[n] − Tn1[m] ⊙ TP2[n]  (ω-independent)
+        # D_mn = TP1[m]ᵀ ⊙ Tn2[n] − Tn1[m]ᵀ ⊙ TP2[n]  (ω-independent)
         D_mn = _hadamard_difference(S.TP1[m], S.Tn2[n], S.Tn1[m], S.TP2[n], S.out_sites;
-                                    maxdim, cutoff)
+                                    transpose1=S.transpose1, maxdim, cutoff)
         _cheb2d_kdiag(D_mn, H1.sites; qft_tol, qft_maxdim, cutoff)
     end
 
@@ -670,9 +708,10 @@ The per-ω rank r(ω) (typically 2–5 for smooth Lorentzian kernels) is usually
 smaller than the Tucker/joint-SVD rank, which must span all frequencies simultaneously.
 For each (ω, s) one Hadamard product and one QFT are performed, giving
 
-    `diag_Π[ω] = Σ_s S_s(ω) · diag(QFT( A_s ⊙ B_s − C_s ⊙ E_s ))`
+    `diag_Π[ω] = Σ_s S_s(ω) · diag(QFT( A_sᵀ ⊙ B_s − C_sᵀ ⊙ E_s ))`
 
-where `A_s = Σ_m U[m,s]·TP1[m]`, `B_s = Σ_n conj(V[n,s])·Tn2[n]`, etc.
+where `A_s = Σ_m U[m,s]·TP1[m]`, `B_s = Σ_n conj(V[n,s])·Tn2[n]`, etc. (the transposes
+as in `get_bubble_mpo_cheb2d`). The sign is opposite to that of `get_bubble_mpo`.
 
 Total Hadamard+QFT operations: Σ_ω r(ω) — compared to N² for the plain variant or
 r_m·r_n for Tucker. When r(ω) ≪ r_Tucker the per-ω SVD is both faster and more
@@ -739,7 +778,8 @@ function get_bubble_diag_cheb2d_svd(H1::TBHamiltonian, H2::TBHamiltonian,
 
             (isnothing(A_s) || isnothing(E_s)) && continue
 
-            D      = _hadamard_difference(A_s, B_s, C_s, E_s, S.out_sites; maxdim, cutoff)
+            D      = _hadamard_difference(A_s, B_s, C_s, E_s, S.out_sites;
+                                          transpose1=S.transpose1, maxdim, cutoff)
             diag_s = _cheb2d_kdiag(D, H1.sites; qft_tol, qft_maxdim, cutoff)
             _accumulate_scaled!(diag_Π, iω, σ_s, diag_s; maxdim, cutoff)
         end
@@ -763,7 +803,8 @@ end
                                    hooi_iters=3, verbose=false) -> Vector{MPS}
 
 Tucker (HOSVD) variant of `get_bubble_diag_cheb2d`, with the same requirement
-that `H.sites` be the `H.L` position qubits.
+that `H.sites` be the `H.L` position qubits, and the same sign (opposite to that of
+`get_bubble_mpo`).
 
 Finds a global low-rank basis in the (m, n) indices shared across all frequencies by
 stacking the coefficient matrices and performing two mode-SVDs:
@@ -834,7 +875,7 @@ function get_bubble_diag_cheb2d_tucker(H1::TBHamiltonian, H2::TBHamiltonian,
     verbose && println("cheb2d_tucker: computing $(r_m*r_n) Hadamard+QFT components...")
     kdiag  = D -> _cheb2d_kdiag(D, H1.sites; qft_tol, qft_maxdim, cutoff)
     diag_D = _tucker_hadamard(kdiag, A_tuck, B_tuck, C_tuck, E_tuck, S.out_sites, MPS;
-                              maxdim, cutoff, verbose)
+                              transpose1=S.transpose1, maxdim, cutoff, verbose)
 
     # ── Accumulate per ω: scalar × MPS additions only ────────────────────────
     diag_Π = _tucker_accumulate(A_core, diag_D, MPS; coeff_tol, maxdim, cutoff)

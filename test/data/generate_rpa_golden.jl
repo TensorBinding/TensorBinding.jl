@@ -77,9 +77,12 @@
 #     wynn_constant_len5); wynn_int_len5 keeps it (a genuinely singular table);
 #   * (fixed, cases regenerated) haydock_cf measured with tr(conj(A)·B) instead of
 #     tr(A†B) (haydock_cf_chain2_imaginary_hermitian_seed threw DomainError);
-#   * for real H the cheb2d bubbles are −1 × get_bubble_mpo (their D_mn has the
-#     numerator P₁⊗I − I⊗P₂), and for complex H they take the Hadamard product
-#     of T_m(H̃₁) itself where get_bubble_mpo has its transpose.
+#   * the cheb2d bubbles are −1 × get_bubble_mpo (their D_mn has the numerator
+#     P₁⊗I − I⊗P₂); the package author decides which sign is right;
+#   * (fixed, cases regenerated) for a complex H₁ the cheb2d bubbles took the
+#     Hadamard product of the H₁ factors T_m(H̃₁)(P₁) themselves where the Lindhard
+#     bubble of get_bubble_mpo has their transposes (the *_cplx, *_pair and
+#     *_spin2_ydir cheb2d cases); real H₁ cases kept their values bit for bit.
 
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Random
 const TB = TensorBinding
