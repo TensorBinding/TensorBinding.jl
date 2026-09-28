@@ -340,7 +340,16 @@ the affected golden cases in the same commit.
       for single-orbital `H0` (every manuscript model is); either support multi-atom `H0`
       (per-spin half filling of the non-spin states) or reject it.
 - [ ] RPA: `_get_density_matrix(:purification)` and the SCF drivers keep a cached density
-      whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented).
+      whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented). The
+      `scf_meanfield` initial density is `Nel / H0.N` per site, another single-orbital
+      assumption.
+- [ ] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
+      fails at build time (ITensors' "not the same site indices"); `add_zeeman!` fails on
+      layered models. (Noticed by the aux-projection fixes, 4954a37.)
+- [ ] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
+      twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
+      and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for
+      Hermiticity.
 
 ## Tier 1 — mechanical, no behaviour change
 
