@@ -149,9 +149,9 @@ full two-particle transform first:
    (`interleave_mpo(…, 0)`) and the odd sites (`interleave_mpo(…, 1)`) — and the
    two halves are multiplied into the full transforms `U` and `U†` (`= U_e ⊗ U_h`).
    The product contracts away the interleaved identity tensors, leaving dense cores.
-3. `fix_sites` re-canonicalises the combined MPOs onto the physical `sites`, then
-   `swapprime` undoes the bra↔ket swap `interleave_mpo` introduces (needed because
-   the reversed QFT is not symmetric, so the swap is a genuine transpose).
+3. `fix_sites` re-canonicalises the combined MPOs onto the physical `sites`
+   (`interleave_mpo` embeds each core untransposed, so the reversed QFT, which is
+   not symmetric, keeps its orientation).
 4. The conjugation `U · W · U†` is applied exactly as in the single-particle
    routine (`swapprime` left-multiply); the result stays on `sites`.
 
@@ -175,17 +175,16 @@ function conjugate_by_qft_exciton(H::TBHamiltonian, W; tol=1e-9, maxdim::Int=100
     FT1i = MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true)))  # U-side
 
     # Interleave the same core onto both registers (even sites via n=0, odd via
-    # n=1), multiply the two halves into the full two-particle transform / inverse,
-    # fix_sites onto the physical sites, then `swapprime` to undo the bra↔ket
-    # swap that `interleave_mpo` introduces (it lays legs down unprimed-first).
-    # Without it the non-symmetric reversed QFT comes out transposed and the
-    # conjugation is wrong; with it these match the single-particle convention.
-    FTirev = swapprime(fix_sites(apply(interleave_mpo(FT1,  sites, 0),
-                                       interleave_mpo(FT1,  sites, 1);
-                                       cutoff=tol, maxdim=maxdim), sites), 0 => 1)  # U†  (sign -1)
-    FTrev  = swapprime(fix_sites(apply(interleave_mpo(FT1i, sites, 0),
-                                       interleave_mpo(FT1i, sites, 1);
-                                       cutoff=tol, maxdim=maxdim), sites), 0 => 1)  # U   (sign +1)
+    # n=1), multiply the two halves into the full two-particle transform / inverse
+    # and fix_sites onto the physical sites. interleave_mpo reads the core's legs as
+    # fix_sites does (first leg of a tensor-train core = bra), so these match the
+    # single-particle convention with no transpose to undo.
+    FTirev = fix_sites(apply(interleave_mpo(FT1,  sites, 0),
+                             interleave_mpo(FT1,  sites, 1);
+                             cutoff=tol, maxdim=maxdim), sites)  # U†  (sign -1)
+    FTrev  = fix_sites(apply(interleave_mpo(FT1i, sites, 0),
+                             interleave_mpo(FT1i, sites, 1);
+                             cutoff=tol, maxdim=maxdim), sites)  # U   (sign +1)
 
     # U · W · U†  — identical structure to single-particle conjugate_by_qft.
     Op1 = apply(W, FTirev; cutoff=tol, maxdim=maxdim)

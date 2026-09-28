@@ -23,8 +23,8 @@ Build an exciton Hamiltonian and wrap it in a `TBHamiltonian` for use with
 TensorBinding's KPM, DMRG, and spectral tools.
 
 **Site encoding** (`2L` sites total, `L = H_c.L`):
-- Odd sites  (1, 3, …) : electron position qubits
-- Even sites (2, 4, …) : hole position qubits (interleaved)
+- Odd sites  (1, 3, …) : electron position qubits (`H_c.sites`, where `H_c` acts)
+- Even sites (2, 4, …) : hole position qubits (`H_v.sites`, where `−H_v` acts; interleaved)
 
 `TBHamiltonian.L = L` counts position qubits per sector;
 `TBHamiltonian.sites` holds all `2L` interleaved MPO sites.
@@ -53,8 +53,10 @@ TensorBinding's KPM, DMRG, and spectral tools.
                           (type-I confinement). Compressed via QTCI.
 - `scale`               : exciton spectral half-bandwidth; `nothing` (default) stores
                           `0.0`, i.e. a lazy DMRG estimate on first use.
-- `tol_quantics`        : QTCI tolerance for `Ufunc` and `on_site`. Default `1e-8`.
-- `maxbonddim_quantics` : QTCI max bond dimension. Default `100`.
+- `tol_quantics`        : QTCI tolerance for `on_site`. Default `1e-8`. (The contact
+                          term from `Ufunc` is interpolated at a fixed `1e-8`, see
+                          `build_interaction_op_exciton`.)
+- `maxbonddim_quantics` : QTCI max bond dimension for `on_site`. Default `100`.
 - `tol`                 : MPO assembly truncation tolerance. Default `1e-8`.
 - `cutoff`              : SVD cutoff for MPO arithmetic. Default `1e-8`.
 - `maxdim`              : max bond dimension of the final MPO. Default `200`.
@@ -124,7 +126,9 @@ and hole both at `x`, so a positive `Ufunc` is attractive.
 
 `H_c` and `H_v` are `TBHamiltonian` objects for the electron and hole
 single-particle sectors (any geometry: `"chain_1d"`, `"square_2d"`, etc.).
-Both must have the same `L` and distinct site indices.
+Both must have the same `L` and distinct site indices. The MPO lives on
+`[H_c.sites[1], H_v.sites[1], H_c.sites[2], …]`: `H_c` acts on the electron (odd)
+sites, `H_v` on the hole (even) sites, each as given (not transposed).
 `Ufunc(x)` gives the interaction strength at site `x ∈ {1, …, 2^L}` (1-indexed).
 
 **`on_site` keyword (optional):** a function `V(x)` representing the conduction
@@ -136,10 +140,10 @@ and `−V` to the valence sector, so that the hole also feels `+V` after the
 Examples
 --------
 ```julia
-# 1D, uniform hopping, contact interaction, Gaussian confinement
+# 1D, uniform hopping, attractive contact interaction −U (U > 0), Gaussian confinement
 H_c = get_Hamiltonian("chain_1d", t; L=L)
 H_v = get_Hamiltonian("chain_1d", t; L=L)
-H_exc = Exciton_Hamiltonian(H_c, H_v, x -> -U;
+H_exc = Exciton_Hamiltonian(H_c, H_v, x -> U;
                              on_site = x -> -V0 * exp(-((x - N/2)^2) / (2σ^2)))
 
 # 2D square lattice
@@ -174,8 +178,10 @@ function Exciton_Hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
         mpo_v = +(mpo_v, -1.0*V_v; cutoff=tol)
     end
 
+    # Electron (H_c.sites) on the odd sites of sites_eh (interleave_mpo n = 1), hole
+    # (H_v.sites) on the even ones (n = 0).
     sites_eh    = collect(Iterators.flatten(zip(H_c.sites, H_v.sites)))
-    kinetic_mpo = interleave_mpo(mpo_c, sites_eh, 0) - interleave_mpo(mpo_v, sites_eh, 1)
+    kinetic_mpo = interleave_mpo(mpo_c, sites_eh, 1) - interleave_mpo(mpo_v, sites_eh, 0)
     # Use sites_eh directly (unprimed ket indices) — extracting sites from
     # siteinds(kinetic_mpo) risks grabbing the primed bra indices instead.
     interaction = build_interaction_op_exciton(H_c.L, sites_eh, Ufunc)

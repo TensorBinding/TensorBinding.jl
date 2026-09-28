@@ -11,7 +11,7 @@
 # Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power,
 #   sum_mpos.
 #
-# Depends on: Utils (_bra_ket, the sigma_d/sigma_u ops).
+# Depends on: Utils (_bra_ket, _mpo_site_pair, the sigma_d/sigma_u ops).
 #
 # Moved verbatim in Tier 1 of docs/dev/REORGANISATION_TODO.md from the interim
 # physics/rpa/plumbing.jl (split out of the former physics/RPA_tk.jl),
@@ -73,22 +73,23 @@ end
 """
     swap_every_other_legs(MPOin, newsites) -> MPO
 
-Replace site indices and additionally swap bra↔ket on every even-numbered
-site.  Used to convert the 2L-site bubble MPO from the interleaved ordering
-into the form expected by `collapse_mpo_pairs`.
+Replace site indices and additionally swap bra↔ket on every odd-numbered
+site (the first register of an interleaved pair).  Used to convert the 2L-site
+bubble MPO from the interleaved ordering into the form expected by
+`collapse_mpo_pairs`. The legs are read by prime level (`_mpo_site_pair`), not in
+storage order.
 """
 function swap_every_other_legs(MPOin::MPO, newsites)
     L2      = length(MPOin)
     @assert length(newsites) == L2
-    indsMPO = siteinds(MPOin)
     T = MPO(L2)
     for n in 1:L2
-        s     = indsMPO[n]
-        new_s = newsites[n]
+        ket, bra = _mpo_site_pair(MPOin, n)
+        new_s    = newsites[n]
         if iseven(n)
-            T[n] = MPOin[n] * delta(s[1], prime(new_s)) * delta(s[2], new_s)
+            T[n] = MPOin[n] * delta(bra, prime(new_s)) * delta(ket, new_s)
         else
-            T[n] = MPOin[n] * delta(s[1], new_s)        * delta(s[2], prime(new_s))
+            T[n] = MPOin[n] * delta(bra, new_s)        * delta(ket, prime(new_s))
         end
     end
     return T
@@ -134,6 +135,11 @@ identity operators.  `phys_sites` must have length `2L`.
 - `n = 0` : operator sits at even positions (2, 4, 6, …), identities at odd
 - `n = 1` : operator sits at odd positions (1, 3, 5, …), identities at even
 
+The embedded operator is `target_mpo` itself, not its transpose: the ket leg of
+tensor `i` becomes `phys_sites[k]` and the bra leg `phys_sites[k]'`, whichever
+order the tensor stores them in (`_mpo_site_pair`; for the unrelated legs of a
+converted QTCI tensor train the first leg is the bra).
+
 **Note**: `phys_sites` must be interleaved as `[A[1], B[1], A[2], B[2], …]`
 so that each operator site lands on an index with the correct dimension.
 For heterogeneous site spaces (layer, sublattice, …), use `interleave_mpo_tb`
@@ -156,9 +162,11 @@ function interleave_mpo(target_mpo, phys_sites, n)
         idx_orig  = (n == 1) ? 2i-1 : 2i
         idx_ident = (n == 1) ? 2i   : 2i-1
 
-        W = target_mpo[i]
-        W = replaceinds(W, siteinds(target_mpo, i) =>
-                           (phys_sites[idx_orig], phys_sites[idx_orig]'))
+        # Ket → phys, bra → phys' by prime level (mapping siteinds(target_mpo, i) in
+        # storage order embedded the transpose of every tensor stored (s', s)).
+        ket, bra = _mpo_site_pair(target_mpo, i)
+        W = replaceinds(target_mpo[i], (ket, bra) =>
+                                       (phys_sites[idx_orig], phys_sites[idx_orig]'))
         if i > 1
             ol_left = linkind(target_mpo, i-1)
             W = replaceind(W, ol_left => link_map[ol_left][2])

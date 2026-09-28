@@ -232,6 +232,41 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`_get_projector(:KPM)`** (the KPM paths of `get_C`, `get_W`, `get_thouless_pump`)
   rebuilds a cached Chebyshev list shorter than `Nchebychev` (it used the short one) and
   expands with `cutoff` (it used 1e-8 whatever `cutoff`).
+- **Exciton Hamiltonian.** `exciton_hamiltonian` / `Exciton_Hamiltonian` put `H_c` on the
+  hole (even) sites and `−H_v` on the electron (odd) sites, both transposed (see
+  `interleave_mpo` below). The MPO is now `(H_c + V) ⊗ I − I ⊗ (H_v − V) + U` on
+  `[H_c.sites[1], H_v.sites[1], …]`, as documented. The old operator was the new one with
+  the electron and hole registers exchanged (and complex-conjugated for complex `H_c`,
+  `H_v`), so:
+  - unchanged in exact arithmetic, for any `H_c`, `H_v`, `on_site` and `Ufunc`: the
+    spectrum, `get_dos_trace`, and every contact-probe (`|X, X⟩`) result
+    (`get_exciton_ldos_spatial`, `get_exciton_ldos`, their GPU twins, the Chebyshev
+    convergence check), and `get_exciton_bands` for real models;
+  - under truncation the MPO is a different network, so truncated runs agree to the
+    truncation error; for the same bipartite nearest-neighbour model on both carriers,
+    confined only through `on_site` (the usual set-up), the two are related by a local
+    diagonal unitary and agree to rounding;
+  - probes with `x_e ≠ x_h` see electron and hole exchanged: the separation LDOS ρ(d, R)
+    of `get_exciton_ldos_separation` is the former ρ(−d, R + d), `exciton_radius2` resolves
+    the hole position as documented, and the random probes of `get_dos_stochastic` and
+    `get_exciton_continuum` give other realizations of the same expectation (with
+    `k_list`, k ↔ Q − k); for complex, time-reversal-breaking `H_c` or `H_v` the momentum
+    axis is reflected, Q → −Q.
+- **`interleave_mpo`** embedded the transpose of every operator whose tensors are stored
+  `(s', s)` (most builders): it mapped the site legs in storage order onto `(p, p')`. It now
+  reads them by prime level. `conjugate_by_qft_exciton` loses the `swapprime` that undid
+  the transpose, and `get_green_krylov` embeds `(z − H)ᵀ` explicitly (both unchanged);
+  `swap_every_other_legs` reads the legs by prime level too (its docstring now says it
+  swaps the odd sites). **`get_bubble_mpo`, `get_bubble_mpo_haydock`, `get_magnon_bubble`**
+  and the susceptibilities built on them returned Π₀ᵀ for complex (time-reversal-breaking)
+  Hamiltonians and now return the Lindhard Π₀, like the cheb2d bubbles: the k-resolved
+  Wynn χ(q) becomes χ(−q) there. Real models move at the truncation level, and by ~1e-5
+  from the slight asymmetry of the purified density at the default tolerance.
+  `rpa_from_bubble_diag` solves `(I − Π₀V)x = diag(Π₀)` instead of its transpose (it
+  differs for complex Π₀ and for a V that does not commute with Π₀).
+- **Non-Hermitian scale**: `scale = 0.0` in the `NonHermitianHamiltonian` methods means
+  "not given", like `nothing`: a scale stored on `NH.hermitized` is used, as everywhere
+  else in the package (it was re-estimated).
 - **Density caches answer only their own method.** `get_density`, `_get_projector` and the
   RPA purification returned any `H._density_cache` whatever method had computed it (a
   McWeeny matrix answered `method=:kpm`). Each stored density is now recorded with its
@@ -336,6 +371,19 @@ constructor that takes all 21 fields in order, caches included, remains.
   after the first Hartree step (its ComplexF32 Hartree deltas); it now stays real.
 - `rms_error` and the GPU SCF residual used ITensors' deprecated index matching
   (`inner(ψ', ψ)`, "will error in ITensors v0.4"); same values.
+- `nh_spectrum_grid(mode=:diag)` dropped the imaginary part of `Z_spatial`; it is
+  `ComplexF64` like `Z` (the real part is unchanged).
+- `hermitize(NH)` rebuilt the Hermitian dilation with the default convention and scale,
+  so an `:H_minus_z` wrapper silently flipped the sign of its upper block;
+  `NonHermitianHamiltonian` records `convention` and `scale` (two new fields, the
+  five-argument constructor still works) and `hermitize(NH)` keeps them.
+  `hermitized_hamiltonian` reports the side of its block index as `aux_side` (always
+  `:pre` before).
+- `rk4_step_dm_nh_gpu` and `get_nh_density_trajectory_gpu` rounded `dt/2`, `dt`, `dt/6` to
+  Float32 in ComplexF64 runs (~1e-8 per step); ComplexF32 runs are unchanged, bit for bit.
+- Docstrings: the `Exciton_Hamiltonian` example called `x -> -U` attractive (the contact
+  term is `−Ufunc`, so a positive `Ufunc` attracts); `tol_quantics` and
+  `maxbonddim_quantics` apply to `on_site` only.
 - A spin index added with `add_spin!(H; position=:post)` (alone or with a postpended Nambu
   index) was always projected from the first site: `get_bands` crashed Julia with a
   segfault, `get_ldos_spatial(mode=:mpo)` threw inside ITensors, and the GPU twins did

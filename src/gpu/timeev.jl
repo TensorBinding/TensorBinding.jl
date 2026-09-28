@@ -16,27 +16,29 @@
 # ============================================================
 
 function _nh_von_neumann_rhs_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO;
-                                 maxdim::Int, cutoff::Real)
+                                 maxdim::Int, cutoff::Real, T::Type{<:Complex} = ComplexF32)
     ak = (cutoff=Float64(cutoff), maxdim=maxdim)
     Hrho    = apply(H_gpu, rho_gpu; ak...)
     rhoHdag = apply(rho_gpu, Hdag_gpu; ak...)
-    diff = +(Hrho, ComplexF32(-1) * rhoHdag; ak...)
+    diff = +(Hrho, T(-1) * rhoHdag; ak...)
     ITensorMPS.truncate!(diff; cutoff=Float64(cutoff), maxdim=maxdim)
-    return ComplexF32(0, -1) * diff
+    return T(0, -1) * diff
 end
 
 # One RK4 step of dρ/dt = -i(Hρ − ρH†) on GPU MPOs (H, H† and ρ already on GPU),
 # through the CPU kernel _rk4_step (solvers/Timeev.jl). The step coefficients
-# dt/2, dt, dt/6, 2 and the right-hand-side constants are ComplexF32 whatever the
-# element type of the MPOs, and every MPO sum truncates with maxdim as well as
-# cutoff (the CPU steps pass only cutoff).
+# dt/2, dt, dt/6, 2 and the right-hand-side constants are complex numbers of the
+# precision of ρ: ComplexF32 for a 32-bit ρ, ComplexF64 for a 64-bit one (not
+# ComplexF32 throughout, which rounded dt to Float32 in ComplexF64 steps). Every MPO
+# sum truncates with maxdim as well as cutoff (the CPU steps pass only cutoff).
 function rk4_step_dm_nh_gpu(H_gpu::MPO, Hdag_gpu::MPO, rho_gpu::MPO, dt::Real;
                             maxdim::Int = 200,
                             cutoff::Real = 1e-8,
                             truncate_intermediates::Bool = true)
-    coeffs = (ComplexF32(Float32(dt / 2)), ComplexF32(Float32(dt)),
-              ComplexF32(Float32(dt / 6)), ComplexF32(2))
-    rhs = (_, rho) -> _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho; maxdim=maxdim, cutoff=cutoff)
+    T = complex(real(mapreduce(eltype, promote_type, rho_gpu)))
+    coeffs = (T(dt / 2), T(dt), T(dt / 6), T(2))
+    rhs = (_, rho) -> _nh_von_neumann_rhs_gpu(H_gpu, Hdag_gpu, rho; maxdim=maxdim,
+                                              cutoff=cutoff, T=T)
     rho_new = _rk4_step(rhs, rho_gpu, coeffs;
                         maxdim=maxdim, cutoff=Float64(cutoff),
                         truncate_intermediates=truncate_intermediates,
@@ -85,8 +87,8 @@ are copied back to CPU. `nsteps` and `dt` are required; samples are taken every
 
 `dtype` is the GPU element type, complex only: `ComplexF32` (default) or
 `ComplexF64`; an MPO that is already on GPU keeps the type it was uploaded with.
-The RK4 step (`rk4_step_dm_nh_gpu`) uses ComplexF32 step coefficients whatever
-the `dtype`.
+The RK4 step (`rk4_step_dm_nh_gpu`) uses step coefficients of the precision of the
+density matrix on GPU (ComplexF32 or ComplexF64).
 
 Sampling follows the 1D `spatial_sampling_plan` convention: use `num_x=0` to
 sample all sites, or set `num_x` to a smaller number for coarse production

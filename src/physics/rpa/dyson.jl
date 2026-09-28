@@ -33,7 +33,10 @@
 Solve the RPA Dyson equation  (I − Π₀V) χ = Π₀  for the interacting
 susceptibility χ using DMRG-style linear solve.
 
-Returns a 2L-site MPS encoding the diagonal χ_{iijj}^RPA.
+Returns a 2L-site MPS encoding the diagonal χ_{iijj}^RPA. The operator `I − Π₀V`
+acts, untransposed, on the even sites of `finalsites`, and the right-hand side is
+the diagonal of `Π₀` there (the same for every state of the odd sites), so the
+solution is `(I − Π₀V)⁻¹ diag(Π₀)` on the even sites, broadcast over the odd ones.
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=20, maxdim=400, cutoff=1e-8)

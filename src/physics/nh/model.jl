@@ -40,6 +40,14 @@ Fields
 - `hermitized` : Hermitian `TBHamiltonian` on `[parent.sites...; block_s]`
                  (`[block_s; parent.sites...]` for `block_placement = :pre`)
 - `block_placement` : `:post` or `:pre`, where `block_s` sits in `hermitized.sites`
+- `convention` : `:z_minus_H` or `:H_minus_z`, the upper block `hermitize` was given
+- `scale`      : the `scale` `hermitize` was given (`0.0`: estimated lazily), not the
+                 estimate `hermitized.scale` may hold later
+
+`hermitize(NH; z=…)` rebuilds the block Hamiltonian with the same `block_placement`,
+`convention` and `scale` unless they are passed. The five-argument constructor
+`NonHermitianHamiltonian(parent, z, block_s, hermitized, block_placement)` records
+`convention = :z_minus_H` and `scale = 0.0`, the `hermitize` defaults.
 
 The hermitized Hamiltonian can be passed to existing MPO/KPM routines. Avoid
 calling tight-binding mutation helpers like `add_onsite!` on `hermitized`;
@@ -52,7 +60,13 @@ mutable struct NonHermitianHamiltonian
     hermitized      :: TBHamiltonian
     block_placement :: Symbol   # :pre  → [block_s; pos_sites...]
                                 # :post → [pos_sites...; block_s]
+    convention      :: Symbol   # :z_minus_H or :H_minus_z
+    scale           :: Float64  # requested scale (0.0 = lazy estimate)
 end
+
+NonHermitianHamiltonian(parent::TBHamiltonian, z, block_s::Index, hermitized::TBHamiltonian,
+                        block_placement::Symbol) =
+    NonHermitianHamiltonian(parent, z, block_s, hermitized, block_placement, :z_minus_H, 0.0)
 
 """
     nh_block_index() -> Index
@@ -83,6 +97,13 @@ block as written; `convention=:H_minus_z` uses `H - zI` instead.
 - `:pre`            — site order `[block_s; H.sites...]`; original layout before postpend change
 
 `scale=0.0` keeps the usual lazy KPM spectral-bound estimation.
+
+The result is a copy of `H` with the block operator as `mpo`, the extra site in
+`sites` and `aux_side = block_placement` (the side of the block index, the
+outermost auxiliary index). `L` and `N` stay those of `H`: they count the
+position register, as for any auxiliary index; the block index is not recorded in
+an auxiliary field (`spin_s`, …), so routines that locate sites through those fields
+do not know it.
 """
 function hermitized_hamiltonian(H::TBHamiltonian;
                                 z::Number = 0.0,
@@ -116,7 +137,7 @@ function hermitized_hamiltonian(H::TBHamiltonian;
 
     # The block operator is not a physical Hamiltonian: interactions stay on the parent.
     return TBHamiltonian(H; sites=sites, mpo=H_block, scale=Float64(scale), center=0.0,
-                         aux_side=:pre, interaction_mpo=nothing, fock_mpo=nothing)
+                         aux_side=block_placement, interaction_mpo=nothing, fock_mpo=nothing)
 end
 
 """
@@ -143,22 +164,25 @@ function hermitize(H::TBHamiltonian;
                                 scale=scale,
                                 convention=convention,
                                 block_placement=block_placement)
-    return NonHermitianHamiltonian(H, ComplexF64(z), block_s, Hh, block_placement)
+    return NonHermitianHamiltonian(H, ComplexF64(z), block_s, Hh, block_placement,
+                                   convention, Float64(scale))
 end
 
 """
-    hermitize(NH; z=NH.z, cutoff=1e-8, maxdim=200, scale=0.0, convention=:z_minus_H,
-              block_placement=NH.block_placement) -> NonHermitianHamiltonian
+    hermitize(NH; z=NH.z, cutoff=1e-8, maxdim=200, scale=NH.scale,
+              convention=NH.convention, block_placement=NH.block_placement)
+        -> NonHermitianHamiltonian
 
 Rebuild the hermitized block Hamiltonian from `NH.parent`, optionally at a new
-reference point `z`.
+reference point `z`. The block placement, convention and requested scale of `NH`
+carry over unless passed; `cutoff` and `maxdim` take their defaults.
 """
 function hermitize(NH::NonHermitianHamiltonian;
                    z::Number = NH.z,
                    cutoff::Real = 1e-8,
                    maxdim::Int = 200,
-                   scale::Real = 0.0,
-                   convention::Symbol = :z_minus_H,
+                   scale::Real = NH.scale,
+                   convention::Symbol = NH.convention,
                    block_placement::Symbol = NH.block_placement)
     return hermitize(NH.parent; z=z, cutoff=cutoff, maxdim=maxdim, scale=scale,
                      convention=convention, block_placement=block_placement)

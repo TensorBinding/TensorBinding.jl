@@ -87,6 +87,10 @@ function nh_kpm_scale(H::TBHamiltonian, z_points;
     return nh_scale
 end
 
+# The Chebyshev scale of the NonHermitianHamiltonian methods: a positive `scale` as
+# given; `scale = nothing` or `0.0` (not given, as `scale = 0.0` means elsewhere in
+# the package) `NH.hermitized.scale` when it is set, else nh_kpm_scale at `NH.z`.
+# (`0.0` used to skip a set `NH.hermitized.scale` and always estimate.)
 function _nh_resolve_scale(NH::NonHermitianHamiltonian;
                            scale::Union{Nothing,Real} = nothing,
                            nh_scale_padding::Real = 1.05,
@@ -97,13 +101,12 @@ function _nh_resolve_scale(NH::NonHermitianHamiltonian;
                            dmrg_maxdim = [10, 20, 40],
                            dmrg_linkdim::Int = 4,
                            printinfo::Bool = false)
-    if scale === nothing
-        NH.hermitized.scale > 0.0 && return NH.hermitized.scale
-    else
+    if scale !== nothing
         sc = Float64(scale)
         sc < 0.0 && error("_nh_resolve_scale: scale must be nonnegative, got $sc.")
         sc > 0.0 && return sc
     end
+    NH.hermitized.scale > 0.0 && return NH.hermitized.scale
 
     return nh_kpm_scale(NH.parent, (NH.z,);
         scale=nothing,
@@ -161,8 +164,9 @@ while `T_k(A)` is advanced in parallel. The returned vector has length `2n`
 and stores `P_0, P_1, ..., P_{2n-1}`.
 
 The `NonHermitianHamiltonian` method builds `S` with `nh_block_source(NH;
-row=source_row, col=source_col)` unless `source` is given, and resolves the scale
-from `NH.hermitized.scale` or `nh_kpm_scale`.
+row=source_row, col=source_col)` unless `source` is given, and resolves the scale:
+a positive `scale` as given, otherwise (`nothing` or `0.0`) `NH.hermitized.scale`
+when it is set, else `nh_kpm_scale` at `NH.z`.
 """
 function nh_kpm_partials(Hh::TBHamiltonian, n::Int;
                          source::MPO,
@@ -778,7 +782,8 @@ Evaluate the NH KPM spectral weight on a rectangular complex energy grid.
 - `:mps` — dual-chain MPS at a single site (`probe_site`, 0-indexed). LDOS at
   that site. O(χ_H × χ_ψ) per step.
 - `:diag` — same as `:scalar` but also extracts site-resolved diagonal MPS A(r,z).
-  Extra return `Z_spatial` has shape `(H.N, ny, nx)`.
+  Extra return `Z_spatial` has shape `(H.N, ny, nx)` and is complex like `Z`; its
+  sum over the sites is `Z`.
 - `:stochastic` — Monte Carlo trace: average over `n_random` random product-state
   probes. Total DOS estimate. O(n_random × Ncheb × χ_H × χ_ψ). No MPO×MPO products.
 
@@ -817,7 +822,7 @@ function nh_spectrum_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::I
         dmrg_linkdim=dmrg_linkdim,
         printinfo=verbose)
     Z         = Matrix{ComplexF64}(undef, ny, nx)
-    Z_spatial = (mode === :diag) ? zeros(Float64, H.N, ny, nx) : nothing
+    Z_spatial = (mode === :diag) ? zeros(ComplexF64, H.N, ny, nx) : nothing
 
     verbose && println("nh_spectrum_grid [mode=:$mode]: $(nx)×$(ny)=$(nx*ny) points, Ncheb=$(2n), scale=$nh_scale")
 
@@ -834,8 +839,10 @@ function nh_spectrum_grid(H::TBHamiltonian, xlims, nx::Int, ylims, ny::Int, n::I
                 A_mps, dos = _nh_diag_online(NH, n;
                                               scale=nh_scale, maxdim=maxdim, cutoff=cutoff)
                 Z[iy, ix] = dos
+                # ⟨i|A⟩ with its imaginary part (eval_mps returns the real part only).
+                sA = siteinds(A_mps)
                 for i in 0:H.N-1
-                    Z_spatial[i+1, iy, ix] = real(eval_mps(A_mps, i))
+                    Z_spatial[i+1, iy, ix] = inner(binary_to_MPS(i, length(sA), sA), A_mps)
                 end
             elseif mode === :stochastic
                 Z[iy, ix] = _nh_stochastic_online(NH, n;

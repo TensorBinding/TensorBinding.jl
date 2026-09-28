@@ -74,10 +74,10 @@ end
 # rk4_step_dm_timedep, rk4_step_dm_nh and rk4_step_dm_nh_gpu (gpu/timeev.jl).
 # `rhs(stage, ρ)` returns f at stage 1–4 (stages 2 and 3 are the midpoint).
 # `coeffs = (dt/2, dt, dt/6, 2)` are the tableau factors, passed in so that the GPU
-# step keeps its ComplexF32 constants. Every MPO sum truncates with `add_kwargs`
-# (the CPU steps pass `cutoff` only, the GPU step `cutoff` and `maxdim`); the
-# intermediate states (if `truncate_intermediates`), the k-sum and the result are
-# then truncated to `maxdim`, `cutoff`.
+# step can give them the complex type of its state. Every MPO sum truncates with
+# `add_kwargs` (the CPU steps pass `cutoff` only, the GPU step `cutoff` and
+# `maxdim`); the intermediate states (if `truncate_intermediates`), the k-sum and
+# the result are then truncated to `maxdim`, `cutoff`.
 function _rk4_step(rhs, ρ::MPO, coeffs; maxdim, cutoff, truncate_intermediates,
                    add_kwargs = (; cutoff = cutoff))
     halfdt, fulldt, sixthdt, two = coeffs

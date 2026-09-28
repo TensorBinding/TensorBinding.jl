@@ -15,7 +15,7 @@ const TB = TensorBinding
 "Unprimed site index of every tensor of `mpo`, in chain order."
 mpo_sites(mpo::MPO) = [only(filter(i -> plev(i) == 0, siteinds(mpo, k))) for k in eachindex(mpo)]
 "Dense matrix of `mpo` over `sites` (site 1 = most significant digit)."
-function dense(mpo::MPO, sites = mpo_sites(mpo))
+function dense_st4(mpo::MPO, sites = mpo_sites(mpo))
     T = ITensor(1.0)
     for k in eachindex(mpo)
         T *= mpo[k]
@@ -32,7 +32,7 @@ function densev(psi::MPS)
     end
     return vec(Array(T, reverse(s)...))
 end
-"MPO of the dense matrix `M` over `sites` (the inverse of `dense`)."
+"MPO of the dense matrix `M` over `sites` (the inverse of `dense_st4`)."
 function mpo_from_dense(M::AbstractMatrix, sites)
     d = [dim(s) for s in reverse(sites)]
     T = ITensor(reshape(M, d..., d...), prime.(reverse(sites))..., reverse(sites)...)
@@ -59,7 +59,7 @@ ssh() = get_Hamiltonian("ssh_sublattice", (t = 1.0, d = -0.3); L = 3)   # 8 cell
     Hd = (A + A') / 2
     Pd = lowest_projector(Hd, 4)
     P = mpo_from_dense(Pd, sites)
-    @test dense(P, sites) ≈ Pd atol = 1e-12
+    @test dense_st4(P, sites) ≈ Pd atol = 1e-12
     xf = (i, _) -> Float64((i ÷ 2) % 2)
     yf = (i, _) -> Float64((i ÷ 2) ÷ 2)
 
@@ -113,8 +113,8 @@ end
     H = chain()
     ρ0 = TB.purification_initial_guess(H.mpo, 2.5, H.sites)
     ρ = TB.sp2_purify(ρ0, 3)
-    M = dense(ρ, H.sites)
-    Pex = lowest_projector(dense(H.mpo, H.sites), 3)
+    M = dense_st4(ρ, H.sites)
+    Pex = lowest_projector(dense_st4(H.mpo, H.sites), 3)
     @test all(isfinite, M)
     @test norm(M - Pex) < 1e-3
     @test real(tr(M)) ≈ 3 atol = 1e-3
@@ -125,18 +125,18 @@ end
 
     # A tol above the floor still ends the run first.
     ρa = TB.sp2_purify(ρ0, 4; tol = 1e-3)
-    @test norm(dense(ρa, H.sites) - lowest_projector(dense(H.mpo, H.sites), 4)) < 1e-2
+    @test norm(dense_st4(ρa, H.sites) - lowest_projector(dense_st4(H.mpo, H.sites), 4)) < 1e-2
 
     # Default Nel: half the states (8 of the 16 on the 8-cell SSH chain), not half the
     # cells (4, quarter filling).
     Hs = ssh()
     @test TB._half_filling(Hs) == 8
-    Hd = dense(Hs.mpo, Hs.sites)
+    Hd = dense_st4(Hs.mpo, Hs.sites)
     for f in (H -> get_density(H; method = :sp2, maxdim = 30),
               H -> TB.sp2_purify(H; maxdim = 30),
               H -> TB._get_projector(H; method = :sp2, maxdim = 30))
         Hn = ssh()                      # fresh indices, same model and site order as Hs
-        Md = dense(f(Hn), Hn.sites)
+        Md = dense_st4(f(Hn), Hn.sites)
         @test real(tr(Md)) ≈ 8 atol = 1e-2
         @test norm(Md - lowest_projector(Hd, 8)) < 1e-2
     end
@@ -147,7 +147,7 @@ end
 end
 
 @testset "add_superconductivity! scale; get_scf leaves the scale to the driver" begin
-    bdg_radius(H) = maximum(abs, eigvals(Hermitian(dense(H.mpo, H.sites))))
+    bdg_radius(H) = maximum(abs, eigvals(Hermitian(dense_st4(H.mpo, H.sites))))
 
     H = chain()                                  # spinless: s-wave redirects to p-wave
     add_superconductivity!(H, 0.2)
@@ -199,7 +199,7 @@ end
     P = TB._get_projector(H; method = :KPM, Nchebychev = 60, maxdim = 30)
     @test H._tn_Ncheb == 60
     Pfresh = TB._get_projector(gapped(); method = :KPM, Nchebychev = 60, maxdim = 30)
-    @test dense(P) ≈ dense(Pfresh) atol = 1e-12
+    @test dense_st4(P) ≈ dense_st4(Pfresh) atol = 1e-12
     # a longer one is used at its own order, as get_density does
     H = gapped(); KPM_Tn(H, 80; maxdim = 30)
     TB._get_projector(H; method = :KPM, Nchebychev = 60, maxdim = 30)
@@ -210,14 +210,14 @@ end
     Pc = TB._get_projector(H; method = :KPM, Nchebychev = 30, maxdim = 30, cutoff = 1e-3)
     fermi = (0.0 - H.center) / H.scale
     ref = get_density_from_Tn(H._tn_cache, 30; fermi = fermi, maxdim = 30, cutoff = 1e-3)
-    @test dense(Pc, H.sites) == dense(ref, H.sites)
+    @test dense_st4(Pc, H.sites) == dense_st4(ref, H.sites)
 
     # get_density returns a cached density matrix only for the method that computed it.
     H = chain()
     ρm = get_density(H; method = :mcweeny, maxdim = 30)
     ρk = get_density(H; method = :kpm, Ncheb = 40, maxdim = 30)
     @test ρk !== ρm
-    @test dense(ρk) ≈ dense(get_density(chain(); method = :kpm, Ncheb = 40, maxdim = 30)) atol = 1e-12
+    @test dense_st4(ρk) ≈ dense_st4(get_density(chain(); method = :kpm, Ncheb = 40, maxdim = 30)) atol = 1e-12
     @test get_density(H; method = :kpm, Ncheb = 40, maxdim = 30) === ρk
     @test TB._get_projector(H; method = :mcweeny, maxdim = 30) !== ρk
     @test get_density(H; method = :mcweeny) === H._density_cache

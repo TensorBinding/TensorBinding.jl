@@ -55,10 +55,14 @@
 #
 # Behaviour pinned as it is at 1a5548b and worth knowing before regenerating
 # (a fix of any of these changes the data on purpose):
-#   * interleave_mpo embeds transpose(op) for site tensors stored (s', s), the
-#     order op()/OpSum MPOs use: it maps siteinds(op, i) in storage order onto
-#     (p, p'). Cases interleave_mpo_L2_n1 and ..._ketfirst give the same output
-#     for mutually transposed operators;
+#   * (fixed, cases regenerated) interleave_mpo embedded transpose(op) for site
+#     tensors stored (s', s), the order op()/OpSum MPOs use (it mapped
+#     siteinds(op, i) in storage order onto (p, p')); it now reads the legs by prime
+#     level, so interleave_mpo_L2_n1 and ..._ketfirst give the same output for the
+#     same operator. The bubbles built on it (get_bubble_mpo, Haydock, the magnon
+#     and RPA drivers) returned Π₀ᵀ for complex H and now return the Lindhard Π₀,
+#     like the cheb2d bubbles; rpa_from_bubble_diag solves (I − Π₀V)x = diag(Π₀)
+#     instead of its transpose;
 #   * (fixed in v0.1.1, cases regenerated) _get_density_matrix(:kpm)
 #     (get_density_from_Tn) returned the projector onto the states ABOVE ϵF
 #     (tr(P·H) > 0), :purification the one below, so the sign of every bubble

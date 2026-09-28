@@ -92,7 +92,10 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
 
     z     = ComplexF64(ω_phys + im * η)
     ω_mpo = z * MPO(sites, "Id") - H_mpo
-    Lop   = interleave_mpo(ω_mpo, sites2, 0)
+    # |G⟩⟩ holds G[r, c] with r on the odd and c on the even qubits (_vec_mps_from_mpo),
+    # and Lop acts on c: G(z − H) = I, i.e. (z − H)ᵀ on the column register, so the
+    # operator is embedded transposed (interleave_mpo embeds it as given).
+    Lop   = interleave_mpo(swapprime(ω_mpo, 0 => 1), sites2, 0)
     rhs   = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
     x0    = isnothing(x0_mpo) ? deepcopy(rhs) :
                 _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
