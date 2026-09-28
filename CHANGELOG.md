@@ -144,7 +144,51 @@ constructor that takes all 21 fields in order, caches included, remains.
   `maxdim` it moves within the truncation error, e.g. ~20 % at `maxdim = 30` on an L = 4
   Fibonacci chain). The cheb2d bubbles move by ~1e-13. (`get_qpi` stops earlier, with the
   `ArgumentError` above.) Binary position spaces are unaffected, bit for bit.
+- **`get_ldos(H, ω; mode=:mps, psi0)`** with a probe that is not normalised: `KPM_Tn_mps`
+  caches the Chebyshev vectors of `ψ₀/‖ψ₀‖`, but the moments were taken with `ψ₀` itself,
+  so the LDOS grew linearly with `‖ψ₀‖`. It is now the LDOS of `ψ₀/‖ψ₀‖`. Normalised probes
+  (`probe_state`, `physical_site_state`, `mpsexciton`) are unaffected.
+- **k-space sampling** (`kspace_sampling_plan`, behind `get_bands` and `get_bands_gpu`
+  without `k_groups`):
+  - `ilinspace(xmin, xmax, 1)` returns `[xmin]`; it returned `[0]`, outside the window
+    when `xmin > 0`. A 1D band plot with `num_x = 1` and `xmin > 0` moves accordingly.
+  - The 2D diagonal cut now places its `num_x` points along the whole cut from
+    `(xmin, ymin)` to `(xmax, ymax)`. It took the first `num_x` points of a
+    full-resolution grid, so `num_x = 4` on a 16 × 16 zone sampled `k = 0, 1, 2, 3`
+    along the diagonal. On registers with twice as many y as x labels (odd `L`) the cut
+    follows the physical diagonal `kx = ky` (it followed `ky = kx / 2`). A window
+    narrower than the zone (`xmin > 0` or `xmax < 2^Lx − 1`) failed an assertion; it
+    now samples the cut inside the window. Unchanged: square zones sampled at full
+    resolution (`num_x ≥ 2^Lx`, the default up to `Lx = 5`) and every `kpath_2d` path.
+- **`fix_sites`** on an MPO whose tensors store the ket leg first, `(s, s')`: it took the
+  second leg as the ket and returned the transpose. It now maps legs by prime level, so
+  only such MPOs change (the physical projector of a projected position space is one);
+  QTCI tensor trains and MPOs stored `(s', s)` are mapped as before.
+
 ### Fixed
+
+- `get_ldos(mode=:diag)`, `get_ldos_spectrum` and `extract_diagonal_to_mps` on a projected
+  position space (Fibonacci, metallic-mean, k-bonacci): the Chebyshev term `T_0`, the
+  physical projector, stores its legs as `(s, s')`, so its diagonal came out on the primed
+  site indices and the first sum of diagonals threw. Diagonals are now extracted on the
+  unprimed index whatever the storage order.
+- An empty group in `x_groups`, `X_groups` or `Q_groups` (`spatial_sampling_plan`,
+  `get_ldos_spatial`, `get_exciton_ldos_spatial`, `get_exciton_bands`, their GPU twins)
+  is a clear error ("every group in x_groups needs at least one position") instead of a
+  `BoundsError`.
+- `mps_to_diagonal_mpo` accepts a one-site MPS (its GPU twin already did).
+- Exciton detection: a one-particle model whose auxiliary indices bring it to `2L` sites
+  (a spinful `L = 1` chain) was taken for an exciton register by `get_dos_stochastic`
+  (and its GPU twin) and printed as one. Every exciton check now also requires no
+  auxiliary index; the exciton entry points reject such a model with their
+  "not an exciton Hamiltonian" error.
+- `get_ldos_spatial` and `get_ldos_spatial_gpu` with `grid`, a window, `box_half` or
+  `reduce=:block` on a T-junction Hamiltonian raise an error: its positions are chains
+  drawn in 2D, not a row-major grid, and the maps silently split the register at
+  `L ÷ 2`.
+- `kernel=:hodc` in a function without `eta`/`m_order` keywords (`get_ldos_spatial`,
+  `get_bands`, `get_qpi`, …) still raises "Unknown KPM kernel", now saying which
+  functions take it.
 
 - Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
   `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of

@@ -286,9 +286,9 @@ case!("Utils", "utils_mps_to_diagonal_mpo", 111) do
        new_sites  = dense(TB.mps_to_diagonal_mpo(A, s2)))
 end
 
-case!("Utils", "utils_mps_to_diagonal_mpo_single_site_throws", 112) do
+case!("Utils", "utils_mps_to_diagonal_mpo_single_site", 112) do
     s1 = siteinds("Qubit", 1)
-    TB.mps_to_diagonal_mpo(MPS([ITensor([1.0, 2.0], s1[1])]), s1)
+    (; dense = dense(TB.mps_to_diagonal_mpo(MPS([ITensor([1.0, 2.0], s1[1])]), s1)))
 end
 
 case!("Utils", "utils_mps2mpo", 113) do
@@ -372,8 +372,8 @@ case!("Utils", "utils_fix_sites", 122) do
     Mc = copy(M)
     out = TB.fix_sites(Mc, s2)
     # Same MPO with every site tensor's legs stored ket-first (s, s', links...):
-    # fix_sites reads siteinds(mpo)[i] positionally, so this pins how it treats
-    # that storage order.
+    # fix_sites maps the legs by prime level, so it must give `dense` again (it read
+    # siteinds(mpo)[i] positionally and returned the transpose until the 2026-09 fixes).
     Mt = ket_first(M, s)
     out_t = TB.fix_sites(Mt, s2)
     (; dense = dense(out), in_place = out === Mc,

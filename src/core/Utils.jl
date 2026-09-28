@@ -162,19 +162,35 @@ mpsexciton(x, sites) = mpsexciton(x, x, sites)
 # 4. MPO / MPS site-index manipulation
 # ============================================================
 
+# The (ket, bra) site indices of tensor i of an MPO. For a prime pair (s, s') they are
+# s and s', in whichever order the tensor stores them: most builders store (s', s), but
+# some (the physical projector of a projected position space) store (s, s'). The two
+# unrelated legs of a converted tensor train (`MPO(tt)` from QTCI) have no prime
+# relation; there the first leg is the bra (row) and the second the ket (column).
+function _mpo_site_pair(M::MPO, i::Integer)
+    a, b = siteinds(M, i)
+    noprime(a) == noprime(b) && plev(a) < plev(b) && return (a, b)
+    return (b, a)
+end
+
+# The ket site index of every tensor of an MPO (see _mpo_site_pair).
+_mpo_ket_sites(M::MPO) = [first(_mpo_site_pair(M, i)) for i in eachindex(M)]
+
 """
     fix_sites(mpo, sites) -> MPO
 
 Replace the site indices of `mpo` (typically built from a TCI
 tensor train whose indices do not match the system's physical sites)
-with `sites`.  Modifies `mpo` in-place and returns it.
+with `sites`: the ket leg of tensor `i` becomes `sites[i]` and the bra leg
+`sites[i]'`, whichever order the tensor stores them in.  Modifies `mpo`
+in-place and returns it.
 """
 function fix_sites(mpo, sites)
-    oldsites      = getindex.(siteinds(mpo), 2)   # unprimed (ket)
-    oldsitesprime = getindex.(siteinds(mpo), 1)   # primed   (bra)
+    pairs = [_mpo_site_pair(mpo, i) for i in eachindex(mpo)]
     for i in eachindex(mpo)
-        mpo[i] = replaceind(mpo[i], oldsites[i]      => sites[i])
-        mpo[i] = replaceind(mpo[i], oldsitesprime[i] => sites[i]')
+        ket, bra = pairs[i]
+        mpo[i] = replaceind(mpo[i], ket => sites[i])
+        mpo[i] = replaceind(mpo[i], bra => sites[i]')
     end
     return mpo
 end
@@ -581,6 +597,8 @@ function spatial_sampling_plan(L::Int;
     if x_groups !== nothing
         groups = x_groups isa AbstractVector{<:AbstractVector} ?
                  [collect(Int, g) for g in x_groups] : [[Int(x)] for x in x_groups]
+        any(isempty, groups) &&
+            error("spatial_sampling_plan: every group in x_groups needs at least one position.")
         centers = Int[first(g) for g in groups]
         stride_known = false   # caller-supplied positions: stride is not defined
     elseif grid
@@ -1037,7 +1055,7 @@ function ilinspace(xmin, xmax, num_x::Int)
     xvals = xmin:xmax
     _N = length(xvals)
     @assert 1 ≤ num_x ≤ _N
-    num_x == 1 && return [0]
+    num_x == 1 && return [xmin]
     step = (_N - 1) ÷ (num_x - 1)
     return collect(xmin:step:(xmin+step*(num_x-1)))
 end
@@ -1057,10 +1075,12 @@ QFT register labels `k in 0:2^L_pos-1`.
   (`xmax` defaults to `2^L_pos - 1`); with `num_avg > 1` each centre is widened
   to `num_avg` equidistant offsets within half a step on either side, clamped
   to the register.
-- `D == 2`: `Lx = L_pos ÷ 2`; the first `min(num_x, 2^Lx)` points of the
-  `ilinspace` grids in `x` and `y` are zipped diagonally into row-major labels
-  `(y << Lx) | x`, again with optional `num_avg` widening. This is the legacy
-  diagonal cut through the 2D zone; for high-symmetry paths use `kpath_2d`.
+- `D == 2`: `Lx = L_pos ÷ 2`; `nx = min(num_x, xmax - xmin + 1, ymax - ymin + 1)`
+  points of the diagonal cut from `(xmin, ymin)` to `(xmax, ymax)` (`xmax`, `ymax`
+  default to the last label of each axis): the `ilinspace` grids of `nx` points in
+  `x` and in `y`, zipped into row-major labels `(y << Lx) | x`, again with optional
+  `num_avg` widening. This is the legacy diagonal cut through the 2D zone; for
+  high-symmetry paths use `kpath_2d`.
 """
 function kspace_sampling_plan(L_pos::Int, D::Int;
                               num_x::Int,
@@ -1086,11 +1106,12 @@ function kspace_sampling_plan(L_pos::Int, D::Int;
         Lx     = div(L_pos, 2)
         Nx_loc = 2^Lx
         Ny_loc = 2^(L_pos - Lx)
-        nx     = min(num_x, Nx_loc)   # can't have more output pts than grid positions
         _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
         _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
-        xcenters    = ilinspace(xmin, _xmax, Nx_loc)
-        ycenters    = ilinspace(ymin, _ymax, Ny_loc)
+        # at most one point per x and per y label of the window
+        nx     = min(num_x, _xmax - xmin + 1, _ymax - ymin + 1)
+        xcenters    = ilinspace(xmin, _xmax, nx)
+        ycenters    = ilinspace(ymin, _ymax, nx)
         half_step_x = nx > 1 ? (_xmax - xmin) / (2 * nx) : 0
         half_step_y = num_y > 1 ? (_ymax - ymin) / (2 * num_y) : 0
         x_offs = num_avg > 1 ? round.(Int, range(-half_step_x, half_step_x; length=num_avg)) : Int[0]
@@ -1201,8 +1222,9 @@ end
     extract_diagonal_to_mps(M) -> MPS
 
 Extract the diagonal of an MPO `M` as an MPS by projecting each local bra/ket
-pair onto equal physical values. This is shared by KPM trace/LDOS, SCF, RPA,
-QFT, and purification routines.
+pair onto equal physical values; the MPS carries the ket (unprimed) site index,
+whichever order the tensors store their legs in. This is shared by KPM
+trace/LDOS, SCF, RPA, QFT, and purification routines.
 """
 extract_diagonal_to_mps(M::MPO)::MPS = _extract_diagonal(M)
 
@@ -1215,7 +1237,7 @@ function _extract_diagonal(M::MPO; to_device = _on_host)::MPS
     for i in 1:N
         tensor = M[i]
         ElT = eltype(tensor)
-        bra, ket = siteinds(M, i)
+        ket, bra = _mpo_site_pair(M, i)
         diagonal_inds = uniqueinds(tensor, ket, bra)
         result = ITensor(diagonal_inds..., ket)
         for value in 1:dim(ket)
@@ -1241,16 +1263,14 @@ mps_to_diagonal_mpo(mps, sites) = _mps_to_diagonal(mps, sites)
 
 # The kernel of mps_to_diagonal_mpo and its GPU twin _mps_to_diagonal_mpo_gpu: each
 # delta is moved by `to_device(·, delta_type)` (see `_on_host`; the GPU makes it a
-# dense ComplexF32 tensor, whatever the element type of the MPS). `one_site=true`
-# accepts a one-site MPS (the GPU twin does); mps_to_diagonal_mpo throws a
-# BoundsError there (golden-pinned).
-function _mps_to_diagonal(mps, sites; to_device = _on_host, delta_type::Type = ComplexF32,
-                          one_site::Bool = false)
+# dense ComplexF32 tensor, whatever the element type of the MPS). A one-site MPS has no
+# link to tell its site index apart, so it is taken as the only index.
+function _mps_to_diagonal(mps, sites; to_device = _on_host, delta_type::Type = ComplexF32)
     N          = length(mps)
     mpo_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         mps_t = mps[i]
-        old_s = if one_site && N == 1
+        old_s = if N == 1
             only(siteinds(mps))
         elseif i == 1
             uniqueind(mps_t, mps[i+1])

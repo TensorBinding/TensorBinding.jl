@@ -1003,6 +1003,14 @@ function _pos_sites(H::TBHamiltonian)
     return filter(s -> s ∉ aux_set, H.sites)
 end
 
+# An exciton Hamiltonian (exciton_hamiltonian): the interleaved 2L-site electron-hole
+# register, with no auxiliary index. Counting sites alone is not enough: auxiliary
+# indices can also bring a one-particle model to 2L sites (a spinful L = 1 chain).
+_is_exciton_register(H::TBHamiltonian) =
+    length(H.sites) == 2 * H.L &&
+    H.layer_s === nothing && H.sublattice_s === nothing &&
+    H.spin_s  === nothing && H.nambu_s      === nothing
+
 
 # ============================================================
 # 12. Interaction storage
@@ -1069,10 +1077,7 @@ function Base.show(io::IO, H::TBHamiltonian)
     H.sublattice_s  !== nothing && (aux_str *= " +$(ITensors.dim(H.sublattice_s))sublattices")
     H.spin_s  !== nothing && (aux_str *= " +spin")
     H.nambu_s !== nothing && (aux_str *= " +BdG")
-    # Detect exciton: interleaved 2L-site chain with no auxiliary indices
-    is_exc = length(H.sites) == 2 * H.L &&
-             H.layer_s === nothing && H.sublattice_s === nothing &&
-             H.spin_s  === nothing && H.nambu_s      === nothing
+    is_exc = _is_exciton_register(H)
     N_str = is_exc ? "N=$(H.N) [exciton, D=$(H.N^2)]" : "N=$(H.N)$(aux_str)"
     sc_str = H.scale == 0.0 ? "scale=auto" :
              H.center == 0.0 ? "scale=$(H.scale)" :

@@ -47,7 +47,8 @@ Chebyshev expansion cached in `H` by a prior `KPM_Tn` or `KPM_Tn_mps` call.
 
 - `:mps`  — computes moments `μₙ = ⟨ψ₀|φₙ⟩` from the MPS Chebyshev cache and
   calls `get_ldos_from_mun`, returning a **Real**.  Requires
-  `KPM_Tn(H, N; mode=:mps, psi0=...)` and the same `psi0` here.
+  `KPM_Tn(H, N; mode=:mps, psi0=...)` and the same `psi0` here.  Both normalise
+  `psi0`, so the result is the LDOS of `ψ₀/‖ψ₀‖` whatever the norm of `psi0`.
 
 **Keywords**
 
@@ -97,7 +98,10 @@ function get_ldos(H::TBHamiltonian, ω_phys::Real;
     elseif mode == :mps
         H._tn_mps_cache === nothing && error("No MPS Chebyshev cache. Call KPM_Tn(H, N; mode=:mps, psi0=...) first.")
         psi0 === nothing && error("get_ldos with mode=:mps requires the psi0 keyword argument")
-        mun = [inner(psi0, H._tn_mps_cache[n]) for n in 1:N]
+        # The cache holds φₙ = T_n(H̃)|ψ₀⟩ for the normalised ψ₀ (KPM_Tn_mps normalises
+        # it), so the moments take the normalised probe too.
+        psi0_n = psi0 / norm(psi0)
+        mun = [inner(psi0_n, H._tn_mps_cache[n]) for n in 1:N]
         return get_ldos_from_mun(mun, N, E;
                                  kernel  = kernel,
                                  lambda  = lambda,

@@ -66,8 +66,8 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   printinfo::Bool  = false,
                                   return_maxlinkdim::Bool = false)
     _ensure_scale!(H)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_ldos_spatial: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_ldos_spatial: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
 
     X_groups !== nothing && x_groups !== nothing &&
         error("get_exciton_ldos_spatial: pass only one of X_groups or x_groups.")
@@ -94,7 +94,6 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
 
     isempty(groups) && error("get_exciton_ldos_spatial: no spatial groups were selected.")
     for grp in groups
-        isempty(grp) && error("get_exciton_ldos_spatial: empty spatial group.")
         all(x -> 1 <= x <= H.N, grp) ||
             error("get_exciton_ldos_spatial: all positions must lie in 1:H.N.")
     end
@@ -226,8 +225,8 @@ function get_exciton_ldos_separation(H::TBHamiltonian, Ncheb::Int, omega_phys_va
                                      verbose::Bool    = false,
                                      printinfo::Bool  = false)
     _ensure_scale!(H)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_ldos_separation: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_ldos_separation: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
     boundary in (:open, :periodic) ||
         error("get_exciton_ldos_separation: boundary must be :open or :periodic, got $boundary.")
 

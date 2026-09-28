@@ -6,7 +6,7 @@
 #
 # Main entry points: get_nh_density_trajectory_gpu,
 # get_state_amplitude_trajectory_gpu, rk4_step_dm_nh_gpu.
-# Depends on: core/Utils.jl (spatial_sampling_plan), core/TBSystem.jl
+# Depends on: core/Utils.jl (spatial_sampling_plan, _mpo_ket_sites), core/TBSystem.jl
 # (TBHamiltonian), solvers/Timeev.jl (the RK4 and TDVP steps _rk4_step,
 # _tdvp_step), gpu/device.jl, gpu/primitives.jl.
 
@@ -66,15 +66,6 @@ function _sample_density_diag_gpu(rho_gpu::MPO, plan;
     return vals
 end
 
-function _mpo_ket_siteinds(W::MPO)
-    return Index[
-        let (_, ket) = siteinds(W, i)
-            ket
-        end
-        for i in 1:length(W)
-    ]
-end
-
 """
     get_nh_density_trajectory_gpu(H, rho0; nsteps, dt, sample_every=1,
                                   num_x=0, num_avg=1, reduce=:point,
@@ -127,7 +118,7 @@ function get_nh_density_trajectory_gpu(H, rho0::MPO;
     reduce in (:point, :block) || error("get_nh_density_trajectory_gpu: reduce must be :point or :block.")
 
     H_mpo = H isa TBHamiltonian ? H.mpo : H
-    sites = H isa TBHamiltonian ? H.sites : _mpo_ket_siteinds(H_mpo)
+    sites = H isa TBHamiltonian ? H.sites : _mpo_ket_sites(H_mpo)
     Lbits = length(sites)
     Nsite = prod(dim(s) for s in sites)
     x_end_eff = x_end === nothing ? Nsite : Int(x_end)

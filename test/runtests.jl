@@ -129,6 +129,7 @@ include("bugfix_gpu3.jl")
 include("bugfix_tdvp.jl")
 include("bugfix_haldane_textbook.jl")
 include("bugfix_density.jl")
+include("bugfix_kpm4.jl")
 
 # The keyword TBHamiltonian constructor (the positional overloads are gone).
 include("tbhamiltonian_ctor.jl")

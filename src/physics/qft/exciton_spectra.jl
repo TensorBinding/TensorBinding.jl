@@ -63,8 +63,8 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
                            printinfo::Bool  = false)
     _require_binary_position_space(H, "get_exciton_bands")
     _ensure_scale!(H)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_bands: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_bands: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
     length(H_QFT) == length(H.sites) ||
         error("get_exciton_bands: H_QFT must live on the same number of sites as H.sites.")
 
@@ -105,7 +105,6 @@ function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_
 
     isempty(groups) && error("get_exciton_bands: no momentum groups were selected.")
     for grp in groups
-        isempty(grp) && error("get_exciton_bands: empty momentum group.")
         all(q -> 1 <= q <= H.N, grp) ||
             error("get_exciton_bands: all momenta must lie in 1:H.N.")
     end
@@ -197,8 +196,8 @@ function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_p
                                printinfo::Bool  = false)
     _require_binary_position_space(H, "get_exciton_continuum")
     _ensure_scale!(H)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_continuum: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_continuum: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
     length(H_QFT) == length(H.sites) ||
         error("get_exciton_continuum: H_QFT must live on the same number of sites as H.sites.")
 

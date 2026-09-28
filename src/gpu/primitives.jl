@@ -150,7 +150,7 @@ end
 # GPU analogue of mps_to_diagonal_mpo (core/Utils.jl), through its kernel: dense
 # ComplexF32 GPU deltas, and a one-site MPS is accepted.
 _mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO =
-    _mps_to_diagonal(mps, sites; to_device=_to_gpu, delta_type=ComplexF32, one_site=true)
+    _mps_to_diagonal(mps, sites; to_device=_to_gpu, delta_type=ComplexF32)
 
 
 # ============================================================

@@ -98,8 +98,8 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     reduce === :point ||
         error("get_exciton_ldos_spatial_gpu: reduce must be :point, got $reduce.")
     _ensure_scale!(H)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_ldos_spatial_gpu: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_ldos_spatial_gpu: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
 
     X_groups !== nothing && x_groups !== nothing &&
         error("get_exciton_ldos_spatial_gpu: pass only one of X_groups or x_groups.")
@@ -129,7 +129,6 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
     end
     isempty(groups) && error("get_exciton_ldos_spatial_gpu: no spatial groups were selected.")
     for grp in groups
-        isempty(grp) && error("get_exciton_ldos_spatial_gpu: empty spatial group.")
         all(x -> 1 <= x <= H.N, grp) ||
             error("get_exciton_ldos_spatial_gpu: all positions must lie in 1:H.N.")
     end
@@ -233,8 +232,8 @@ function get_exciton_cheb_convergence_gpu(H::TBHamiltonian, X::Int, Ncheb_max::I
                                            printinfo::Bool   = false)
     _check_gpu("get_exciton_cheb_convergence_gpu")
     gpu_type = _resolve_gpu_type("get_exciton_cheb_convergence_gpu", type, dtype, cutoff)
-    length(H.sites) == 2 * H.L ||
-        error("get_exciton_cheb_convergence_gpu: H is not an exciton Hamiltonian (expected length(H.sites) == 2*H.L).")
+    _is_exciton_register(H) ||
+        error("get_exciton_cheb_convergence_gpu: H is not an exciton Hamiltonian (expected the 2L-site electron-hole register of exciton_hamiltonian).")
     1 <= X <= H.N ||
         error("get_exciton_cheb_convergence_gpu: X=$X out of range 1:$(H.N).")
     maxdim_ref >= maxdim_test ||

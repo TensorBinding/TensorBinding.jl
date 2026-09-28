@@ -644,9 +644,9 @@ case!("bands_low_2d_default_grid") do; lowbands(fx(:square4), 2) end
 case!("bands_low_2d_numx3_navg2_numy3") do
     lowbands(fx(:square4), 2; num_x=3, num_avg=2, xmin=0, xmax=3, ymin=0, ymax=3, num_y=3)
 end
-# In 2D the centres are ilinspace(xmin, xmax, 2^Lx), so any window narrower
-# than 2^Lx points trips ilinspace's assertion (pinned as it is today).
-case!("bands_low_2d_narrow_window"; throws=true) do
+# A 2D window narrower than 2^Lx points used to trip ilinspace's assertion (the centres
+# were ilinspace(xmin, xmax, 2^Lx)); it now samples the diagonal cut inside the window.
+case!("bands_low_2d_narrow_window") do
     lowbands(fx(:square4), 2; num_x=3, xmin=1, xmax=3)
 end
 case!("bands_low_2d_numx_exceeds_grid") do; lowbands(fx(:square4), 2; num_x=9) end

@@ -196,7 +196,7 @@ function _build_preset(geometry, params, L, N, sites;
     # The model builders (HAAH, HSSH, …) create their own site indices internally,
     # so we extract the actual sites from the MPO rather than using the ones
     # created by get_Hamiltonian (which would be a different set).
-    mpo_sites = getindex.(siteinds(mpo), 2)
+    mpo_sites = _mpo_ket_sites(mpo)
     # If caller supplied ref_sites, replace MPO indices in-place so all
     # Hamiltonians built with the same ref_sites share identical Index objects.
     if !isnothing(ref_sites)

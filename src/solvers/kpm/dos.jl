@@ -63,9 +63,9 @@ default.  Only use projections when you actually need a sector-resolved DOS.
 
 **Exciton stratification** (no aux projections)
 
-For exciton Hamiltonians (`length(H.sites) == 2*H.L`), stratified sampling
-dedicates `N_bound` samples to the bound sector `|x,x⟩` and `N_sample` to the
-full Hilbert space, combining with proper weights:
+For exciton Hamiltonians (the 2L-site register of `exciton_hamiltonian`),
+stratified sampling dedicates `N_bound` samples to the bound sector `|x,x⟩` and
+`N_sample` to the full Hilbert space, combining with proper weights:
   `DOS = N_phys × avg_bound + (D − N_phys) × avg_scatter`.
 `N_bound = 0` (default) = uniform sampling over all D states.
 Set `dos_weighting=:sample` to inspect the sampled spectral signal before these
@@ -171,7 +171,7 @@ function _dos_stochastic(H::TBHamiltonian, Ham_n::MPO, Ncheb::Int, ω_phys_vals,
     projected_position_space = !_is_binary_position_space(H)
     D      = projected_position_space ? H.N : prod(ITensors.dim(s) for s in H.sites)
     N_phys = H.N
-    is_exc = length(H.sites) == 2 * H.L
+    is_exc = _is_exciton_register(H)
 
     ω_vals, W, denom, valid = _kpm_energy_grid(H, Ncheb, ω_phys_vals;
                                                kernel=kernel, lambda=lambda, eta=eta,

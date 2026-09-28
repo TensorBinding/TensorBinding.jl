@@ -41,6 +41,10 @@ function _kpm_kernel(N::Int, kernel::Symbol; lambda::Real = 4.0)
         return Float64[N - n for n in 0:N-1]
     elseif kernel == :dirichlet
         return fill(Float64(N), N)
+    elseif kernel == :hodc
+        # HODC is a choice of weights, not a damping kernel: _dos_weight_matrix builds them.
+        error("Unknown KPM kernel: hodc. Choose :jackson, :lorentz, :fejer, or :dirichlet " *
+              "(:hodc is taken only by the functions with eta and m_order keywords).")
     else
         error("Unknown KPM kernel: $kernel. Choose :jackson, :lorentz, :fejer, or :dirichlet")
     end

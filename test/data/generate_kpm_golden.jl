@@ -52,11 +52,9 @@ const GENERATOR_BUGS = (MethodError, UndefVarError, UndefKeywordError, TypeError
 
 # Cases that do throw one of GENERATOR_BUGS today, on purpose: the behaviour is
 # pinned as it is (see the case in test/golden_kpm.jl for the details).
-const PINNED_BUGLIKE_THROWS = Set([
-    # spatial_sampling_plan takes first() of every group before
-    # get_exciton_ldos_spatial's own "empty spatial group" check can run.
-    "exciton/spatial/empty_group",
-])
+# None today ("exciton/spatial/empty_group" was one, a BoundsError, until
+# spatial_sampling_plan rejected empty groups itself).
+const PINNED_BUGLIKE_THROWS = Set{String}()
 
 function evaluate(cases)
     entries = NamedTuple[]

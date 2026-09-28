@@ -320,6 +320,9 @@ function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             error("get_ldos_spatial: box_half/grid/window/block sampling requires H.geometry to be set.")
         length(H.geometry(1)) == 2 ||
             error("get_ldos_spatial: box_half/grid/window/block sampling is only supported for 2D systems.")
+        _is_tjunction(H) &&
+            error("get_ldos_spatial: box_half/grid/window/block sampling needs a row-major 2D register; " *
+                  "a T-junction is chains drawn in 2D. Use point sampling (num_x or x_groups).")
     end
     reduce === :block && mode === :mps &&
         error("get_ldos_spatial: reduce=:block is only supported in mode=:mpo.")

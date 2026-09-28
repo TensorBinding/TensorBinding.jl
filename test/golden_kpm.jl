@@ -534,9 +534,9 @@ end
 case!("get_ldos/unknown_mode") do
     get_ldos(chain4_mpo_cached(4), 0.0; mode=:bogus)
 end
-# Pinned as it is today (it throws): the Fibonacci projector T_0 stores its site
-# legs as (s, s') while T_n>=1 store (s', s), so extract_diagonal_to_mps puts the
-# T_0 diagonal on primed indices and the first `+` of diagonals fails.
+# The Fibonacci projector T_0 stores its site legs as (s, s') while T_n>=1 store
+# (s', s); extract_diagonal_to_mps used to put the T_0 diagonal on primed indices, so
+# the first `+` of diagonals failed (and this case threw).
 case!("get_ldos/diag/fib4") do
     H = model(:fib4)
     KPM_Tn(H, 10)
@@ -1136,8 +1136,8 @@ end
 case!("exciton/spatial/X_out_of_range") do
     exc_spatial(6, W_EXC3; X_list=[9])
 end
-# Pinned as it is today: spatial_sampling_plan takes first() of every group, so an
-# empty group raises a BoundsError before the "empty spatial group" check below it.
+# spatial_sampling_plan rejects an empty group (it used to take first() of every group
+# and raise a BoundsError).
 case!("exciton/spatial/empty_group") do
     exc_spatial(6, W_EXC3; X_groups=[[1], Int[]])
 end

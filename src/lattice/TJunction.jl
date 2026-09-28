@@ -43,6 +43,11 @@ States: 1 = branch |-1⟩, 2 = branch |0⟩, 3 = branch |+1⟩.
 """
 tjunction_index() = Index(3, "TJunction")
 
+# A T-junction Hamiltonian (add_tjunction!, tjunction_hamiltonian,
+# tjunction_lattice_hamiltonian): chains drawn in 2D, whose position register is not a
+# row-major 2^Lx × 2^Ly grid, so grid, window, box and block LDOS maps do not apply.
+_is_tjunction(H) = H.sublattice_s !== nothing && hastags(H.sublattice_s, "TJunction")
+
 
 # ============================================================
 # 2. add_tjunction! — in-place extension of an existing TBHamiltonian

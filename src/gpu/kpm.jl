@@ -194,6 +194,9 @@ function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
             error("get_ldos_spatial_gpu: box_half/grid/window/block sampling requires H.geometry to be set.")
         length(H.geometry(1)) == 2 ||
             error("get_ldos_spatial_gpu: box_half/grid/window/block sampling is only supported for 2D systems.")
+        _is_tjunction(H) &&
+            error("get_ldos_spatial_gpu: box_half/grid/window/block sampling needs a row-major 2D register; " *
+                  "a T-junction is chains drawn in 2D. Use point sampling (num_x or x_groups).")
     end
     Lx_uc   = something(H.Lx, H.L ÷ 2)
     Ly_uc   = H.L - Lx_uc
@@ -606,7 +609,7 @@ function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
 
     Ham_n_gpu = _to_gpu(_scaled_hamiltonian(H; cutoff=cutoff), gpu_type)
 
-    is_exc = length(H.sites) == 2 * H.L
+    is_exc = _is_exciton_register(H)
     continuum_only && !is_exc &&
         error("get_dos_stochastic_gpu: continuum_only=true requires an exciton Hamiltonian.")
     continuum_only && H.N < 2 &&

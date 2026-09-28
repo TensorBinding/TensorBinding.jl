@@ -28,7 +28,7 @@ Calling this on the Chebyshev spectral MPO T_n and then extracting the
 diagonal gives the k-resolved contribution to A(k,ω).
 """
 function conjugate_by_qft(W; tol=1e-9, maxdim::Int=100)
-    sites  = getindex.(siteinds(W), 2)
+    sites  = _mpo_ket_sites(W)
     R      = length(sites)
     FTirev = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=-1.0, normalize=true))), sites)
     FTrev  = fix_sites(MPO(TCI.reverse(QuanticsTCI.quanticsfouriermpo(R; sign=+1.0, normalize=true))), sites)
