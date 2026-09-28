@@ -77,10 +77,16 @@ Line numbers refer to the working tree on that date and will drift.
 - [x] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
       (`qc2dsquare` from L≈12). Decided: fix through the Tier 2 scale maker (below).
       *Fixed by the scale maker (tier2/registry): max(6|t|, 1.1 × row-sum bound).*
-- [ ] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
+- [x] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
       QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
-- [ ] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
+      *Fixed in 11a4e3c: `hopping2MPO(...; check=true)` compares the build with f on a fixed
+      sample and rebuilds it from the nonzero sampled entries as pivots (deterministic), or
+      errors; on in `get_Hamiltonian("custom")` and `add_hopping!(H, f(i, j))`. Not switched
+      on yet: Twisted, the Timeev propagator, `add_soc!(:custom)`, `pairing2MPO`.*
+- [x] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
       field is identically zero (e.g. `uniformsemenoff=true, ms=0`).
+      *Fixed in 11a4e3c: zero fields leave their terms out (also HUniform, HAAH, HChern8);
+      `add_onsite!(H, 0)` leaves the MPO alone.*
 - [x] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
       `Lx = H.L ÷ 2` silently; `tjunction_lattice_hamiltonian` has no meaningful `Lx`.
       *They raise an error on T-junctions (`_is_tjunction`, the "TJunction" branch index),
@@ -126,13 +132,23 @@ the affected golden cases in the same commit.
 - [x] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
       *The default is now max(that, 1.1 × dense radius at L ≤ 10) (tier2/registry); the
       formula itself stays in `_estimate_scale` (golden-pinned).*
-- [ ] `honeycomb_sublattice_hamiltonian`/`honeycomb_nnn_hamiltonian` (and the `"honeycomb"`,
+- [x] `honeycomb_sublattice_hamiltonian`/`honeycomb_nnn_hamiltonian` (and the `"honeycomb"`,
       `"honeycomb_nnn"` presets) are ~1e-6 off after compression at cutoff 1e-8 (spurious entries).
+      *Fixed in 11a4e3c: not QTCI but ITensors' density-matrix `+` (non-orthonormal LAPACK
+      eigenvectors at a near-degenerate pair, Lx = 2, Ly = 1, |t| = 1 only);
+      `_checked_sum_mpos` falls back to the exact direct sum.*
 - [ ] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
-- [ ] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
+- [x] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
       bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
-- [ ] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
-- [ ] `sdf_convex_polygon` has its sign flipped (polygon masks are inverted).
+      *Fixed in 11a4e3c; `intrachain_hopping` was not Hermitian for real t either (row break
+      on the wrong side of the backward hop). Twisted `t_inter` not checked.*
+- [x] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
+      *11a4e3c: a clear error on layouts that are not Bravais in the cell index (the shells
+      depend on row parity there; one shift per displacement cannot express them).
+      Alternative left open: parity-masked shells.*
+- [x] `sdf_convex_polygon` has its sign flipped (polygon masks are inverted).
+      *Fixed in 11a4e3c: not a plain flip; counter-clockwise input used the outward normals
+      (negative everywhere); the orientation now comes from the signed area.*
 - [x] RPA: `ϵF` never reaches the purification density (always half filling); `haydock_cf` uses
       tr(conj(A)B) instead of tr(A†B).
       *Fixed in ead1d66: McWeeny starts from `H.center + ϵF` (the `mcweeny_purify` level), SP2
@@ -151,19 +167,28 @@ the affected golden cases in the same commit.
       conjugation is unchanged by it. `interleave_mpo` still open.*
 
 **Crashes and unhelpful errors**
-- [ ] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
+- [x] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
       index — `project_aux` hard-codes `side=:pre` and never checks the index is on the tensor.
       Same `:pre` hard-coding in `get_ldos_spatial(mode=:mpo)`.
-- [ ] `get_bands(H)` default `num_x=60` fails for 1D systems with L < 6; low-level `get_bands`
+      *Fixed in 4954a37: every aux index is projected from its side in H.sites (`aux_site`);
+      `project_aux`/`_project_aux_gpu` check the end site (`_require_end_site`); low-level
+      `spin_side` keyword.*
+- [x] `get_bands(H)` default `num_x=60` fails for 1D systems with L < 6; low-level `get_bands`
       with `sublat_s` but `sublat_proj=false` silently transforms the sublattice index.
-- [ ] `aux_site(H, :spin)` errors on every BdG+spin model.
+      *Fixed in 4954a37: the default is clamped to the window; an unprojected
+      nambu/layer/sublattice index in the low-level method is an ArgumentError.*
+- [x] `aux_site(H, :spin)` errors on every BdG+spin model.
+      *Fixed in 4954a37: the side is that of the block of aux sites holding the index (also
+      fixes spinful layered models).*
 - [x] `get_ldos(:diag)` and `get_ldos_spectrum` throw on Fibonacci (projector leg order).
       *Fixed in 87f6562: `extract_diagonal_to_mps` takes the unprimed leg whatever the order.*
 - [x] Empty-group checks in `get_exciton_ldos_spatial`/`get_exciton_bands` are unreachable
       (BoundsError first); `mps_to_diagonal_mpo` fails on a 1-site MPS.
       *Fixed in 87f6562: `spatial_sampling_plan` rejects empty groups (the callers' dead
       checks are gone); `mps_to_diagonal_mpo` takes a one-site MPS.*
-- [ ] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
+- [x] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
+      *Fixed in 11a4e3c: one QTCI mask per sublattice; complex amplitudes via
+      `_hermitian_intra`.*
 - [x] `haydock_cf` throws DomainError for complex Hermitian seeds.
       *Fixed in ead1d66 (same change).*
 
@@ -176,10 +201,13 @@ the affected golden cases in the same commit.
       matching ("will error in ITensors v0.4").
 - [x] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
       *Fixed in ead1d66: 1/(∞ − ∞) is taken as 0; singular tables keep the sentinel.*
-- [ ] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
-- [ ] `MODEL_REGISTRY["chern8"]` uses absolute `t2=0.2` (HChern8 defaults to 0.2t); Lieb's
+- [x] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
+      *Fixed in 11a4e3c (default removed, docstring added).*
+- [x] `MODEL_REGISTRY["chern8"]` uses absolute `t2=0.2` (HChern8 defaults to 0.2t); Lieb's
       `geometry_uc` uses a triangular basis; `get_Hamiltonian` silently ignores `ref_sites` for
       several geometries.
+      *Fixed in 11a4e3c: chern8 t2 = 0.2t; Lieb `geometry_uc` square; `ref_sites` honoured
+      (the L position qubits) or an ArgumentError.*
 - [ ] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
 - [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
       *Fixed with the shared GPU warning (tier2/gpuwrap): its extra `cutoff < 1e-5` warning for
@@ -198,14 +226,17 @@ the affected golden cases in the same commit.
 
 ### Found by the Tier 2 scale maker (2026-09-26; not fixed, decision needed)
 
-- [ ] `"lieb"` default scale 2.5|t| is below the bulk spectral radius 2√2|t| (2.82 at
+- [x] `"lieb"` default scale 2.5|t| is below the bulk spectral radius 2√2|t| (2.82 at
       Lx = Ly = 4); `"honeycomb_nnn"` 3.5(|t| + |t2|) is below 3|t| + 6|t2| once
       |t2| > 0.2|t| (t2 = 0.3, Lx = 5, Ly = 4: radius 4.76 > 4.55). The multi-atom lattices
       keep their builder defaults because the max rule would also move the pinned
       `lieb_L3_*` golden cases, whose radius (2.48) is below 2.5 but above 2.5/1.1.
       `scale=:small` / `:geometry` give a bounding scale today.
-- [ ] `dice_hamiltonian` docstring says the bands reach ±3t; they reach ±3√2 t (the
+      *Fixed in 11a4e3c: the multi-atom entries use the max(formula, :small) rule; lieb_L3
+      cases moved as predicted.*
+- [x] `dice_hamiltonian` docstring says the bands reach ±3t; they reach ±3√2 t (the
       4.5|t| default still bounds them).
+      *Fixed in 11a4e3c (and Lieb's ±2√2 t).*
 
 ### Found by the Tier 2 KPM kernels (2026-09-26; not fixed, decision needed)
 
@@ -239,11 +270,12 @@ the affected golden cases in the same commit.
 
 ### Found by the Tier 2 aux and density kernels (2026-09-26; not fixed, decision needed)
 
-- [ ] `_project_spin_sector` on a spin site inside the MPO (`add_spin!(H; position=:post)`
+- [x] `_project_spin_sector` on a spin site inside the MPO (`add_spin!(H; position=:post)`
       followed by `add_superconductivity!(H, Δ; position=:post)`, sites `[pos…, spin, nambu]`)
       drops every site after the spin site from the MPO, while the returned `sites` keep
       the Nambu index; `_project_aux_block` keeps them. Kept as one explicit line in
       `_project_spin_sector`.
+      *Fixed in 4954a37: every other site is kept.*
 - [ ] The density helpers differ from `get_density` in more than their method symbols:
       `_get_projector(:KPM)` expands any cached Chebyshev list, also one shorter than
       `Nchebychev`, and with cutoff 1e-8 whatever its `cutoff`; its `:sp2` runs 40
@@ -252,9 +284,11 @@ the affected golden cases in the same commit.
       default) even with `verbose=false`; `get_density` checks the density cache before the
       method (a cached McWeeny matrix answers `method=:kpm`), the helpers for purification
       only. All kept, as keyword choices of the shared dispatcher `_density_matrix`.
-- [ ] The projection chain takes the Nambu and spin sectors as `1:2`, the probe loops the
+- [x] The projection chain takes the Nambu and spin sectors as `1:2`, the probe loops the
       Nambu sectors as `1:dim(nambu index)` and the spin sectors as `1:2`: the same for every
       Nambu index the package builds (dimension 2); kept as they were.
+      *Checked 2026-09-28: the package only builds dimension-2 Nambu and spin indices, so
+      the two ranges agree; no change.*
 
 ### Found by the export-list checks (2026-09-26; not fixed)
 
@@ -274,9 +308,10 @@ the affected golden cases in the same commit.
       `get_bubble_mpo`'s sign; cheb2d's sign is the physical retarded response, which the
       untracked Ward-conductivity script relies on. Decision for the author: which sign
       Π₀ has, and whether the cheb2d bubbles flip.
-- [ ] cheb2d bubbles on complex H take the Hadamard product P_a ⊙ P_b where the Lindhard
+- [x] cheb2d bubbles on complex H take the Hadamard product P_a ⊙ P_b where the Lindhard
       bubble has P_aᵀ ⊙ P_b: 44 % off on a complex L = 2 chain, and ‖Σ_j Π_ij‖ = 0.34 for
       ‖Π‖ = 0.62 (particle number not conserved).
+      *Fixed in 2eebb32: the H₁ factors are transposed (skipped for real H₁, bit for bit).*
 - [ ] `rpa_from_bubble_diag` does not return χ: its output is rank one,
       x[(i,j)] = [(Aᵀ)⁻¹ diag Π₀]_j with A = I − Π₀V (behind `get_rpa_susceptibility` and
       `get_magnon_susceptibility`).
