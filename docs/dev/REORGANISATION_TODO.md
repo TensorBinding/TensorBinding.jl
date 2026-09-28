@@ -269,7 +269,7 @@ the affected golden cases in the same commit.
 
 ### Found by the Tier 2 KPM kernels (2026-09-26; not fixed, decision needed)
 
-- [ ] `_jackson_kernel(N)` (rpa/cheb2d.jl, the `kernel=:jackson` option of the SVD/Tucker
+- [x] `_jackson_kernel(N)` (rpa/cheb2d.jl, the `kernel=:jackson` option of the SVD/Tucker
       cheb2d bubbles) has `(N − m)` where the Jackson kernel for N moments has `(N − m + 1)`:
       it is the textbook g_m minus `cos(πm/(N+1))/(N+1)`, so g_0 = N/(N+1) instead of 1
       (max deviation 1/(N+1): 0.1 at N = 9, 0.0066 at N = 151). Fixing it moves the pinned
@@ -365,7 +365,7 @@ the affected golden cases in the same commit.
       *Fixed: add_zeeman!, add_soc! and add_superconductivity! lift their terms to the
       layout of H.sites (`_lift_to_aux_sites`); both failures, and the same on every
       sublattice or layered model, are gone.*
-- [ ] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
+- [x] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
       twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
       and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for
       Hermiticity.
@@ -373,6 +373,9 @@ the affected golden cases in the same commit.
       The self-check stays off there: the twisted V_kl and the propagator are dense
       functions, where QTCI does not miss bond classes; `add_soc!(:custom)` and
       `pairing2MPO` are still open.*
+      *Done: `add_superconductivity!(:custom)` and `add_soc!(:custom)` run it (both were 7 %
+      and 2 % off for nearest-neighbour Δ(i, j) and λ(i, j) at L = 6); `pairing2MPO` takes
+      `check`.*
 
 ## Tier 1 — mechanical, no behaviour change
 

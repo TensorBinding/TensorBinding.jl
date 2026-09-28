@@ -1,4 +1,4 @@
-using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test
+using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Random
 using TensorBinding: get_Hamiltonian, honeycomb_sublattice_hamiltonian, bilayer_hamiltonian,
                      add_spin!, add_zeeman!, add_soc!, add_superconductivity!, get_matrix
 
@@ -54,4 +54,28 @@ end
     A = Matrix(get_matrix(H.mpo, H.sites))
     @test norm(A - A') < 1e-8 * norm(A)
     @test norm(imag(A)) > 1e-3                 # the phase of t_inter is there
+end
+
+@testset "Custom pairing and SOC: sparse Δ(i, j), λ(i, j) are checked" begin
+    # A nearest-neighbour Δ(i, j) or λ(i, j) is sparse: QTCI from its default pivots could
+    # miss the bonds (a wrong MPO or "maxsamplevalue is zero!", depending on the RNG).
+    # The builds now run the sampled self-check of hopping2MPO.
+    L, Δ, λ = 6, 0.3, 0.2
+    N = 2^L
+    f(i, j) = j == i + 1 ? Δ : (j == i - 1 ? -Δ : 0.0)
+    g(i, j) = abs(i - j) == 1 ? λ : 0.0
+    Hd = let H = get_Hamiltonian("chain_1d", 1.0; L=L); Matrix(get_matrix(H.mpo, H.sites)) end
+    P  = [f(i, j) for i in 1:N, j in 1:N]
+    Λ  = [g(i, j) for i in 1:N, j in 1:N]
+    for seed in (1, 7, 42)
+        Random.seed!(seed)
+        H = get_Hamiltonian("chain_1d", 1.0; L=L)
+        add_superconductivity!(H, f; type=:custom)             # [nambu, pos…]
+        @test Matrix(get_matrix(H.mpo, H.sites)) ≈ [Hd P; P' -Hd] atol=1e-8
+        Random.seed!(seed)
+        H = get_Hamiltonian("chain_1d", 1.0; L=L)
+        add_soc!(H, g; type=:custom, direction=:z)             # [spin, pos…]
+        @test Matrix(get_matrix(H.mpo, H.sites)) ≈
+              kron([1 0; 0 1], Hd) + kron([0.5 0; 0 -0.5], Λ) atol=1e-8
+    end
 end

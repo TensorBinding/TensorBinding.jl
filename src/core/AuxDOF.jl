@@ -338,7 +338,7 @@ end
 
 """
     add_superconductivity!(H, Δ; type=:swave, tol=1e-8, maxdim=200,
-                           position=nothing) -> H
+                           position=nothing, check=true) -> H
 
 Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending
 (`position=:pre`) or postpending (`position=:post`) a Nambu (particle–hole)
@@ -356,7 +356,8 @@ The BdG structure is:
   On-site (s-wave) pairing is allowed here because the antisymmetry is carried
   by the spin singlet factor `i·σ_y`.  `Δ` can be a `Number` or 1-arg `Function`.
 - **Custom** (`type=:custom`): arbitrary pairing matrix via 2-arg function `Δ(i,j)`,
-  compressed with TCI.
+  compressed with TCI and checked against `Δ` on a sample of entries (`check=true`,
+  the self-check of `hopping2MPO`; a build that passes is kept as it is).
 
 **Note on spinless s-wave**: on-site pairing is forbidden for spinless fermions
 (`Δ(i,i) = 0` by antisymmetry).  Calling with `type=:swave` on a spinless chain
@@ -387,7 +388,8 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
                                 type::Symbol = :swave,
                                 tol::Real    = 1e-8,
                                 maxdim::Int  = 200,
-                                position::Union{Nothing,Symbol} = nothing)
+                                position::Union{Nothing,Symbol} = nothing,
+                                check::Bool  = true)
     _require_binary_position_space(H, "add_superconductivity!")
     H.nambu_s === nothing ||
         error("BdG already applied (H.nambu_s is set). Cannot apply twice.")
@@ -426,7 +428,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     elseif type === :custom
         Δ isa Function ||
             error("For type=:custom, Δ must be a 2-arg Function Δ(i,j).")
-        pairing2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64)
+        pairing2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64, check=check)
     else
         error("Unknown pairing type :$type.  Use :swave, :pwave, or :custom.")
     end
@@ -479,7 +481,7 @@ end
 
 """
     add_soc!(H, λ; type=:rashba, direction=:z, tol=1e-8, maxdim=200,
-             position=nothing) -> H
+             position=nothing, check=true) -> H
 
 Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed,
 placing the spin index at `position` (default `H.aux_side`).
@@ -494,7 +496,8 @@ placing the spin index at `position` (default `H.aux_side`).
 - `:custom` — arbitrary position-space MPO `λ_mpo` tensor-producted with the
               spin operator given by `direction` (`:x`, `:y`, or `:z`).
               `λ` may be a Number, a 1-arg `Function λ(i)`, or a 2-arg
-              `Function λ(i,j)` (the last compressed via TCI).
+              `Function λ(i,j)` (the last compressed via TCI and checked against
+              `λ` on a sample of entries: `check=true`, see `hopping2MPO`).
               For the result to be Hermitian, the position-space matrix must
               itself be Hermitian: `λ(i,j) = conj(λ(j,i))`.  Diagonal and
               real-symmetric inputs satisfy this automatically.
@@ -512,7 +515,8 @@ function add_soc!(H::TBHamiltonian, λ;
                   direction::Symbol = :z,
                   tol::Real         = 1e-8,
                   maxdim::Int       = 200,
-                  position::Union{Nothing,Symbol} = nothing)
+                  position::Union{Nothing,Symbol} = nothing,
+                  check::Bool       = true)
     _require_binary_position_space(H, "add_soc!")
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
@@ -549,7 +553,7 @@ function add_soc!(H::TBHamiltonian, λ;
         elseif λ isa Function && applicable(λ, 1)
             get_diagonal_mpo(H.L, pos_s, λ)
         elseif λ isa Function
-            hopping2MPO(λ, H.N, pos_s; tol=tol, type=ComplexF64)
+            hopping2MPO(λ, H.N, pos_s; tol=tol, type=ComplexF64, check=check)
         else
             error("λ must be a Number or a Function.")
         end

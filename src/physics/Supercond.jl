@@ -74,7 +74,7 @@ end
 
 """
     pairing2MPO(f, N, sites; tol=1e-8, type=ComplexF64,
-                initial_positions=[], unfoldingscheme=:interleaved) -> MPO
+                initial_positions=[], unfoldingscheme=:interleaved, check=false) -> MPO
 
 Antisymmetric analogue of `hopping2MPO` for superconducting pairing.
 
@@ -86,11 +86,14 @@ For nearest-neighbour pairing prefer `pairingNNN` — it is exact and avoids TCI
 Use `pairing2MPO` for longer-range or d-wave / p±ip patterns.
 
 `H_pair` is passed directly to `bdg_hamiltonian` or `bdg_spin_hamiltonian`.
+`check=true` runs the sampled self-check of `hopping2MPO` (a sparse `f`, such as a
+short-range pairing, can make the default QTCI pivots miss whole bond classes);
+`add_superconductivity!(H, Δ; type=:custom)` turns it on.
 """
 function pairing2MPO(f, N, sites; tol=1e-8, initial_positions=[],
-                     type=ComplexF64, unfoldingscheme=:interleaved)
+                     type=ComplexF64, unfoldingscheme=:interleaved, check::Bool=false)
     return hopping2MPO(f, N, sites; tol=tol, initial_positions=initial_positions,
-                       type=type, unfoldingscheme=unfoldingscheme)
+                       type=type, unfoldingscheme=unfoldingscheme, check=check)
 end
 
 

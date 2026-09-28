@@ -91,8 +91,10 @@ constructor that takes all 21 fields in order, caches included, remains.
   ±2^k, ±(2^k ± 1)) and, if it is wrong or QTCI threw "maxsamplevalue is zero!", rebuilt
   from the nonzero sampled entries as pivots, deterministically; a second failure is an
   error. A build that passes is returned unchanged, and the check draws nothing from the
-  RNG. `get_Hamiltonian("custom", f)` and `add_hopping!(H, f)` with a two-argument `f`
-  turn it on; their new keyword `check=false` turns it off.
+  RNG. `get_Hamiltonian("custom", f)`, `add_hopping!(H, f)` with a two-argument `f`,
+  `add_superconductivity!(H, Δ; type=:custom)` and `add_soc!(H, λ; type=:custom)` with a
+  two-argument `λ` turn it on; their new keyword `check=false` turns it off.
+  `pairing2MPO` takes `check` too (default `false`, like `hopping2MPO`).
 
 ### Changed
 
@@ -289,7 +291,9 @@ constructor that takes all 21 fields in order, caches included, remains.
   wrong MPO for a sparse `f` (a nearest-neighbour chain, a single bond), depending on the
   global RNG: QTCI missed whole bond classes from its default pivots. They now run the
   sampled self-check of `hopping2MPO` (see **Added**); builds that were right are
-  unchanged, bit for bit.
+  unchanged, bit for bit. The same holds for `add_superconductivity!(H, Δ; type=:custom)`
+  and `add_soc!(H, λ; type=:custom)`: a nearest-neighbour `Δ(i, j)` on a 64-site chain
+  came out 6.8 % off, a nearest-neighbour `λ(i, j)` 2.3 % off, whatever the seed.
 - **Honeycomb builders** (`honeycomb_sublattice_hamiltonian`, `honeycomb_nnn_hamiltonian`,
   `"honeycomb"`, `"honeycomb_nnn"`) at `Lx = 2, Ly = 1` with `|t| = 1` carried spurious
   entries of 1e-5: ITensors' density-matrix MPO sum projects on the eigenvectors of a
