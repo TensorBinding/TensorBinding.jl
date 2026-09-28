@@ -123,8 +123,13 @@ the affected golden cases in the same commit.
 - [x] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
       *Fixed in ead1d66 (divides by N²). Nothing compensated it: bugfix_rpacheb2d's dense
       reference used the same coefficients.*
-- [ ] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
+- [x] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
       electron sites (`interleave_mpo(..., 0)` targets even sites).
+      *Fixed in a64b949 (interleave n = 1 for H_c, plus the untransposed interleave_mpo).
+      The spectrum and every contact-probe |X, X⟩ result are unchanged in exact arithmetic;
+      for the same bipartite model on both carriers the truncated runs agree to rounding
+      too; x_e ≠ x_h probes swap electron and hole (separation ρ(d, R) → ρ(−d, R + d)). The
+      contact term is −Ufunc as documented.*
 - [x] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
       the kx = ky diagonal.
       *By design: its docstring calls it the legacy diagonal cut (`kpath_2d` gives paths; a
@@ -165,14 +170,20 @@ the affected golden cases in the same commit.
       iterate, error if still far from a projector; default Nel = `_half_filling(H)`.*
 - [x] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
       *Fixed in 87f6562: the moments take `ψ₀/‖ψ₀‖`, like the cache `KPM_Tn_mps` builds.*
-- [ ] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
+- [x] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
       `hermitize(NH)` forgets the convention and scale; `hermitized_hamiltonian` reports
       `aux_side=:pre` and the parent's `L`/`N`.
-- [ ] `rk4_step_dm_nh_gpu` casts `dt/2`, `dt`, `dt/6` to Float32 even for ComplexF64 (~1e-8 error).
-- [ ] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
+      *Fixed in a64b949: Z_spatial ComplexF64; NonHermitianHamiltonian records convention
+      and scale, hermitize(NH) keeps them; aux_side is the block side. L/N: false alarm
+      (they mean position qubits and sites, like add_spin! keeps them).*
+- [x] `rk4_step_dm_nh_gpu` casts `dt/2`, `dt`, `dt/6` to Float32 even for ComplexF64 (~1e-8 error).
+      *Fixed in a64b949: coefficients in complex(real(eltype(ρ))); ComplexF32 bit for bit.*
+- [x] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
       (see the memory note on interleave_mpo).
       *`fix_sites` fixed in 87f6562 (legs by prime level, `_mpo_site_pair`); the exciton QFT
       conjugation is unchanged by it. `interleave_mpo` still open.*
+      *`interleave_mpo` fixed in a64b949 (legs by prime level); `get_green_krylov` embeds (z
+      − H)ᵀ explicitly; the bubbles return the Lindhard Π₀ for complex H.*
 
 **Crashes and unhelpful errors**
 - [x] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
@@ -221,7 +232,9 @@ the affected golden cases in the same commit.
       several geometries.
       *Fixed in 11a4e3c: chern8 t2 = 0.2t; Lieb `geometry_uc` square; `ref_sites` honoured
       (the L position qubits) or an ArgumentError.*
-- [ ] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
+- [x] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
+      *Fixed in a64b949: 0.0 means "not given" like nothing (a scale stored on NH.hermitized
+      is used), as everywhere else.*
 - [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
       *Fixed with the shared GPU warning (tier2/gpuwrap): its extra `cutoff < 1e-5` warning for
       every type is deleted; it now warns for a 32-bit type below 1e-5, its old 32-bit range.*
@@ -232,10 +245,13 @@ the affected golden cases in the same commit.
       *By design: the functions behind `_kpm_weight_matrix` have no `eta`/`m_order` keywords
       and document the four damping kernels. The error now says which functions take
       `:hodc` (87f6562).*
-- [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
+- [x] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
       `project_aux` error message names sublattice for every aux index.
       *The π was already right (4cf039f: "no 1/π factor", as the code). The
       `get_magnon_bubble` docstring had the spin-flip energy reversed (fixed in ead1d66).*
+      *Exciton interaction: the code (−Ufunc at contact) matched its docstring; the
+      Exciton_Hamiltonian example (x -> -U called attractive) is fixed in a64b949.
+      project_aux message: fixed in 4954a37.*
 
 ### Found by the Tier 2 scale maker (2026-09-26; not fixed, decision needed)
 
