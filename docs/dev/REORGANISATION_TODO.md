@@ -111,7 +111,9 @@ the affected golden cases in the same commit.
       merge commit lists them). The winding marker σ_z(PxQ + QxP) is symmetric under P ↔ Q,
       so `get_W(:KPM)` did not change; only the Chern marker changes sign (the pinned
       Hofstadter case, whose marker is ~0, moved by 4e-11).*
-- [ ] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
+- [x] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
+      *Fixed in ead1d66 (divides by N²). Nothing compensated it: bugfix_rpacheb2d's dense
+      reference used the same coefficients.*
 - [ ] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
       electron sites (`interleave_mpo(..., 0)` targets even sites).
 - [x] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
@@ -131,8 +133,10 @@ the affected golden cases in the same commit.
       bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
 - [ ] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
 - [ ] `sdf_convex_polygon` has its sign flipped (polygon masks are inverted).
-- [ ] RPA: `ϵF` never reaches the purification density (always half filling); `haydock_cf` uses
+- [x] RPA: `ϵF` never reaches the purification density (always half filling); `haydock_cf` uses
       tr(conj(A)B) instead of tr(A†B).
+      *Fixed in ead1d66: McWeeny starts from `H.center + ϵF` (the `mcweeny_purify` level), SP2
+      refuses `ϵF ≠ 0`; `haydock_cf` takes the exact Frobenius product `inner(A, B)`.*
 - [ ] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
       states (quarter filling on sublattice/spin/BdG models).
 - [x] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
@@ -160,7 +164,8 @@ the affected golden cases in the same commit.
       *Fixed in 87f6562: `spatial_sampling_plan` rejects empty groups (the callers' dead
       checks are gone); `mps_to_diagonal_mpo` takes a one-site MPS.*
 - [ ] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
-- [ ] `haydock_cf` throws DomainError for complex Hermitian seeds.
+- [x] `haydock_cf` throws DomainError for complex Hermitian seeds.
+      *Fixed in ead1d66 (same change).*
 
 **Minor / API**
 - [ ] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
@@ -169,7 +174,8 @@ the affected golden cases in the same commit.
       `get_scf` passes `scale=nothing`, overriding `scf_magnetic_hubbard`'s default.
 - [ ] `rms_error`/`_rms_error_gpu` and several `inner` calls rely on ITensors' deprecated index
       matching ("will error in ITensors v0.4").
-- [ ] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
+- [x] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
+      *Fixed in ead1d66: 1/(∞ − ∞) is taken as 0; singular tables keep the sentinel.*
 - [ ] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
 - [ ] `MODEL_REGISTRY["chern8"]` uses absolute `t2=0.2` (HChern8 defaults to 0.2t); Lieb's
       `geometry_uc` uses a triangular basis; `get_Hamiltonian` silently ignores `ref_sites` for
@@ -187,6 +193,8 @@ the affected golden cases in the same commit.
       `:hodc` (87f6562).*
 - [ ] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
       `project_aux` error message names sublattice for every aux index.
+      *The π was already right (4cf039f: "no 1/π factor", as the code). The
+      `get_magnon_bubble` docstring had the spin-flip energy reversed (fixed in ead1d66).*
 
 ### Found by the Tier 2 scale maker (2026-09-26; not fixed, decision needed)
 
@@ -206,6 +214,7 @@ the affected golden cases in the same commit.
       it is the textbook g_m minus `cos(πm/(N+1))/(N+1)`, so g_0 = N/(N+1) instead of 1
       (max deviation 1/(N+1): 0.1 at N = 9, 0.0066 at N = 151). Fixing it moves the pinned
       `jackson_kernel_*` and low-rank cheb2d golden cases.
+      *Fixed in ead1d66: `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)`; `_jackson_kernel` deleted.*
 - [x] `get_qpi` accepts projected position spaces but is binary-only (the impurity sits
       at the binary address `x0 − 1`, the QFT is over the binary register). With
       `physical_projector` as T₀ a Fibonacci call now throws in the diagonal accumulation
@@ -220,6 +229,13 @@ the affected golden cases in the same commit.
       the switch without truncation (3e-12); at `maxdim = 30` both are ~30 % off that
       converged value and differ from each other by ~19 %, so these bubbles need a
       convergence check in `maxdim` on projected spaces.
+      *Not a correctness bug (2026-09-28 check): H, ρ and the identity are block-diagonal in
+      physical ⊕ unphysical, so the collapsed physical block is exact (0.0 difference on an
+      L = 4 Fibonacci chain without truncation). It is an accuracy cost: 92 % of ‖G·N‖ sits
+      outside P⊗P and is discarded, but uses bond dimension. The fix, bit for bit on binary
+      spaces (`physical_projector` = identity there): projectors in `_build_heff`, in the
+      bubble numerators and seeds, and T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim`
+      convergence study. Left open as an improvement.*
 
 ### Found by the Tier 2 aux and density kernels (2026-09-26; not fixed, decision needed)
 
@@ -249,6 +265,23 @@ the affected golden cases in the same commit.
 - [x] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
       uses; dropping it would remove a dependency (a Project.toml change, fine in any release).
       *Dropped from `[deps]` and `[compat]`, and from the packages `test/exports.jl` checks.*
+
+### Found by the bug pass (2026-09-28)
+
+- [ ] Sign: for real H the cheb2d bubbles are −1 × `get_bubble_mpo` (their D_mn carries the
+      numerator P₁⊗I − I⊗P₂, `get_bubble_mpo` has I⊗P₂ − P₁⊗I). Both are documented as Π₀
+      and feed the same Dyson/Wynn drivers, whose (I − Π₀V)χ = Π₀ is the Stoner form of
+      `get_bubble_mpo`'s sign; cheb2d's sign is the physical retarded response, which the
+      untracked Ward-conductivity script relies on. Decision for the author: which sign
+      Π₀ has, and whether the cheb2d bubbles flip.
+- [ ] cheb2d bubbles on complex H take the Hadamard product P_a ⊙ P_b where the Lindhard
+      bubble has P_aᵀ ⊙ P_b: 44 % off on a complex L = 2 chain, and ‖Σ_j Π_ij‖ = 0.34 for
+      ‖Π‖ = 0.62 (particle number not conserved).
+- [ ] `rpa_from_bubble_diag` does not return χ: its output is rank one,
+      x[(i,j)] = [(Aᵀ)⁻¹ diag Π₀]_j with A = I − Π₀V (behind `get_rpa_susceptibility` and
+      `get_magnon_susceptibility`).
+- [ ] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
+      2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -498,7 +531,7 @@ the affected golden cases in the same commit.
       The per-energy diagonal accumulators (`get_ldos_diag_from_Tn`, QPI, cheb2d
       `_accumulate_scaled!`) and the NH reconstructions (no truncation, first term
       unweighted) keep their loops; `_weighted_mpo_sum_gpu` (conductivity only) too.*
-- [ ] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
+- [x] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
       (RPA) and `nh_jackson_weights` (NH).
       *Partly done in tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
       :jackson)[1:N]` (checked element by element for N = 1…4000) and is deleted; its eight
@@ -506,6 +539,8 @@ the affected golden cases in the same commit.
       record through a local definition. Not done: `_jackson_kernel` stays, because it is
       not `_kpm_kernel` under any normalisation (see "Found by the Tier 2 KPM kernels"), and
       no `normalize` keyword was added, since no caller would use it without changing values.*
+      *Completed in ead1d66: `_jackson_kernel` was the off-by-one kernel; the cheb2d bubbles
+      now take `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)` and it is deleted.*
 - [x] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
       8-keyword block copied into ~10 signatures; one `_project_aux_sectors` replacing the
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
