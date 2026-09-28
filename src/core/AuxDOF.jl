@@ -349,7 +349,10 @@ automatically redirects to `:pwave` (uniform `Δ`) or errors (spatially varying 
 - `:pwave`  — antisymmetric NN pairing `Δ·(K_f − K_b)` for spinless chains; `Δ` must be a `Number`
 - `:custom` — arbitrary `Δ(i,j)`; pass a 2-arg function
 
-Errors if BdG has already been applied.  Invalidates all caches.
+Errors if BdG has already been applied.  Invalidates all caches.  The KPM scale
+becomes `|H.center| + H.scale + 1.1‖Δ̂‖` (center 0), with ‖Δ̂‖ = `abs(Δ)` for
+s-wave and `2abs(Δ)` for p-wave, when `H.scale` is set and `Δ` is a `Number`;
+otherwise it is reset to 0 and estimated by DMRG on first use.
 
 Examples
 --------
@@ -434,12 +437,21 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     end
     ITensorMPS.truncate!(H_bdg; maxdim=maxdim, cutoff=tol)
 
-    Δ_scale    = Δ isa Number ? abs(Δ) : 1.0
+    old_scale, old_center = H.scale, H.center
     H.mpo      = H_bdg
     H.nambu_s  = nambu_s
     H.aux_side = pos
-    H.scale    = H.scale + Δ_scale * 1.1   # rough update; user can override
     _invalidate_cache!(H)
+    # KPM scale of the BdG Hamiltonian (center 0): the normal part τ_z ⊗ H lies within
+    # ±(|center| + scale) of H, the pairing adds at most its norm ‖Δ̂‖ (|Δ| on site,
+    # 2|Δ| for the p-wave Δ K_f − Δ* K_b), padded by 10 %. Only when that bound is
+    # known: a scale set on H (not the DMRG sentinel 0) and a number Δ; otherwise the
+    # scale stays 0 and is estimated by DMRG on first use. (Up to v0.1.1 an update
+    # scale + 1.1|Δ| stood before _invalidate_cache!, which reset it to 0.)
+    if old_scale > 0 && Δ isa Number
+        Δ_norm  = type === :pwave ? 2 * abs(Δ) : abs(Δ)
+        H.scale = abs(old_center) + old_scale + 1.1 * Δ_norm   # user can override
+    end
     return H
 end
 

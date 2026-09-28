@@ -308,9 +308,10 @@ case!("Utils", "utils_rms_error", 115) do
     s = siteinds("Qubit", 3)
     A = TB.get_mps(3, s, rprof(0.0, 0.0, 0.0, 1.0))
     B = TB.get_mps(3, s, rprof(0.0, 0.01, 0.0, 1.0))
-    # rms_error calls inner(diff', diff), which ITensors accepts only through a
-    # deprecated index-matching path and warns about once per session; the
-    # warning is silenced here, the value is pinned.
+    # Up to v0.1.1 rms_error called inner(diff', diff), which ITensors accepts only
+    # through a deprecated index-matching path and warns about once per session; it
+    # now calls inner(diff, diff) (the same value, bit for bit). The logger is still
+    # silenced here; the value is pinned.
     with_logger(NullLogger()) do
         (; rms = TB.rms_error(A, B), rms_self = TB.rms_error(A, A))
     end

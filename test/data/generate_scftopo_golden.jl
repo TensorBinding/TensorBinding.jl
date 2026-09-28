@@ -10,6 +10,13 @@
 # were regenerated in the merge of release-0.1.1 into Anouar, which made
 # get_density_from_Tn the occupied-state projector; every other entry kept its values
 # (the get_W(:KPM) cases too: the winding marker is symmetric under P <-> 1 - P).
+# The 2026-09 bug pass regenerated, each in the commit of its fix:
+# topology/get_C/hofstadter_sp2_flat (its "custom" Hofstadter build was a wrong QTCI MPO
+# for that seed); the 11 Chern-marker cases (real local markers), the SP2 cases (no
+# runaway to NaN, half the states as the default Nel), the four add_superconductivity!
+# scale fields, and the two density-cache cases (the cache answers only its own method).
+# The get_W/KPM_flat and KPM_quenched entries move at the 1e-11 level from one
+# regeneration to the next; they are kept at their old values.
 #
 # The cases themselves are defined in test/golden_scftopo.jl (module ScftopoGolden),
 # which this script includes with SCFTOPO_GOLDEN_GENERATOR defined so that only the

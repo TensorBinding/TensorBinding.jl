@@ -31,7 +31,8 @@ using TensorBinding: get_Hamiltonian, add_onsite!, add_hopping!, add_spin!, add_
 # spectral scales, so no DMRG scale estimate runs. The global RNG is re-seeded before
 # each case from the case name (QTCI draws random pivots from it); stdout and log
 # records are silenced while a case runs (several routines println unconditionally,
-# and rms_error triggers an ITensors deprecation warning). Warnings are not pinned.
+# and up to v0.1.1 rms_error triggered an ITensors deprecation warning). Warnings are
+# not pinned.
 #
 # Runtime (2026-09, workstation, one thread, other Julia jobs running): ~3 min cold.
 # Nearly all of it is first-call compilation shared with any test of this package:
@@ -694,7 +695,7 @@ case!("topology/_get_projector/cache_short_circuits") do
        sp2 = TB._get_projector(H; method = :sp2) === sentinel)
 end
 case!("topology/_get_projector/sp2_Nel") do
-    # SP2 stalls just above tol and then diverges to NaN for some fillings (pinned as is)
+    # up to v0.1.1 SP2 stalled just above tol, then diverged (to NaN for some fillings)
     (; Nel3 = attempt(() -> dense(TB._get_projector(gapped_chain(); method = :sp2, Nel = 3.0, maxdim = 30))),
        default = attempt(() -> dense(TB._get_projector(gapped_chain(); method = :sp2, maxdim = 30))))
 end
@@ -716,10 +717,10 @@ end
 case!("topology/get_W/mcweeny_l_Lambda") do
     H = ssh(); winding(get_W(H; method = :mcweeny, l = 2, Λ = 4, maxdim = 30), H)
 end
-case!("topology/get_W/sp2_half_filling") do       # SP2 diverges to NaN here (pinned as is)
+case!("topology/get_W/sp2_half_filling") do       # SP2 diverged to NaN here up to v0.1.1
     H = ssh(); winding(get_W(H; method = :sp2, Nel = 8, maxdim = 30), H)
 end
-case!("topology/get_W/sp2_default_Nel") do     # default Nel = H.N ÷ 2 counts unit cells, not atoms
+case!("topology/get_W/sp2_default_Nel") do     # default Nel: half the states (H.N ÷ 2 up to v0.1.1)
     H = ssh(); winding(get_W(H; method = :sp2, maxdim = 30), H)
 end
 case!("topology/get_W/trivial_mcweeny_flat") do

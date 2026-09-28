@@ -1220,7 +1220,11 @@ single `get_*` style entry point for notebooks.
   `Nel=H0.N ÷ 2`, `spectral_bounds=nothing`, `stop_on_increase=false` (`:cdw`).
 - `density_method=:sp2`, or `method` (default `nothing`), which takes precedence.
 - `Ncheb=100`, `scale=nothing`, `purification_scale_padding=1.05`, `maxdim=100`,
-  `cutoff=1e-8`, `purif_maxiter=40`, `purif_tol=1e-6`, `verbose=true`.
+  `cutoff=1e-8`, `purif_maxiter=40`, `purif_tol=1e-6`, `verbose=true`. A `scale`
+  that is not given is left to the driver's default: `H0.scale` when it is set
+  (`:magnetic`, and through the BdG builders `:swave`/`:pwave`), a DMRG estimate
+  of every mean-field Hamiltonian otherwise and always for `:cdw`. (Up to v0.1.1
+  `:magnetic` received `scale=nothing` and estimated every iteration by DMRG.)
 - `tol=1e-6`, `maxiters=30`, `mixing=0.4`: passed to the drivers as `scf_tol`,
   `max_scf_iter` and `mix`. For `:cdw` with `interaction=:dense` or `:distance`, `tol` is
   also the QTCI tolerance of the Hartree builder (`:local` does not use it).
@@ -1257,6 +1261,9 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
     _require_binary_position_space(H0, "get_scf")
     ch = _canonical_channel(channel)
     dmethod = _canonical_density_method(method === nothing ? density_method : method)
+    # A scale not given is left to the driver: scf_magnetic_hubbard defaults to H0.scale
+    # (passing scale=nothing overrode that, up to v0.1.1); the others default to nothing.
+    scale_kw = scale === nothing ? (;) : (; scale)
 
     if ch === :cdw
         builder = _make_cdw_builder(H0, U;
@@ -1275,7 +1282,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                              Nel=Nel,
                              fermi=fermi,
                              Ncheb=Ncheb,
-                             scale=scale,
+                             scale_kw...,
                              spectral_bounds=spectral_bounds,
                              purification_scale_padding=purification_scale_padding,
                              max_scf_iter=maxiters,
@@ -1293,7 +1300,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
                                     density_method=dmethod,
                                     fermi=fermi,
                                     Ncheb=Ncheb,
-                                    scale=scale,
+                                    scale_kw...,
                                     purification_scale_padding=purification_scale_padding,
                                     max_scf_iter=maxiters,
                                     scf_tol=tol,
@@ -1309,7 +1316,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
         return scf_swave_hubbard(H0, U;
                                  density_method=dmethod,
                                  Ncheb=Ncheb,
-                                 scale=scale,
+                                 scale_kw...,
                                  purification_scale_padding=purification_scale_padding,
                                  max_scf_iter=maxiters,
                                  scf_tol=tol,
@@ -1325,7 +1332,7 @@ function get_scf(H0::TBHamiltonian, U, channel::Symbol;
         return scf_pwave_equalspin(H0, U;
                                    density_method=dmethod,
                                    Ncheb=Ncheb,
-                                   scale=scale,
+                                   scale_kw...,
                                    purification_scale_padding=purification_scale_padding,
                                    max_scf_iter=maxiters,
                                    scf_tol=tol,

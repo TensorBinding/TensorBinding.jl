@@ -63,6 +63,37 @@ end
 
 
 """
+    _half_filling(H) -> Int
+
+Half the number of states of `H`, `prod(dim, H.sites) ÷ 2`: every position,
+sublattice, layer, spin and Nambu state counts. The default SP2 electron count
+(`H.N ÷ 2` up to v0.1.1, which counts unit cells and gave quarter filling on
+sublattice, spin and BdG models).
+"""
+_half_filling(H) = prod(dim, H.sites) ÷ 2
+
+
+# The method (:mcweeny, :sp2 or :kpm) that computed each density matrix the package
+# caches in `H._density_cache`, keyed by the MPO object itself and held weakly (an
+# entry goes with its MPO). `_cached_density(H, method)` is the cache when it was
+# computed by `method`, or has no entry (set by hand, e.g. `H._density_cache = ρ`),
+# and `nothing` otherwise: up to v0.1.1 a cached McWeeny matrix answered `:kpm` too.
+const _DENSITY_METHOD = WeakKeyDict{MPO,Symbol}()
+
+function _store_density!(H, ρ::MPO, method::Symbol)
+    H._density_cache = ρ
+    _DENSITY_METHOD[ρ] = method
+    return ρ
+end
+
+function _cached_density(H, method::Symbol)
+    ρ = H._density_cache
+    ρ === nothing && return nothing
+    return get(_DENSITY_METHOD, ρ, method) === method ? ρ : nothing
+end
+
+
+"""
     _purified_pair(guess, a₊, a₋; maxiters, maxdim, cutoff, tol, verbose) -> (ρ₊, ρ₋)
 
 McWeeny-purify the initial guess `guess(a₊)`, then `guess(a₋)`, each built just
@@ -163,6 +194,12 @@ Each step costs one MPO-MPO product.  The direction rule drives
 Tr(ρ) toward `Nel` and simultaneously pushes eigenvalues to 0 or 1.
 Convergence is quadratic.
 
+The iteration stops when the residual ‖ρ²−ρ‖/‖ρ‖ is below `tol`, after `maxiters`
+iterations, or once Tr(ρ²) > Tr(ρ): the spectrum has then left `[0, 1]`, which
+only truncation (or an invalid `ρ0`) can do, and the map would amplify it (see
+`_sp2_iterate`); the iterate with the smallest residual is returned in that case,
+or an error thrown when that residual is still 0.1 or more.
+
 The spectrum of `ρ0` must lie in `[0, 1]`; normalise with
 `ρ0 = (Id - H/scale) / 2` if starting from scratch.
 
@@ -189,10 +226,28 @@ end
 
 The SP2 loop of `sp2_purify`, also run on GPU MPOs by `get_C_gpu`. Each iteration:
 `ρ² = apply(ρ, ρ; maxdim, cutoff)`, `truncate!(ρ²; <trunc>)`, the residual,
-`progress(iter, err, ρ)`, a stop below `tol`, then `ρ ← ρ²` when Tr ρ² ≥ `Nel`, else
-`ρ ← +(2ρ, −ρ²; <add_trunc>)` and `truncate!(ρ; <trunc>)`; `after_step()` ends every
-iteration that did not stop. The CPU truncates with both parameters and sums with
-`cutoff`; the GPU truncates with `cutoff` and sums with both. `ρ` is not copied.
+`progress(iter, err, ρ)`, a stop below `tol`, the stop on Tr ρ² > Tr ρ (below), then
+`ρ ← ρ²` when Tr ρ² ≥ `Nel`, else `ρ ← +(2ρ, −ρ²; <add_trunc>)` and
+`truncate!(ρ; <trunc>)`; `after_step()` ends every iteration that did not stop. The
+CPU truncates with both parameters and sums with `cutoff`; the GPU truncates with
+`cutoff` and sums with both. `ρ` is not copied.
+
+The second stop is the noise floor. With the spectrum in [0, 1], x² ≤ x for every
+eigenvalue, so Tr ρ² ≤ Tr ρ; only truncation puts eigenvalues outside, and once they
+outweigh what is left of the genuine non-idempotency Σ x(1 − x), Tr ρ² > Tr ρ. The
+map then amplifies them: an eigenvalue 1 + δ becomes 1 + 2δ under ρ², and, since it
+also raises Tr ρ², the rule Tr ρ² ≥ `Nel` keeps choosing ρ² (likewise −δ under
+2ρ − ρ²), so the residual doubles every iteration until the MPO overflows to NaN.
+At that point the loop returns the iterate with the smallest residual seen so far,
+or, when that residual is still 0.1 or more, throws an error: then no iterate came
+near a projector, and the spectrum left [0, 1] because the input is not a valid
+guess (a non-Hermitian Hamiltonian, or a scale below its spectral radius), where
+SP2 used to overflow to NaN or return whatever the last iteration gave.
+The stop cannot fire in exact arithmetic, and a run in which it does not fire returns
+what it returned up to v0.1.1. It replaces the runaway (to NaN, or to a
+matrix far from a projector at `maxiters`) of SP2 runs whose truncation floor lies
+above `tol`: with the default cutoff 1e-8 the floor was 1e-5 to 1e-3 on the small
+chains tested, against the default tol = 1e-5.
 """
 function _sp2_iterate(ρ::MPO, Nel::Real; maxiters::Int, maxdim::Int, cutoff::Real,
                       tol::Real, trunc::Tuple = (:maxdim, :cutoff),
@@ -200,12 +255,23 @@ function _sp2_iterate(ρ::MPO, Nel::Real; maxiters::Int, maxdim::Int, cutoff::Re
                       after_step = nothing)
     trunc_kwargs = _trunc_kwargs(trunc, maxdim, cutoff)
     add_kwargs   = _trunc_kwargs(add_trunc, maxdim, cutoff)
+    best, best_err = ρ, Inf
     for iter in 1:maxiters
         ρ2  = _mpo_sq(ρ; maxdim, cutoff, trunc)
         err = _idempotency_error(ρ, ρ2)
         progress === nothing || progress(iter, err, ρ)
         err < tol && break
+        err < best_err && ((best, best_err) = (ρ, err))
         tr_ρ2 = real(tr(ρ2))
+        # Spectrum outside [0, 1]: the noise floor is reached (see above), unless no
+        # iterate came near a projector.
+        if tr_ρ2 > real(tr(ρ))
+            best_err < 0.1 && return best
+            error("SP2 purification failed: the spectrum left [0, 1] (Tr ρ² > Tr ρ) at " *
+                  "iteration $iter with the smallest residual ‖ρ²−ρ‖/‖ρ‖ still $best_err. " *
+                  "Check that the Hamiltonian is Hermitian and that its scale bounds the " *
+                  "spectrum (ρ0 needs its spectrum in [0, 1]).")
+        end
         if tr_ρ2 >= Nel
             # contract toward 0: keep ρ²
             ρ = ρ2
@@ -290,21 +356,21 @@ function mcweeny_purify(H::TBHamiltonian;
     ρ0 = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff)
     ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                             tol=tol, verbose=verbose)
-    H._density_cache = ρ
-    return ρ
+    return _store_density!(H, ρ, :mcweeny)
 end
 
 
 """
-    sp2_purify(H::TBHamiltonian; Nel=H.N ÷ 2, maxiters=40, maxdim=40, cutoff=1e-8,
-               tol=1e-5, verbose=false) -> MPO
+    sp2_purify(H::TBHamiltonian; Nel=_half_filling(H), maxiters=40, maxdim=40,
+               cutoff=1e-8, tol=1e-5, verbose=false) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs SP2 purification,
 caches the result in `H._density_cache`, and returns the purified density matrix.
-`Nel` defaults to half-filling (`H.N ÷ 2`).
+`Nel` defaults to half-filling: half the number of states, `prod(dim, H.sites) ÷ 2`
+(sublattice, layer, spin and Nambu states included; `H.N ÷ 2` up to v0.1.1).
 """
 function sp2_purify(H::TBHamiltonian;
-                    Nel::Int        = H.N ÷ 2,
+                    Nel::Int        = _half_filling(H),
                     maxiters::Int   = 40,
                     maxdim::Int     = 40,
                     cutoff::Float64 = 1e-8,
@@ -314,8 +380,7 @@ function sp2_purify(H::TBHamiltonian;
     ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
     ρ  = sp2_purify(ρ0, Nel; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                               tol=tol, verbose=verbose)
-    H._density_cache = ρ
-    return ρ
+    return _store_density!(H, ρ, :sp2)
 end
 
 
@@ -325,13 +390,17 @@ end
 
 """
     get_density(H::TBHamiltonian; method=:mcweeny, ϵF=0.0, Ncheb=150, kernel=:jackson,
-                lambda=4.0, maxdim=40, cutoff=1e-8, Nel=H.N ÷ 2, maxiters=30,
+                lambda=4.0, maxdim=40, cutoff=1e-8, Nel=_half_filling(H), maxiters=30,
                 tol=1e-5, verbose=false) -> MPO
 
 Compute and cache the zero-temperature density matrix P = θ(ϵF − H).
 
-If `H._density_cache` is already populated it is returned immediately.
-Set `H._density_cache = nothing` to force a fresh computation.
+If `H._density_cache` holds a density matrix computed by the same `method` (or one
+stored there by hand), it is returned immediately, whatever the other keywords; one
+computed by another method is recomputed (and replaced). Set
+`H._density_cache = nothing` to force a fresh computation. An unknown `method` is an
+error even when a density matrix is cached (up to v0.1.1 the cache answered every
+method).
 
 **method**
 - `:mcweeny` (default) — McWeeny purification P_{n+1} = 3P_n² − 2P_n³
@@ -349,7 +418,8 @@ Set `H._density_cache = nothing` to force a fresh computation.
 - `lambda`  : Jackson kernel damping parameter. Default `4.0`.
 - `maxdim`  : Maximum bond dimension. Default `40`.
 - `cutoff`  : SVD truncation cutoff. Default `1e-8`.
-- `Nel`     : Target electron count (`:sp2` only). Default `H.N ÷ 2`.
+- `Nel`     : Target electron count (`:sp2` only). Default: half the number of
+  states, `prod(dim, H.sites) ÷ 2` (`H.N ÷ 2`, half the unit cells, up to v0.1.1).
 - `maxiters`: Maximum purification iterations. Default `30`.
 - `tol`     : Idempotency convergence tolerance (purification). Default `1e-5`.
 - `verbose` : Print iteration progress. Default `false`.
@@ -362,16 +432,19 @@ function get_density(H::TBHamiltonian;
                      lambda::Real     = 4.0,
                      maxdim::Int      = 40,
                      cutoff::Float64  = 1e-8,
-                     Nel::Int         = H.N ÷ 2,
+                     Nel::Int         = _half_filling(H),
                      maxiters::Int    = 30,
                      tol::Float64     = 1e-5,
                      verbose::Bool    = false)
 
     method === :kpm || _require_binary_position_space(H, "get_density(method=:$method)")
+    method in (:mcweeny, :sp2, :kpm) ||
+        error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")
 
-    if H._density_cache !== nothing
+    cached = _cached_density(H, method)
+    if cached !== nothing
         verbose && println("get_density: returning cached density matrix")
-        return H._density_cache
+        return cached
     end
 
     return _density_matrix(H, method; ϵF=ϵF, Ncheb=Ncheb, kernel=kernel, lambda=lambda,
@@ -382,22 +455,26 @@ end
 
 """
     _density_matrix(H, method; ϵF=0.0, Ncheb=150, kernel=:jackson, lambda=4.0,
-                    maxdim=40, cutoff=1e-8, Nel=H.N ÷ 2, maxiters=30, tol=1e-5,
+                    maxdim=40, cutoff=1e-8, Nel=_half_filling(H), maxiters=30, tol=1e-5,
                     verbose=false, Tn=nothing, store=true) -> MPO
 
 The density-matrix dispatcher behind `get_density`, which checks the position
-space and the density cache first; the defaults are `get_density`'s. RPA's
-`_get_density_matrix` (physics/rpa/bubble.jl) and Topology's `_get_projector`
+space, the method and the density cache first; the defaults are `get_density`'s.
+RPA's `_get_density_matrix` (physics/rpa/bubble.jl) and Topology's `_get_projector`
 (physics/Topology.jl) call it too, after translating their own method symbols,
 cache rules and defaults (see each).
 
 - `:mcweeny` / `:sp2`: `mcweeny_purify(H; ϵF, …)` / `sp2_purify(H; Nel, …)`, which
   store the result in `H._density_cache`.
-- `:kpm`: `get_density_from_Tn` on the Chebyshev list `Tn = (Tn_list, N)`. With
-  `Tn = nothing` that is `H._tn_cache`, built by `KPM_Tn(H, Ncheb; …)` when it is
-  absent or shorter than `Ncheb`. The result is stored in `H._density_cache`
-  unless `store=false`. The expansion is that of `get_density_from_Tn`, the
-  occupied-state projector θ(μ − x) (it was θ(x − μ) until v0.1.1).
+- `:kpm`: `get_density_from_Tn` on the Chebyshev list `Tn = (Tn_list, N)`, expanded
+  with `maxdim` and `cutoff`. With `Tn = nothing` that is `H._tn_cache`, built by
+  `KPM_Tn(H, Ncheb; …)` when it is absent or shorter than `Ncheb` (a longer one is
+  used at its own order). The result is stored in `H._density_cache` unless
+  `store=false`. The expansion is that of `get_density_from_Tn`, the occupied-state
+  projector θ(μ − x) (it was θ(x − μ) until v0.1.1).
+
+Each stored result is recorded with its method (`_store_density!`), so that a later
+`get_density` or `_get_projector` for another method does not return it.
 """
 function _density_matrix(H::TBHamiltonian, method::Symbol;
                          ϵF       = 0.0,
@@ -406,7 +483,7 @@ function _density_matrix(H::TBHamiltonian, method::Symbol;
                          lambda   = 4.0,
                          maxdim   = 40,
                          cutoff   = 1e-8,
-                         Nel      = H.N ÷ 2,
+                         Nel      = _half_filling(H),
                          maxiters = 30,
                          tol      = 1e-5,
                          verbose  = false,
@@ -430,7 +507,7 @@ function _density_matrix(H::TBHamiltonian, method::Symbol;
         ρ = get_density_from_Tn(Tn_list, N;
                                   fermi=fermi_r, maxdim=maxdim, cutoff=cutoff,
                                   kernel=kernel, lambda=lambda)
-        store && (H._density_cache = ρ)
+        store && _store_density!(H, ρ, :kpm)
         return ρ
     else
         error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")

@@ -18,20 +18,25 @@
 function _rms_error_gpu(a::MPS, b::MPS; cutoff::Real = 1e-12)
     diff = +(a, -1.0 * b; cutoff=Float64(cutoff))
     n = prod(dim(s) for s in siteinds(a))
-    return sqrt(abs(real(inner(diff', diff))) / n)
+    # ⟨diff|diff⟩ with matching site indices (see rms_error)
+    return sqrt(abs(real(inner(diff, diff))) / n)
 end
 
+# The diagonal Hartree MPOs, with deltas of element type `delta_type` (ComplexF32 unless
+# given; see scf_magnetic_hubbard_gpu).
 function _local_hartree_from_density_gpu(rho::MPS, sites, U::Number, bg::MPS;
-                                         maxdim::Int, cutoff::Real)
+                                         maxdim::Int, cutoff::Real,
+                                         delta_type::Type = ComplexF32)
     coeff = +(rho, -1.0 * bg; maxdim=maxdim, cutoff=Float64(cutoff))
-    return _mps_to_diagonal_mpo_gpu(U * coeff, sites)
+    return _mps_to_diagonal_mpo_gpu(U * coeff, sites; delta_type)
 end
 
 function _hartree_mpo_from_density_gpu(rho::MPS, interaction_op::MPO, sites, bg::MPS;
-                                       maxdim::Int, cutoff::Real)
+                                       maxdim::Int, cutoff::Real,
+                                       delta_type::Type = ComplexF32)
     coeff = +(rho, -1.0 * bg; maxdim=maxdim, cutoff=Float64(cutoff))
     coeff_mps = apply(interaction_op, coeff; maxdim=maxdim, cutoff=Float64(cutoff))
-    return _mps_to_diagonal_mpo_gpu(coeff_mps, sites)
+    return _mps_to_diagonal_mpo_gpu(coeff_mps, sites; delta_type)
 end
 
 
@@ -72,9 +77,12 @@ the loop; it is multiplied by `purification_scale_padding`.
 
 `type` (alias `dtype`; default `ComplexF32`) is the element type the
 Hamiltonians, densities and background profile are uploaded with; `ComplexF64`
-is safer at tight cutoffs. A real `type` is accepted for a real `H0`, but the
-ComplexF32 deltas of the Hartree MPOs then promote the loop to the matching
-complex type. ComplexF32 eigen-decompositions can NaN at very tight
+is safer at tight cutoffs. A real `type` is accepted for a real `H0`, and the
+loop stays real (the Hartree MPOs are built with deltas of that type; up to
+v0.1.1 their ComplexF32 deltas made it complex after the first Hartree step).
+With a 32-bit type, real or complex, the Float64 coefficients of the Hartree,
+purification and mixing steps promote the loop to 64 bits after the first
+step, as they always did. ComplexF32 eigen-decompositions can NaN at very tight
 cutoffs: a warning is emitted for a 32-bit `type` with `cutoff < 1e-5`; the
 requested `cutoff` is used as-is.
 
@@ -164,17 +172,21 @@ function scf_magnetic_hubbard_gpu(H0::TBHamiltonian, U::Union{Number, MPO};
         )
     end
 
+    # The Hartree deltas: a real type keeps its own (ComplexF32 deltas turned the whole
+    # loop complex after the first Hartree step, up to v0.1.1); the complex types keep
+    # the ComplexF32 deltas they always had (exact 0/1 entries).
+    delta_type = gpu_type <: Real ? gpu_type : ComplexF32
     for iter in 1:max_scf_iter
         V_up_gpu = U isa MPO ?
             _hartree_mpo_from_density_gpu(rho_dn_gpu, U_gpu, sites, bg_gpu;
-                                          maxdim=maxdim, cutoff=cutoff) :
+                                          maxdim=maxdim, cutoff=cutoff, delta_type) :
             _local_hartree_from_density_gpu(rho_dn_gpu, sites, U, bg_gpu;
-                                            maxdim=maxdim, cutoff=cutoff)
+                                            maxdim=maxdim, cutoff=cutoff, delta_type)
         V_dn_gpu = U isa MPO ?
             _hartree_mpo_from_density_gpu(rho_up_gpu, U_gpu, sites, bg_gpu;
-                                          maxdim=maxdim, cutoff=cutoff) :
+                                          maxdim=maxdim, cutoff=cutoff, delta_type) :
             _local_hartree_from_density_gpu(rho_up_gpu, sites, U, bg_gpu;
-                                            maxdim=maxdim, cutoff=cutoff)
+                                            maxdim=maxdim, cutoff=cutoff, delta_type)
 
         Hup_mpo_gpu = +(H0_up_gpu, V_up_gpu; maxdim=maxdim, cutoff=Float64(cutoff))
         Hdn_mpo_gpu = +(H0_dn_gpu, V_dn_gpu; maxdim=maxdim, cutoff=Float64(cutoff))

@@ -5,10 +5,13 @@
 #
 # The key observables are:
 #
-#   Chern marker (2D):   C(r) = 4π Im⟨r| P [x̂, P] [ŷ, P] |r⟩
+#   Chern marker (2D):   C(r) = 2π Im⟨r| P x̂ Q ŷ P − Q x̂ P ŷ Q |r⟩
 #   Winding number (1D): W(r) = ⟨r| σ_z (P x̂ Q + Q x̂ P) |r⟩
 #
-# where P is the ground-state projector, Q = I − P, and [A,B] = AB − BA.
+# where P is the ground-state projector and Q = I − P. C(r) is the diagonal of the
+# Hermitian part of 2πi (Q x̂ P ŷ Q − P x̂ Q ŷ P), the operator the code assembles,
+# and the mean of the two Bianco–Resta markers 4π Im⟨r|P x̂ Q ŷ P|r⟩ and
+# −4π Im⟨r|Q x̂ P ŷ Q|r⟩, whose traces agree (see _hermitian_diag).
 # Integrating C(r) or W(r) over the bulk gives the integer invariant.
 #
 # == Position functions ==
@@ -38,12 +41,13 @@
 #
 #   quenched=false:
 #       Position operators use xfunc/yfunc directly (no sin/cos).
-#       Formula: C = 2πi (Q x P y Q − P x Q y P).  Best for OBC or averages.
+#       Formula: C = 2πi (Q x P y Q − P x Q y P), Hermitian part.  Best for OBC
+#       or averages.
 #
 # == Projector methods ==
-#   method=:KPM      — KPM Chebyshev expansion (uses cached Tn if available)
-#   method=:mcweeny  — McWeeny purification (uses density cache if available)
-#   method=:sp2      — SP2 purification (uses density cache if available)
+#   method=:KPM      — KPM Chebyshev expansion (uses cached Tn of sufficient order)
+#   method=:mcweeny  — McWeeny purification (uses a McWeeny density cache)
+#   method=:sp2      — SP2 purification (uses an SP2 density cache)
 #
 # Bond dimension and truncation are controlled uniformly through `maxdim` and
 # `cutoff` kwargs, which are threaded into every apply, add, and truncate! call.
@@ -65,21 +69,22 @@
 
 Compute or retrieve the ground-state projector P for `H`.
 
-- `method=:KPM` (default): uses the cached `H._tn_cache` if present; otherwise
-  runs `KPM_Tn(H, Nchebychev)`.  The Fermi level `fermi` (in physical units)
-  is rescaled internally.
-- `method=:mcweeny`: returns `H._density_cache` if set; otherwise runs McWeeny
-  purification with `ϵF=fermi`.
+- `method=:KPM` (default): uses the cached `H._tn_cache` if it has at least
+  `Nchebychev` moments; otherwise runs `KPM_Tn(H, Nchebychev)`.  The Fermi level
+  `fermi` (in physical units) is rescaled internally.
+- `method=:mcweeny`: returns `H._density_cache` if it was computed by McWeeny
+  purification (or set by hand); otherwise runs McWeeny purification with `ϵF=fermi`.
 - `method=:sp2`: same but uses SP2 purification.  `Nel` sets the target
-  electron count (default: `H.N ÷ 2`).
+  electron count (default: half the number of states, `prod(dim, H.sites) ÷ 2`).
 - `maxdim`, `cutoff`: bond dimension and truncation threshold forwarded to the
   underlying method.
 
 The projector comes from `get_density`'s dispatcher (`_density_matrix`,
 physics/Purification.jl), with the rules above: `:KPM` (not `get_density`'s
-`:kpm`) takes a cached Chebyshev list of any order, never touches the density
-cache and expands with `get_density_from_Tn`'s default cutoff (1e-8) rather
-than `cutoff`; `:sp2` runs `sp2_purify`'s default 40 iterations.
+`:kpm`) never touches the density cache; `:sp2` runs `sp2_purify`'s default 40
+iterations. Up to v0.1.1 `:KPM` also expanded a cached Chebyshev list shorter than
+`Nchebychev`, always with cutoff 1e-8, and `:mcweeny`/`:sp2` returned a density
+matrix cached by any method.
 """
 function _get_projector(H::TBHamiltonian;
                          method::Symbol   = :KPM,
@@ -89,17 +94,18 @@ function _get_projector(H::TBHamiltonian;
                          cutoff::Float64  = 1e-8,
                          Nel              = nothing)
     if method == :KPM
-        Tn = H._tn_cache !== nothing ? (H._tn_cache, H._tn_Ncheb) :
-             (first(KPM_Tn(H, Nchebychev; maxdim=maxdim, cutoff=cutoff)), Nchebychev)
-        return _density_matrix(H, :kpm; ϵF=fermi, maxdim=maxdim, cutoff=1e-8,
-                               Tn=Tn, store=false)
+        # H._tn_cache when it has ≥ Nchebychev moments, else a fresh KPM_Tn(H, Nchebychev)
+        return _density_matrix(H, :kpm; ϵF=fermi, Ncheb=Nchebychev, maxdim=maxdim,
+                               cutoff=cutoff, store=false)
     elseif method == :mcweeny
-        H._density_cache !== nothing && return H._density_cache
+        cached = _cached_density(H, :mcweeny)
+        cached === nothing || return cached
         return _density_matrix(H, :mcweeny; ϵF=fermi, maxiters=30, maxdim=maxdim,
                                cutoff=cutoff, tol=1e-5, verbose=false)
     elseif method == :sp2
-        H._density_cache !== nothing && return H._density_cache
-        Nel_val = Nel === nothing ? H.N ÷ 2 : Int(Nel)
+        cached = _cached_density(H, :sp2)
+        cached === nothing || return cached
+        Nel_val = Nel === nothing ? _half_filling(H) : Int(Nel)
         return _density_matrix(H, :sp2; Nel=Nel_val, maxiters=40, maxdim=maxdim,
                                cutoff=cutoff, tol=1e-5, verbose=false)
     else
@@ -155,7 +161,8 @@ assigns the same x-coordinate to both A and B sites of each UC.
 - `Nchebychev`: Chebyshev order when `method=:KPM` and no cache is present.
 - `maxdim`    : MPO bond dimension during all multiplications.
 - `cutoff`    : truncation threshold during all multiplications.
-- `Nel`       : target electron count for SP2 (default `H.N ÷ 2`).
+- `Nel`       : target electron count for SP2 (default: half the number of states,
+                `prod(dim, H.sites) ÷ 2`).
 - `l`         : qubits per direction; inferred as `H.L ÷ 2` if `nothing`.
 - `Λ`         : quenching period (angle = xfunc/Λ); sets the Λ prefactor.
 
@@ -360,6 +367,11 @@ In both modes the marker is divided by the unit-cell area `A_cell = |a₁ × a�
 with `a₁`, `a₂` the steps of `xfunc`/`yfunc` from unit cell 0 to unit cells 1 and
 `L_chain`.
 
+In both modes each ⟨α|C|α⟩ is that of the Hermitian part (C + C†)/2 of the marker
+operator, i.e. its real part: C itself is not Hermitian, and up to v0.1.1 its
+traceless anti-Hermitian part gave the local markers imaginary parts of O(0.1)
+(`_hermitian_diag`).
+
 # Arguments
 - `P`       : ground-state projector MPO (over `sites`)
 - `L`       : number of position qubits; system has `2^L` unit cells
@@ -380,7 +392,8 @@ with `a₁`, `a₂` the steps of `xfunc`/`yfunc` from unit cell 0 to unit cells 
 `calculate_chern_number(uc::Int) -> ComplexF64` where `uc` is a 1-indexed
 unit cell number (1 … 2^L).  For sublattice models the value is the sum of
 the Chern marker over all `n_sub` atoms within that unit cell.
-Take `real(·)` for the Chern number density.
+The value is real (its imaginary part is zero); `real(·)` gives the Chern
+number density as a `Float64`.
 
 # Example — quenched square lattice
 ```julia
@@ -411,6 +424,25 @@ function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
     return _chern_marker(P, L, sites, xfunc, yfunc; l, Λ, maxdim, cutoff, quenched,
                          sequential, pk_mpo)
 end
+
+"""
+    _hermitian_diag(z) -> Complex
+
+The diagonal element ⟨α|(C + C†)/2|α⟩ of the Hermitian part of a marker operator C,
+given z = ⟨α|C|α⟩ (or a real-weighted sum of them, as the unit-cell value of the
+`_chern_marker` closures): since ⟨α|C†|α⟩ = conj(z), it is `real(z)`, kept complex
+so that the closures keep their return type, and it needs no MPO product for C†.
+
+The Chern-marker operator C = 2πi (Q X P Y Q − P X Q Y P) (and its quenched,
+sequential and `pk_mpo` forms) is not Hermitian. Its Hermitian part
+πi [(Q X P Y Q − Q Y P X Q) − (P X Q Y P − P Y Q X P)] gives the local marker,
+the mean of the Bianco–Resta P- and Q-forms. The anti-Hermitian remainder is
+traceless (it drops out of the Chern number) but not locally small: on a trivial
+Semenoff honeycomb (2 × 2 cells), where P is real and every local marker vanishes,
+it is up to 0.16i per unit cell. Up to v0.1.1 it was the imaginary part of every
+`get_C` value.
+"""
+_hermitian_diag(z::Number) = complex(real(z))
 
 """
     _chern_marker(P, L, sites, xfunc, yfunc; l, Λ, maxdim, cutoff, quenched,
@@ -493,6 +525,8 @@ function _chern_marker(P, L, sites, xfunc, yfunc;
         alpha -> to_device(binary_to_MPS(alpha - 1, L, sites), device_type)
     end
 
+    # Each of the three closures below returns the unit-cell sum of ⟨α|C|α⟩ / A_cell
+    # through _hermitian_diag: the diagonal of the Hermitian part of the marker operator.
     if quenched
         sinX_op_p = get_sinx_op(L, pos_sites, L_chain, Λ, xfunc_pos)
         cosX_op_p = get_cosx_op(L, pos_sites, L_chain, Λ, xfunc_pos)
@@ -549,7 +583,7 @@ function _chern_marker(P, L, sites, xfunc, yfunc;
                          sin_x * inner(Pα', cosX_op, Q_sinΔY_Pα)
 
                     (cq - cp) * 2im * π * Λ^2
-                end, 1:n_sub) / A_cell
+                end, 1:n_sub) / A_cell |> _hermitian_diag
             end
 
         else
@@ -637,7 +671,7 @@ function _chern_marker(P, L, sites, xfunc, yfunc;
                     ch -=  cos_x * sin_y * inner(α', C3, α)
                     ch -=  sin_x * cos_y * inner(α', C4, α)
                     ch * 2im * π * Λ^2
-                end, 1:n_sub) / A_cell
+                end, 1:n_sub) / A_cell |> _hermitian_diag
             end
         end
 
@@ -666,7 +700,7 @@ function _chern_marker(P, L, sites, xfunc, yfunc;
                 alpha = (uc - 1) * n_sub + sub
                 α     = make_alpha_mps(alpha)
                 inner(α', C_op, α)
-            end, 1:n_sub) / A_cell
+            end, 1:n_sub) / A_cell |> _hermitian_diag
         end
     end
 
@@ -716,7 +750,8 @@ See `get_C_op_MPO_from_P` for full documentation of the remaining arguments.
 # Returns
 `calculate_chern_number(uc::Int) -> ComplexF64` where `uc` is a 1-indexed
 unit cell number; the closure sums the marker over all `n_sub` sublattice
-atoms in that UC.  Take `real(·)` for the density.
+atoms in that UC.  The value is real (zero imaginary part; see
+`get_C_op_MPO_from_P`); `real(·)` gives the density as a `Float64`.
 """
 function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                method::Symbol   = :KPM,

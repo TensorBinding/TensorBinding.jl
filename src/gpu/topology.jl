@@ -86,7 +86,7 @@ function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                              end : nothing)
         H._density_cache = nothing   # don't cache GPU MPO in CPU field
     elseif method == :sp2
-        Nel_val = Nel === nothing ? H.N ÷ 2 : Int(Nel)
+        Nel_val = Nel === nothing ? _half_filling(H) : Int(Nel)
         printinfo && _gpu_log("SP2 purification on GPU (Nel=$Nel_val)..."; indent=0)
         P = _sp2_iterate(P, Nel_val; maxiters=40, maxdim, cutoff=Float64(cutoff), tol=1e-5,
                          trunc=(:cutoff,), add_trunc=(:cutoff, :maxdim), after_step=_gpu_gc!,

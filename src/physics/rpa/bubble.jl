@@ -18,13 +18,15 @@
 # The density matrix of a bubble: get_density's dispatcher (_density_matrix,
 # physics/Purification.jl) with the bubbles' own method symbols and rules.
 #
-#   P_method=:purification  purify_method (:mcweeny or :sp2), reusing the density
-#                           cache whatever ϵF (as get_density does). McWeeny is
-#                           purified at ϵF, with mcweeny_purify's convention: the
-#                           level of its initial guess is H.center + ϵF. SP2 fixes
-#                           the filling through Nel = H.N ÷ 2 instead, so it refuses
-#                           ϵF ≠ 0. (Until the fix ϵF was not passed and every
-#                           purification ran at ϵF = 0.)
+#   P_method=:purification  purify_method (:mcweeny or :sp2), reusing a density
+#                           cached by the same method whatever ϵF (as get_density
+#                           does). McWeeny is purified at ϵF, with mcweeny_purify's
+#                           convention: the level of its initial guess is
+#                           H.center + ϵF. SP2 fixes the filling at half the states
+#                           (_half_filling) instead, so it refuses ϵF ≠ 0. (Until the
+#                           fix ϵF was not passed and every purification ran at
+#                           ϵF = 0, SP2 filled H.N ÷ 2 states, a quarter on
+#                           sublattice/spin models, and any cached density answered.)
 #   P_method=:kpm           a fresh Chebyshev list of order Ncheb from the raw
 #                           KPM_Tn (not cached on H; its progress lines follow
 #                           `verbose`), no density cache read or written; the
@@ -36,17 +38,18 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
                               purify_maxiters::Int, purify_tol::Float64,
                               verbose::Bool)
     if P_method == :purification
-        if H._density_cache !== nothing
+        cached = _cached_density(H, purify_method)
+        if cached !== nothing
             verbose && println("  Reusing cached density matrix")
-            return H._density_cache
+            return cached
         end
         purify_method in (:mcweeny, :sp2) ||
             error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
         purify_method == :sp2 && !iszero(ϵF) &&
-            throw(ArgumentError("purify_method=:sp2 fixes the filling at Nel = H.N ÷ 2 " *
+            throw(ArgumentError("purify_method=:sp2 fixes the filling at half the states " *
                                 "and cannot take a Fermi level (got ϵF = $ϵF); use " *
                                 "purify_method=:mcweeny or P_method=:kpm"))
-        Nel = H.N ÷ 2
+        Nel = _half_filling(H)
         verbose && println(purify_method == :mcweeny ? "  Running McWeeny purification" :
                                                        "  Running SP2 purification (Nel=$Nel)")
         return _density_matrix(H, purify_method; ϵF=ϵF, Nel=Nel, maxiters=purify_maxiters,

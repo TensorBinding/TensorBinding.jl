@@ -1153,7 +1153,9 @@ RMS distance between two MPS objects over all computational-basis states.
 function rms_error(a::MPS, b::MPS)
     diff = a - b
     n = prod(dim(s) for s in siteinds(a))
-    return sqrt(abs(real(inner(diff', diff))) / n)
+    # ⟨diff|diff⟩ with matching site indices (inner(diff', diff), up to v0.1.1, went
+    # through ITensors' deprecated index matching: the same contraction, with a warning)
+    return sqrt(abs(real(inner(diff, diff))) / n)
 end
 
 """

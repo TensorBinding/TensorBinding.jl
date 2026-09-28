@@ -202,6 +202,41 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`wynn_epsilon`** returns the limit of an exactly converged sequence (a constant or
   geometric one) instead of the `1e30` sentinel; a singular table (an arithmetic
   sequence) keeps the sentinel. The Wynn RPA drivers' pinned results are unchanged.
+- **Local Chern markers are real.** `get_C`, `get_C_gpu`, `get_valley_C` and
+  `get_C_op_MPO_from_P` evaluate ⟨α|C|α⟩ for C = 2πi(QXPYQ − PXQYP), which is not
+  Hermitian: its traceless anti-Hermitian part gave every site an imaginary part of up to
+  O(0.1) (±0.16i on a trivial Semenoff honeycomb, whose marker is 0). They now return the
+  diagonal of its Hermitian part, the real part, which is the mean of the Bianco–Resta
+  P- and Q-forms. Real parts are unchanged, bit for bit; the values stay `ComplexF64`.
+- **SP2 purification** (`sp2_purify`, `get_density(method=:sp2)`, the SP2 paths of the
+  topology markers, `get_C_gpu`, the SCF drivers and the RPA bubbles) stopped only at `tol`
+  or `maxiters`. With the default cutoff its truncation floor (1e-5 to 1e-3) lies above
+  the default `tol` = 1e-5, and once truncation pushes eigenvalues out of [0, 1] the
+  iteration doubles them each step, to NaN or to a matrix far from a projector. It now
+  stops as soon as Tr ρ² > Tr ρ and returns the iterate with the smallest residual (an
+  error if that residual is still ≥ 0.1: an invalid guess). Runs where the stop never
+  fires return what they did before.
+- **Default SP2 electron count**: half the number of states, `prod(dim, H.sites) ÷ 2`,
+  instead of `H.N ÷ 2` (half the unit cells: quarter filling on sublattice, layer, spin and
+  BdG models), in `sp2_purify(H)`, `get_density`, `_get_projector` (the topology markers),
+  `get_C_gpu` and the RPA bubbles with `purify_method=:sp2`. Models with only position
+  sites are unchanged. (The SCF drivers keep their documented `Nel = H0.N ÷ 2` defaults.)
+- **`add_superconductivity!`** keeps a KPM scale: `|center| + scale + 1.1‖Δ̂‖` (center 0;
+  ‖Δ̂‖ = |Δ| for s-wave, 2|Δ| for p-wave) when `H` had a scale and `Δ` is a number. Its
+  update `scale + 1.1|Δ|` stood before the cache invalidation, which reset the scale to 0,
+  so every BdG model was left to the DMRG estimate; a function `Δ` or an unset scale still
+  are.
+- **`get_scf(H, U, :magnetic)`** without `scale` uses `scf_magnetic_hubbard`'s default
+  `H0.scale`: `get_scf` passed `scale=nothing` and so estimated every mean-field
+  Hamiltonian by DMRG. The other channels are unchanged.
+- **`_get_projector(:KPM)`** (the KPM paths of `get_C`, `get_W`, `get_thouless_pump`)
+  rebuilds a cached Chebyshev list shorter than `Nchebychev` (it used the short one) and
+  expands with `cutoff` (it used 1e-8 whatever `cutoff`).
+- **Density caches answer only their own method.** `get_density`, `_get_projector` and the
+  RPA purification returned any `H._density_cache` whatever method had computed it (a
+  McWeeny matrix answered `method=:kpm`). Each stored density is now recorded with its
+  method; one set by hand still answers every method. An unknown `method` of
+  `get_density` is an error even with a cache.
 - **Default KPM scales of the 2D multi-atom lattices** (`get_Hamiltonian` without `scale`)
   are `max(builder formula, estimate_scale(...; method=:small))`, like the presets:
   `"lieb"` 2.5|t| → 2.73|t| at L = 3 and 3.10|t| from 16 × 16 cells (its bulk radius is
@@ -287,6 +322,10 @@ constructor that takes all 21 fields in order, caches included, remains.
 - Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
   positional `cyclic=true` default of `build_shift_mpo`, never reachable (a two-argument
   call takes the keyword method, `cyclic=false`), is gone.
+- `scf_magnetic_hubbard_gpu` with a real `type` (`Float64`) switched to complex arithmetic
+  after the first Hartree step (its ComplexF32 Hartree deltas); it now stays real.
+- `rms_error` and the GPU SCF residual used ITensors' deprecated index matching
+  (`inner(ψ', ψ)`, "will error in ITensors v0.4"); same values.
 - A spin index added with `add_spin!(H; position=:post)` (alone or with a postpended Nambu
   index) was always projected from the first site: `get_bands` crashed Julia with a
   segfault, `get_ldos_spatial(mode=:mpo)` threw inside ITensors, and the GPU twins did

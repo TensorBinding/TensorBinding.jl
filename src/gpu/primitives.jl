@@ -147,10 +147,11 @@ function density_profile_from_dm_gpu(density_mpo::MPO, sites=nothing;
     error("Unsupported density extraction mode :$mode. Use :direct or :complement.")
 end
 
-# GPU analogue of mps_to_diagonal_mpo (core/Utils.jl), through its kernel: dense
-# ComplexF32 GPU deltas, and a one-site MPS is accepted.
-_mps_to_diagonal_mpo_gpu(mps::MPS, sites)::MPO =
-    _mps_to_diagonal(mps, sites; to_device=_to_gpu, delta_type=ComplexF32)
+# GPU analogue of mps_to_diagonal_mpo (core/Utils.jl), through its kernel: dense GPU
+# deltas of element type `delta_type` (default ComplexF32; the real SCF types pass
+# theirs, see scf_magnetic_hubbard_gpu), and a one-site MPS is accepted.
+_mps_to_diagonal_mpo_gpu(mps::MPS, sites; delta_type::Type = ComplexF32)::MPO =
+    _mps_to_diagonal(mps, sites; to_device=_to_gpu, delta_type)
 
 
 # ============================================================
