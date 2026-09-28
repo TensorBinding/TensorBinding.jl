@@ -59,7 +59,9 @@ end
     intrachain_hopping(L_chain, num_site, sites; hopping=MPO(sites, "Id"), t=1) -> MPO
 
 NN hopping along rows (x-direction) of a 2D lattice with `L_chain` sites per
-row.  Hops that would wrap ix = Nx-1 → 0 are suppressed by `_row_break_mpo`.
+row: `t · K·B·W + conj(t) · W†·B·K†`, with `K` the +1 shift, `B` the row break
+`_row_break_mpo(:xplus)` (no hop from ix = Nx-1 to the next row) and `W` the diagonal
+`hopping` profile (weights at the source of the forward hop). Hermitian.
 """
 function intrachain_hopping(L_chain, num_site, sites;
                             hopping=MPO(sites, "Id"), t=1)
@@ -69,7 +71,8 @@ function intrachain_hopping(L_chain, num_site, sites;
     K   = shift_mpo(sites, 1; cyclic=false)
     Kd  = shift_adjoint_mpo(K)
     hop_fwd = apply(apply(K, brk), hopping)
-    hop_bwd = apply(apply(hopping, Kd), brk)
+    # (K·B·W)† = W†·B·K†: the break on the destination side of the backward hop.
+    hop_bwd = apply(apply(dag(hopping), brk), Kd)
     return +(t * hop_fwd, conj(t) * hop_bwd; cutoff=1e-8)
 end
 
@@ -77,15 +80,16 @@ end
 """
     interchain_hopping_square(L_chain, num_site, sites; hopping=MPO(sites, "Id"), t=1) -> MPO
 
-NN hopping along columns (y-direction) of a square lattice.
-One column step = linear shift by L_chain sites = ku composed L_chain times.
+NN hopping along columns (y-direction) of a square lattice:
+`t · W·K + conj(t) · K†·W†`, with `K` the shift by `L_chain` (one column step) and `W`
+the diagonal `hopping` profile. Hermitian.
 """
 function interchain_hopping_square(L_chain, num_site, sites;
                                    hopping=MPO(sites, "Id"), t=1)
     K       = shift_mpo(sites, L_chain; cyclic=false)
     Kd      = shift_adjoint_mpo(K)
     hop_fwd = apply(hopping, K)
-    hop_bwd = apply(Kd, hopping)
+    hop_bwd = apply(Kd, dag(hopping))
     return t * hop_fwd + conj(t) * hop_bwd
 end
 

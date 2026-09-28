@@ -327,7 +327,7 @@ Direct builders
 |--------------|---------------------------------|--------------|
 | `"chain_1d"` | hopping amplitude `t::Number`   | `boundary=:open` or `:periodic` (`bc` overrides it); direct MPO, no QTCI; use `add_onsite!` for potentials |
 | `"haldane"`  | `(t2, phi, M)` NamedTuple       | `rs` (N×2 positions from `honeycomb_positions`, required); no other kwargs |
-| `"custom"`   | hopping function `f(i,j)`       | `scale` (required: a number, `:dmrg`, or `:small` up to 1024 sites), `geometry` (`i -> position` or an N×2 matrix), `type=ComplexF64` |
+| `"custom"`   | hopping function `f(i,j)`       | `scale` (required: a number, `:dmrg`, or `:small` up to 1024 sites), `geometry` (`i -> position` or an N×2 matrix), `type=ComplexF64`, `check=true` (the sampled self-check of [`hopping2MPO`](@ref)) |
 
 Projected position spaces (quasicrystals; `H.N` counts the admissible sites only)
 ---------------------------------------------------------------------------------
@@ -358,7 +358,7 @@ and, in 2D, `cutoff`). Extra kwargs: `Lx`, `Ly` (2D only), `mparams` (a
 | `"hex_2d"`             | `HUniform2Dhex`         | 2D  | `t`               |                             |
 | `"triangular_2d"`      | `HUniform2Dtri`         | 2D  | `t`               |                             |
 | `"triangular_bravais"` | `HUniform2Dtri_bravais` | 2D  | `t`               |                             |
-| `"chern8"`             | `HChern8`               | 2D  | `V`, `t`          | `t2=0.2`                    |
+| `"chern8"`             | `HChern8`               | 2D  | `V`, `t`          | `t2=0.2t`                   |
 | `"chernhex"`           | `H2DChernhex`           | 2D  | `t`, `t2`, `ms`   | `uniformhaldane=false`, `uniformsemenoff=false` |
 | `"qc2dsquare"`         | `HQC2Dsquare`           | 2D  | `t`               |                             |
 
@@ -395,25 +395,28 @@ Common keyword arguments
                 set `center`)
 - `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`)
 - `maxdim`    : maximum MPO bond dimension after construction (default `15`)
-- `ref_sites` : preset models only: replace the MPO's site indices by these, so
-                that Hamiltonians built with the same `ref_sites` share `Index`
-                objects (default `nothing`; the other geometries ignore it or,
-                for the projected spaces, reject it)
+- `ref_sites` : the `L` position qubits to build on (default `nothing`): they replace the
+                MPO's position site indices, so that Hamiltonians built with the
+                same `ref_sites` share `Index` objects; the multi-atom lattices keep
+                their own sublattice index. Any other length or dimension is an
+                error, and the projected spaces reject `ref_sites`
 
 Default KPM scale
 -----------------
-Without `scale`, `"chain_1d"` and the preset models (`"chernhex"` excepted) take
+Without `scale`, `"chain_1d"`, the preset models (`"chernhex"` excepted) and the 2D
+multi-atom lattices take
 `max(f, estimate_scale(geometry, params; L, kwargs..., method=:auto))`, where `f` is
 the geometry's former default (`2.5|t|` for `"chain_1d"`, `"uniform"`, `"ssh"`;
 `1.2(|t| + |V|)` for `"aah"`; `4.4|t|`, `4.0|t|`, `7|t|`, `7|t|` for `"square_2d"`,
 `"hex_2d"`, `"triangular_2d"`, `"triangular_bravais"`; `6|t|` for `"chern8"`,
-`"qc2dsquare"`) and `:auto` is the padded row-sum bound (`:geometry`) for the
+`"qc2dsquare"`; the builder defaults `4.5|t|` for `"kagome"` and `"dice"`, `2.5|t|` for
+`"lieb"`, `3.5|t|` for `"honeycomb"` and `3.5(|t| + |t2|)` for `"honeycomb_nnn"`) and
+`:auto` is the padded row-sum bound (`:geometry`) for the
 size-scaled `"chern8"` and `"qc2dsquare"` and the dense small-size estimate (`:small`)
 otherwise. Where `f` already reaches `1.1 ×` the row-sum bound, the estimate cannot
 exceed it and is not computed. Every other geometry keeps its builder's default:
 the analytic bounds of `"haldane"`, `"chernhex"`, `"ssh_sublattice"` and the projected
-spaces, and the fixed multiples of `t` of the other multi-atom lattices. The centre is
-0 except for the projected spaces.
+spaces. The centre is 0 except for the projected spaces.
 
 Examples
 --------
@@ -657,10 +660,13 @@ function _build_custom(f, L, N, sites;
                        scale=nothing,
                        tol=1e-8,
                        maxdim=15,
-                       type=ComplexF64)
+                       type=ComplexF64,
+                       check::Bool=true)
     @assert !isnothing(scale) "`scale` must be provided for geometry=\"custom\"."
     geom_f = geometry isa Matrix ? (let m = Float64.(geometry); i -> m[i, :]; end) : geometry
-    mpo = hopping2MPO(f, N, sites; tol=tol, type=type)
+    # The sampled self-check of hopping2MPO: the default QTCI pivots miss bond classes of
+    # a sparse f; a build that passes is returned unchanged (see hopping2MPO).
+    mpo = hopping2MPO(f, N, sites; tol=tol, type=type, check=check)
     ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
     return TBHamiltonian(; L, N, sites, mpo, geometry=geom_f, scale=Float64(scale))
 end
@@ -697,7 +703,7 @@ end
 """
     add_hopping!(H, f; nn=1, boundary=:open, bc=nothing, maxdim=15, tol=1e-8,
                  type=ComplexF64, apply_kwargs=NamedTuple(), sublat=nothing,
-                 sublat_from=nothing, sublat_to=nothing) -> H
+                 sublat_from=nothing, sublat_to=nothing, check=true) -> H
 
 Add a hopping term to `H`.
 
@@ -734,6 +740,8 @@ Add a hopping term to `H`.
 - `maxdim`, `tol`: truncation of the summed MPO (`tol` is also the QTCI
   tolerance of a 2-arg `f`).
 - `type`: element type of the QTCI compression of a 2-arg `f`.
+- `check=true`: the sampled self-check of [`hopping2MPO`](@ref) for a 2-arg `f` (the
+  default QTCI pivots miss bond classes of a sparse `f`; a build that passes it is kept).
 - `apply_kwargs`: keywords for the `apply` calls inside [`kineticNNN`](@ref)
   (scalar and 1-arg `f`).
 
@@ -754,7 +762,8 @@ function add_hopping!(H::TBHamiltonian, f;
                       apply_kwargs     = NamedTuple(),
                       sublat           = nothing,
                       sublat_from      = nothing,
-                      sublat_to        = nothing)
+                      sublat_to        = nothing,
+                      check::Bool      = true)
     _require_binary_position_space(H, "add_hopping!")
     if !isnothing(H.Lx)
         (!isnothing(sublat) || !isnothing(sublat_from) || !isnothing(sublat_to)) &&
@@ -798,7 +807,7 @@ function add_hopping!(H::TBHamiltonian, f;
             kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn;
                        apply_kwargs=apply_kwargs, boundary=boundary)
         else
-            hopping2MPO(f, H.N, pos_s; tol=tol, type=type)
+            hopping2MPO(f, H.N, pos_s; tol=tol, type=type, check=check)
         end
     end
 
@@ -855,7 +864,8 @@ Add a diagonal (on-site) potential to `H`.
 
 **`f` argument** — same conventions as `add_hopping_2D!`
 
-- `f::Number` — uniform constant; builds `f · Id` directly (no QTCI).
+- `f::Number` — uniform constant (compressed by QTCI like the functions); `f = 0` adds
+  nothing and leaves `H.mpo` as it is.
 - `f(n)` — 1-arg function; `n ∈ {0, …, N-1}` is the 0-indexed unit-cell index.
 - `f(ix, iy)` — 2-arg function; `ix, iy` are 0-indexed 2D coordinates
   (`ix = n % Nx`, `iy = n ÷ Nx`). Requires `Lx=` keyword so that `Nx = 2^Lx`.
@@ -901,6 +911,7 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                                Matrix{Float64}(I, dim(H.sublattice_s), dim(H.sublattice_s)))
 
         layers = _resolve_layer_selection(H.layer_s, layer)
+        f isa Number && iszero(f) && return _add_zero_onsite!(H, sublat)
         H_layered_term = nothing
         for ell in layers
             H_pos = TBHamiltonian(H; sites=term_sites, mpo=copy(zero_mpo),
@@ -946,6 +957,8 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
         nothing
     end
 
+    fkind === :scalar && iszero(f) && return _add_zero_onsite!(H, sublat)
+
     diag_mpo = if fkind === :scalar
         get_diagonal_mpo(L, pos_s, x -> f)
     elseif fkind === :pos1d
@@ -978,6 +991,16 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
     H.mpo = isnothing(maxdim) ?
         +(H.mpo, new_term; cutoff=tol) :
         +(H.mpo, new_term; cutoff=tol, maxdim=maxdim)
+    _invalidate_cache!(H)
+    return H
+end
+
+# add_onsite! of the constant 0: nothing to add (its QTCI compression would throw
+# "maxsamplevalue is zero!"), so H.mpo is left as it is; the `sublat` check and the cache
+# invalidation are those of any other add_onsite! call.
+function _add_zero_onsite!(H::TBHamiltonian, sublat)
+    (isnothing(sublat) || H.sublattice_s !== nothing) ||
+        error("add_onsite! with sublat=$sublat requires H.sublattice_s to be set.")
     _invalidate_cache!(H)
     return H
 end

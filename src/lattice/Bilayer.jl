@@ -66,6 +66,14 @@ simply `t_inter * Identity`.
 """
 _aa_interlayer_mpo(sites; t_inter::Number = 1.0) = t_inter * MPO(sites, "Id")
 
+# V†, the interlayer operator of the backward layer hop |l⟩⟨k| of the layered builders.
+# The :Bernal V (t K_u D_A + conj(t) D_A K_d) is Hermitian; the :AA V = t_inter · Id has
+# the adjoint conj(t_inter) · Id, a different MPO only for a complex t_inter (for a real
+# one V itself is returned, as the builders always used it).
+_interlayer_adjoint(V::MPO, stacking::Symbol, t_inter::Number, sites) =
+    stacking === :AA && !isreal(t_inter) ?
+        _aa_interlayer_mpo(sites; t_inter=conj(t_inter)) : V
+
 function _explicit_sublattice_monolayer(lattice::Symbol, Lx::Int, Ly::Int,
                                         pos_sites, sub_s;
                                         t::Number = 1.0,
@@ -133,9 +141,9 @@ end
 Build the position-space interlayer coupling MPO for the given `stacking`.
 The returned operator V already carries `t_inter`; the layered builders add
 
-    H_inter = |k⟩⟨l| ⊗ V + |l⟩⟨k| ⊗ V
+    H_inter = |k⟩⟨l| ⊗ V + |l⟩⟨k| ⊗ V†
 
-for each pair of adjacent layers k, l.
+for each pair of adjacent layers k, l (see `_interlayer_adjoint`).
 
 **Supported stackings**
 - `:AA`     — on-site (identity in position space); any lattice
@@ -197,9 +205,10 @@ Build a bilayer tight-binding Hamiltonian as a `TBHamiltonian`.
 
 The assembled Hamiltonian is
 
-    H = Σₖ Pₖ ⊗ H_mono  +  (|1⟩⟨2| + |2⟩⟨1|) ⊗ V
+    H = Σₖ Pₖ ⊗ H_mono  +  |1⟩⟨2| ⊗ V + |2⟩⟨1| ⊗ V†
 
-where V is the exact interlayer MPO for the chosen stacking.
+where V is the exact interlayer MPO for the chosen stacking (Hermitian for :Bernal,
+`t_inter · Id` for :AA, so that a complex `t_inter` gives `conj(t_inter)` back).
 
 Returns a `TBHamiltonian` with `H.sites = [layer_s; pos_sites]`, the layer index in
 `H.layer_s` (`H.aux_side = :pre`), `H.Lx = Lx` and `H.scale = 0.0`, so the spectral
@@ -254,11 +263,12 @@ function bilayer_hamiltonian(
     H_intra = +(prepend_layer_projector(H_mono, layer_s, 1),
                 prepend_layer_projector(H_mono, layer_s, 2); cutoff=cutoff)
 
-    # Interlayer: (|1⟩⟨2| + |2⟩⟨1|) ⊗ V  (V built exactly, no TCI)
+    # Interlayer: |1⟩⟨2| ⊗ V + |2⟩⟨1| ⊗ V†  (V built exactly, no TCI)
     V = interlayer_mpo(lattice, stacking, Lx, Ly, pos_sites;
                        t_inter=t_inter, cutoff=cutoff)
-    H_inter = +(prepend_layer_hopping(V, layer_s, 1, 2),
-                prepend_layer_hopping(V, layer_s, 2, 1); cutoff=cutoff)
+    V_dag   = _interlayer_adjoint(V, stacking, t_inter, pos_sites)
+    H_inter = +(prepend_layer_hopping(V,     layer_s, 1, 2),
+                prepend_layer_hopping(V_dag, layer_s, 2, 1); cutoff=cutoff)
 
     H_total = +(H_intra, H_inter; cutoff=cutoff)
     ITensorMPS.truncate!(H_total; maxdim=maxdim, cutoff=cutoff)
@@ -333,8 +343,9 @@ function multilayer_hamiltonian(
     # Interlayer: only adjacent layers k ↔ k+1
     V = interlayer_mpo(lattice, stacking, Lx, Ly, pos_sites;
                        t_inter=t_inter, cutoff=cutoff)
-    H_inter = sum_mpos((+(prepend_layer_hopping(V, layer_s, k,   k+1),
-                          prepend_layer_hopping(V, layer_s, k+1, k  ); cutoff=cutoff)
+    V_dag = _interlayer_adjoint(V, stacking, t_inter, pos_sites)
+    H_inter = sum_mpos((+(prepend_layer_hopping(V,     layer_s, k,   k+1),
+                          prepend_layer_hopping(V_dag, layer_s, k+1, k  ); cutoff=cutoff)
                         for k in 1:(n_layers - 1)); cutoff=cutoff)
 
     H_total = +(H_intra, H_inter; cutoff=cutoff)

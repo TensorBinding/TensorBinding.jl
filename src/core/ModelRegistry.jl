@@ -24,14 +24,12 @@
 # and lattice/geometry.jl kept per geometry name.
 #
 # Known quirks, kept on purpose (the golden tests pin them):
-#   - "chern8" passes an absolute t2 = 0.2 to HChern8, whose own default is 0.2t;
 #   - _estimate_scale reads `t` from `params` only (an `mparams` string is ignored, except
 #     by "chernhex"), and "aah" reads `V` only from a NamedTuple (a Dict counts as V = 1);
 #     geometries without a formula get 5|t| (get_Hamiltonian never asks it for them);
 #   - the preset builders ignore the Qubit sites that get_Hamiltonian draws for them;
-#   - the multi-atom lattices ignore every keyword but Lx, Ly; "ssh_sublattice" ignores
-#     them all; "chain_1d", "haldane", "custom" and the multi-atom lattices ignore
-#     `ref_sites`;
+#   - the multi-atom lattices ignore every keyword but Lx, Ly (and ref_sites, which
+#     replaces their position qubits); "ssh_sublattice" ignores them all but ref_sites;
 #   - MODEL_REGISTRY keyword defaults that differ from the builders' own (e.g.
 #     "qc2dsquare" tol_quantics=1e-9, maxbonddim_quantics=250) stay: they set the MPOs.
 
@@ -213,7 +211,7 @@ end
 # The 2D multi-atom lattices: the builder `entry.builder(Lx, Ly, params...)` with the
 # parameters of `entry.defaults` in order, the geometry from `entry.positions`.
 function _build_sublattice(entry::ModelEntry, params, L;
-                           scale=nothing, tol=1e-8, maxdim=200, kwargs...)
+                           scale=nothing, tol=1e-8, maxdim=200, ref_sites=nothing, kwargs...)
     Lx = get(kwargs, :Lx, L ÷ 2)
     Ly = get(kwargs, :Ly, L - Lx)
     args = Tuple(_param(params, k, v; scalar = k === :t) for (k, v) in pairs(entry.defaults))
@@ -222,31 +220,56 @@ function _build_sublattice(entry::ModelEntry, params, L;
     rs = getfield(@__MODULE__, entry.positions)(Lx, Ly)
     H.geometry = let m = rs; i -> m[i, :]; end
 
-    # UC geometry: same Bravais position for every atom in the same unit cell.
-    # All four lattices share a triangular Bravais basis; n_sub = atoms per UC.
-    n_sub  = entry.n_sub
-    Nx_uc  = 2^Lx
-    sq3_2  = sqrt(3) / 2
-    H.geometry_uc = let n_sub = n_sub, Nx = Nx_uc, sq3_2 = sq3_2
-        i -> begin
-            n_cell = (i - 1) ÷ n_sub
-            ix = n_cell % Nx
-            iy = n_cell ÷ Nx
-            [ix + iy * 0.5, iy * sq3_2]
-        end
+    # UC geometry: the Bravais position of the atom's unit cell, which is that of the
+    # cell's atom A (basis offset 0 in every *_positions table): ix a1 + iy a2 of the
+    # lattice's own Bravais vectors (triangular for kagome, honeycomb and dice, square for
+    # Lieb); n_sub = atoms per UC.
+    n_sub = entry.n_sub
+    H.geometry_uc = let m = rs, n_sub = n_sub
+        i -> m[n_sub * ((i - 1) ÷ n_sub) + 1, :]
     end
 
     isnothing(scale) || (H.scale = Float64(scale))
     H.Lx = Lx
+    ref_sites === nothing || _replace_pos_sites!(H, ref_sites, entry.name)
     return H
 end
 
 # SSH chain with an explicit sublattice index: `t` (or the single number) and `d`.
-function _build_ssh_sublattice(params, L; scale=nothing, tol=1e-8, maxdim=15)
+function _build_ssh_sublattice(params, L; scale=nothing, tol=1e-8, maxdim=15,
+                               ref_sites=nothing)
     t = _param(params, :t, 1.0; scalar=true)
     d = _param(params, :d, 0.0)
     H = ssh_sublattice_hamiltonian(L, t, d; cutoff=tol, maxdim=maxdim)
     isnothing(scale) || (H.scale = Float64(scale))
+    ref_sites === nothing || _replace_pos_sites!(H, ref_sites, "ssh_sublattice")
+    return H
+end
+
+# `ref_sites` of get_Hamiltonian must be the L position qubits of the model, `sites` (the
+# Qubit indices it would otherwise use or has built): same number, dimension 2.
+function _check_ref_sites(ref_sites, sites, name)
+    (length(ref_sites) == length(sites) && all(s -> dim(s) == 2, ref_sites)) ||
+        throw(ArgumentError("ref_sites for \"$name\" must be its $(length(sites)) position " *
+                            "qubits (dimension 2); got $(length(ref_sites)) indices of " *
+                            "dimensions $(dim.(ref_sites))."))
+    return ref_sites
+end
+
+# The sites a direct builder ("chain_1d", "haldane", "custom") builds on: `ref_sites` when
+# given (checked), otherwise the Qubit sites get_Hamiltonian drew.
+_ref_or_drawn(sites, ref_sites, name) =
+    ref_sites === nothing ? sites : _check_ref_sites(ref_sites, sites, name)
+
+# A multi-atom builder makes its own position qubits: `ref_sites` replaces them in the MPO
+# and in H.sites (the sublattice index stays the builder's), so Hamiltonians built with
+# the same ref_sites share their position indices.
+function _replace_pos_sites!(H::TBHamiltonian, ref_sites, name)
+    pos = _pos_sites(H)
+    _check_ref_sites(ref_sites, pos, name)
+    new_sites = [(k = findfirst(==(s), pos); k === nothing ? s : ref_sites[k]) for s in H.sites]
+    fix_sites(H.mpo, new_sites)
+    H.sites = new_sites
     return H
 end
 
@@ -308,7 +331,7 @@ end
 # HChern8: 4 NN bonds of |t| and 4 diagonal bonds of |t| |Σₖ i V t2 cos²(k·r)| ≤ 4|t V t2|.
 function _chern8_rowsum(p)
     t = abs(p[:t])
-    return 4t + 16t * abs(p[:V] * p[:t2])
+    return 4t + 16t * abs(p[:V] * get(p, :t2, 0.2 * p[:t]))   # HChern8: t2 = 0.2t by default
 end
 
 # HQC2Dsquare: 4 NN bonds of |t (1 + 0.1 Σₖ (2.5 cos + cos))| ≤ 2.4|t|.
@@ -357,25 +380,28 @@ _sublattice(name, builder, positions, n_sub, defaults, rowsum) =
     ModelEntry(name; kind=:sublattice, dim=2, n_sub, params=collect(keys(defaults)),
                defaults, builder, positions,
                build=(params, L, N, sites; ref_sites=nothing, kwargs...) ->
-                   _build_sublattice(MODELS[name], params, L; kwargs...),
-               auto=:small, rowsum, resizable=true)
+                   _build_sublattice(MODELS[name], params, L; ref_sites, kwargs...),
+               default_rule=:max, auto=:small, rowsum, resizable=true)
 
 # In the order of get_Hamiltonian's "Supported: …" message.
 const _MODEL_ENTRIES = ModelEntry[
     ModelEntry("chain_1d"; kind=:direct, dim=1, params=[:t], builder=:kinetic_1d_nn,
                build=(params, L, N, sites; ref_sites=nothing, kwargs...) ->
-                   _build_chain_1d(params, L, N, sites; kwargs...),
+                   _build_chain_1d(params, L, N, _ref_or_drawn(sites, ref_sites, "chain_1d");
+                                   kwargs...),
                geometry=_chain_rule, legacy_scale=_t_scale(2.5), default_rule=:max,
                auto=:small, rowsum=(params, kwargs) -> 2 * _abs_t(params), resizable=true),
     ModelEntry("haldane"; kind=:direct, dim=2, params=[:t2, :phi, :M],
                builder=:haldane_hoppingf,
                build=(params, L, N, sites; ref_sites=nothing, kwargs...) ->
-                   _build_haldane(params, L, N, sites; kwargs...),
+                   _build_haldane(params, L, N, _ref_or_drawn(sites, ref_sites, "haldane");
+                                  kwargs...),
                auto=:geometry, rowsum=(params, kwargs) -> _haldane_rowsum(params.t2, params.M),
                resizable=false),
     ModelEntry("custom"; kind=:direct, dim=1, builder=:hopping2MPO,
                build=(params, L, N, sites; ref_sites=nothing, kwargs...) ->
-                   _build_custom(params, L, N, sites; kwargs...),
+                   _build_custom(params, L, N, _ref_or_drawn(sites, ref_sites, "custom");
+                                 kwargs...),
                auto=:dmrg, resizable=false),
     ModelEntry("fibonacci"; kind=:projected, dim=1, params=[:A, :B],
                defaults=(; t=1.0, onsite=0.0), builder=:fibonacci_hamiltonian,
@@ -401,7 +427,7 @@ const _MODEL_ENTRIES = ModelEntry[
                defaults=(; t=1.0, d=0.0), builder=:ssh_sublattice_hamiltonian,
                build=(params, L, N, sites; ref_sites=nothing, scale=nothing, tol=1e-8,
                       maxdim=15, kwargs...) ->
-                   _build_ssh_sublattice(params, L; scale, tol, maxdim),
+                   _build_ssh_sublattice(params, L; scale, tol, maxdim, ref_sites),
                auto=:small,
                rowsum=(params, kwargs) -> (t = _param(params, :t, 1.0; scalar=true);
                                            d = _param(params, :d, 0.0);
@@ -429,7 +455,7 @@ const _MODEL_ENTRIES = ModelEntry[
             geometry=_tri_bravais_geometry, legacy_scale=_t_scale(7.0),
             rowsum=_bonds("triangular_bravais", 6)),
     _preset("chern8", :HChern8, 2, [:V, :t],
-            (; t2=0.2, tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10);
+            (; tol_quantics=1e-8, maxbonddim_quantics=10, cutoff=1e-10);
             geometry=nothing, auto=:geometry,
             rowsum=(params, kwargs) -> _chern8_rowsum(_preset_params("chern8", params, kwargs))),
     _preset("chernhex", :H2DChernhex, 2, [:t, :t2, :ms],
@@ -691,8 +717,9 @@ Methods
   otherwise.
 
 When `scale` is not passed, `get_Hamiltonian` uses `max(today's formula,
-estimate_scale(...; method=:auto))` for `"chain_1d"` and the preset models except
-`"chernhex"`, and the builder's own default for every other geometry (see its docstring).
+estimate_scale(...; method=:auto))` for `"chain_1d"`, the preset models except
+`"chernhex"` and the 2D multi-atom lattices, and the builder's own default for every other
+geometry (see its docstring).
 
 ```julia
 estimate_scale("aah", (V=0.5, phi=0.2, t=1.0); L=12)               # :small, built at L = 10

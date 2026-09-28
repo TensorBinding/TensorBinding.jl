@@ -11,6 +11,7 @@
 # Internals:
 #   _shift_mpo               - kinetic MPO for displacement (dx, dy); TJunction.jl uses it too
 #   _nth_shell_disps         - canonical displacement vectors for the nn-th shell
+#   _check_bravais_layout    - rejects geometries that are not Bravais in the cell index
 #   _resolve_layer_selection - the `layer` keyword of add_hopping_2D! as a list of layers
 #
 # Depends on: core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
@@ -101,6 +102,7 @@ function _nth_shell_disps(H::TBHamiltonian, n::Int, Lx::Int)
     yshift = [H.geometry(n_sub*Nx + alpha) for alpha in 1:n_sub] # cell (0,1)
     a1 = xshift[1] - base[1]
     a2 = yshift[1] - base[1]
+    _check_bravais_layout(H, base, a1, a2, n_sub, Nx, 2^(H.L - Lx))
 
     Np   = 2n + 3
     ix_c = n + 1
@@ -148,6 +150,34 @@ function _nth_shell_disps(H::TBHamiltonian, n::Int, Lx::Int)
     return disps
 end
 
+# The shells of _nth_shell_disps are one displacement (dx, dy) per bond type, applied to
+# every cell, which is right only when H.geometry is a Bravais lattice in the cell index:
+# atom α of cell (ix, iy) at base[α] + ix a1 + iy a2. Checked on the first 4 × 4 cells and
+# the far corners. The brick layouts of "triangular_2d" (odd rows shifted by 1/2) and
+# "hex_2d" are not: there the neighbours of a site depend on the parity of its row (and,
+# for hex_2d, column), e.g. the nn = 1 partners in the next row of triangular_2d are at
+# dx ∈ {-1, 0} from even rows and dx ∈ {0, 1} from odd ones, which no set of (dx, dy)
+# shifts reproduces.
+function _check_bravais_layout(H::TBHamiltonian, base, a1, a2, n_sub::Int, Nx::Int, Ny::Int;
+                               atol = 1e-6)
+    tol   = atol * max(1.0, norm(a1), norm(a2))
+    cells = unique(vcat(vec([(ix, iy) for ix in 0:min(Nx - 1, 3), iy in 0:min(Ny - 1, 3)]),
+                        [(Nx - 1, 0), (0, Ny - 1), (Nx - 1, Ny - 1)]))
+    for (ix, iy) in cells, α in 1:n_sub
+        r    = H.geometry(n_sub * (ix + iy * Nx) + α)
+        want = base[α] + ix * a1 + iy * a2
+        norm(r - want) <= tol && continue
+        error("add_hopping_2D!/get_shell_disps: H.geometry is not a Bravais lattice in " *
+              "the cell index (atom $α of cell (ix, iy) = ($ix, $iy) is at $(r), not at " *
+              "r(0, 0) + ix a1 + iy a2 = $(want)). Its neighbour shells differ between " *
+              "even and odd rows or columns (as on the brick layouts of \"triangular_2d\" " *
+              "and \"hex_2d\"), which one shift per (dx, dy) cannot express. Use " *
+              "\"triangular_bravais\" or the sublattice \"honeycomb\", or pass Bravais " *
+              "positions as `geometry`.")
+    end
+    return nothing
+end
+
 
 # ============================================================
 # 3. Public API: add_hopping_2D!
@@ -186,12 +216,16 @@ Add the `nn`-th nearest-neighbor hopping to a 2D `TBHamiltonian`.
 - `nn`: neighbor shell index (1 = nearest, 2 = next-nearest, etc.).
 
 **Compatibility**
-Works for all 2D geometries registered in `get_Hamiltonian`:
-- No explicit sublattice (`square_2d`, `triangular_2d`): hopping added directly
+Works on the 2D geometries whose `H.geometry` is a Bravais lattice in the cell index
+(atom `α` of cell `(ix, iy)` at `r_α + ix a₁ + iy a₂`):
+- No explicit sublattice (`square_2d`, `triangular_bravais`): hopping added directly
   as a position-space kinetic MPO.
 - Explicit sublattice (`honeycomb`, `honeycomb_nnn`, `kagome`, `lieb`, `dice`):
   each displacement is augmented with the sublattice transition matrix via
   `postpend_op`.
+The brick layouts of `triangular_2d` and `hex_2d` (also used by `lattice=:triangular`
+and `:honeycomb` here) are an error: their shells differ between even and odd rows,
+which one shift per displacement cannot express.
 
 **Complexity**
 Shell detection uses a reference patch of `(2nn+3)²` unit cells — O(nn²) work,

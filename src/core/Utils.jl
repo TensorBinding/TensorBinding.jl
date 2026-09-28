@@ -35,7 +35,18 @@ ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 # 2. Shift MPOs: (Q f)(x) = f(x + q) on a binary-encoded chain
 # ============================================================
 
-function build_shift_mpo(sites, q,cyclic=true)
+"""
+    build_shift_mpo(sites, q, cyclic)       -> MPO
+    build_shift_mpo(sites, q; cyclic=false) -> MPO
+
+Binary adder `|n⟩ → |n + q⟩` on the `L = length(sites)` qubits (site 1 the most
+significant bit), a bond-dimension-2 carry MPO, for `0 ≤ q < 2^L`: modulo `2^L` with
+`cyclic = true`, otherwise the states with `n + q ≥ 2^L` are mapped to zero. The keyword
+form defaults to the open shift; the positional `cyclic` has no default (its former
+default `true` was never reached: a two-argument call dispatches to the keyword method).
+Negative shifts: `shift_mpo`.
+"""
+function build_shift_mpo(sites, q, cyclic)
     N      = length(sites)
     q_bits = [(q >> (N - i)) & 1 for i in 1:N]
     links  = [Index(2, "Link,l$n") for n in 0:N+1]

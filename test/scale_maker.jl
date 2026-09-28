@@ -3,7 +3,8 @@ using TensorBinding: get_Hamiltonian, estimate_scale, honeycomb_positions
 
 # The KPM scale maker (core/ModelRegistry.jl): estimate_scale with its :small, :geometry
 # and :dmrg methods, get_Hamiltonian(...; scale=method), and the default scale
-# max(today's formula, estimate_scale(:auto)) of "chain_1d" and the preset models.
+# max(today's formula, estimate_scale(:auto)) of "chain_1d", the preset models and the 2D
+# multi-atom lattices.
 
 const SM = TensorBinding
 
@@ -53,7 +54,8 @@ sm_formula(g, p) =
         # the default scale bounds the spectrum
         @test H.scale > ρ
         if entry.default_rule === :max
-            legacy = SM._estimate_scale(g, p)
+            # the multi-atom lattices' former default is their builder's formula
+            legacy = entry.kind === :sublattice ? sm_formula(g, p) : SM._estimate_scale(g, p)
             est = estimate_scale(g, p; kw..., method=:auto)
             @test isapprox(H.scale, max(legacy, est); rtol=1e-8)
             @test H.scale >= legacy

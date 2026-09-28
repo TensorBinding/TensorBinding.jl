@@ -5,7 +5,8 @@
 # used by the RPA bubbles, the Krylov Green's function, the exciton QFT and the
 # two-particle Hamiltonian, MPO powers by squaring (compose_power), the exact
 # rank-1 site projector (_site_projector_mpo) and the left-to-right compressed
-# sum of MPO terms (sum_mpos) that the lattice builders assemble with.
+# sum of MPO terms (sum_mpos) that the lattice builders assemble with, with its
+# checked variant _checked_sum_mpos (the sublattice builders).
 #
 # Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power,
 #   sum_mpos.
@@ -267,4 +268,38 @@ function sum_mpos(terms; kwargs...)
         total = +(total, term; kwargs...)
     end
     return total
+end
+
+"""
+    _checked_sum_mpos(terms; cutoff, maxdim, rtol=1e-11) -> MPO
+
+`sum_mpos(terms; cutoff)` followed by `truncate!(·; maxdim, cutoff)`, the assembly of the
+sublattice builders, checked against the exact direct sum `H` of `terms`: the result is
+returned as it is unless it lies further than `rtol ‖H‖` (Frobenius) from `H` while the
+SVD truncation of `H` at the same `cutoff` and `maxdim` stays within `rtol ‖H‖`; then that
+SVD truncation is returned instead. Where the truncation does remove weight, or the sum
+is right, the output is that of `sum_mpos` bit for bit.
+
+`+` compresses every partial sum with ITensors' density-matrix algorithm, which projects
+on the eigenvectors of a Hermitian eigensolver; for (nearly) degenerate eigenvalues LAPACK
+can return them non-orthonormal, and the sum then carries spurious entries (1e-5 in
+`honeycomb_sublattice_hamiltonian(2, 1)`, whatever the cutoff). `terms` is iterated twice.
+"""
+function _checked_sum_mpos(terms; cutoff::Real, maxdim::Integer, rtol::Real = 1e-11)
+    total = sum_mpos(terms; cutoff=cutoff)
+    ITensorMPS.truncate!(total; maxdim=maxdim, cutoff=cutoff)
+    exact = foldl((a, b) -> +(a, b; alg="directsum"), terms)
+    ref   = ITensorMPS.truncate(exact; maxdim=maxdim, cutoff=cutoff)
+    tol   = rtol * norm(exact)
+    (_mpo_distance(ref, exact) > tol || _mpo_distance(total, exact) <= tol) && return total
+    return ref
+end
+
+# Frobenius distance ‖A - B‖ of two MPOs on the same sites, read off the orthogonality
+# centre of their direct-sum difference (accurate to rounding, unlike a difference of
+# inner products).
+function _mpo_distance(A::MPO, B::MPO)
+    Δ = +(A, -1 * B; alg="directsum")
+    orthogonalize!(Δ, 1)
+    return norm(Δ[1])
 end

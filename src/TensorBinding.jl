@@ -91,7 +91,7 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            dense MPO matrices
 #                            → Fibonacci*
 # core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo,
-#                            sum_mpos
+#                            sum_mpos, _checked_sum_mpos
 #                            → Utils
 # core/Hamiltonian.jl        1D kinetic MPOs, the QTCI hopping builder hopping2MPO
 #                            → Utils
@@ -124,7 +124,7 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # lattice/NNNeighbor.jl      nth-neighbour hopping add_hopping_2D!, get_shell_disps
 #                            → Utils, TBSystem, geometry, masks2d, hopping2d
 # lattice/Flake.jl           signed-distance functions, QTCI flake masks
-#                            → TBSystem
+#                            → Utils, TBSystem
 # lattice/Twisted.jl         twisted multilayer builders
 #                            → Utils, MPOTools, Hamiltonian, TBSystem, geometry, ModelRegistry
 # lattice/Bilayer.jl         commensurate bilayer/multilayer builders

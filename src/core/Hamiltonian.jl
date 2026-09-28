@@ -2,8 +2,9 @@
 #
 # Contents: kinetic_1d_nn (uniform nearest-neighbour chain) with its boundary
 # parser _tb_periodic_boundary, hopping2MPO and qtci_matrix_to_MPO (compress an
-# arbitrary hopping matrix f(i, j) by 2D QTCI), and kineticNNN (a chain with a
-# spatially varying nn-th-neighbour hopping field).
+# arbitrary hopping matrix f(i, j) by 2D QTCI; hopping2MPO(...; check=true) compares the
+# result with f on a fixed sample and rebuilds it from structural pivots when it is
+# wrong), and kineticNNN (a chain with a spatially varying nn-th-neighbour hopping field).
 #
 # Main entry points: hopping2MPO, kinetic_1d_nn, kineticNNN.
 #
@@ -62,10 +63,56 @@ global-pivot search points per sweep) are passed to QuanticsTCI; the defaults ar
 QuanticsTCI's own. Both draw from the global RNG, so the result depends on its state.
 With structural `initial_positions`, setting both to `0` gives a deterministic build
 that leaves the global RNG untouched.
+
+`check=true` guards against the weakness of QTCI on sparse `f`: from its default pivot
+(the corner entry) and a few random ones it can miss whole bond classes, giving a wrong
+MPO or "maxsamplevalue is zero!", depending on the RNG. The build then runs as without
+`check`, and its MPO is compared with `f` on a fixed sample of entries (a spread of rows,
+column offsets 0, ±1, ±2, ±3, ±2^k and ±(2^k ± 1)); if it passes, it is returned as it is.
+Otherwise (or if QTCI threw "maxsamplevalue is zero!") the MPO is rebuilt from the
+nonzero sampled entries as pivots (plus `initial_positions`) without random pivots, and
+checked again; a second failure, or `f` vanishing on every sample, is an error. An entry
+fails when it is off by more than half of `|f(i, j)|`, or by more than `1e-3` of the
+largest sampled `|f|`: a missed or spurious bond, not the small deviations of an
+approximate compression. The sample calls `f` a few thousand times and draws nothing
+from the RNG. `get_Hamiltonian("custom", f)` and `add_hopping!(H, f)` with a two-argument
+`f` turn the check on (their keyword `check`); the default here is `false`.
 """
 function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                      unfoldingscheme=:interleaved, nrandominitpivot::Int=5,
-                     nsearchglobalpivot::Int=5)
+                     nsearchglobalpivot::Int=5, check::Bool=false)
+    build(pivots, nrand, nsearch) =
+        _hopping2MPO(f, N, sites; tol, initial_positions=pivots, type, unfoldingscheme,
+                     nrandominitpivot=nrand, nsearchglobalpivot=nsearch)
+    check || return build(initial_positions, nrandominitpivot, nsearchglobalpivot)
+
+    samples = _hopping_samples(f, N)
+    mpo = try
+        build(initial_positions, nrandominitpivot, nsearchglobalpivot)
+    catch err
+        (err isa ErrorException && occursin("maxsamplevalue is zero", err.msg)) || rethrow()
+        nothing
+    end
+    mpo !== nothing && _hopping_mismatch(mpo, sites, samples) === nothing && return mpo
+
+    pivots = [collect(initial_positions); _hopping_pivots(samples)]
+    isempty(pivots) &&
+        error("hopping2MPO: f vanishes at all $(length(samples)) sampled entries and QTCI " *
+              "found no nonzero entry either. If f is identically zero, leave the term out; " *
+              "otherwise pass `initial_positions` at its nonzero entries.")
+    mpo = build(pivots, 0, 0)
+    bad = _hopping_mismatch(mpo, sites, samples)
+    bad === nothing && return mpo
+    i, j, got, want = bad
+    error("hopping2MPO: the QTCI-compressed MPO is wrong at entry ($i, $j): $got instead " *
+          "of $want, also when rebuilt from the nonzero sampled entries of f as pivots. " *
+          "Pass `initial_positions` covering every bond class of f (hopping2MPO), or " *
+          "`check=false` to accept the approximate MPO.")
+end
+
+# The QTCI build of hopping2MPO (what hopping2MPO runs without `check`).
+function _hopping2MPO(f, N, sites; tol, initial_positions, type, unfoldingscheme,
+                      nrandominitpivot, nsearchglobalpivot)
     L     = Int(log2(N))
     qgrid = QuanticsGrids.DiscretizedGrid{2}(
         L, (1, 1), (N, N);
@@ -88,6 +135,70 @@ function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
     @debug "hopping2MPO: MPS turned into MPO"
     ITensorMPS.truncate!(mpo; cutoff=1e-8)
     return mpo
+end
+
+# The entries (i, j, f(i, j)) that hopping2MPO(...; check=true) compares: every row for
+# N ≤ 64, else the rows 2^k and 2^k ± 1 (k = 1 … L-1; a bond out of row 2^k carries
+# through k bits of the binary index, so these rows show every carry depth), the last two
+# and an odd golden-ratio stride of `nbulk` rows through the bulk; in each row the
+# columns j = i + d for the offsets d = 0, ±1, ±2, ±3, ±2^k, ±(2^k ± 1), which hold the
+# bonds of chains and of row-major 2^Lx-wide grids (±1, ±Nx, ±(Nx ± 1), ±2Nx, …). f is
+# called with Float64 arguments, as QTCI calls it on the grid of hopping2MPO.
+function _hopping_samples(f, N; nbulk=16)
+    L    = Int(log2(N))
+    s    = 2 * round(Int, 0.30901699437494745 * N) + 1
+    pow  = [2^k + δ for k in 1:L-1 for δ in (-1, 0, 1)]
+    rows = N <= 64 ? collect(1:N) :
+           unique([1; pow; N - 1; N; [1 + mod(k * s, N) for k in 0:nbulk-1]])
+    offs = unique([0; [σ * d for d in [1; 2; 3; pow] for σ in (1, -1)]])
+    return [(i, i + d, f(Float64(i), Float64(i + d))) for i in rows for d in offs
+            if 1 <= i + d <= N]
+end
+
+# The first sampled entry that the MPO gets wrong, (i, j, got, want), or nothing: off by
+# more than half of |f(i, j)| or by more than 1e-3 of the largest sampled |f|.
+function _hopping_mismatch(mpo::MPO, sites, samples)
+    maxabs = maximum(s -> abs(s[3]), samples; init=0.0)
+    arrs   = _mpo_site_arrays(mpo, sites)
+    for (i, j, want) in samples
+        got = _mpo_array_entry(arrs, i, j)
+        abs(got - want) <= max(0.5 * abs(want), 1e-3 * maxabs) || return (i, j, got, want)
+    end
+    return nothing
+end
+
+# Pivots for the rebuild of hopping2MPO(...; check=true): the nonzero sampled entries, at
+# most `nmax` of them (evenly spread over the sample).
+function _hopping_pivots(samples; nmax=512)
+    nz = [(i, j) for (i, j, v) in samples if !iszero(v)]
+    length(nz) <= nmax && return nz
+    return nz[round.(Int, range(1, length(nz); length=nmax))]
+end
+
+# The site tensors of an MPO on the Qubit `sites` as arrays A[k][left, out, in, right]
+# (several link indices on a bond merged), for _mpo_array_entry.
+function _mpo_site_arrays(mpo::MPO, sites)
+    n = length(mpo)
+    links = [collect(commoninds(mpo[k], mpo[k + 1])) for k in 1:n - 1]
+    return map(1:n) do k
+        lk = k > 1 ? links[k - 1] : Index[]
+        rk = k < n ? links[k] : Index[]
+        s  = sites[k]
+        reshape(Array(mpo[k], lk..., prime(s), s, rk...),
+                prod(dim, lk; init=1), dim(s), dim(s), prod(dim, rk; init=1))
+    end
+end
+
+# Entry (i, j) (1-based; row = primed index) of the MPO of `arrs`, site 1 the most
+# significant bit.
+function _mpo_array_entry(arrs, i::Integer, j::Integer)
+    L = length(arrs)
+    v = ones(ComplexF64, 1, 1)
+    for k in 1:L
+        b = L - k
+        v = v * arrs[k][:, (((i - 1) >> b) & 1) + 1, (((j - 1) >> b) & 1) + 1, :]
+    end
+    return only(v)
 end
 
 

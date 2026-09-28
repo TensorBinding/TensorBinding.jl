@@ -22,18 +22,19 @@
     HUniform(L, t; v=1e-6, tol_quantics=1e-8, maxbonddim_quantics=10, nn=1) -> MPO
 
 Uniform-hopping tight-binding chain on 2^L sites with an optional uniform onsite
-potential `v`.  A small nonzero `v` is required to avoid TCI failure on constant functions.
+potential `v`. `v = 0` leaves the on-site term out (QTCI cannot compress a function that
+vanishes everywhere; this used to throw "maxsamplevalue is zero!").
 """
 function HUniform(L::Integer, t;
                   v::Real                  = 1e-6,
                   tol_quantics::Real       = 1e-8,
                   maxbonddim_quantics::Int = 10,
                   nn::Integer              = 1)
-    v == 0.0 && @warn "onsite potential v=0 can cause TCI failure; set v to a small nonzero value"
     N     = 2^L
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
     hops_MPO   = qtt_mpo(L, xvals, sites, _ -> t;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    iszero(v) && return kineticNNN(L, sites, hops_MPO, nn)
     onsite_MPO = qtt_mpo(L, xvals, sites, _ -> v;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     return +(kineticNNN(L, sites, hops_MPO, nn), onsite_MPO; cutoff=1e-8)
 end
@@ -62,6 +63,8 @@ end
 
 Aubry–André–Harper quasicrystal:
     H = t * Σ c†_{i+1}c_i + V * cos(2π b i + φ) * n_i
+
+`V = 0` leaves the on-site term out (the clean chain; QTCI cannot compress a zero field).
 """
 function HAAH(L::Integer, V, phi, t;
               b::Real                  = (1 + sqrt(5)) / 2,
@@ -71,6 +74,7 @@ function HAAH(L::Integer, V, phi, t;
     sites = siteinds("Qubit", L)
     xvals = 0:N-1
     hops_MPO   = qtt_mpo(L, xvals, sites, _ -> t;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    iszero(V) && return kineticNNN(L, sites, hops_MPO, 1)
     onsite_MPO = qtt_mpo(L, xvals, sites, x -> V * cos(2pi * b * x + phi);
                          tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     return +(kineticNNN(L, sites, hops_MPO, 1), onsite_MPO; cutoff=1e-8)
@@ -184,7 +188,8 @@ end
             maxbonddim_quantics=10, cutoff=1e-10) -> MPO
 
 8-fold "Chern mosaic" Hamiltonian: uniform intra/inter-row hoppings modulated by
-a spatially varying 8-fold pattern using 4 rotated k-vectors.
+a spatially varying 8-fold pattern using 4 rotated k-vectors. Without modulation
+(`V t2 = 0`) the diagonal terms, whose QTCI field would vanish identically, are left out.
 """
 function HChern8(Lx::Integer, Ly::Integer, V, t;
                  a::Real                  = 5/64 * 2^Lx,
@@ -214,13 +219,17 @@ function HChern8(Lx::Integer, Ly::Integer, V, t;
     w2    = wrap((x,y) -> alt_hop_x(mod(x-1, Nx)) * func8fold(x+0.5, y+0.5))
     w3    = wrap((x,y) -> alt_hop_x(x)             * func8fold(x-0.5, y+0.5))
 
+    # func8fold ∝ V t2: without modulation w2 = w3 = 0, which QTCI cannot compress
+    modulated = !iszero(V * t2)
+
     hops_MPO  = qtt_mpo(L, xvals, sites, w_alt; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     hops_MPO1 = qtt_mpo(L, xvals, sites, w1;    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    hops_MPO2 = qtt_mpo(L, xvals, sites, w2;    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    hops_MPO3 = qtt_mpo(L, xvals, sites, w3;    tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    hops_MPO2 = modulated ? qtt_mpo(L, xvals, sites, w2; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics) : nothing
+    hops_MPO3 = modulated ? qtt_mpo(L, xvals, sites, w3; tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics) : nothing
 
     HinterNN  = kineticNNN(          L,    sites, hops_MPO,  Nx)
     HintraNN  = kineticintra2DNNN(   Lx, Ly, sites, hops_MPO1, 1)
+    modulated || return +(HinterNN, HintraNN; cutoff=cutoff)
     HinterSWNE = kineticinterNNNSWNE(Lx, Ly, sites, hops_MPO2, Nx+1)
     HinterSENW = kineticinterNNNSENW(Lx, Ly, sites, hops_MPO3, Nx-1)
 
@@ -245,6 +254,9 @@ Haldane Chern insulator on the brick-wall honeycomb of a `2^Lx × 2^Ly` grid: ba
   for `x ≥ Nx/2`, a domain wall at `x = Nx/2` (the right half is trivial for small `ms`,
   since the critical mass is `3√3 |t2|`). `uniformhaldane=true` and `uniformsemenoff=true`
   make the fields uniform.
+- A field that vanishes identically (`t = 0`; `t2 = 0`; `ms = 0` with `uniformsemenoff`
+  or `t2 = 0`) leaves its terms out, since QTCI cannot compress a zero function (this
+  used to throw "maxsamplevalue is zero!"); with all three zero the result is the zero MPO.
 
 With uniform fields and `t = 1` this is `get_Hamiltonian("haldane", (t2=t2, phi=-π/2,
 M=ms))` on `honeycomb_positions(Lx + Ly; Lx=Lx)`, up to the gauge `c → -c` on odd `x + y`.
@@ -276,20 +288,29 @@ function H2DChernhex(Lx::Integer, Ly::Integer, t, t2, ms;
 
     wrap(f) = i -> f(i % Nx, div(i, Nx))
 
-    hops_MPO      = qtt_mpo(L, xvals, sites, wrap((x,y) -> t);               tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    hops_MPOalter = qtt_mpo(L, xvals, sites, wrap((x,y) -> alt_hop_xy(x,y)); tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    on_site_MPO   = qtt_mpo(L, xvals, sites, wrap((x,y) -> semenoff(x,y));   tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    # A field that vanishes identically (t = 0; t2 = 0; ms = 0 with a uniform mass or with
+    # t2 = 0) leaves its terms out: QTCI cannot compress a zero function.
+    zero_t, zero_t2 = iszero(t), iszero(t2)
+    zero_ms = iszero(ms) && (uniformsemenoff || zero_t2)
 
-    Hintra    = kineticintra2DNNhex( Lx, Ly, sites, hops_MPO,      1)
-    Hinter    = kineticNNN(          L,       sites, hops_MPO,      Nx)
+    hops_MPO      = zero_t  ? nothing : qtt_mpo(L, xvals, sites, wrap((x,y) -> t);               tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    hops_MPOalter = zero_t2 ? nothing : qtt_mpo(L, xvals, sites, wrap((x,y) -> alt_hop_xy(x,y)); tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+    on_site_MPO   = zero_ms ? nothing : qtt_mpo(L, xvals, sites, wrap((x,y) -> semenoff(x,y));   tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
+
+    terms = MPO[]
+    zero_t || push!(terms,
+        kineticintra2DNNhex( Lx, Ly, sites, hops_MPO,      1),    # Hintra
+        kineticNNN(          L,       sites, hops_MPO,      Nx))  # Hinter
     # The vertical second neighbour (x, y+2) forms a C3 triple with (x±1, y-1), so it takes
     # the opposite sign to the diagonal ones (x±1, y+1) built from the same amplitudes.
-    HNNinter1 = -1 * kineticNNN(     L,       sites, hops_MPOalter, 2*Nx)
-    HNNinter2 = kineticinterNNNSWNE( Lx, Ly, sites, hops_MPOalter, Nx+1)
-    HNNinter3 = kineticinterNNNSENW( Lx, Ly, sites, hops_MPOalter, Nx-1)
+    zero_t2 || push!(terms,
+        -1 * kineticNNN(     L,       sites, hops_MPOalter, 2*Nx),
+        kineticinterNNNSWNE( Lx, Ly, sites, hops_MPOalter, Nx+1),
+        kineticinterNNNSENW( Lx, Ly, sites, hops_MPOalter, Nx-1))
+    zero_ms || push!(terms, on_site_MPO)
+    isempty(terms) && return zero(ComplexF64) * MPO(sites, "Id")
 
-    return sum_mpos((Hintra, Hinter, HNNinter1, HNNinter2, HNNinter3, on_site_MPO);
-                    cutoff=cutoff)
+    return sum_mpos(terms; cutoff=cutoff)
 end
 
 

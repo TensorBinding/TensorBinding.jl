@@ -86,6 +86,13 @@ constructor that takes all 21 fields in order, caches included, remains.
   `maxdim` truncate (the product, the sum, an extra `truncate!`). The KPM, band-structure,
   QPI, non-Hermitian and GPU solvers now all run their recursions through it, each with
   its former truncation, so their results are unchanged bit for bit.
+- `hopping2MPO(f, N, sites; check=false)`: with `check=true` the QTCI result is compared
+  with `f` on a fixed sample of entries (a spread of rows; column offsets 0, ±1, ±2, ±3,
+  ±2^k, ±(2^k ± 1)) and, if it is wrong or QTCI threw "maxsamplevalue is zero!", rebuilt
+  from the nonzero sampled entries as pivots, deterministically; a second failure is an
+  error. A build that passes is returned unchanged, and the check draws nothing from the
+  RNG. `get_Hamiltonian("custom", f)` and `add_hopping!(H, f)` with a two-argument `f`
+  turn it on; their new keyword `check=false` turns it off.
 
 ### Changed
 
@@ -189,6 +196,39 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`wynn_epsilon`** returns the limit of an exactly converged sequence (a constant or
   geometric one) instead of the `1e30` sentinel; a singular table (an arithmetic
   sequence) keeps the sentinel. The Wynn RPA drivers' pinned results are unchanged.
+- **Default KPM scales of the 2D multi-atom lattices** (`get_Hamiltonian` without `scale`)
+  are `max(builder formula, estimate_scale(...; method=:small))`, like the presets:
+  `"lieb"` 2.5|t| → 2.73|t| at L = 3 and 3.10|t| from 16 × 16 cells (its bulk radius is
+  2√2|t|); `"dice"` from 8 × 8 cells (≈ 4.63|t| for large systems); `"honeycomb_nnn"` once
+  |t2| is large (t2 = 0.3: radius 4.76 > 4.55). `"kagome"` and `"honeycomb"` never
+  change, and direct builder calls (`lieb_hamiltonian(...)`) keep their own formula.
+- **`"chern8"`** takes `t2 = 0.2t`, the default of `HChern8`; the registry passed an
+  absolute `t2 = 0.2`. Only `t ≠ 1` without an explicit `t2` changes.
+- **`ref_sites`** of `get_Hamiltonian` is honoured by `"chain_1d"`, `"haldane"`,
+  `"custom"`, `"ssh_sublattice"` and the multi-atom lattices, which ignored it: the `L`
+  position qubits of the result are `ref_sites` (a multi-atom lattice keeps its own
+  sublattice index). A `ref_sites` of the wrong length or dimension is an
+  `ArgumentError`.
+- **`get_Hamiltonian("custom", f)`** and **`add_hopping!(H, f(i, j))`** could return a
+  wrong MPO for a sparse `f` (a nearest-neighbour chain, a single bond), depending on the
+  global RNG: QTCI missed whole bond classes from its default pivots. They now run the
+  sampled self-check of `hopping2MPO` (see **Added**); builds that were right are
+  unchanged, bit for bit.
+- **Honeycomb builders** (`honeycomb_sublattice_hamiltonian`, `honeycomb_nnn_hamiltonian`,
+  `"honeycomb"`, `"honeycomb_nnn"`) at `Lx = 2, Ly = 1` with `|t| = 1` carried spurious
+  entries of 1e-5: ITensors' density-matrix MPO sum projects on the eigenvectors of a
+  nearly degenerate Hermitian eigenproblem, which LAPACK returned non-orthonormal. The
+  sublattice builders now check their sum against the exact direct sum of the terms and
+  fall back to its SVD truncation; every other size and lattice is unchanged, bit for bit.
+- **`sdf_convex_polygon`** with counter-clockwise vertices (the documented order) used the
+  outward edge normals and was negative everywhere, so its masks suppressed the whole
+  lattice. The orientation is now read from the signed area: positive inside for either
+  order; clockwise input is unchanged, collinear vertices are an error.
+- **`intrachain_hopping`** (legacy) was not Hermitian even for real `t`: its backward hop
+  put the row break on the wrong side, dropping the bond from `ix = Nx − 2` to `Nx − 1`
+  and adding a wrap to the previous row's end.
+- The `"lieb"` `geometry_uc` (unit-cell positions) is square; it used the triangular
+  Bravais vectors of the other multi-atom lattices.
 
 ### Fixed
 
@@ -221,6 +261,26 @@ constructor that takes all 21 fields in order, caches included, remains.
   "Computed T_n …" with `verbose=false`.
 - The `get_magnon_bubble` docstring had the spin-flip energy reversed (the code computes
   `ω − (ε↓ − ε↑)`).
+- Hermitian for complex parameters: the intra-cell bond of the honeycomb builders, the AA
+  interlayer coupling of `bilayer_hamiltonian` / `multilayer_hamiltonian` (its backward
+  hop now takes `conj(t_inter)`), and `interchain_hopping_square` with a complex profile.
+  Real parameters are unchanged, bit for bit.
+- `kagome_hamiltonian`, `lieb_hamiltonian` and `dice_hamiltonian` accept complex
+  amplitudes (an `InexactError` before), with `⟨A|H|B⟩ = t_AB` on every bond.
+- `mask_hamiltonian` works on sublattice Hamiltonians (kagome, Lieb, honeycomb, dice): each
+  atom is masked at its own position (a `DimensionMismatch` before).
+- A QTCI field that vanishes identically no longer throws "maxsamplevalue is zero!": its
+  term is left out in `H2DChernhex` (e.g. `uniformsemenoff=true, ms=0`), `HUniform(v=0)`,
+  `HAAH(V=0)` and `HChern8` without modulation, and `add_onsite!(H, 0)` leaves `H.mpo`
+  as it is.
+- `add_hopping_2D!` and `get_shell_disps` raise an error on layouts that are not a Bravais
+  lattice in the cell index (`"triangular_2d"` with `Ly ≥ 2`, `"hex_2d"`, the layered
+  `lattice=:triangular` / `:honeycomb`): their neighbour shells differ between even and odd
+  rows, and one shift per displacement put half the bonds in the wrong place.
+  `"triangular_bravais"`, `"square_2d"` and the sublattice lattices are unchanged.
+- Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
+  positional `cyclic=true` default of `build_shift_mpo`, never reachable (a two-argument
+  call takes the keyword method, `cyclic=false`), is gone.
 
 - Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
   `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of

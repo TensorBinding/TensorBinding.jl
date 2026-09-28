@@ -5,7 +5,8 @@
 # Entry points: mask_hamiltonian; sdf_interval, sdf_disk, sdf_rect, sdf_halfplane,
 #   sdf_annulus, sdf_convex_polygon; sdf_union, sdf_intersect, sdf_subtract.
 #
-# Depends on: core/TBSystem.jl (TBHamiltonian, _invalidate_cache!).
+# Depends on: core/TBSystem.jl (TBHamiltonian, _invalidate_cache!) and core/Utils.jl
+# (postpend_op, for the per-sublattice masks).
 #
 # mask_hamiltonian applies a smooth diagonal mask M learned via QTCI:
 #
@@ -86,22 +87,30 @@ sdf_annulus(cx, cy, r_in, r_out) =
     sdf_convex_polygon(vertices) -> (x, y) -> Float64
 
 Signed distance function for the convex polygon with the given `vertices`
-(a vector of `(x, y)` tuples listed in **counter-clockwise** order).
-Positive inside.
+(a vector of `(x, y)` tuples, listed counter-clockwise or clockwise: the
+orientation is read from the signed area). Positive inside, like the other SDFs.
 
 Implemented as the minimum signed distance to each edge's inward half-plane.
+Collinear vertices (zero area) are an error.
 """
 function sdf_convex_polygon(vertices::AbstractVector)
     length(vertices) ≥ 3 || error("sdf_convex_polygon: need at least 3 vertices.")
+    n = length(vertices)
+    # Twice the signed area (shoelace): positive for counter-clockwise vertices.
+    area2 = sum(vertices[i][1] * vertices[mod1(i + 1, n)][2] -
+                vertices[mod1(i + 1, n)][1] * vertices[i][2] for i in 1:n)
+    iszero(area2) && error("sdf_convex_polygon: the vertices are collinear (zero area).")
+    ccw = area2 > 0
     return (x, y) -> begin
         d = Inf
-        n = length(vertices)
         for i in 1:n
             x1, y1 = vertices[i]
             x2, y2 = vertices[mod1(i + 1, n)]
             ex, ey  = x2 - x1, y2 - y1
-            # Inward normal for CCW polygon: rotate edge vector 90° CW
-            nx_, ny_ = ey, -ex
+            # Inward normal: the edge vector rotated by 90° CCW for a counter-clockwise
+            # polygon, 90° CW for a clockwise one. (The CCW case used the CW rotation,
+            # the outward normal, so the documented order gave an SDF negative everywhere.)
+            nx_, ny_ = ccw ? (-ey, ex) : (ey, -ex)
             len = sqrt(nx_^2 + ny_^2)
             d   = min(d, (nx_*(x - x1) + ny_*(y - y1)) / len)
         end
@@ -166,6 +175,9 @@ The mask MPS is learned via QTCI, so even sub-lattice-spacing smoothing
 - Requires `H.geometry` to be set (all preset geometries provide this).
 - Must be called **before** `add_spin!`, `add_superconductivity!`, or
   bilayer construction.
+- On a sublattice Hamiltonian (kagome, Lieb, honeycomb, dice, …; the sublattice
+  index postpended) every atom is masked at its own position `H.geometry(i)`:
+  one QTCI mask per sublattice, `M = Σ_s M_s ⊗ |s⟩⟨s|`.
 
 **Examples**
 ```julia
@@ -199,24 +211,27 @@ function mask_hamiltonian(H::TBHamiltonian, sdf;
 
     L     = H.L
     N     = H.N
-    sites = H.sites
+    sub   = H.sublattice_s
 
     # Logistic sigmoid with numerical clamp
     _sig(x) = 1 / (1 + exp(-clamp(x, -500.0, 500.0)))
 
-    # Mask value for 1-indexed site i (geometry(i) splatted into sdf)
+    # Mask value for 1-indexed atom i (geometry(i) splatted into sdf)
     mask_site(i) = _sig(sdf(H.geometry(i)...) / sigma)
 
-    # QTCI over the 0-indexed float domain x = 0, …, N-1 (x maps to site x + 1)
-    mask_raw(x) = mask_site(round(Int, x) + 1)
-    xvals       = range(0, N - 1; length=N)
-    qtt, _, _   = quanticscrossinterpolate(Float64, mask_raw, xvals; tolerance=tol)
-    mask_mps    = MPS(TCI.tensortrain(qtt.tci); sites=sites)
-
-    # Promote MPS → diagonal MPO via _asdiagonal on each site tensor
-    mask_mpo = outer(mask_mps', mask_mps)
-    for i in 1:L
-        mask_mpo[i] = Quantics._asdiagonal(mask_mps[i], sites[i])
+    mask_mpo = if sub === nothing
+        _diagonal_mask_mpo(mask_site, N, H.sites; tol)
+    else
+        # One mask per sublattice on the position qubits, M = Σ_s M_s ⊗ |s⟩⟨s|, with
+        # M_s(n) the mask at atom n_sub·n + s (0-based cell n), summed exactly.
+        (H.aux_side === :post && H.sites[end] == sub) ||
+            error("mask_hamiltonian: the sublattice index must be the last site " *
+                  "(aux_side = :post), as the sublattice builders make it.")
+        n_sub = dim(sub)
+        pos   = H.sites[1:L]
+        terms = [postpend_op(_diagonal_mask_mpo(i -> mask_site(n_sub * (i - 1) + s), N, pos;
+                                                tol), sub, s) for s in 1:n_sub]
+        foldl((a, b) -> +(a, b; alg="directsum"), terms)
     end
 
     # H_flake = M · H · M  (Hermitian, boundary hoppings smoothly suppressed)
@@ -228,4 +243,20 @@ function mask_hamiltonian(H::TBHamiltonian, sdf;
     H_new.mpo = Hm
     _invalidate_cache!(H_new)
     return H_new
+end
+
+# Diagonal MPO diag(m(1), …, m(N)) on the L qubit `sites` (N = 2^L, site 1 the most
+# significant bit), learned by QTCI at tolerance `tol` over x = 0, …, N-1 (x ↦ m(x + 1)).
+function _diagonal_mask_mpo(m, N, sites; tol)
+    mask_raw(x) = m(round(Int, x) + 1)
+    xvals       = range(0, N - 1; length=N)
+    qtt, _, _   = quanticscrossinterpolate(Float64, mask_raw, xvals; tolerance=tol)
+    mask_mps    = MPS(TCI.tensortrain(qtt.tci); sites=sites)
+
+    # Promote MPS → diagonal MPO via _asdiagonal on each site tensor
+    mask_mpo = outer(mask_mps', mask_mps)
+    for i in 1:length(sites)
+        mask_mpo[i] = Quantics._asdiagonal(mask_mps[i], sites[i])
+    end
+    return mask_mpo
 end
