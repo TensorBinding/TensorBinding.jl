@@ -304,7 +304,10 @@ constructor that takes all 21 fields in order, caches included, remains.
   `ω − (ε↓ − ε↑)`).
 - Hermitian for complex parameters: the intra-cell bond of the honeycomb builders, the AA
   interlayer coupling of `bilayer_hamiltonian` / `multilayer_hamiltonian` (its backward
-  hop now takes `conj(t_inter)`), and `interchain_hopping_square` with a complex profile.
+  hop now takes `conj(t_inter)`), the interlayer coupling of `twisted_bilayer_hamiltonian` /
+  `twisted_multilayer_hamiltonian` (its backward hop was the transpose, compressed as
+  `Float64`: a complex `t_inter` threw), and `interchain_hopping_square` with a complex
+  profile.
   Real parameters are unchanged, bit for bit.
 - `kagome_hamiltonian`, `lieb_hamiltonian` and `dice_hamiltonian` accept complex
   amplitudes (an `InexactError` before), with `⟨A|H|B⟩ = t_AB` on every bond.

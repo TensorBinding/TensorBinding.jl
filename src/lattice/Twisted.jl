@@ -114,10 +114,13 @@ function twisted_multilayer_hamiltonian(
     for k in 1:n_layers, l in (k+1):n_layers
         rsk = positions[k];  rsl = positions[l]
         V_kl(i, j) = t_inter * exp(-α_decay * norm(rsk[Int(i), :] - rsl[Int(j), :]))
-        V_lk(i, j) = V_kl(j, i)   # = V_{kl}^T (transpose = h.c. for real V)
+        V_lk(i, j) = conj(V_kl(j, i))   # = V_{kl}† (the transpose for a real t_inter)
 
-        Vkl_mpo = hopping2MPO(V_kl, N, pos_sites; tol=tol, type=Float64)
-        Vlk_mpo = hopping2MPO(V_lk, N, pos_sites; tol=tol, type=Float64)
+        # A complex t_inter needs complex tensors (it threw an InexactError, and V_lk was
+        # the transpose, not the adjoint); a real one keeps the Float64 build.
+        T_V     = t_inter isa Real ? Float64 : ComplexF64
+        Vkl_mpo = hopping2MPO(V_kl, N, pos_sites; tol=tol, type=T_V)
+        Vlk_mpo = hopping2MPO(V_lk, N, pos_sites; tol=tol, type=T_V)
 
         term = +(prepend_layer_hopping(Vkl_mpo, layer_s, k, l),
                  prepend_layer_hopping(Vlk_mpo, layer_s, l, k); cutoff=cutoff)

@@ -45,3 +45,13 @@ end
     E  = sqrt.(real(ε) .^ 2 .+ Δ^2)
     @test ref ≈ sort([E; E; -E; -E]) atol=1e-10
 end
+
+@testset "Twisted bilayer: complex t_inter is Hermitian" begin
+    # V_lk was the transpose of V_kl (the adjoint only for a real t_inter), compressed as
+    # Float64 (a complex t_inter threw an InexactError).
+    H = TensorBinding.twisted_bilayer_hamiltonian(:square, 1, 1, 10.0;
+                                                  t_inter=0.3 * cis(0.7), tol=1e-10)
+    A = Matrix(get_matrix(H.mpo, H.sites))
+    @test norm(A - A') < 1e-8 * norm(A)
+    @test norm(imag(A)) > 1e-3                 # the phase of t_inter is there
+end

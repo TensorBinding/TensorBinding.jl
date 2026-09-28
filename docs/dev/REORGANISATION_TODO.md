@@ -353,6 +353,10 @@ the affected golden cases in the same commit.
       twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
       and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for
       Hermiticity.
+      *The twisted `t_inter`: fixed (V_lk = V_kl†, complex tensors for a complex t_inter).
+      The self-check stays off there: the twisted V_kl and the propagator are dense
+      functions, where QTCI does not miss bond classes; `add_soc!(:custom)` and
+      `pairing2MPO` are still open.*
 
 ## Tier 1 — mechanical, no behaviour change
 
