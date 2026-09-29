@@ -9,7 +9,7 @@
 # Entry points: get_exciton_ldos_spatial, get_exciton_ldos,
 #   get_exciton_ldos_separation, exciton_radius2
 # Depends on: core/Utils.jl (mpsexciton, spatial_sampling_plan), core/TBSystem.jl
-#   (TBHamiltonian), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+#   (TBHamiltonian, _is_exciton_register), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
 #   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,
 #   _run_kpm_mps!).
 #

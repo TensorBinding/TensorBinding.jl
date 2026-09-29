@@ -87,9 +87,9 @@ end
     @test Y1 ≈ Y2 atol=1e-12
     @test Y1 != dmat_x(mpo_x(X, ns), ns)
 
-    # Two-particle QFT = single-particle QFT on each register (a product operator
-    # A ⊗ B maps to conj(A) ⊗ conj(B)); the swapprime that compensated the transpose
-    # is gone.
+    # Two-particle QFT = single-particle QFT on each register (A ⊗ B maps to
+    # conjugate_by_qft(A) ⊗ conjugate_by_qft(B)); the swapprime that compensated the
+    # transpose is gone.
     Hx = exciton_hamiltonian("chain_1d", 1.0, x -> 1.0; L=2, scale=5.0)
     se, sh = Hx.sites[1:2:end], Hx.sites[2:2:end]
     Ae, Bh = randn(ComplexF64, 4, 4), randn(ComplexF64, 4, 4)

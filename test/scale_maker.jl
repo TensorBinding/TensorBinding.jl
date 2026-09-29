@@ -32,7 +32,8 @@ const SM_CASES = [
     ("ssh_sublattice", (t=1.0, d=0.3), (L=3,)),
 ]
 
-# The builders' own defaults, which the entries with default_rule = :formula keep.
+# The builders' own formulas: kept by the :formula entries, and the `f` of
+# max(f, :small) for the multi-atom lattices.
 sm_formula(g, p) =
     g == "kagome" || g == "dice" ? 4.5 * SM._abs_t(p) :
     g == "lieb"                  ? 2.5 * SM._abs_t(p) :
@@ -48,8 +49,8 @@ sm_formula(g, p) =
         H = get_Hamiltonian(g, p; kw...)
         M = sm_dense(H)
         ρ = sm_radius(M)
-        # the row-sum rule bounds every row of the builder's matrix (up to the ~1e-6
-        # compression noise of the honeycomb builders)
+        # the row-sum rule bounds every row of the builder's matrix (the 1e-5 margin
+        # covered the ~1e-6 compression noise of the honeycomb builders, gone since 11a4e3c)
         @test entry.rowsum(p, kw) >= sm_rowsum(M) * (1 - 1e-5)
         # the default scale bounds the spectrum
         @test H.scale > ρ

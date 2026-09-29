@@ -8,7 +8,7 @@
 # Entry points: get_dos_stochastic, get_dos_trace
 # Depends on: core/Utils.jl (_basis_state_mps, extract_diagonal_to_mps,
 #   mpsexciton, to_binary_vector, _on_host), core/TBSystem.jl (TBHamiltonian, physical_projector,
-#   physical_site_state, _is_binary_position_space), core/AuxDOF.jl
+#   physical_site_state, _is_binary_position_space, _is_exciton_register), core/AuxDOF.jl
 #   (_aux_projection, _probe_sectors, probe_state), solvers/DMRG.jl
 #   (_ensure_scale!), solvers/kpm/kernels.jl
 #   (_kpm_energy_grid), solvers/kpm/recursion.jl (_scaled_hamiltonian,

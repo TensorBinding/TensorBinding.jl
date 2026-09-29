@@ -28,7 +28,9 @@
 #         prepend_spin/postpend_spin, nambu_index, _NAMBU_OPS,
 #         prepend_nambu/postpend_nambu            ← physics/Supercond.jl
 #   3–6.  add_spin!, add_zeeman!, add_superconductivity!, add_soc!
-#                                                 ← core/TBSystem.jl
+#                                                 ← core/TBSystem.jl;
+#         _lift_to_aux_sites (end of section 2), the aux-site lift of the
+#         Zeeman, SOC and pairing terms
 #   7.    project_aux, _autoenable_proj, aux_site ← the former physics/QFT_tk.jl;
 #         _require_end_site (the end-site check of project_aux and
 #         _project_aux_gpu)

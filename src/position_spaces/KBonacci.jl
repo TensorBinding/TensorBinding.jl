@@ -26,8 +26,7 @@
 #
 # Depends on: Utils (mps_to_diagonal_mpo, shift_adjoint_mpo), TBSystem
 # (TBHamiltonian and the position-space interface), Fibonacci (the FibLower,
-# FibRaise and FibP0 ops), geometry* (_chain_geometry; a * marks a file included
-# later, see the source map in TensorBinding.jl).
+# FibRaise and FibP0 ops), geometry (_chain_geometry).
 
 # ============================================================
 # 1. Position-space type, k-bonacci numeration and alphabet

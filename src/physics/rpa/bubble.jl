@@ -8,8 +8,8 @@
 # Entry points: get_bubble_mpo, get_bubble_mpo_haydock.
 # Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, solvers/DMRG.jl,
 #   solvers/kpm/recursion.jl, solvers/kpm/cached.jl, solvers/Krylov.jl,
-#   physics/Purification.jl* (* = included later; see the source map in
-#   src/TensorBinding.jl).
+#   physics/Purification.jl (_density_matrix, _cached_density, _half_filling; see the
+#   source map in src/TensorBinding.jl).
 
 # ============================================================
 # 1. Internal helpers for the TBHamiltonian API
@@ -95,8 +95,8 @@ Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
   convention of `mcweeny_purify`, the same level when `H.center = 0`);
   `purify_method=:sp2` fixes the filling instead and requires `ϵF = 0`.
 - `P_method`       : `:purification` (default) or `:kpm` — how to compute density matrices.
-  With `:purification`, `H._density_cache` is reused if present, whatever `ϵF`
-  (set `H._density_cache = nothing` after changing it).
+  With `:purification`, a density cached by the same `purify_method` (or set by hand) is
+  reused, whatever `ϵF` (set `H._density_cache = nothing` after changing it).
 - `GF_method`      : `:kpm` (default) or `:krylov` — how to compute G_eff(ω).
 - `Ncheb`          : Chebyshev order (KPM methods only). Default `150`.
 - `maxdim`         : Maximum bond dimension. Default `200`.

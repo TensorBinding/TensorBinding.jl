@@ -60,7 +60,8 @@ interlayer coupling is exponentially decaying:
 The assembled Hamiltonian is:
   `H = Σ_k P_k ⊗ H_mono  +  Σ_{k<l} (|k⟩⟨l| ⊗ V_{kl} + |l⟩⟨k| ⊗ V_{lk})`
 
-which is Hermitian for real V_{kl} since V_{lk}(i,j) = V_{kl}(j,i) = V_{kl}^T.
+which is Hermitian: V_{lk}(i,j) = conj(V_{kl}(j,i)), i.e. V_{lk} = V_{kl}†, for a complex
+`t_inter` too.
 
 **Arguments**
 - `lattice`    : `:square`, `:triangular`, or `:honeycomb`

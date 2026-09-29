@@ -119,7 +119,8 @@ const EXPECTED_CASE_COUNTS = Dict{Symbol,Int}(
 A dense, non-Hermitian MPO on `sites` with bond dimension `χ`, filled entry by
 entry with `cos(0.37k + phase) + im*sin(0.91k + 2phase)` (k = 1, 2, …). Each site
 tensor stores its indices as (s', s, links…), or (s, s', links…) with
-`ketfirst=true`: some helpers read `siteinds(M, n)` in storage order.
+`ketfirst=true`, which checks that the helpers read the legs by prime level, not storage
+order.
 """
 function det_mpo(sites; χ::Int=2, phase::Real=0.0, ketfirst::Bool=false, realpart::Bool=false)
     L     = length(sites)
@@ -507,7 +508,8 @@ function _run_case(fn::Symbol, @nospecialize(S::NamedTuple),
     elseif fn === :_jackson_kernel
         # The Jackson weights of the low-rank cheb2d bubbles for N moments:
         # _jackson_kernel(N) until it was deleted, now the textbook kernel from the
-        # shared _kpm_kernel that _cheb2d_setup uses (same record).
+        # shared _kpm_kernel that _cheb2d_setup uses (same record fields; values
+        # regenerated in ead1d66).
         N = args[1]
         return (; value=TB._kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1))
     elseif fn === :_weighted_mpo_sum                   # args = (weights,)

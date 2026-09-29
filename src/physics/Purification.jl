@@ -26,7 +26,9 @@
 # Entry points: get_density, mcweeny_purify, sp2_purify, purification_initial_guess,
 #   sign_mpo, get_ldos_drho, get_dos_drho. The dispatcher behind get_density,
 #   _density_matrix, also computes the density matrices of the RPA bubbles
-#   (_get_density_matrix) and the topological markers (_get_projector).
+#   (_get_density_matrix) and the topological markers (_get_projector); so do the
+#   density-cache helpers _store_density!/_cached_density (_DENSITY_METHOD) and the
+#   default SP2 filling _half_filling.
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
 #   solvers/kpm/cached.jl.
 

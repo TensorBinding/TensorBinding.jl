@@ -292,7 +292,7 @@ case("hermitize_pre_H_minus_z_scaled_integer_z") do
                         convention = :H_minus_z, scale = 2.5))
 end
 
-# hermitize(NH) inherits z and block_placement but not convention or scale.
+# hermitize(NH) inherits z, block_placement, convention and scale unless passed.
 case("hermitize_rebuild_from_nh") do
     H = lossy_chain()
     NH1 = hermitize(H; z = 0.2 + 0.1im, block_placement = :pre,
@@ -443,7 +443,7 @@ case("nh_resolve_scale") do
     NH0 = lossy_nh()
     (stored   = TB._nh_resolve_scale(NHs),
      explicit = TB._nh_resolve_scale(NHs; scale = 3.0),
-     zero_ignores_stored = TB._nh_resolve_scale(NHs; scale = 0.0, maxdim = MAXDIM),
+     zero_uses_stored = TB._nh_resolve_scale(NHs; scale = 0.0, maxdim = MAXDIM),
      estimated = TB._nh_resolve_scale(NH0; nh_scale_padding = 1.3, maxdim = MAXDIM),
      negative  = caught(() -> TB._nh_resolve_scale(NHs; scale = -2.0)))
 end

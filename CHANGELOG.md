@@ -57,8 +57,9 @@ constructor that takes all 21 fields in order, caches included, remains.
 - An export list: `using TensorBinding` now brings 58 main entry points into scope
   (`get_Hamiltonian`, the `add_*!` mutators, `KPM_Tn`, `get_ldos_spatial`, `get_bands`,
   `get_scf`, the main `*_gpu` functions, …), listed by area under "Public API" on the
-  documentation home page. Only names specific to TensorBinding are exported; the rest of
-  the API, including every type, is still called as `TensorBinding.name`. Qualified calls
+  documentation home page. Only names specific to TensorBinding are added (next to the six
+  ITensors names re-exported since v0.1.0); the rest of the API, including every type, is
+  still called as `TensorBinding.name`. Qualified calls
   and `using TensorBinding: name` imports work as before. A script that defines its own
   top-level function or variable with one of these names now shadows the export; on Julia
   1.11 and earlier that definition is an error if the script used the exported name first.
@@ -103,7 +104,8 @@ constructor that takes all 21 fields in order, caches included, remains.
   spectral bounds, which sets an automatic KPM scale, is reported as an `@info` message.
   The spinless s-wave → p-wave notice of `add_superconductivity!` is an `@info` message.
 - `get_Hamiltonian` looks every geometry up in one model registry (`MODELS` in
-  `core/ModelRegistry.jl`); `MODEL_REGISTRY` and `build_hamiltonian` are unchanged.
+  `core/ModelRegistry.jl`); `MODEL_REGISTRY` and `build_hamiltonian` are unchanged, except
+  for the `"chern8"` default `t2` (see **Changed results**).
 - **GPU precision warning**: the GPU entry points that warn about a tight `cutoff` share
   one helper and one wording, and warn only for a 32-bit element type (`ComplexF32`,
   `Float32`). Each keeps its threshold: `cutoff < 1e-6`, or `1e-4` for
@@ -123,12 +125,13 @@ constructor that takes all 21 fields in order, caches included, remains.
 ### Changed results
 
 - **Default KPM scales** of `get_Hamiltonian` (no `scale` keyword) are now
-  `max(former default, estimate_scale(...; method=:auto))` for `"chain_1d"` and the preset
-  models except `"chernhex"`. The Hamiltonians themselves are unchanged. Exactly these
-  defaults move:
+  `max(former default, estimate_scale(...; method=:auto))` for `"chain_1d"`, the preset
+  models except `"chernhex"` and the 2D multi-atom lattices (see **Default KPM scales of
+  the 2D multi-atom lattices** below). The Hamiltonians themselves are unchanged. Exactly
+  these preset defaults move:
   - `"qc2dsquare"`: always, `6|t|` → `10.56|t|` (padded row-sum bound); `6|t|` was below the
     spectral radius from `L ≈ 12`.
-  - `"chern8"`: when `|V·t2| > 1/11` (with the default `t2 = 0.2`: `|V| > 0.455`), to
+  - `"chern8"`: when `|V·t2| > 1/11` (with the default `t2 = 0.2t` at `t = 1`: `|V| > 0.455`), to
     `1.1(4|t| + 16|t·V·t2|)`; e.g. `V = t = 1`: `6` → `7.92`.
   - `"aah"`: wherever `1.1 ×` the spectral radius of the chain (built at `L ≤ 10`) exceeds
     `1.2(|t| + |V|)`, i.e. for weak potentials: at `t = 1`, `V = 0.5` goes from `1.8` to
@@ -138,11 +141,9 @@ constructor that takes all 21 fields in order, caches included, remains.
   - `"ssh"`: when `|d|` exceeds about `1.14|t|` (bonds `t ± d` beyond the `2.5|t|` window).
   - Never: `"chain_1d"`, `"square_2d"`, `"hex_2d"`, `"triangular_2d"`,
     `"triangular_bravais"`, whose former default already bounds `1.1 ×` the row sum;
-    `"haldane"`, `"chernhex"`, the multi-atom lattices, `"custom"` and the projected spaces
-    keep their builders' defaults.
+    `"haldane"`, `"chernhex"`, `"custom"` and the projected spaces keep their builders'
+    defaults.
   Pass `scale=` explicitly to reproduce an old result.
-- **`get_qpi`** on a projected position space raises a clear `ArgumentError` (QPI needs a
-  binary register). It used to return maps that included the unphysical register states.
 - **Projected position spaces** (Fibonacci, metallic-mean, k-bonacci): every KPM path that
   accepts one now shifts the spectrum and starts its Chebyshev recursion with
   `physical_projector(H)`, as most of them already did. (The Green's-function recursion of the RPA
@@ -153,14 +154,14 @@ constructor that takes all 21 fields in order, caches included, remains.
   the unphysical register states, where it used to hold spurious weight. The physical block
   is the same up to truncation (without truncation the two agree to ~1e-12; with a binding
   `maxdim` it moves within the truncation error, e.g. ~20 % at `maxdim = 30` on an L = 4
-  Fibonacci chain). The cheb2d bubbles move by ~1e-13. (`get_qpi` stops earlier, with the
-  `ArgumentError` above.) Binary position spaces are unaffected, bit for bit.
+  Fibonacci chain). The cheb2d bubbles move by ~1e-13. (`get_qpi` stops earlier, with an
+  `ArgumentError`, see **Fixed**.) Binary position spaces are unaffected, bit for bit.
 - **`get_ldos(H, ω; mode=:mps, psi0)`** with a probe that is not normalised: `KPM_Tn_mps`
   caches the Chebyshev vectors of `ψ₀/‖ψ₀‖`, but the moments were taken with `ψ₀` itself,
   so the LDOS grew linearly with `‖ψ₀‖`. It is now the LDOS of `ψ₀/‖ψ₀‖`. Normalised probes
   (`probe_state`, `physical_site_state`, `mpsexciton`) are unaffected.
 - **k-space sampling** (`kspace_sampling_plan`, behind `get_bands` and `get_bands_gpu`
-  without `k_groups`):
+  without `k_groups_override` or `kpath`):
   - `ilinspace(xmin, xmax, 1)` returns `[xmin]`; it returned `[0]`, outside the window
     when `xmin > 0`. A 1D band plot with `num_x = 1` and `xmin > 0` moves accordingly.
   - The 2D diagonal cut now places its `num_x` points along the whole cut from
@@ -183,12 +184,13 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **Jackson kernel of the low-rank cheb2d bubbles** (`kernel=:jackson`, the default of the
   Tucker and SVD variants): the textbook kernel for the `Ncheb + 1` moments (`g₀ = 1`),
   from the shared `_kpm_kernel`. The RPA-only `_jackson_kernel` had `(N − m)` for
-  `(N − m + 1)`, so `g₀ = N/(N + 1)`; the bubbles move by up to `(N + 1)²/N²` on top of the
-  factor 4 (e.g. ×4.16 at `Ncheb = 50`).
+  `(N − m + 1)`, so `g₀ = N/(N + 1)` (N = Ncheb + 1). The low orders gain a factor
+  ≈ (N + 1)/N each, so smooth bubbles grow by ≈ (N + 1)²/N² on top of the factor 4 (e.g.
+  ×4.16 at `Ncheb = 50`), while the highest orders are damped more strongly than before.
 - **cheb2d bubbles on a complex `H₁`**: the Hadamard product takes the transpose of the
   `H₁` factors, so the bubble has the Lindhard form `(P_a)ᵀ ⊙ P_b` of `get_bubble_mpo`
-  and conserves particles; it was `P_a ⊙ P_b` (44 % off on a complex L = 2 chain, row
-  sums 0.35‖Π‖). Real `H₁` results are unchanged, bit for bit. The cheb2d bubbles carry
+  and conserves particles; it was `P_a ⊙ P_b` (44 % off on a complex L = 2 chain, row sums
+  of norm 0.34 for ‖Π‖ = 0.62). Real `H₁` results are unchanged, bit for bit. The cheb2d bubbles carry
   the opposite sign to `get_bubble_mpo`; their docstrings now say so (which sign `Π₀`
   should have is open).
 - **RPA bubbles with `P_method=:purification` use `ϵF`.** It was never passed, so every
@@ -199,8 +201,9 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`haydock_cf`** (and `get_bubble_mpo_haydock`, `haydock_resolve_mpo`) measures with the
   Frobenius product `Tr[A†B]`, contracted exactly. It took `Tr[conj(A)·B]` of a truncated
   product, which is `Tr[A†B]` only for symmetric `A`: wrong for complex `H` and for seeds
-  whose Krylov vectors are not symmetric (a projector seed stopped after one step).
-  Real symmetric cases move only at the truncation level.
+  whose Krylov vectors are not symmetric (a projector seed stopped after one step), and
+  complex Hermitian seeds (e.g. `Y ⊗ I`) threw a `DomainError`. Real symmetric cases move
+  only at the truncation level.
 - **`wynn_epsilon`** returns the limit of an exactly converged sequence (a constant or
   geometric one) instead of the `1e30` sentinel; a singular table (an arithmetic
   sequence) keeps the sentinel. The Wynn RPA drivers' pinned results are unchanged.
@@ -291,8 +294,9 @@ constructor that takes all 21 fields in order, caches included, remains.
   2√2|t|); `"dice"` from 8 × 8 cells (≈ 4.63|t| for large systems); `"honeycomb_nnn"` once
   |t2| is large (t2 = 0.3: radius 4.76 > 4.55). `"kagome"` and `"honeycomb"` never
   change, and direct builder calls (`lieb_hamiltonian(...)`) keep their own formula.
-- **`"chern8"`** takes `t2 = 0.2t`, the default of `HChern8`; the registry passed an
-  absolute `t2 = 0.2`. Only `t ≠ 1` without an explicit `t2` changes.
+- **`"chern8"`** takes `t2 = 0.2t`, the default of `HChern8`, in `get_Hamiltonian` and
+  `build_hamiltonian` (`MODEL_REGISTRY["chern8"]` no longer lists `t2`); the registry passed
+  an absolute `t2 = 0.2`. Only `t ≠ 1` without an explicit `t2` changes.
 - **`ref_sites`** of `get_Hamiltonian` is honoured by `"chain_1d"`, `"haldane"`,
   `"custom"`, `"ssh_sublattice"` and the multi-atom lattices, which ignored it: the `L`
   position qubits of the result are `ref_sites` (a multi-atom lattice keeps its own
@@ -315,9 +319,23 @@ constructor that takes all 21 fields in order, caches included, remains.
   outward edge normals and was negative everywhere, so its masks suppressed the whole
   lattice. The orientation is now read from the signed area: positive inside for either
   order; clockwise input is unchanged, collinear vertices are an error.
+- **Hermitian for complex parameters**: the intra-cell bond of the honeycomb builders, the
+  AA interlayer coupling of `bilayer_hamiltonian` / `multilayer_hamiltonian` (its backward
+  hop now takes `conj(t_inter)`) and `interchain_hopping_square` with a complex profile
+  were not Hermitian. Real parameters are unchanged, bit for bit.
 - **`intrachain_hopping`** (legacy) was not Hermitian even for real `t`: its backward hop
   put the row break on the wrong side, dropping the bond from `ix = Nx − 2` to `Nx − 1`
   and adding a wrap to the previous row's end.
+- **Non-Hermitian models**: `nh_spectrum_grid(mode=:diag)` dropped the imaginary part of
+  `Z_spatial`; it is `ComplexF64` like `Z` (the real part is unchanged). `hermitize(NH)`
+  rebuilt the Hermitian dilation with the default convention and scale, so an
+  `:H_minus_z` wrapper silently flipped the sign of its upper block;
+  `NonHermitianHamiltonian` records `convention` and `scale` (two new fields, the
+  five-argument constructor still works) and `hermitize(NH)` keeps them.
+  `hermitized_hamiltonian` reports the side of its block index as `aux_side` (always `:pre`
+  before). `rk4_step_dm_nh_gpu` and `get_nh_density_trajectory_gpu` rounded `dt/2`, `dt`,
+  `dt/6` to Float32 in ComplexF64 runs (~1e-8 per step); ComplexF32 runs are unchanged,
+  bit for bit.
 - The `"lieb"` `geometry_uc` (unit-cell positions) is square; it used the triangular
   Bravais vectors of the other multi-atom lattices.
 
@@ -335,9 +353,12 @@ constructor that takes all 21 fields in order, caches included, remains.
 - `mps_to_diagonal_mpo` accepts a one-site MPS (its GPU twin already did).
 - Exciton detection: a one-particle model whose auxiliary indices bring it to `2L` sites
   (a spinful `L = 1` chain) was taken for an exciton register by `get_dos_stochastic`
-  (and its GPU twin) and printed as one. Every exciton check now also requires no
-  auxiliary index; the exciton entry points reject such a model with their
-  "not an exciton Hamiltonian" error.
+  (and its GPU twin), whose `N_bound` / `continuum_only` sampling then treated it as one,
+  and was accepted by the exciton entry points. Every exciton check now also requires no
+  auxiliary index (as `show` already did); the exciton entry points reject such a model
+  with their "not an exciton Hamiltonian" error.
+- `get_qpi` on a projected position space raises a clear `ArgumentError` (QPI needs a
+  binary register); it returned maps that included the unphysical register states.
 - `get_ldos_spatial` and `get_ldos_spatial_gpu` with `grid`, a window, `box_half` or
   `reduce=:block` on a T-junction Hamiltonian raise an error: its positions are chains
   drawn in 2D, not a row-major grid, and the maps silently split the register at
@@ -345,20 +366,14 @@ constructor that takes all 21 fields in order, caches included, remains.
 - `kernel=:hodc` in a function without `eta`/`m_order` keywords (`get_ldos_spatial`,
   `get_bands`, `get_qpi`, …) still raises "Unknown KPM kernel", now saying which
   functions take it.
-- `haydock_cf` threw a `DomainError` for complex Hermitian seeds (e.g. `Y ⊗ I`).
 - RPA bubbles with `P_method=:purification, purify_method=:sp2` and `ϵF ≠ 0` raise an
-  `ArgumentError`: SP2 fixes the filling at `Nel = H.N ÷ 2`, and ignored `ϵF` silently.
+  `ArgumentError`: SP2 fixes the filling at half the states, and ignored `ϵF` silently.
 - RPA `P_method=:kpm` and the Green's-function recursion of `get_bubble_mpo` printed
   "Computed T_n …" with `verbose=false`.
-- The `get_magnon_bubble` docstring had the spin-flip energy reversed (the code computes
-  `ω − (ε↓ − ε↑)`).
-- Hermitian for complex parameters: the intra-cell bond of the honeycomb builders, the AA
-  interlayer coupling of `bilayer_hamiltonian` / `multilayer_hamiltonian` (its backward
-  hop now takes `conj(t_inter)`), the interlayer coupling of `twisted_bilayer_hamiltonian` /
-  `twisted_multilayer_hamiltonian` (its backward hop was the transpose, compressed as
-  `Float64`: a complex `t_inter` threw), and `interchain_hopping_square` with a complex
-  profile.
-  Real parameters are unchanged, bit for bit.
+- `twisted_bilayer_hamiltonian` / `twisted_multilayer_hamiltonian` with a complex
+  `t_inter` threw an `InexactError` (the interlayer coupling was compressed as `Float64`,
+  and its backward hop was the transpose, not the adjoint); real `t_inter` is unchanged,
+  bit for bit.
 - `kagome_hamiltonian`, `lieb_hamiltonian` and `dice_hamiltonian` accept complex
   amplitudes (an `InexactError` before), with `⟨A|H|B⟩ = t_AB` on every bond.
 - `mask_hamiltonian` works on sublattice Hamiltonians (kagome, Lieb, honeycomb, dice): each
@@ -372,9 +387,8 @@ constructor that takes all 21 fields in order, caches included, remains.
   `lattice=:triangular` / `:honeycomb`): their neighbour shells differ between even and odd
   rows, and one shift per displacement put half the bonds in the wrong place.
   `"triangular_bravais"`, `"square_2d"` and the sublattice lattices are unchanged.
-- Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
-  positional `cyclic=true` default of `build_shift_mpo`, never reachable (a two-argument
-  call takes the keyword method, `cyclic=false`), is gone.
+- `build_shift_mpo(sites, q, cyclic)` has no positional default any more: its `true` was
+  never reached (`build_shift_mpo(sites, q)` calls the keyword method, `cyclic=false`).
 - `add_zeeman!` and `add_soc!` failed on every Hamiltonian with a layer or sublattice index
   (bilayers, honeycomb, kagome, …: the term lacked those sites, and the MPO sum threw), and
   `add_soc!` on a BdG model; `add_superconductivity!` did the same, and lifted the pairing
@@ -386,19 +400,6 @@ constructor that takes all 21 fields in order, caches included, remains.
   after the first Hartree step (its ComplexF32 Hartree deltas); it now stays real.
 - `rms_error` and the GPU SCF residual used ITensors' deprecated index matching
   (`inner(ψ', ψ)`, "will error in ITensors v0.4"); same values.
-- `nh_spectrum_grid(mode=:diag)` dropped the imaginary part of `Z_spatial`; it is
-  `ComplexF64` like `Z` (the real part is unchanged).
-- `hermitize(NH)` rebuilt the Hermitian dilation with the default convention and scale,
-  so an `:H_minus_z` wrapper silently flipped the sign of its upper block;
-  `NonHermitianHamiltonian` records `convention` and `scale` (two new fields, the
-  five-argument constructor still works) and `hermitize(NH)` keeps them.
-  `hermitized_hamiltonian` reports the side of its block index as `aux_side` (always
-  `:pre` before).
-- `rk4_step_dm_nh_gpu` and `get_nh_density_trajectory_gpu` rounded `dt/2`, `dt`, `dt/6` to
-  Float32 in ComplexF64 runs (~1e-8 per step); ComplexF32 runs are unchanged, bit for bit.
-- Docstrings: the `Exciton_Hamiltonian` example called `x -> -U` attractive (the contact
-  term is `−Ufunc`, so a positive `Ufunc` attracts); `tol_quantics` and
-  `maxbonddim_quantics` apply to `on_site` only.
 - A spin index added with `add_spin!(H; position=:post)` (alone or with a postpended Nambu
   index) was always projected from the first site: `get_bands` crashed Julia with a
   segfault, `get_ldos_spatial(mode=:mpo)` threw inside ITensors, and the GPU twins did
@@ -418,14 +419,21 @@ constructor that takes all 21 fields in order, caches included, remains.
   projection flag off transformed the auxiliary site as one more momentum bit (a
   meaningless result); it raises an `ArgumentError`. The `TBHamiltonian` methods always
   switch those flags on.
-- `_project_spin_sector` (the RPA and SCF spin channels) on a spin index inside the
-  auxiliary block dropped sites from the MPO: the Nambu site for `[pos…, spin, nambu]`,
-  every position site for `[nambu, spin, pos…]`.
+- `_project_spin_sector` (the spin channels of the RPA:
+  `get_rpa_susceptibility(_wynn)(mode=:magnetic)`, `get_magnon_bubble` and the magnon
+  susceptibilities) on a spin index inside the auxiliary block dropped sites from the MPO:
+  the Nambu site for `[pos…, spin, nambu]`, every position site for `[nambu, spin, pos…]`.
 - A projection flag without its index (`nambu_proj=true` on a model without Nambu index,
   `spin_proj=true` in `get_ldos_spatial(mode=:mpo)` without spin) threw a `TypeError`; the
   error now names the DOF. `project_aux(W, nothing, σ)` no longer blames `sublat_proj`
   whatever the DOF.
-
+- Docstrings: the dice bands reach ±3√2 t (not ±3t) and the Lieb bands ±2√2 t; the
+  `get_magnon_bubble` spin-flip energy was reversed (the code computes `ω − (ε↓ − ε↑)`);
+  the `Exciton_Hamiltonian` example called `x -> -U` attractive (the contact term is
+  `−Ufunc`, so a positive `Ufunc` attracts), and `tol_quantics`/`maxbonddim_quantics`
+  apply to `on_site` only.
+- Error messages of `build_hamiltonian` for a model of the wrong dimension ended in a
+  mangled "-" (an old encoding accident); they now end in "…)".
 - Example notebooks: `examples/spectral/aux_ldos_examples.ipynb` called
   `TensorBinding.plot_ldos_2d`, which the package does not define (plotting is not part of
   it); the notebook now defines the helper itself. `examples/manybody/excitons.ipynb` used

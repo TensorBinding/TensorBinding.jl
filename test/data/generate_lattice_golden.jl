@@ -4,7 +4,10 @@
 # Reference: first generated on top of commit 1a5548b (branch Anouar, "Run the
 # third-round audit regression tests from runtests.jl"), before the Tier 1
 # code reorganisation (docs/dev/REORGANISATION_TODO.md). The data pins what the
-# lattice code does at that commit, remaining bugs included.
+# lattice code does at that commit, remaining bugs included. The 2026-09 bug pass
+# regenerated the 25 cases its fixes moved (11a4e3c: Hermiticity for complex
+# parameters, the honeycomb sum, polygon masks, zero fields, non-Bravais shells,
+# ref_sites, the multi-atom scales) and the build_hamiltonian message (below).
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain. It does not move
@@ -41,12 +44,11 @@
 # haldane_hoppingf/chirality, and the default scale of "chern8" and
 # "qc2dsquare" (their cases pass an explicit `scale=`).
 #
-# Error messages are pinned by their first 60 characters. One of them,
-# build_hamiltonian's "Model 'uniform' is 1D; call build_hamiltonian(model, L; -",
-# ends in the mojibake that the Tier 1 item "re-save 2Dlattice_tk.jl as UTF-8"
-# restores (the message came with MODEL_REGISTRY from the former 2Dlattice_tk.jl
-# and is in core/ModelRegistry.jl now); when that lands, regenerate and check
-# that the data diff touches only that message_prefix.
+# Error messages are pinned by their first 60 characters. build_hamiltonian's
+# "Model 'uniform' is 1D; call build_hamiltonian(model, L; …)." ended in a mojibake
+# "-" (it came with MODEL_REGISTRY from the former 2Dlattice_tk.jl) until the
+# consistency pass of 2026-09-29 restored the "…)"; that regeneration moved only
+# this message_prefix.
 
 using TensorBinding
 const TB = TensorBinding
@@ -233,7 +235,7 @@ gh("chain_1d_L3", "chain_1d", 1.0, (L = 3,))
 gh("chain_1d_L3_periodic", "chain_1d", 0.7, (L = 3, boundary = :periodic))
 gh("chain_1d_L3_bc_string", "chain_1d", 1.0, (L = 3, bc = "periodic"))
 gh("chain_1d_L3_scale_maxdim2", "chain_1d", 1.0, (L = 3, scale = 3.0, maxdim = 2))
-gh("chain_1d_L3_ref_sites_ignored", "chain_1d", 1.0, (L = 3,); ref_sites = true)
+gh("chain_1d_L3_ref_sites", "chain_1d", 1.0, (L = 3,); ref_sites = true)
 gh("custom_L3_real_matrix_geometry", "custom", :custom_nn, (L = 3, scale = 2.0, type = Float64);
    custom_geometry = (kind = :matrix, Lx = 2, Ly = 1))
 gh("custom_L3_complex_function_geometry", "custom", :custom_cplx, (L = 3, scale = 2.5);
@@ -246,7 +248,7 @@ gh("kagome_L3_namedtuple_scale", "kagome", (t = 0.9,), (L = 3, Lx = 2, Ly = 1, s
 gh("lieb_L3_Lx2_Ly1", "lieb", 1.0, (L = 3, Lx = 2, Ly = 1))
 gh("lieb_L3_dict", "lieb", Dict(:t => 0.6), (L = 3, Lx = 2, Ly = 1))
 gh("honeycomb_L3_default_split", "honeycomb", 1.0, (L = 3,))
-gh("honeycomb_L3_Lx2_Ly1_ref_sites_ignored", "honeycomb", 1.0, (L = 3, Lx = 2, Ly = 1); ref_sites = true)
+gh("honeycomb_L3_Lx2_Ly1_ref_sites", "honeycomb", 1.0, (L = 3, Lx = 2, Ly = 1); ref_sites = true)
 gh("honeycomb_nnn_L3_namedtuple", "honeycomb_nnn", (t = 1.0, t2 = 0.15), (L = 3, Lx = 2, Ly = 1))
 gh("honeycomb_nnn_L3_dict", "honeycomb_nnn", Dict(:t => 1.0, :t2 => 0.1), (L = 3, Lx = 2, Ly = 1))
 gh("dice_L3_Lx2_Ly1", "dice", 1.0, (L = 3, Lx = 2, Ly = 1))

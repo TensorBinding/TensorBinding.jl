@@ -5,7 +5,8 @@
 # Split from the former physics/RPA_tk.jl. The five bubbles share the kernels of
 # section 2: the prologue _cheb2d_setup, the plain (m,n) sweep _cheb2d_pair_sweep!, the
 # Tucker steps _tucker_bases, _tucker_components, _tucker_hadamard and _tucker_accumulate,
-# and the per-term _hadamard_difference, _cheb2d_kdiag and _accumulate_scaled!.
+# and the per-term _hadamard_difference (with the H₁-side transposes _transpose_mpo,
+# _real_mpo), _cheb2d_kdiag and _accumulate_scaled!.
 #
 # Entry points: get_bubble_mpo_cheb2d, get_bubble_mpo_cheb2d_tucker,
 #   get_bubble_diag_cheb2d, get_bubble_diag_cheb2d_svd, get_bubble_diag_cheb2d_tucker,

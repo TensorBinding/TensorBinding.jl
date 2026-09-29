@@ -9,7 +9,8 @@
 # forwarding and default-keyword cases; every earlier case kept its values.
 # The 42 cases with P_method=:kpm were regenerated in the merge of release-0.1.1
 # into Anouar, which made the KPM density the occupied-state projector; every
-# other case kept its values.
+# other case kept its values. The 2026-09 bug pass regenerated the cases listed as
+# "(fixed, cases regenerated)" below.
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain.
@@ -125,7 +126,8 @@ dkw(; ϵF=0.0, P_method=:kpm, purify_method=:mcweeny) =
 add!("mpo_kron_q2_sub3", :mpo_kron, :kron)
 add!("interleave_mpo_L2_n1", :interleave_mpo, :ileave2, (1,))
 add!("interleave_mpo_L2_n0", :interleave_mpo, :ileave2, (0,))
-# Same operator stored ket-first: interleave_mpo maps siteinds(op, i) in storage order.
+# Same operator stored ket-first: interleave_mpo reads the legs by prime level, so this
+# equals interleave_mpo_L2_n1.
 add!("interleave_mpo_L2_n1_ketfirst", :interleave_mpo, :ileave2_ketfirst, (1,))
 add!("interleave_mpo_L1_n0", :interleave_mpo, :ileave1, (0,))
 add!("interleave_mpo_tb_qubit_sub3_A", :interleave_mpo_tb, :ileave_tb_het, (:A,))
@@ -144,7 +146,7 @@ add!("build_heff_chain2_cplx_pair", :_build_heff, :chain2_cplx)
 add!("density_kpm_ef0", :_get_density_matrix, :chain3_cplx, (), dkw())
 add!("density_kpm_ef03", :_get_density_matrix, :chain3_cplx, (), dkw(ϵF=0.3))
 add!("density_mcweeny", :_get_density_matrix, :chain3_cplx, (), dkw(P_method=:purification))
-# ϵF is not forwarded to the purification path.
+# ϵF reaches McWeeny (level H.center + ϵF); it did not before ead1d66.
 add!("density_mcweeny_ef03", :_get_density_matrix, :chain3_cplx, (),
      dkw(ϵF=0.3, P_method=:purification))
 add!("density_sp2", :_get_density_matrix, :chain3_cplx, (),

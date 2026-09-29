@@ -6,7 +6,8 @@
 # two-particle Hamiltonian, MPO powers by squaring (compose_power), the exact
 # rank-1 site projector (_site_projector_mpo) and the left-to-right compressed
 # sum of MPO terms (sum_mpos) that the lattice builders assemble with, with its
-# checked variant _checked_sum_mpos (the sublattice builders).
+# checked variant _checked_sum_mpos (the sublattice builders) and its Frobenius
+# distance _mpo_distance.
 #
 # Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power,
 #   sum_mpos.

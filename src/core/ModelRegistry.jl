@@ -4,7 +4,8 @@
 #
 # Contents: the parameter helpers _param and _parse_param_string; the builders of the
 # preset, multi-atom and projected entries (_build_preset, _build_sublattice,
-# _build_ssh_sublattice, the ref_sites guard of the projected spaces); today's default
+# _build_ssh_sublattice, the ref_sites guard of the projected spaces, and the ref_sites
+# helpers _check_ref_sites, _ref_or_drawn, _replace_pos_sites!); today's default
 # scale formulas (_estimate_scale, _chernhex_scale) and the preset geometry closures
 # (_preset_geometry), read from the entries; ModelEntry and MODELS, the registry, with
 # MODEL_REGISTRY, its (builder, dim, required, kw_defaults) view of the presets;
@@ -14,7 +15,7 @@
 # Main entry points: build_hamiltonian, estimate_scale; get_Hamiltonian
 # (core/TBSystem.jl) looks every geometry up in MODELS.
 #
-# Depends on: Utils (fix_sites, _mpo_dense_matrix), TBSystem (TBHamiltonian, the chain,
+# Depends on: Utils (fix_sites, _mpo_ket_sites, _mpo_dense_matrix), TBSystem (TBHamiltonian, the chain,
 # Haldane and custom builders), geometry (the i -> position closures), Fibonacci,
 # MetallicMean, KBonacci (their get_Hamiltonian wrappers), presets (the H* builders,
 # looked up by Symbol at call time), sublattice* (builders and position tables, looked
@@ -537,7 +538,7 @@ function build_hamiltonian(model::AbstractString, L::Integer;
     key = lowercase(model)
     haskey(MODEL_REGISTRY, key) || error("Unknown model '$model'. Known: $(sort(collect(keys(MODEL_REGISTRY))))")
     fn_sym, dim, required, kw_defaults = MODEL_REGISTRY[key]
-    dim == 1 || error("Model '$model' is 2D; call build_hamiltonian(model, Lx, Ly; -")
+    dim == 1 || error("Model '$model' is 2D; call build_hamiltonian(model, Lx, Ly; …).")
     fn = getfield(@__MODULE__, fn_sym)
     p  = _parse_param_string(mparams)
     for (k,v) in mparam_dict; p[k] = v; end
@@ -554,7 +555,7 @@ function build_hamiltonian(model::AbstractString, Lx::Integer, Ly::Integer;
     key = lowercase(model)
     haskey(MODEL_REGISTRY, key) || error("Unknown model '$model'. Known: $(sort(collect(keys(MODEL_REGISTRY))))")
     fn_sym, dim, required, kw_defaults = MODEL_REGISTRY[key]
-    dim == 2 || error("Model '$model' is 1D; call build_hamiltonian(model, L; -")
+    dim == 2 || error("Model '$model' is 1D; call build_hamiltonian(model, L; …).")
     fn = getfield(@__MODULE__, fn_sym)
     p  = _parse_param_string(mparams)
     for (k,v) in mparam_dict; p[k] = v; end

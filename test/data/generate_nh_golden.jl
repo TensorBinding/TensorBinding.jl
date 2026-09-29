@@ -5,7 +5,9 @@
 # Reference: the golden data was first generated from commit 1a5548b ("Run the
 # third-round audit regression tests from runtests.jl", branch Anouar), before
 # the Tier 1 code reorganisation (docs/dev/REORGANISATION_TODO.md). It pins
-# what the NH code did at that commit, remaining bugs included.
+# what the NH code did at that commit, remaining bugs included. The 2026-09 bug
+# pass regenerated the 7 cases its fixes moved (a64b949: Z_spatial, hermitize(NH),
+# aux_side, the 0.0 scale).
 #
 # The "Truncation" cases (maxdim / cutoff forwarding) were added later, at
 # 4cf90f8 on the same branch. src/ had changed since 1a5548b, but only outside

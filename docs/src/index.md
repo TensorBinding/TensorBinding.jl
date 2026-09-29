@@ -8,11 +8,11 @@ TensorBinding is a Julia library for tight-binding physics on matrix-product-sta
 
 ## Installation
 
-TensorBinding is not yet registered. Install directly from the GitHub repository:
+TensorBinding is registered in the Julia General registry:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/TensorBinding/TensorBinding.jl")
+Pkg.add("TensorBinding")
 ```
 
 

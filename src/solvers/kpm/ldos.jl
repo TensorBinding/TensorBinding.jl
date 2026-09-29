@@ -10,8 +10,9 @@
 # Depends on: core/Utils.jl (spatial_sampling_plan, extract_diagonal_to_mps,
 #   _eval_block_mps, binary_to_MPS), core/TBSystem.jl (TBHamiltonian,
 #   physical_projector, site_permutation), core/AuxDOF.jl (_aux_projection,
-#   _probe_sectors, probe_state, _project_aux_sectors), solvers/DMRG.jl
-#   (_ensure_scale!), solvers/kpm/kernels.jl (_kpm_energy_grid),
+#   _probe_sectors, probe_state, _project_aux_sectors), lattice/TJunction.jl
+#   (_is_tjunction), solvers/DMRG.jl (_ensure_scale!), solvers/kpm/kernels.jl
+#   (_kpm_energy_grid),
 #   solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach,
 #   _run_kpm_mps!).
 #

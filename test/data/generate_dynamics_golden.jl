@@ -4,7 +4,9 @@
 # Reference: the golden data was first generated from commit 1a5548b ("Run the
 # third-round audit regression tests from runtests.jl", branch Anouar), before
 # Tier 1 of the code-organisation refactor (docs/dev/REORGANISATION_TODO.md). It
-# pins what the code computes there, remaining bugs included.
+# pins what the code computes there, remaining bugs included. The 2026-09 bug pass
+# regenerated the cases its fixes moved (87f6562: fix_sites, the one-site MPS;
+# ead1d66: Haydock; a64b949: the TwoParticle cases).
 #
 # The cases themselves (inputs, seeds and which outputs are recorded) live in
 # DynamicsGoldenRunner in test/golden_dynamics.jl, so that the test and this

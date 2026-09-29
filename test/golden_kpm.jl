@@ -511,9 +511,9 @@ case!("get_ldos/mps/chain4/hodc_eta0.05_m6") do
     H, psi0 = chain4_mps_cached(site6)
     (; A = [get_ldos(H, w; mode=:mps, psi0, kernel=:hodc, eta=0.05, m_order=6) for w in W_CHAIN4])
 end
-# Pinned as it is today: KPM_Tn(mode=:mps) normalises psi0 but get_ldos(mode=:mps)
-# takes moments against the caller's (here unnormalised, norm sqrt(2)) psi0, so
-# the result scales with norm(psi0) rather than 1 or norm(psi0)^2.
+# psi0 is not normalised (norm √2): get_ldos(mode=:mps) takes the moments with
+# ψ₀/‖ψ₀‖, as the KPM_Tn(mode=:mps) cache does (until 87f6562 it used the caller's
+# psi0, so the result scaled with ‖ψ₀‖).
 case!("get_ldos/mps/chain4/unnormalised_psi0") do
     H, psi0 = chain4_mps_cached(sup39)
     (; A = [get_ldos(H, w; mode=:mps, psi0) for w in W_CHAIN4])
@@ -580,7 +580,7 @@ case!("get_ldos_spectrum/ssh3") do
     KPM_Tn(H, 8)
     (; A = dense(get_ldos_spectrum(H, W_SSH3)))
 end
-# Throws today, for the reason given at "get_ldos/diag/fib4".
+# Threw until 87f6562, for the reason given at "get_ldos/diag/fib4".
 case!("get_ldos_spectrum/fib4") do
     H = model(:fib4)
     KPM_Tn(H, 10)
@@ -1064,8 +1064,8 @@ case!("exciton/cached_ldos/miss_then_hit"; requires=has_cached_exciton) do
     H = model(:exc3)
     (; A = [TB._get_exciton_ldos_cached(H, 3, w; Ncheb=10) for w in W_EXC3])
 end
-# Pinned as it is today: the cache hit checks only Ncheb, not the X the cache was
-# built for, so this returns moments <5,5|T_n|3,3> (values of both signs).
+# Pinned as it was before the function was deleted (c91ff65; the case is skipped): the
+# cache hit checked only Ncheb, not the X the cache was built for, so this returns moments <5,5|T_n|3,3> (values of both signs).
 case!("exciton/cached_ldos/hit_other_X"; requires=has_cached_exciton) do
     H = model(:exc3)
     KPM_Tn(H, 10, 3)
@@ -1200,8 +1200,8 @@ end
 case!("exciton/radius2/d_list_mismatch") do
     exciton_radius2(zeros(2, 3, 1), [0, 1])
 end
-# Throws today: the exciton MPO stores its site legs as (s, s'), so
-# `getindex.(siteinds(H), 2)` returns the primed indices and the probe MPS no
+# Threw before the function was deleted (c91ff65; the case is skipped): the exciton MPO
+# stores its site legs as (s, s'), so `getindex.(siteinds(H), 2)` returned the primed indices and the probe MPS no
 # longer matches apply(H, ...) at the first `+`.
 case!("exciton/ldos_exc_KPM_Tn/X3"; requires=has(:ldos_exc_KPM_Tn)) do
     H = model(:exc3)

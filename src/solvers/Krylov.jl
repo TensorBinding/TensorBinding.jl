@@ -3,13 +3,14 @@
 # Contents: the retarded single-particle Green's function G(ω) = (ω + iη − H)⁻¹ as
 # an MPO, from the vectorized linear system
 #
-#     [(ω + iη − H) ⊗ I] |G⟩⟩ = |I⟩⟩
+#     [I ⊗ (ω + iη − H)ᵀ] |G⟩⟩ = |I⟩⟩     (G (ω + iη − H) = I, operator on the column sites)
 #
 # solved by ITensorMPS.linsolve (get_green_krylov), where |M⟩⟩ is the vectorized
 # (MPS) representation of the matrix M on a 2L-site interleaved quantics chain (odd
 # sites = row bits, even sites = column bits; built by _vec_mps_from_mpo); and the
 # operator-level Haydock (Lanczos) recursion with its continued fraction and
-# resolvent MPO (haydock_cf, eval_haydock_cf, haydock_resolve_mpo).
+# resolvent MPO (haydock_cf, eval_haydock_cf, haydock_resolve_mpo) with its
+# Hilbert-Schmidt inner product _hs_inner.
 #
 # Entry points: get_green_krylov, haydock_cf, eval_haydock_cf, haydock_resolve_mpo
 # Depends on: core/Utils.jl (custom_mpo), core/MPOTools.jl (interleave_mpo),
@@ -72,7 +73,9 @@ end
 Low-level: compute the retarded Green's function G(ω) = (ω + iη − H)⁻¹ for a
 raw MPO `H_mpo` defined on `sites`, via the vectorized linear system
 
-    [(ω + iη − H) ⊗ I] |G⟩⟩ = |I⟩⟩
+    [I ⊗ (ω + iη − H)ᵀ] |G⟩⟩ = |I⟩⟩
+
+(`G (ω + iη − H) = I`, with the operator on the column sites of |G⟩⟩).
 
 See the `TBHamiltonian` overload for the full keyword-argument reference.
 """
@@ -130,7 +133,9 @@ Compute the retarded Green's function
 
 as an MPO by solving the vectorized linear system
 
-    [(ω + iη − H) ⊗ I] |G⟩⟩ = |I⟩⟩
+    [I ⊗ (ω + iη − H)ᵀ] |G⟩⟩ = |I⟩⟩
+
+(`G (ω + iη − H) = I`, with the operator on the column sites of |G⟩⟩)
 
 using `ITensorMPS.linsolve` (DMRG-like Krylov solver).  The Hamiltonian is used
 unscaled — no KPM Chebyshev expansion required.

@@ -1276,7 +1276,8 @@ mps_to_diagonal_mpo(mps, sites) = _mps_to_diagonal(mps, sites)
 
 # The kernel of mps_to_diagonal_mpo and its GPU twin _mps_to_diagonal_mpo_gpu: each
 # delta is moved by `to_device(·, delta_type)` (see `_on_host`; the GPU makes it a
-# dense ComplexF32 tensor, whatever the element type of the MPS). A one-site MPS has no
+# dense tensor of `delta_type`, ComplexF32 by default, whatever the element type of the
+# MPS; the real GPU SCF passes its own type). A one-site MPS has no
 # link to tell its site index apart, so it is taken as the only index.
 function _mps_to_diagonal(mps, sites; to_device = _on_host, delta_type::Type = ComplexF32)
     N          = length(mps)

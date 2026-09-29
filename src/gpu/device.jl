@@ -87,12 +87,14 @@
 #   default (ComplexF64 for the NH-DOS entry points), and a real type only
 #   where the docstring allows it, for a real Hamiltonian. A few internal steps
 #   upload with ComplexF32 whatever the entry point's type (a CPU MPO passed to
-#   density_profile_from_dm_gpu and its constant profile, the SCF Hartree deltas,
+#   density_profile_from_dm_gpu and its constant profile, the SCF Hartree deltas of a
+#   complex type,
 #   the identity of _purification_initial_guess_gpu, _mcweeny_purify_gpu, the
 #   conductivity helpers). Results moved back via _to_cpu_mpo /
 #   _to_cpu_mps are promoted to ComplexF64. ComplexF32 eigendecomposition can
 #   produce NaN at very tight `cutoff` on large systems: the entry points warn
 #   (without altering the value) for a 32-bit element type with `cutoff < 1e-6`
+#   (1e-4 for the NH DOS, 1e-5 for the GPU SCF)
 #   (_resolve_gpu_type; the NH diagonal-trace entry points do not warn).
 #
 # SHARED KERNELS

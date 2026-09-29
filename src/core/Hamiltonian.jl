@@ -4,7 +4,8 @@
 # parser _tb_periodic_boundary, hopping2MPO and qtci_matrix_to_MPO (compress an
 # arbitrary hopping matrix f(i, j) by 2D QTCI; hopping2MPO(...; check=true) compares the
 # result with f on a fixed sample and rebuilds it from structural pivots when it is
-# wrong), and kineticNNN (a chain with a spatially varying nn-th-neighbour hopping field).
+# wrong: _hopping2MPO, _hopping_samples, _hopping_mismatch, _hopping_pivots,
+# _mpo_site_arrays, _mpo_array_entry), and kineticNNN (a chain with a spatially varying nn-th-neighbour hopping field).
 #
 # Main entry points: hopping2MPO, kinetic_1d_nn, kineticNNN.
 #
@@ -45,7 +46,7 @@ end
 """
     hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                 unfoldingscheme=:interleaved, nrandominitpivot=5,
-                nsearchglobalpivot=5) -> MPO
+                nsearchglobalpivot=5, check=false) -> MPO
 
 Compress an arbitrary NxN hopping matrix `H[i,j] = f(i,j)` into an
 MPO using Quantics Tensor Cross Interpolation on a 2D quantics grid
@@ -75,8 +76,10 @@ checked again; a second failure, or `f` vanishing on every sample, is an error. 
 fails when it is off by more than half of `|f(i, j)|`, or by more than `1e-3` of the
 largest sampled `|f|`: a missed or spurious bond, not the small deviations of an
 approximate compression. The sample calls `f` a few thousand times and draws nothing
-from the RNG. `get_Hamiltonian("custom", f)` and `add_hopping!(H, f)` with a two-argument
-`f` turn the check on (their keyword `check`); the default here is `false`.
+from the RNG. `get_Hamiltonian("custom", f)`, `add_hopping!(H, f)` with a two-argument
+`f`, `add_superconductivity!(H, Δ; type=:custom)` (through `pairing2MPO`) and
+`add_soc!(H, λ; type=:custom)` with a two-argument `λ` turn the check on (their keyword
+`check`); the default here is `false`.
 """
 function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                      unfoldingscheme=:interleaved, nrandominitpivot::Int=5,

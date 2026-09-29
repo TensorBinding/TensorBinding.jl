@@ -7,7 +7,9 @@
 # regenerated on top of 1ffb7aa (branch Anouar, after the 2026-09 bug round):
 # every case was byte-identical except the ten `_exciton_block_groups` cases,
 # which were dropped because 552ff3f removed that unreachable helper. The data
-# pins what the planners do after the bug round, remaining bugs included.
+# pins what the planners do after the bug round, remaining bugs included; the
+# 2026-09 bug pass regenerated the 110 ilinspace/kspace_sampling_plan cases its
+# fixes moved (87f6562).
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain. It does not move when

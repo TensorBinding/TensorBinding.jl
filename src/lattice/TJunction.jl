@@ -3,7 +3,8 @@
 # junctions, each returned as a TBHamiltonian with the index in H.sublattice_s.
 #
 # Entry points: add_tjunction!, tjunction_hamiltonian,
-#   tjunction_lattice_hamiltonian, tjunction_index.
+#   tjunction_lattice_hamiltonian, tjunction_index; _is_tjunction (the check of the
+#   grid LDOS maps in solvers/kpm/ldos.jl and gpu/kpm.jl).
 #
 # Depends on: core/Utils.jl (postpend_op, prepend_op), core/MPOTools.jl
 # (_site_projector_mpo, sum_mpos), core/Hamiltonian.jl (kinetic_1d_nn), core/TBSystem.jl

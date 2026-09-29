@@ -27,7 +27,7 @@ Line numbers refer to the working tree on that date and will drift.
       `Lx`, `interaction_mpo`, `fock_mpo` and `position_space`; SCF (l.364, 485, 1136),
       RPA (l.1141) and NH (l.99) copy Hamiltonians through it. Replace with a keyword copy
       constructor (see Tier 2) and delete the positional ones.
-      *Fixed in c87275a, bc4c9b4, cfe41cf.*
+      *Fixed in c87275a, bc4c9b4, cfe41cf; positional overloads deleted in aab063f (tier2/ctor).*
 - [x] `solvers/KPM_tk.jl` `get_density_quantics` uses an undefined global `sites`. Delete.
       *Fixed in f85750b.*
 - [x] `solvers/Timeev_tk.jl` `compare_propagator_and_tdvp_heatmaps` calls `heatmap`/`plot`/
@@ -81,8 +81,10 @@ Line numbers refer to the working tree on that date and will drift.
       QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
       *Fixed in 11a4e3c: `hopping2MPO(...; check=true)` compares the build with f on a fixed
       sample and rebuilds it from the nonzero sampled entries as pivots (deterministic), or
-      errors; on in `get_Hamiltonian("custom")` and `add_hopping!(H, f(i, j))`. Not switched
-      on yet: Twisted, the Timeev propagator, `add_soc!(:custom)`, `pairing2MPO`.*
+      errors; on in `get_Hamiltonian("custom")` and `add_hopping!(H, f(i, j))`. Off in the
+      twisted builders and the Timeev propagator (dense functions, see "Found by the bug
+      pass"); `add_soc!(:custom)` and `add_superconductivity!(:custom)` run it since
+      b40baa3, `pairing2MPO` takes `check`.*
 - [x] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
       field is identically zero (e.g. `uniformsemenoff=true, ms=0`).
       *Fixed in 11a4e3c: zero fields leave their terms out (also HUniform, HAAH, HChern8);
@@ -102,9 +104,10 @@ Line numbers refer to the working tree on that date and will drift.
       *Fixed in 87f6562: `[xmin]`, and the 2D plan places `min(num_x, window)` points.*
 - [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
 - [x] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
-      *The cell builds it: the chain exciton of `H_exc` without its confinement potential.*
+      *The cell builds it: the chain exciton of `H_exc` without its confinement potential
+      (15f791f).*
 
-### Found by the Tier 1 characterization sweep (2026-09-26; pinned as-is, not fixed)
+### Found by the Tier 1 characterization sweep (2026-09-26)
 
 The golden tests pin today's behaviour, these bugs included; fixing one means regenerating
 the affected golden cases in the same commit.
@@ -152,7 +155,8 @@ the affected golden cases in the same commit.
 - [x] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
       bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
       *Fixed in 11a4e3c; `intrachain_hopping` was not Hermitian for real t either (row break
-      on the wrong side of the backward hop). Twisted `t_inter` not checked.*
+      on the wrong side of the backward hop). Twisted `t_inter`: fixed in 4387a04
+      (V_lk = V_kl†).*
 - [x] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
       *11a4e3c: a clear error on layouts that are not Bravais in the cell index (the shells
       depend on row parity there; one shift per displacement cannot express them).
@@ -181,7 +185,7 @@ the affected golden cases in the same commit.
 - [x] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
       (see the memory note on interleave_mpo).
       *`fix_sites` fixed in 87f6562 (legs by prime level, `_mpo_site_pair`); the exciton QFT
-      conjugation is unchanged by it. `interleave_mpo` still open.*
+      conjugation is unchanged by it.*
       *`interleave_mpo` fixed in a64b949 (legs by prime level); `get_green_krylov` embeds (z
       − H)ᵀ explicitly; the bubbles return the Lindhard Π₀ for complex H.*
 
@@ -253,7 +257,7 @@ the affected golden cases in the same commit.
       Exciton_Hamiltonian example (x -> -U called attractive) is fixed in a64b949.
       project_aux message: fixed in 4954a37.*
 
-### Found by the Tier 2 scale maker (2026-09-26; not fixed, decision needed)
+### Found by the Tier 2 scale maker (2026-09-26)
 
 - [x] `"lieb"` default scale 2.5|t| is below the bulk spectral radius 2√2|t| (2.82 at
       Lx = Ly = 4); `"honeycomb_nnn"` 3.5(|t| + |t2|) is below 3|t| + 6|t2| once
@@ -267,7 +271,7 @@ the affected golden cases in the same commit.
       4.5|t| default still bounds them).
       *Fixed in 11a4e3c (and Lieb's ±2√2 t).*
 
-### Found by the Tier 2 KPM kernels (2026-09-26; not fixed, decision needed)
+### Found by the Tier 2 KPM kernels (2026-09-26)
 
 - [x] `_jackson_kernel(N)` (rpa/cheb2d.jl, the `kernel=:jackson` option of the SVD/Tucker
       cheb2d bubbles) has `(N − m)` where the Jackson kernel for N moments has `(N − m + 1)`:
@@ -297,7 +301,7 @@ the affected golden cases in the same commit.
       bubble numerators and seeds, and T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim`
       convergence study. Left open as an improvement.*
 
-### Found by the Tier 2 aux and density kernels (2026-09-26; not fixed, decision needed)
+### Found by the Tier 2 aux and density kernels (2026-09-26)
 
 - [x] `_project_spin_sector` on a spin site inside the MPO (`add_spin!(H; position=:post)`
       followed by `add_superconductivity!(H, Δ; position=:post)`, sites `[pos…, spin, nambu]`)
@@ -323,15 +327,16 @@ the affected golden cases in the same commit.
       *Checked 2026-09-28: the package only builds dimension-2 Nambu and spin indices, so
       the two ranges agree; no change.*
 
-### Found by the export-list checks (2026-09-26; not fixed)
+### Found by the export-list checks (2026-09-26)
 
 - [x] `examples/spectral/aux_ldos_examples.ipynb` calls `TensorBinding.plot_ldos_2d`, which the
       package does not define (the notebook's stored output already shows the UndefVarError).
       *The notebook defines the helper in its second cell (a copy of the untracked
-      plotting helper's); the stale error output is cleared.*
+      plotting helper's); the stale error output is cleared (15f791f).*
 - [x] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
       uses; dropping it would remove a dependency (a Project.toml change, fine in any release).
-      *Dropped from `[deps]` and `[compat]`, and from the packages `test/exports.jl` checks.*
+      *Dropped from `[deps]` and `[compat]`, and from the packages `test/exports.jl` checks
+      (15f791f).*
 
 ### Found by the bug pass (2026-09-28)
 
@@ -348,12 +353,12 @@ the affected golden cases in the same commit.
 - [x] `rpa_from_bubble_diag` does not return χ: its output is rank one,
       x[(i,j)] = [(Aᵀ)⁻¹ diag Π₀]_j with A = I − Π₀V (behind `get_rpa_susceptibility` and
       `get_magnon_susceptibility`).
-      *Fixed (right-hand side vec(Π₀), operator on the row sites after the interleave_mpo
-      fix): returns vec(χ) in the _vec_mps_from_mpo layout.*
+      *Fixed in 11fec80 (right-hand side vec(Π₀), operator on the row sites after the
+      interleave_mpo fix): returns vec(χ) in the _vec_mps_from_mpo layout.*
 - [x] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
       2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
-      *Fixed: the default start is a global Krylov expansion of vec(I) (the stall was the
-      solver, not the formulation: a dense solve of the same system is exact).*
+      *Fixed in 11fec80: the default start is a global Krylov expansion of vec(I) (the stall
+      was the solver, not the formulation: a dense solve of the same system is exact).*
 - [ ] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
       `Nel_up = Nel_dn = H0.N ÷ 2` (`scf_magnetic_hubbard(_gpu)`): half the unit cells, a
       quarter filling if `H0` carries a sublattice or layer index. The drivers are built
@@ -366,20 +371,33 @@ the affected golden cases in the same commit.
 - [x] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
       fails at build time (ITensors' "not the same site indices"); `add_zeeman!` fails on
       layered models. (Noticed by the aux-projection fixes, 4954a37.)
-      *Fixed: add_zeeman!, add_soc! and add_superconductivity! lift their terms to the
+      *Fixed in 8004f49: add_zeeman!, add_soc! and add_superconductivity! lift their terms to the
       layout of H.sites (`_lift_to_aux_sites`); both failures, and the same on every
       sublattice or layered model, are gone.*
 - [x] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
       twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
       and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for
       Hermiticity.
-      *The twisted `t_inter`: fixed (V_lk = V_kl†, complex tensors for a complex t_inter).
-      The self-check stays off there: the twisted V_kl and the propagator are dense
-      functions, where QTCI does not miss bond classes; `add_soc!(:custom)` and
-      `pairing2MPO` are still open.*
-      *Done: `add_superconductivity!(:custom)` and `add_soc!(:custom)` run it (both were 7 %
+      *The twisted `t_inter`: fixed in 4387a04 (V_lk = V_kl†, complex tensors for a complex
+      t_inter). The self-check stays off there: the twisted V_kl and the propagator are
+      dense functions, where QTCI does not miss bond classes.*
+      *Done in b40baa3: `add_superconductivity!(:custom)` and `add_soc!(:custom)` run it (both were 7 %
       and 2 % off for nearest-neighbour Δ(i, j) and λ(i, j) at L = 6); `pairing2MPO` takes
       `check`.*
+
+### Found by the consistency pass (2026-09-29; the examples are not edited until decided)
+
+- [ ] `examples/basics/getting_started.ipynb` cell 15: `add_superconductivity!` on a chain
+      built with a scale now keeps the bound scale 2.5 + 1.1·2|Δ| = 3.6 (bf9a6a1) where the
+      DMRG estimate gave ≈ 2.2, so its three panels are ~1.7× coarser at the same Ncheb.
+      Decide: keep the bound (deterministic, cheap) or let a DMRG estimate refine it.
+- [ ] `examples/dynamics/time_evolution.ipynb` cells 9–11: the drive
+      `intrachain_hopping(...; t = 1im * t_x)` was not Hermitian (11a4e3c fixed it), so the
+      stored energy, current and bond-dimension panels are those of the wrong operator; a
+      re-run gives different curves (E(0) = −10.94 = Tr H₀ρ₀, was −10.05).
+- [ ] The manuscript scripts under `examples/manuscript_files/scripts` `include` and the
+      `.sh` files run `APSOS_*.jl` names; the tracked files are called `manuscript_*`, so
+      as tracked they do not run (predates the bug pass).
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -634,9 +652,8 @@ the affected golden cases in the same commit.
       *Partly done in tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
       :jackson)[1:N]` (checked element by element for N = 1…4000) and is deleted; its eight
       callers (nh/kpm.jl ×5, gpu/nh.jl ×3) call `_kpm_kernel`, and the golden case keeps its
-      record through a local definition. Not done: `_jackson_kernel` stays, because it is
-      not `_kpm_kernel` under any normalisation (see "Found by the Tier 2 KPM kernels"), and
-      no `normalize` keyword was added, since no caller would use it without changing values.*
+      record through a local definition. No `normalize` keyword was added: no caller would
+      use it without changing values.*
       *Completed in ead1d66: `_jackson_kernel` was the off-by-one kernel; the cheb2d bubbles
       now take `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)` and it is deleted.*
 - [x] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
@@ -757,8 +774,8 @@ the affected golden cases in the same commit.
       wrappers pass `_to_gpu`. Kernels, each behind its CPU function and its GPU twin:
       `_extract_diagonal` (`extract_diagonal_to_mps(_gpu)`); `_mps_to_diagonal`
       (`mps_to_diagonal_mpo`, `_mps_to_diagonal_mpo_gpu`: `delta_type` keeps the GPU's
-      ComplexF32 deltas, `one_site` its one-site MPS, which the CPU still rejects with the
-      golden-pinned BoundsError); `_eval_block_mps` (also the GPU point, 1D-block and
+      ComplexF32 deltas, `one_site` its one-site MPS, which the CPU then rejected with the
+      golden-pinned BoundsError; since 87f6562 both accept it and `one_site` is gone); `_eval_block_mps` (also the GPU point, 1D-block and
       all-sites evaluators: six copies gone, `value` gives the complex amplitudes);
       `_dos_stochastic` (solvers/kpm/dos.jl: sampling and normalisation of both stochastic
       DOS; the GPU's `continuum_only`, progress lines and GPU memory release are keywords);
@@ -831,11 +848,13 @@ the affected golden cases in the same commit.
 - [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases;
       `get_C_gpu` and the valley-resolved `get_valley_C` are renamed with them),
       `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
-      `exciton_mpo` for `Exciton_Hamiltonian`, fix `get_bublle_expanded_from_Tn`.
+      `exciton_mpo` for `Exciton_Hamiltonian` (`get_bublle_expanded_from_Tn` was deleted in
+      Tier 1).
       Export the new names that are specific enough (add them to "Public API" in
       `docs/src/index.md` too; `test/exports.jl` checks both).
 - [ ] Replace hidden mutable caches (`_tn_cache`, `_tn_mps_cache`, `_density_cache`,
       `_ensure_scale!` side effects, solvers mutating user Hamiltonians) with an explicit
       `KPMExpansion` object passed to the reconstruction functions.
 - [ ] CUDA as a package extension (`[weakdeps] CUDA`, `ext/TensorBindingCUDAExt/`), replacing
-      the `Base.loaded_modules` UUID lookup; fix the README dependency statement.
+      the `Base.loaded_modules` UUID lookup (the README dependency statement was fixed in
+      4738800).

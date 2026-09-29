@@ -12,7 +12,8 @@
 # truncate!); get_Hamiltonian, which looks the geometry up in the model registry
 # (core/ModelRegistry.jl: builders, parameters, default KPM scales), and the direct
 # builders it holds (chain, Haldane, custom); central_index; the mutators
-# add_hopping!, add_onsite!, add_interaction!; _pos_sites; Base.show. The spin,
+# add_hopping!, add_onsite! (with _add_zero_onsite!), add_interaction!; _pos_sites,
+# _is_exciton_register; Base.show. The spin,
 # Zeeman, pairing and SOC mutators live in core/AuxDOF.jl.
 #
 # Main entry points: get_Hamiltonian, TBHamiltonian, add_hopping!, add_onsite!,
@@ -66,7 +67,8 @@ Fields
 - `scale`    : energy half-bandwidth; `H/scale` has spectrum in `[-1, 1]`.
                Set analytically at construction for standard geometries.
                Reset to `0.0` by `_invalidate_cache!` after any modification —
-               `_ensure_scale!` then re-estimates it on demand via DMRG.
+               `_ensure_scale!` then re-estimates it on demand via DMRG
+               (`add_superconductivity!` then sets a bound scale again).
 - `center`   : spectral centre; `0.0` for particle-hole symmetric Hamiltonians.
 
 **Auxiliary DOF indices** (`nothing` until the corresponding `add_*!` is called)

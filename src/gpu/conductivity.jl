@@ -1,8 +1,8 @@
 # gpu/conductivity.jl — conductivity-only GPU helpers: the QFT operator pair, the
 # GPU Hadamard product, weighted MPO sums, the GPU density matrix and the Tucker
 # component builder. Moved from the former gpu/GPU_tk.jl. No other code in src/,
-# test/ or examples/ calls these helpers; kept in the package for now (the Tier 1
-# checklist in docs/dev/REORGANISATION_TODO.md plans to move them out of src/).
+# test/ or examples/ calls these helpers; kept in the package (an untracked
+# conductivity script uses them; see docs/dev/REORGANISATION_TODO.md).
 #
 # Main entry points (internal): _build_qft_ops_gpu, _hadamard_mpo_gpu,
 # _weighted_mpo_sum_gpu, _get_density_matrix_gpu, _build_tucker_components_gpu.

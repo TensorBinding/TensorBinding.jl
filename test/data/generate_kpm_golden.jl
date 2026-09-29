@@ -9,7 +9,9 @@
 # the git tree hash of the working-tree src/, which does not move when only
 # tests or docs change. The five density/* cases were regenerated in the merge
 # of release-0.1.1 into Anouar, which made get_density_from_Tn the
-# occupied-state projector; every other entry kept its values.
+# occupied-state projector; every other entry kept its values until the 2026-09 bug
+# pass, which regenerated the unnormalised-psi0, Fibonacci LDOS and empty-group cases
+# (87f6562) and the exc3 exciton cases (a64b949).
 #
 # The cases themselves (models, inputs, and which outputs are recorded) live in
 # KPMGoldenRunner in test/golden_kpm.jl, so that the test replays exactly what

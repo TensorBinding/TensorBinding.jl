@@ -7,7 +7,8 @@
 # Main entry point: get_C_gpu.
 # Depends on: core/TBSystem.jl, solvers/DMRG.jl (_ensure_scale!), physics/Topology.jl
 # (_chern_marker, _get_projector), physics/Purification.jl
-# (purification_initial_guess, _mcweeny_iterate, _sp2_iterate), gpu/device.jl.
+# (purification_initial_guess, _mcweeny_iterate, _sp2_iterate, _half_filling),
+# gpu/device.jl.
 
 """
     get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;

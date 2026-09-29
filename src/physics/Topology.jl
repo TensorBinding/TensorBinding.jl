@@ -56,7 +56,8 @@
 #   thouless_pump, get_C_op_MPO_from_P.
 # Depends on: core/Utils.jl, core/TBSystem.jl, lattice/NNNeighbor.jl,
 #   solvers/kpm/recursion.jl, physics/Purification.jl (the density dispatcher
-#   _density_matrix behind _get_projector; see the source map in src/TensorBinding.jl).
+#   _density_matrix behind _get_projector, _cached_density, _half_filling; see the source
+#   map in src/TensorBinding.jl).
 
 
 # ============================================================

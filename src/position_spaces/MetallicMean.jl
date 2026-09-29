@@ -23,9 +23,8 @@
 # metallic_mean_digits, metallic_mean_bond_symbol.
 #
 # Depends on: Utils (mps_to_diagonal_mpo, shift_adjoint_mpo, _product_state_mps),
-# TBSystem (TBHamiltonian and the position-space interface), geometry*
-# (_chain_geometry; a * marks a file included later, see the source map in
-# TensorBinding.jl).
+# TBSystem (TBHamiltonian and the position-space interface), geometry
+# (_chain_geometry).
 
 # ============================================================
 # 1. Position-space type and metallic-mean numeration

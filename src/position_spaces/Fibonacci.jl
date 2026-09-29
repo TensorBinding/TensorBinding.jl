@@ -16,9 +16,8 @@
 # fibonacci_atomic_depth, fibonacci_site_environment, site_axis(H; ordering).
 #
 # Depends on: Utils (mps_to_diagonal_mpo, fibonacci_ldos_sampling_plan),
-# TBSystem (TBHamiltonian and the position-space interface), geometry*
-# (_chain_geometry; a * marks a file included later, see the source map in
-# TensorBinding.jl).
+# TBSystem (TBHamiltonian and the position-space interface), geometry
+# (_chain_geometry).
 
 # ============================================================
 # 1. Position-space type and Zeckendorf numeration

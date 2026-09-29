@@ -30,7 +30,8 @@ eigprojs(Hd) = (F = eigen(Hermitian(Hd)); (F.values, [F.vectors[:, a] * F.vector
     end
 
     # The bubble itself against its documented formula with the exact f:
-    # Π = Σ_ab f(ε_a, ε_b) [(P_a P) ⊙ P_b − P_a ⊙ (P_b P)] with P the code's density matrix.
+    # Π = Σ_ab f(ε_a, ε_b) [(P_a P) ⊙ P_b − P_a ⊙ (P_b P)] with P the code's density matrix
+    # (the transposes of the documented formula drop out for this real H).
     # (For a real H this is −1 × get_bubble_mpo, a sign difference still to be decided;
     # see the note in test/data/generate_rpa_golden.jl.)
     ω, η, Nc = 0.4, 1.0, 20       # interpolation error ~1e-4 here; the old bubble was f/4
@@ -67,7 +68,8 @@ end
     H._density_cache = nothing
     @test densemat(ρ0, H.sites) == densemat(ρm, H.sites)
 
-    # SP2 fixes the filling through Nel = H.N ÷ 2 and cannot honour a Fermi level.
+    # SP2 fixes the filling at half the states (_half_filling; = H.N ÷ 2 on this chain) and
+    # cannot honour a Fermi level.
     @test_throws ArgumentError dm(0.8, :purification; purify_method=:sp2)
     @test _get_density_matrix(H, 0.0, :purification, 60, 100, 1e-12, :sp2, 40, 30, 1e-5,
                               false) isa MPO

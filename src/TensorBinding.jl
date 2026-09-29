@@ -144,7 +144,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            weighted T_n sum _chebyshev_sum
 #                            → Utils, TBSystem, kpm/kernels
 # solvers/kpm/ldos.jl        get_ldos_online, get_ldos_spatial
-#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
+#                            → Utils, TBSystem, AuxDOF, TJunction, DMRG, kpm/kernels,
+#                              kpm/recursion
 # solvers/kpm/dos.jl         stochastic and trace DOS
 #                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
 # solvers/kpm/exciton.jl     exciton LDOS
@@ -178,8 +179,7 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion, kpm/cached,
 #                              rpa/bubble, qft/conjugation
 # physics/rpa/dyson.jl       RPA Dyson solve, Wynn series, magnon channel
-#                            → Utils, MPOTools, TBSystem, AuxDOF, Krylov, rpa/bubble,
-#                              qft/conjugation
+#                            → MPOTools, TBSystem, AuxDOF, Krylov, rpa/bubble, qft/conjugation
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
 #                            → Utils, TBSystem, NNNeighbor, kpm/recursion, Purification
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
@@ -195,8 +195,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # gpu/primitives.jl          delta, MPS evaluation, diagonals, aux projection, QFT sandwich
 #                            → Utils, AuxDOF, gpu/device
 # gpu/kpm.jl                 KPM_Tn_gpu, spatial LDOS, stochastic DOS
-#                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion,
-#                              kpm/dos, gpu/device, gpu/primitives
+#                            → Utils, TBSystem, AuxDOF, TJunction, DMRG, kpm/kernels,
+#                              kpm/recursion, kpm/dos, gpu/device, gpu/primitives
 # gpu/bands.jl               get_bands_gpu
 #                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
 #                              kpm/recursion, qft/kpath, qft/bands, gpu/device, gpu/primitives

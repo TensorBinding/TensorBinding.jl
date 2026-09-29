@@ -12,8 +12,8 @@
 #   scf_swave_superconducting, scf_swave_hubbard and scf_pwave_equalspin; the
 #   Hartree/Fock builder factories, the BdG profile extractors and the initial guesses.
 # Depends on: core/Utils.jl, core/TBSystem.jl, core/AuxDOF.jl, solvers/DMRG.jl,
-#   physics/Purification.jl*, physics/Supercond.jl* (* = included later; see the
-#   source map in src/TensorBinding.jl).
+#   physics/Purification.jl, physics/Supercond.jl (see the source map in
+#   src/TensorBinding.jl).
 #
 # == Sections ==
 #   1. Density / profile extraction

@@ -4,7 +4,9 @@
 # Reference: first generated from commit 1a5548b ("Run the third-round audit
 # regression tests from runtests.jl"), before Tier 1 of the code-organisation
 # refactor (docs/dev/REORGANISATION_TODO.md). The data pin what the code does
-# at that commit, remaining bugs included.
+# at that commit, remaining bugs included. The 2026-09 bug pass regenerated the
+# cases its fixes moved (87f6562: the 2D k-space window and empty groups; 4954a37:
+# the aux projections, with new postpended-spin and BdG+spin cases).
 #
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain. It does not move when

@@ -633,10 +633,12 @@ case!("purification/get_density/kpm_rebuilds_shorter_tn_cache") do
     H = chain(); KPM_Tn(H, 12; maxdim = 30)
     (; dm = dmsum(get_density(H; method = :kpm, Ncheb = 24, maxdim = 30)), tn_Ncheb = H._tn_Ncheb)
 end
+# A density set by hand answers every method (an unknown method is an error even with a
+# cache: "unknown_method" below).
 case!("purification/get_density/returns_cache") do
     H = chain(); sentinel = 0.25 * MPO(H.sites, "Id"); H._density_cache = sentinel
     (; kpm = get_density(H; method = :kpm) === sentinel,
-       unknown = get_density(H; method = :nonsense) === sentinel)
+       sp2 = get_density(H; method = :sp2) === sentinel)
 end
 case!("purification/get_density/unknown_method") do
     get_density(chain(); method = :nonsense)
@@ -680,7 +682,7 @@ case!("topology/_get_projector/KPM_fresh") do
     (; P = dense(TB._get_projector(H; method = :KPM, fermi = 0.3, Nchebychev = 30, maxdim = 30)),
        cached_tn = H._tn_cache !== nothing, tn_Ncheb = H._tn_Ncheb)
 end
-case!("topology/_get_projector/KPM_uses_tn_cache") do
+case!("topology/_get_projector/KPM_rebuilds_short_tn_cache") do
     H = gapped_chain(); KPM_Tn(H, 20; maxdim = 30)
     dense(TB._get_projector(H; method = :KPM, Nchebychev = 300, maxdim = 30))
 end

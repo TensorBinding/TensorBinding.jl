@@ -2,7 +2,7 @@
 #
 # Contains get_bands (low-level MPO method and the TBHamiltonian overloads); its
 # helpers _eval_diag_mps, ilinspace and kspace_sampling_plan live in core/Utils.jl
-# and _kpm_weight_matrix in solvers/kpm/kernels.jl.  Split from the former
+# and _kpm_energy_grid in solvers/kpm/kernels.jl.  Split from the former
 # physics/QFT_tk.jl, together with that file's overview, which below describes the
 # whole physics/qft/ folder.
 #
@@ -70,12 +70,13 @@
 #        (MSB first); linear index n = ix + iy·2^Lx (row-major).
 #
 # == Dependencies of physics/qft/ outside the folder ==
-# fix_sites, extract_diagonal_to_mps,
+# fix_sites, _mpo_ket_sites, extract_diagonal_to_mps,
 #   _eval_diag_mps, kspace_sampling_plan,
 #   spatial_sampling_plan              → core/Utils.jl
 # interleave_mpo, mpo_kron             → core/MPOTools.jl
 # TBHamiltonian, _pos_sites, physical_projector,
-#   _require_binary_position_space     → core/TBSystem.jl
+#   _require_binary_position_space,
+#   _is_exciton_register               → core/TBSystem.jl
 # AuxProjection, AuxDOFProjection, _aux_projection,
 #   _project_aux_sectors               → core/AuxDOF.jl
 # _row_checker_mpo, _col_select_mpo    → lattice/masks2d.jl

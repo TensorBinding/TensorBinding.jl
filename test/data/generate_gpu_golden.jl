@@ -8,7 +8,9 @@
 # chern_chern8_kpm_lambda_c64 (get_C_gpu / get_C with method=:KPM) was
 # regenerated in the merge of release-0.1.1 into Anouar, which made the KPM
 # density the occupied-state projector (the marker changes sign); every other
-# entry kept its values.
+# entry kept its values until the 2026-09 bug pass, which regenerated the cases its
+# fixes moved: the Chern markers (real, bf9a6a1) and the exciton, NH-trajectory and
+# RK4 cases (a64b949).
 #
 # The cases (inputs, calls, tolerances and the CPU counterparts) are defined in
 # the GPUGoldenRunner module of test/golden_gpu.jl, which this script includes.

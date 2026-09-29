@@ -39,10 +39,10 @@ Bernal stacking places each A site in layer 1 directly above a B site in
 layer 2 (the B site of the same unit cell, index A+1).  The interlayer
 operator in position space is therefore
 
-    V = t_inter · (K_u D_A + D_A K_d)
+    V = t_inter K_u D_A + conj(t_inter) D_A K_d
 
 where D_A is the A-sublattice projector and K_u/K_d are the ±1 shift
-operators.  This is symmetric (Hermitian for real t_inter).
+operators.  This is Hermitian for any t_inter.
 """
 function _bernal_interlayer_mpo(L::Int, sites;
                                  t_inter::Number = 1.0,

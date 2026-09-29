@@ -18,7 +18,7 @@
 # Entry points: get_rpa_susceptibility, get_rpa_susceptibility_wynn,
 #   rpa_wynn_from_bubbles, rpa_from_bubble_diag, get_magnon_bubble,
 #   get_magnon_susceptibility, get_magnon_susceptibility_wynn.
-# Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, core/AuxDOF.jl,
+# Depends on: core/MPOTools.jl, core/TBSystem.jl, core/AuxDOF.jl,
 #   solvers/Krylov.jl (_vec_mps_from_mpo), physics/rpa/bubble.jl,
 #   physics/qft/conjugation.jl (see the source map in src/TensorBinding.jl).
 

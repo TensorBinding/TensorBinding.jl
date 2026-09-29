@@ -8,9 +8,9 @@
 # get_dos_stochastic_gpu (a thin wrapper over the CPU sampling kernel
 # _dos_stochastic of solvers/kpm/dos.jl, run on GPU tensors).
 # Depends on: core/Utils.jl (spatial_sampling_plan, interval_sampling_plan),
-# core/TBSystem.jl (position-space interface), core/AuxDOF.jl (the
-# aux projection _aux_projection/_project_aux_sectors),
-# solvers/DMRG.jl (spectral bounds, _ensure_scale!),
+# core/TBSystem.jl (position-space interface, _is_exciton_register), core/AuxDOF.jl (the
+# aux projection _aux_projection/_project_aux_sectors), lattice/TJunction.jl
+# (_is_tjunction), solvers/DMRG.jl (spectral bounds, _ensure_scale!),
 # solvers/kpm/kernels.jl (energy grid, moment-column reconstruction),
 # solvers/kpm/recursion.jl (_scaled_hamiltonian, chebyshev_foreach: the recurrences
 # run on GPU tensors), solvers/kpm/dos.jl (_dos_stochastic), gpu/device.jl,
