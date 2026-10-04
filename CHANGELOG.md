@@ -191,8 +191,9 @@ constructor that takes all 21 fields in order, caches included, remains.
   `H₁` factors, so the bubble has the Lindhard form `(P_a)ᵀ ⊙ P_b` of `get_bubble_mpo`
   and conserves particles; it was `P_a ⊙ P_b` (44 % off on a complex L = 2 chain, row sums
   of norm 0.34 for ‖Π‖ = 0.62). Real `H₁` results are unchanged, bit for bit. The cheb2d bubbles carry
-  the opposite sign to `get_bubble_mpo`; their docstrings now say so (which sign `Π₀`
-  should have is open).
+  the opposite sign to `get_bubble_mpo`; their docstrings now say so. Both signs stay as
+  they are: cheb2d has the sign of the retarded response, `get_bubble_mpo` the Stoner
+  sign that the Dyson and Wynn drivers expect.
 - **RPA bubbles with `P_method=:purification` use `ϵF`.** It was never passed, so every
   purification ran at `ϵF = 0`. McWeeny now starts from the level `H.center + ϵF`, the
   convention of `mcweeny_purify` (the `:kpm` density is `θ(ϵF − H)`: the same level when

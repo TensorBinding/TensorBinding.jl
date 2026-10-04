@@ -286,7 +286,7 @@ the affected golden cases in the same commit.
       included the unphysical register states. A `_require_binary_position_space` guard
       would give a clear error.
       *Done in 492fac4 (Tier 2): `get_qpi` raises that `ArgumentError`.*
-- [ ] RPA bubbles on projected spaces: the density (`P_method=:kpm`) now has an empty
+- [x] RPA bubbles on projected spaces: the density (`P_method=:kpm`) now has an empty
       unphysical block, but `_build_heff`, the numerator and the 2L-site Green's function
       (`KPM_Tn(Heff, …, sites_combined)`) still use ambient identities. On an L = 4
       Fibonacci chain the physical block of `get_bubble_mpo` is the same before and after
@@ -300,6 +300,8 @@ the affected golden cases in the same commit.
       spaces (`physical_projector` = identity there): projectors in `_build_heff`, in the
       bubble numerators and seeds, and T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim`
       convergence study. Left open as an improvement.*
+      *Decision 2026-10-04: left as is for 0.2.0; Tiago takes it on (see "After 0.2.0"
+      at the end).*
 
 ### Found by the Tier 2 aux and density kernels (2026-09-26)
 
@@ -340,12 +342,14 @@ the affected golden cases in the same commit.
 
 ### Found by the bug pass (2026-09-28)
 
-- [ ] Sign: for real H the cheb2d bubbles are −1 × `get_bubble_mpo` (their D_mn carries the
+- [x] Sign: for real H the cheb2d bubbles are −1 × `get_bubble_mpo` (their D_mn carries the
       numerator P₁⊗I − I⊗P₂, `get_bubble_mpo` has I⊗P₂ − P₁⊗I). Both are documented as Π₀
       and feed the same Dyson/Wynn drivers, whose (I − Π₀V)χ = Π₀ is the Stoner form of
       `get_bubble_mpo`'s sign; cheb2d's sign is the physical retarded response, which the
       untracked Ward-conductivity script relies on. Decision for the author: which sign
       Π₀ has, and whether the cheb2d bubbles flip.
+      *Decision 2026-10-04: both kept as they are (the docstrings already state the sign
+      difference).*
 - [x] cheb2d bubbles on complex H take the Hadamard product P_a ⊙ P_b where the Lindhard
       bubble has P_aᵀ ⊙ P_b: 44 % off on a complex L = 2 chain, and ‖Σ_j Π_ij‖ = 0.34 for
       ‖Π‖ = 0.62 (particle number not conserved).
@@ -359,15 +363,24 @@ the affected golden cases in the same commit.
       2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
       *Fixed in 11fec80: the default start is a global Krylov expansion of vec(I) (the stall
       was the solver, not the formulation: a dense solve of the same system is exact).*
-- [ ] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
+- [x] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
       `Nel_up = Nel_dn = H0.N ÷ 2` (`scf_magnetic_hubbard(_gpu)`): half the unit cells, a
       quarter filling if `H0` carries a sublattice or layer index. The drivers are built
       for single-orbital `H0` (every manuscript model is); either support multi-atom `H0`
       (per-spin half filling of the non-spin states) or reject it.
-- [ ] RPA: `_get_density_matrix(:purification)` and the SCF drivers keep a cached density
+      *Decision 2026-10-04: left as is; the drivers stay single-orbital in 0.2.0, and
+      multi-orbital support comes in a later version (see "After 0.2.0").*
+- [x] RPA: `_get_density_matrix(:purification)` and the SCF drivers keep a cached density
       whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented). The
       `scf_meanfield` initial density is `Nel / H0.N` per site, another single-orbital
       assumption.
+      *Fixed in 44d034f: the cache records the method and the parameters that fix the
+      projector (`_density_key`: ϵF for McWeeny and KPM, Nel for SP2, the expanded
+      Chebyshev order, kernel and lambda for KPM), checked by `get_density`,
+      `_get_projector` and the RPA purification; the truncation keywords still reuse a
+      cached density, and one set by hand still answers everything. The SCF drivers were
+      not affected (each iteration works on a fresh copy, whose caches start empty). The
+      single-orbital start of `scf_meanfield` stays with the decision above.*
 - [x] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
       fails at build time (ITensors' "not the same site indices"); `add_zeeman!` fails on
       layered models. (Noticed by the aux-projection fixes, 4954a37.)
@@ -387,17 +400,39 @@ the affected golden cases in the same commit.
 
 ### Found by the consistency pass (2026-09-29; the examples are not edited until decided)
 
-- [ ] `examples/basics/getting_started.ipynb` cell 15: `add_superconductivity!` on a chain
+- [x] `examples/basics/getting_started.ipynb` cell 15: `add_superconductivity!` on a chain
       built with a scale now keeps the bound scale 2.5 + 1.1·2|Δ| = 3.6 (bf9a6a1) where the
       DMRG estimate gave ≈ 2.2, so its three panels are ~1.7× coarser at the same Ncheb.
       Decide: keep the bound (deterministic, cheap) or let a DMRG estimate refine it.
-- [ ] `examples/dynamics/time_evolution.ipynb` cells 9–11: the drive
+      *Decision 2026-10-04: keep the bound.*
+- [x] `examples/dynamics/time_evolution.ipynb` cells 9–11: the drive
       `intrachain_hopping(...; t = 1im * t_x)` was not Hermitian (11a4e3c fixed it), so the
       stored energy, current and bond-dimension panels are those of the wrong operator; a
       re-run gives different curves (E(0) = −10.94 = Tr H₀ρ₀, was −10.05).
-- [ ] The manuscript scripts under `examples/manuscript_files/scripts` `include` and the
+      *Decision 2026-10-04: re-run it. Re-run in 2fbfe42 (sources unchanged). The E(0)
+      values quoted above do not match the notebook's 8 × 8 run: E(0) = −48.327 =
+      Tr H₀ρ₀, the sum of the 28 negative eigenvalues (exact −48.3269), was −46.5. Tr ρ
+      stays at 28.99999 within 1e-6, and the bond dimension of ρ(t) stays at 16, the
+      bound for a drive acting on x only (it grew to 45 with the old operator). The
+      cell's "target: 32" is not reached, as before: the 8 zero modes of the bipartite
+      open lattice start at McWeeny's unstable fixed point ½ and end one filled, seven
+      empty (the 28 negative states are filled), so Tr ρ₀ = 29.*
+- [x] The manuscript scripts under `examples/manuscript_files/scripts` `include` and the
       `.sh` files run `APSOS_*.jl` names; the tracked files are called `manuscript_*`, so
       as tracked they do not run (predates the bug pass).
+      *Decision 2026-10-04: left as they are; they were written for the Triton runs and
+      use the old version of TensorBinding.*
+
+### Found while fixing the density cache (2026-10-04)
+
+- [x] `H._tn_Ncheb` is the order of the Chebyshev list built last, MPO or MPS, but
+      `get_ldos`, `get_ldos_spectrum` and the KPM density (`_density_matrix`) read it for
+      the other list too: after `KPM_Tn(H, 30; mode=:mps)` and `KPM_Tn(H, 20)`,
+      `get_ldos(mode=:mps)` used 20 of 31 moments (0.087 vs 0.051 on an L = 3 chain);
+      an MPS list longer than the MPO list made `get_density(:kpm)` read past the end of
+      the MPO list (BoundsError).
+      *Fixed in 44d034f: each reader takes the order of its own list (`_tn_order`, the
+      length minus one); `_tn_Ncheb` keeps its meaning. Unchanged with one list cached.*
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -858,3 +893,14 @@ the affected golden cases in the same commit.
 - [ ] CUDA as a package extension (`[weakdeps] CUDA`, `ext/TensorBindingCUDAExt/`), replacing
       the `Base.loaded_modules` UUID lookup (the README dependency statement was fixed in
       4738800).
+
+## After 0.2.0
+
+Decided on 2026-10-04 to leave out of 0.2.0; the details are in the items above.
+
+- Multi-orbital SCF drivers: per-spin half filling of the non-spin states as the default
+  `Nel`, and a starting density that is not `Nel / H0.N` per site ("Found by the bug
+  pass").
+- RPA bubbles on projected position spaces: physical projectors in `_build_heff`, the
+  numerators and seeds, T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim` convergence
+  study (Tiago; "Found by the Tier 2 KPM kernels").

@@ -32,8 +32,8 @@ eigprojs(Hd) = (F = eigen(Hermitian(Hd)); (F.values, [F.vectors[:, a] * F.vector
     # The bubble itself against its documented formula with the exact f:
     # Π = Σ_ab f(ε_a, ε_b) [(P_a P) ⊙ P_b − P_a ⊙ (P_b P)] with P the code's density matrix
     # (the transposes of the documented formula drop out for this real H).
-    # (For a real H this is −1 × get_bubble_mpo, a sign difference still to be decided;
-    # see the note in test/data/generate_rpa_golden.jl.)
+    # (For a real H this is −1 × get_bubble_mpo, a sign difference kept by decision
+    # (2026-10-04); see the note in test/data/generate_rpa_golden.jl.)
     ω, η, Nc = 0.4, 1.0, 20       # interpolation error ~1e-4 here; the old bubble was f/4
     H  = chain2()
     kw = (; P_method=:kpm, Ncheb=Nc, maxdim=100, cutoff=1e-12, η=η)

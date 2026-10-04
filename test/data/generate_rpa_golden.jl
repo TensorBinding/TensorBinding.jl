@@ -88,7 +88,8 @@
 #   * (fixed, cases regenerated) haydock_cf measured with tr(conj(A)·B) instead of
 #     tr(A†B) (haydock_cf_chain2_imaginary_hermitian_seed threw DomainError);
 #   * the cheb2d bubbles are −1 × get_bubble_mpo (their D_mn has the numerator
-#     P₁⊗I − I⊗P₂); the package author decides which sign is right;
+#     P₁⊗I − I⊗P₂); kept as is (decision 2026-10-04): cheb2d has the retarded
+#     response's sign, get_bubble_mpo the Stoner sign of the Dyson/Wynn drivers;
 #   * (fixed, cases regenerated) for a complex H₁ the cheb2d bubbles took the
 #     Hadamard product of the H₁ factors T_m(H̃₁)(P₁) themselves where the Lindhard
 #     bubble of get_bubble_mpo has their transposes (the *_cplx, *_pair and
