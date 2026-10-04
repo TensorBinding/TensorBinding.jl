@@ -196,8 +196,8 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **RPA bubbles with `P_method=:purification` use `ϵF`.** It was never passed, so every
   purification ran at `ϵF = 0`. McWeeny now starts from the level `H.center + ϵF`, the
   convention of `mcweeny_purify` (the `:kpm` density is `θ(ϵF − H)`: the same level when
-  `H.center = 0`). `ϵF = 0` is unchanged, bit for bit. A cached `H._density_cache` is
-  still returned whatever `ϵF`, as in `get_density`: clear it when scanning `ϵF`.
+  `H.center = 0`). `ϵF = 0` is unchanged, bit for bit. A cached density is reused only
+  at the same `ϵF` (see **Density caches answer only their own projector**).
 - **`haydock_cf`** (and `get_bubble_mpo_haydock`, `haydock_resolve_mpo`) measures with the
   Frobenius product `Tr[A†B]`, contracted exactly. It took `Tr[conj(A)·B]` of a truncated
   product, which is `Tr[A†B]` only for symmetric `A`: wrong for complex `H` and for seeds
@@ -283,11 +283,24 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **Non-Hermitian scale**: `scale = 0.0` in the `NonHermitianHamiltonian` methods means
   "not given", like `nothing`: a scale stored on `NH.hermitized` is used, as everywhere
   else in the package (it was re-estimated).
-- **Density caches answer only their own method.** `get_density`, `_get_projector` and the
-  RPA purification returned any `H._density_cache` whatever method had computed it (a
-  McWeeny matrix answered `method=:kpm`). Each stored density is now recorded with its
-  method; one set by hand still answers every method. An unknown `method` of
-  `get_density` is an error even with a cache.
+- **Density caches answer only their own projector.** `get_density`, `_get_projector`
+  and the RPA purification returned any `H._density_cache` whatever method had computed
+  it (a McWeeny matrix answered `method=:kpm`) and at whatever Fermi level, filling or
+  order: a scan over `ϵF`, `Nel` or `Ncheb` on one Hamiltonian returned the first density
+  at every point. Each stored density is now recorded with its method and the parameters
+  that fix it (`ϵF` for McWeeny and KPM, `Nel` for SP2, the Chebyshev order and kernel for
+  KPM); the truncation keywords (`maxdim`, `cutoff`, `maxiters`, `tol`) still reuse it.
+  One set by hand still answers every method. An unknown `method` of `get_density` is an
+  error even with a cache, and the RPA purification checks `purify_method` and the SP2
+  Fermi level before the cache. The SCF drivers were not affected (each iteration
+  computes its density on a fresh copy).
+- **Cached Chebyshev lists are read at their own order.** `H._tn_Ncheb` is the order of the
+  list built last, MPO or MPS, and `get_ldos`, `get_ldos_spectrum` and the KPM density
+  read it for the other list too. After `KPM_Tn(H, 30; mode=:mps, …)` and then
+  `KPM_Tn(H, 20)`, `get_ldos(mode=:mps)` used 20 of the 31 moments (0.087 instead of
+  0.051 on an L = 3 chain); with an MPS list longer than the MPO list,
+  `get_density(method=:kpm)` ran past the end of the MPO list (BoundsError). Each reader
+  now takes the order from its own list. With one list cached nothing changes.
 - **Default KPM scales of the 2D multi-atom lattices** (`get_Hamiltonian` without `scale`)
   are `max(builder formula, estimate_scale(...; method=:small))`, like the presets:
   `"lieb"` 2.5|t| → 2.73|t| at L = 3 and 3.10|t| from 16 × 16 cells (its bulk radius is

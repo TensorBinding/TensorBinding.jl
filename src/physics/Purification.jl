@@ -27,8 +27,8 @@
 #   sign_mpo, get_ldos_drho, get_dos_drho. The dispatcher behind get_density,
 #   _density_matrix, also computes the density matrices of the RPA bubbles
 #   (_get_density_matrix) and the topological markers (_get_projector); so do the
-#   density-cache helpers _store_density!/_cached_density (_DENSITY_METHOD) and the
-#   default SP2 filling _half_filling.
+#   density-cache helpers _store_density!/_cached_density/_density_key (_DENSITY_KEY)
+#   and the default SP2 filling _half_filling.
 # Depends on: core/Utils.jl, core/TBSystem.jl, solvers/DMRG.jl, solvers/kpm/recursion.jl,
 #   solvers/kpm/cached.jl.
 
@@ -75,23 +75,40 @@ sublattice, spin and BdG models).
 _half_filling(H) = prod(dim, H.sites) ÷ 2
 
 
-# The method (:mcweeny, :sp2 or :kpm) that computed each density matrix the package
-# caches in `H._density_cache`, keyed by the MPO object itself and held weakly (an
-# entry goes with its MPO). `_cached_density(H, method)` is the cache when it was
-# computed by `method`, or has no entry (set by hand, e.g. `H._density_cache = ρ`),
-# and `nothing` otherwise: up to v0.1.1 a cached McWeeny matrix answered `:kpm` too.
-const _DENSITY_METHOD = WeakKeyDict{MPO,Symbol}()
+# What each density matrix the package caches in `H._density_cache` was computed for,
+# keyed by the MPO object itself and held weakly (an entry goes with its MPO): the
+# method and the parameters that fix the projector, `_density_key(method; …)`.
+# `_cached_density(H, key)` is the cache when it was computed for `key`, or has no
+# entry (set by hand, e.g. `H._density_cache = ρ`), and `nothing` otherwise. The
+# truncation keywords (maxdim, cutoff, tol, maxiters) are not part of the key. Up to
+# v0.1.1 a cached density answered every method and every ϵF, Nel and Chebyshev order.
+const _DENSITY_KEY = WeakKeyDict{MPO,Tuple}()
 
-function _store_density!(H, ρ::MPO, method::Symbol)
+# The key of a density matrix: (:mcweeny, ϵF), (:sp2, Nel) or
+# (:kpm, ϵF, order, kernel, lambda), with `Ncheb` the order actually expanded
+# (`_kpm_density_order`).
+function _density_key(method::Symbol; ϵF=0.0, Nel=0, Ncheb=0, kernel=:jackson, lambda=4.0)
+    method === :mcweeny && return (method, Float64(ϵF))
+    method === :sp2     && return (method, Int(Nel))
+    return (method, Float64(ϵF), Int(Ncheb), kernel, Float64(lambda))
+end
+
+# The order `_density_matrix(H, :kpm; Ncheb)` expands: a cached Chebyshev list with at
+# least `Ncheb` moments is used at its own order.
+_kpm_density_order(H, Ncheb) =
+    H._tn_cache === nothing ? Ncheb : max(_tn_order(H._tn_cache), Ncheb)
+
+function _store_density!(H, ρ::MPO, key::Tuple)
     H._density_cache = ρ
-    _DENSITY_METHOD[ρ] = method
+    _DENSITY_KEY[ρ] = key
     return ρ
 end
 
-function _cached_density(H, method::Symbol)
+function _cached_density(H, key::Tuple)
     ρ = H._density_cache
     ρ === nothing && return nothing
-    return get(_DENSITY_METHOD, ρ, method) === method ? ρ : nothing
+    stored = get(_DENSITY_KEY, ρ, nothing)
+    return (stored === nothing || stored == key) ? ρ : nothing
 end
 
 
@@ -341,7 +358,8 @@ end
                    tol=1e-5, verbose=false) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs McWeeny purification,
-caches the result in `H._density_cache`, and returns the purified density matrix.
+caches the result in `H._density_cache` (recorded with `ϵF`, which `get_density`
+checks), and returns the purified density matrix.
 
 `ϵF` shifts the Fermi level of the initial guess ρ₀ = (I − (H − (center + ϵF)·I)/scale) / 2
 (see `purification_initial_guess`), allowing purification to target a band other
@@ -358,7 +376,7 @@ function mcweeny_purify(H::TBHamiltonian;
     ρ0 = purification_initial_guess(H; ϵF=ϵF, maxdim=maxdim, cutoff=cutoff)
     ρ  = mcweeny_purify(ρ0; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                             tol=tol, verbose=verbose)
-    return _store_density!(H, ρ, :mcweeny)
+    return _store_density!(H, ρ, _density_key(:mcweeny; ϵF=ϵF))
 end
 
 
@@ -367,7 +385,8 @@ end
                cutoff=1e-8, tol=1e-5, verbose=false) -> MPO
 
 High-level overload: builds the initial guess from `H`, runs SP2 purification,
-caches the result in `H._density_cache`, and returns the purified density matrix.
+caches the result in `H._density_cache` (recorded with `Nel`, which `get_density`
+checks), and returns the purified density matrix.
 `Nel` defaults to half-filling: half the number of states, `prod(dim, H.sites) ÷ 2`
 (sublattice, layer, spin and Nambu states included; `H.N ÷ 2` up to v0.1.1).
 """
@@ -382,7 +401,7 @@ function sp2_purify(H::TBHamiltonian;
     ρ0 = purification_initial_guess(H; maxdim=maxdim, cutoff=cutoff)
     ρ  = sp2_purify(ρ0, Nel; maxiters=maxiters, maxdim=maxdim, cutoff=cutoff,
                               tol=tol, verbose=verbose)
-    return _store_density!(H, ρ, :sp2)
+    return _store_density!(H, ρ, _density_key(:sp2; Nel=Nel))
 end
 
 
@@ -397,12 +416,14 @@ end
 
 Compute and cache the zero-temperature density matrix P = θ(ϵF − H).
 
-If `H._density_cache` holds a density matrix computed by the same `method` (or one
-stored there by hand), it is returned immediately, whatever the other keywords; one
-computed by another method is recomputed (and replaced). Set
+If `H._density_cache` holds a density matrix computed by the same `method` for the
+same projector (`ϵF` for `:mcweeny` and `:kpm`, `Nel` for `:sp2`, and for `:kpm` the
+Chebyshev order expanded, `kernel` and `lambda`), or one stored there by hand, it is
+returned immediately, whatever the truncation keywords (`maxdim`, `cutoff`,
+`maxiters`, `tol`); any other is recomputed (and replaced). Set
 `H._density_cache = nothing` to force a fresh computation. An unknown `method` is an
 error even when a density matrix is cached (up to v0.1.1 the cache answered every
-method).
+method, Fermi level, `Nel` and order).
 
 **method**
 - `:mcweeny` (default) — McWeeny purification P_{n+1} = 3P_n² − 2P_n³
@@ -443,7 +464,9 @@ function get_density(H::TBHamiltonian;
     method in (:mcweeny, :sp2, :kpm) ||
         error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")
 
-    cached = _cached_density(H, method)
+    key = _density_key(method; ϵF=ϵF, Nel=Nel, Ncheb=_kpm_density_order(H, Ncheb),
+                       kernel=kernel, lambda=lambda)
+    cached = _cached_density(H, key)
     if cached !== nothing
         verbose && println("get_density: returning cached density matrix")
         return cached
@@ -475,8 +498,9 @@ cache rules and defaults (see each).
   `store=false`. The expansion is that of `get_density_from_Tn`, the occupied-state
   projector θ(μ − x) (it was θ(x − μ) until v0.1.1).
 
-Each stored result is recorded with its method (`_store_density!`), so that a later
-`get_density` or `_get_projector` for another method does not return it.
+Each stored result is recorded with its method and the parameters that fix it
+(`_store_density!`, `_density_key`), so that a later `get_density`, `_get_projector`
+or RPA purification for another method, Fermi level, `Nel` or order does not return it.
 """
 function _density_matrix(H::TBHamiltonian, method::Symbol;
                          ϵF       = 0.0,
@@ -499,17 +523,18 @@ function _density_matrix(H::TBHamiltonian, method::Symbol;
                              tol=tol, verbose=verbose)
     elseif method == :kpm
         if Tn === nothing
-            if H._tn_cache === nothing || H._tn_Ncheb < Ncheb
+            if H._tn_cache === nothing || _tn_order(H._tn_cache) < Ncheb
                 KPM_Tn(H, Ncheb; maxdim=maxdim, cutoff=cutoff, verbose=verbose)
             end
-            Tn = (H._tn_cache, H._tn_Ncheb)
+            Tn = (H._tn_cache, _tn_order(H._tn_cache))
         end
         Tn_list, N = Tn
         fermi_r = (ϵF - H.center) / H.scale
         ρ = get_density_from_Tn(Tn_list, N;
                                   fermi=fermi_r, maxdim=maxdim, cutoff=cutoff,
                                   kernel=kernel, lambda=lambda)
-        store && _store_density!(H, ρ, :kpm)
+        store && _store_density!(H, ρ, _density_key(:kpm; ϵF=ϵF, Ncheb=N, kernel=kernel,
+                                                    lambda=lambda))
         return ρ
     else
         error("Unknown method: $method. Choose :mcweeny, :sp2, or :kpm")

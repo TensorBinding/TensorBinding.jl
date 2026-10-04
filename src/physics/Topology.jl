@@ -56,8 +56,8 @@
 #   thouless_pump, get_C_op_MPO_from_P.
 # Depends on: core/Utils.jl, core/TBSystem.jl, lattice/NNNeighbor.jl,
 #   solvers/kpm/recursion.jl, physics/Purification.jl (the density dispatcher
-#   _density_matrix behind _get_projector, _cached_density, _half_filling; see the source
-#   map in src/TensorBinding.jl).
+#   _density_matrix behind _get_projector, _cached_density, _density_key,
+#   _half_filling; see the source map in src/TensorBinding.jl).
 
 
 # ============================================================
@@ -74,9 +74,10 @@ Compute or retrieve the ground-state projector P for `H`.
   `Nchebychev` moments; otherwise runs `KPM_Tn(H, Nchebychev)`.  The Fermi level
   `fermi` (in physical units) is rescaled internally.
 - `method=:mcweeny`: returns `H._density_cache` if it was computed by McWeeny
-  purification (or set by hand); otherwise runs McWeeny purification with `ϵF=fermi`.
-- `method=:sp2`: same but uses SP2 purification.  `Nel` sets the target
-  electron count (default: half the number of states, `prod(dim, H.sites) ÷ 2`).
+  purification at the same `fermi` (or set by hand); otherwise runs McWeeny
+  purification with `ϵF=fermi`.
+- `method=:sp2`: same (at the same `Nel`) but uses SP2 purification.  `Nel` sets the
+  target electron count (default: half the number of states, `prod(dim, H.sites) ÷ 2`).
 - `maxdim`, `cutoff`: bond dimension and truncation threshold forwarded to the
   underlying method.
 
@@ -85,7 +86,7 @@ physics/Purification.jl), with the rules above: `:KPM` (not `get_density`'s
 `:kpm`) never touches the density cache; `:sp2` runs `sp2_purify`'s default 40
 iterations. Up to v0.1.1 `:KPM` also expanded a cached Chebyshev list shorter than
 `Nchebychev`, always with cutoff 1e-8, and `:mcweeny`/`:sp2` returned a density
-matrix cached by any method.
+matrix cached by any method, at any Fermi level or filling.
 """
 function _get_projector(H::TBHamiltonian;
                          method::Symbol   = :KPM,
@@ -99,14 +100,14 @@ function _get_projector(H::TBHamiltonian;
         return _density_matrix(H, :kpm; ϵF=fermi, Ncheb=Nchebychev, maxdim=maxdim,
                                cutoff=cutoff, store=false)
     elseif method == :mcweeny
-        cached = _cached_density(H, :mcweeny)
+        cached = _cached_density(H, _density_key(:mcweeny; ϵF=fermi))
         cached === nothing || return cached
         return _density_matrix(H, :mcweeny; ϵF=fermi, maxiters=30, maxdim=maxdim,
                                cutoff=cutoff, tol=1e-5, verbose=false)
     elseif method == :sp2
-        cached = _cached_density(H, :sp2)
-        cached === nothing || return cached
         Nel_val = Nel === nothing ? _half_filling(H) : Int(Nel)
+        cached = _cached_density(H, _density_key(:sp2; Nel=Nel_val))
+        cached === nothing || return cached
         return _density_matrix(H, :sp2; Nel=Nel_val, maxiters=40, maxdim=maxdim,
                                cutoff=cutoff, tol=1e-5, verbose=false)
     else

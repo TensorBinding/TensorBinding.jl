@@ -8,8 +8,8 @@
 # Entry points: get_bubble_mpo, get_bubble_mpo_haydock.
 # Depends on: core/Utils.jl, core/MPOTools.jl, core/TBSystem.jl, solvers/DMRG.jl,
 #   solvers/kpm/recursion.jl, solvers/kpm/cached.jl, solvers/Krylov.jl,
-#   physics/Purification.jl (_density_matrix, _cached_density, _half_filling; see the
-#   source map in src/TensorBinding.jl).
+#   physics/Purification.jl (_density_matrix, _cached_density, _density_key,
+#   _half_filling; see the source map in src/TensorBinding.jl).
 
 # ============================================================
 # 1. Internal helpers for the TBHamiltonian API
@@ -19,14 +19,17 @@
 # physics/Purification.jl) with the bubbles' own method symbols and rules.
 #
 #   P_method=:purification  purify_method (:mcweeny or :sp2), reusing a density
-#                           cached by the same method whatever ϵF (as get_density
-#                           does). McWeeny is purified at ϵF, with mcweeny_purify's
+#                           cached by the same method at the same ϵF (McWeeny) or
+#                           filling (SP2), as get_density does; the method and the
+#                           SP2 Fermi level are checked first. McWeeny is purified
+#                           at ϵF, with mcweeny_purify's
 #                           convention: the level of its initial guess is
 #                           H.center + ϵF. SP2 fixes the filling at half the states
 #                           (_half_filling) instead, so it refuses ϵF ≠ 0. (Until the
 #                           fix ϵF was not passed and every purification ran at
 #                           ϵF = 0, SP2 filled H.N ÷ 2 states, a quarter on
-#                           sublattice/spin models, and any cached density answered.)
+#                           sublattice/spin models, and any cached density answered,
+#                           whatever its method or level.)
 #   P_method=:kpm           a fresh Chebyshev list of order Ncheb from the raw
 #                           KPM_Tn (not cached on H; its progress lines follow
 #                           `verbose`), no density cache read or written; the
@@ -38,11 +41,6 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
                               purify_maxiters::Int, purify_tol::Float64,
                               verbose::Bool)
     if P_method == :purification
-        cached = _cached_density(H, purify_method)
-        if cached !== nothing
-            verbose && println("  Reusing cached density matrix")
-            return cached
-        end
         purify_method in (:mcweeny, :sp2) ||
             error("Unknown purify_method: $purify_method. Choose :mcweeny or :sp2")
         purify_method == :sp2 && !iszero(ϵF) &&
@@ -50,6 +48,11 @@ function _get_density_matrix(H::TBHamiltonian, ϵF::Real,
                                 "and cannot take a Fermi level (got ϵF = $ϵF); use " *
                                 "purify_method=:mcweeny or P_method=:kpm"))
         Nel = _half_filling(H)
+        cached = _cached_density(H, _density_key(purify_method; ϵF=ϵF, Nel=Nel))
+        if cached !== nothing
+            verbose && println("  Reusing cached density matrix")
+            return cached
+        end
         verbose && println(purify_method == :mcweeny ? "  Running McWeeny purification" :
                                                        "  Running SP2 purification (Nel=$Nel)")
         return _density_matrix(H, purify_method; ϵF=ϵF, Nel=Nel, maxiters=purify_maxiters,
@@ -95,8 +98,8 @@ Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
   convention of `mcweeny_purify`, the same level when `H.center = 0`);
   `purify_method=:sp2` fixes the filling instead and requires `ϵF = 0`.
 - `P_method`       : `:purification` (default) or `:kpm` — how to compute density matrices.
-  With `:purification`, a density cached by the same `purify_method` (or set by hand) is
-  reused, whatever `ϵF` (set `H._density_cache = nothing` after changing it).
+  With `:purification`, a density cached by the same `purify_method` at the same `ϵF`
+  (McWeeny) or filling (SP2), or one set by hand, is reused.
 - `GF_method`      : `:kpm` (default) or `:krylov` — how to compute G_eff(ω).
 - `Ncheb`          : Chebyshev order (KPM methods only). Default `150`.
 - `maxdim`         : Maximum bond dimension. Default `200`.

@@ -81,7 +81,8 @@ Fields
 **Lazy caches** (cleared by `_invalidate_cache!` whenever `mpo` changes)
 - `_tn_cache`      : MPO Chebyshev list; set by `KPM_Tn(H, N; mode=:mpo)`
 - `_tn_mps_cache`  : MPS Chebyshev state list; set by `KPM_Tn(H, N; mode=:mps, psi0=…)`
-- `_tn_Ncheb`      : order of the cached Chebyshev expansion
+- `_tn_Ncheb`      : order of the Chebyshev list built last, MPO or MPS; each reader
+  takes the order of its own list from the list (`_tn_order`)
 - `_density_cache` : cached density-matrix MPO
 
 **Stored interaction MPOs** (set via [`add_interaction!`](@ref))
@@ -287,6 +288,12 @@ function _invalidate_cache!(H::TBHamiltonian)
     H.center = 0.0
     return H
 end
+
+# The order N of a cached Chebyshev list T_0 … T_N (`_tn_cache` or `_tn_mps_cache`):
+# its length minus one (N ≥ 1; the recursion always emits T_0 and T_1). `_tn_Ncheb` is
+# the order of the list built last, so until 0.2.0 a reader of the other list expanded
+# it at the wrong order (a BoundsError, or silently fewer moments than it holds).
+_tn_order(list) = length(list) - 1
 
 """
     truncate!(H::TBHamiltonian; cutoff=1e-10, maxdim=nothing) -> H
@@ -1094,7 +1101,7 @@ end
 
 function Base.show(io::IO, H::TBHamiltonian)
     tn_str   = H._tn_cache !== nothing ?
-               "Tn cached (Ncheb = $(H._tn_Ncheb))" : "no Tn cache"
+               "Tn cached (Ncheb = $(_tn_order(H._tn_cache)))" : "no Tn cache"
     geom_str = isnothing(H.geometry) ? "no geometry" :
                "$(H.N) sites, $(length(H.geometry(1)))D"
     aux_str  = ""

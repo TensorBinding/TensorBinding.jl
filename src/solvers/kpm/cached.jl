@@ -72,7 +72,8 @@ function get_ldos(H::TBHamiltonian, ω_phys::Real;
                   cutoff::Real    = 1e-8,
                   zl              = nothing,
                   wl              = nothing)
-    N    = H._tn_Ncheb
+    list = mode == :mps ? H._tn_mps_cache : H._tn_cache
+    N    = list === nothing ? H._tn_Ncheb : _tn_order(list)
     E    = (ω_phys - H.center) / H.scale
     eta_ = eta == 0.0 ? 1 / (N + 1) : eta
 
@@ -152,7 +153,7 @@ function get_ldos_spectrum(H::TBHamiltonian, ω_phys_vals;
                             cutoff::Real   = 1e-8)
     H._tn_cache === nothing &&
         error("No MPO Chebyshev cache. Call KPM_Tn(H, Ncheb; mode=:mpo) first.")
-    N      = H._tn_Ncheb
+    N      = _tn_order(H._tn_cache)
     ω_vals = _rescaled_energies(H, ω_phys_vals)
     return get_ldos_diag_from_Tn(H._tn_cache, N, ω_vals;
                                   kernel=kernel, lambda=lambda,
