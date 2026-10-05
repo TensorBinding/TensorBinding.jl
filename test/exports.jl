@@ -73,8 +73,10 @@ end
 # TensorBinding's exported names, without the module's own name.
 exported_names() = filter(n -> n !== :TensorBinding && Base.isexported(TB, n), names(TB))
 
-# The exported names that are ITensors' own objects, re-exported (MPO, inner, …).
-is_reexported(n) = isdefined(ITensors, n) && getglobal(ITensors, n) === getglobal(TB, n)
+# The exported names that are ITensors' or ITensorMPS' own objects, re-exported (MPO,
+# inner, …); the MPS names live in ITensorMPS since ITensors 0.7.
+is_reexported(n) = any(m -> isdefined(m, n) && getglobal(m, n) === getglobal(TB, n),
+                       (ITensors, ITensorMPS))
 
 # The names listed in the "Public API" section of docs/src/index.md: every `name` in
 # backticks in the section's bullet list, from its first "- " line to the first blank
@@ -123,9 +125,9 @@ end
     @testset "only functions are exported" begin
         # A type visible in Main prints without its `TensorBinding.` prefix, which would
         # change the error messages the golden tests pin; constants are not exported either.
-        # The re-exported ITensors names (MPO, MPS, OpSum are types) are ITensors' own.
+        # The re-exported names (MPO, MPS, OpSum are types) are ITensors'/ITensorMPS' own.
         own = filter(!is_reexported, exported)
-        @test issubset(filter(is_reexported, exported), names(ITensors))
+        @test issubset(filter(is_reexported, exported), union(names(ITensors), names(ITensorMPS)))
         @test isempty([n for n in own if !(getglobal(TB, n) isa Function)])
     end
 

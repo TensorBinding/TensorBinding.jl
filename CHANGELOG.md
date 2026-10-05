@@ -99,6 +99,17 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Changed
 
+- **Dependencies** (breaking for scripts that load only ITensors): ITensors 0.9,
+  NDTensors 0.4, ITensorMPS 0.3 up to 0.3.44, Quantics 0.4 and Julia 1.10 or newer (were
+  ITensors 0.6, NDTensors 0.3, ITensorMPS 0.2, Quantics 0.3 and Julia 1.9). Since ITensors
+  0.7 the MPS functions live in ITensorMPS: a script that loads only `using ITensors` and
+  calls `dmrg`, `random_mps`, `op` or `apply` on an MPS adds `using ITensorMPS`. The six
+  names TensorBinding re-exports (`expect`, `inner`, `MPO`, `MPS`, `OpSum`, `siteinds`)
+  keep working; on a clash with another package write `ITensorMPS.OpSum` and so on.
+  ITensorMPS is capped below 0.3.45, whose MPO×MPO `apply` (ITensorMPS#97) truncates its
+  last sweep with the caller's `cutoff` and `maxdim` and so moves results (most by
+  1e-10–1e-5, heavily truncated non-Hermitian spectra by up to ~8 %); with the cap every
+  result is unchanged.
 - Unconditional progress prints in library code ("MPS COMPUTED!", "C1 done", …) are
   `@debug` messages (`JULIA_DEBUG=TensorBinding` shows them). The DMRG estimate of the
   spectral bounds, which sets an automatic KPM scale, is reported as an `@info` message.

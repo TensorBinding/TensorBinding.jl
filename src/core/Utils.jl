@@ -266,7 +266,7 @@ Replace the site indices of an MPS obtained from a 1D TCI tensor
 train with the physical `sites` of the target system.
 """
 function custom_mps(qtt, sites)
-    old_mps = ITensors.MPS(qtt)
+    old_mps = MPS(qtt)
     N       = length(old_mps)
     new_mps = MPS(N)
     for i in 1:N

@@ -36,7 +36,7 @@ using Base.Threads
 # second module with the same exports, so bare calls to them fail as ambiguous; the
 # "Public API" section says how to avoid it.
 
-# ITensors names every workflow needs (re-exported, the same objects)
+# ITensors/ITensorMPS names every workflow needs (re-exported, the same objects)
 export expect, inner, MPO, MPS, OpSum, siteinds
 # Model construction and mutation
 export add_hopping!, add_hopping_2D!, add_interaction!, add_onsite!, add_soc!, add_spin!,

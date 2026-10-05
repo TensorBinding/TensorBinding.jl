@@ -232,7 +232,7 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     end
     @debug "qtci_matrix_to_MPO: QTCI done"
     citt = TensorCrossInterpolation.TensorTrain(ci.tci)
-    mps  = ITensors.MPS(citt)
+    mps  = MPS(citt)
     @debug "qtci_matrix_to_MPO: MPS built"
     mpo  = custom_mpo(mps, sites)
     @debug "qtci_matrix_to_MPO: MPO built"

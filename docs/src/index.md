@@ -38,13 +38,14 @@ The rest of the API, including the types (`TBHamiltonian`, the position spaces,
 `NonHermitianHamiltonian`, …), is not exported: call it as `TensorBinding.name` or import
 it with `using TensorBinding: name`. TensorBinding exports only names specific to it, so
 that loading it next to other packages does not make them ambiguous; generic names such as
-`truncate!`, `hermitize` or `get_density` stay qualified. The six re-exported ITensors
-names are the exception: a package that exports its own `OpSum`, `inner`, `expect`, `MPO`
-or `MPS` (XDiag exports `OpSum` and `inner`, for example) clashes with them exactly as it
-does with `using ITensors`; write `ITensors.OpSum` and so on in that case. The GPU
+`truncate!`, `hermitize` or `get_density` stay qualified. The six re-exported
+ITensors/ITensorMPS names are the exception: a package that exports its own `OpSum`,
+`inner`, `expect`, `MPO` or `MPS` (XDiag exports `OpSum` and `inner`, for example) clashes
+with them exactly as it does with `using ITensorMPS`; write `ITensorMPS.OpSum` and so on
+in that case. The GPU
 functions need CUDA.jl to be loaded (see the README).
 
-- ITensors names, re-exported: `expect`, `inner`, `MPO`, `MPS`, `OpSum`, `siteinds`
+- ITensors/ITensorMPS names, re-exported: `expect`, `inner`, `MPO`, `MPS`, `OpSum`, `siteinds`
 - Model construction and mutation: `add_hopping!`, `add_hopping_2D!`, `add_interaction!`,
   `add_onsite!`, `add_soc!`, `add_spin!`, `add_superconductivity!`, `add_tjunction!`,
   `add_zeeman!`, `get_Hamiltonian`

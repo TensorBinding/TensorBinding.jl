@@ -17,14 +17,14 @@ TensorCrossInterpolation = "b261b2ec-6378-4871-b32e-9173bb050604"
 
 [compat]
 FFTW = "1"
-ITensorMPS = "0.2"
-ITensors = "0.6"
-NDTensors = "0.3"
-Quantics = "0.3"
+ITensorMPS = "0.3.1 - 0.3.44"
+ITensors = "0.9"
+NDTensors = "0.4"
+Quantics = "0.4"
 QuanticsGrids = "0.7"
 QuanticsTCI = "0.7"
 TensorCrossInterpolation = "0.9"
-julia = "1.9"
+julia = "1.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
