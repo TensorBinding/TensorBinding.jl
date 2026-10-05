@@ -1596,3 +1596,12 @@ function _renamed_kw(fn::Symbol, newname::Symbol, new, oldname::Symbol, old, def
     return old
 end
 
+# The value `:KPM` of the method keyword `kw` of `fn`, spelled `:kpm` since 0.2: mapped
+# with a one-time warning per function (one shared id would let the first function's
+# warning silence the others').
+function _kpm_method(fn::Symbol, kw::Symbol, method::Symbol)
+    method === :KPM || return method
+    _depwarn_once("$fn: $kw=:KPM is deprecated, use $kw=:kpm", Symbol(fn, "_", kw, "_KPM"))
+    return :kpm
+end
+

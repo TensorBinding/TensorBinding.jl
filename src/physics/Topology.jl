@@ -98,10 +98,7 @@ function _get_projector(H::TBHamiltonian;
                          maxdim::Int      = 40,
                          cutoff::Float64  = 1e-8,
                          Nel              = nothing)
-    if method === :KPM
-        _depwarn_once("method=:KPM is deprecated, use method=:kpm", :method_KPM)
-        method = :kpm
-    end
+    method = _kpm_method(:_get_projector, :method, method)
     if method == :kpm
         # H._tn_cache when it has ≥ Ncheb moments, else a fresh KPM_Tn(H, Ncheb)
         return _density_matrix(H, :kpm; ϵF=fermi, Ncheb=Ncheb, maxdim=maxdim,
@@ -196,8 +193,9 @@ function winding_marker(H::TBHamiltonian, xfunc=nothing;
                Lambda::Union{Nothing,Real} = nothing,
                Nchebychev::Union{Nothing,Int} = nothing,   # deprecated: Ncheb
                Λ::Union{Nothing,Real}  = nothing)          # deprecated: Lambda
-    Ncheb = _renamed_kw(:winding_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
-    Λ     = _renamed_kw(:winding_marker, :Lambda, Lambda, :Λ, Λ, 10)
+    Ncheb  = _renamed_kw(:winding_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    Λ      = _renamed_kw(:winding_marker, :Lambda, Lambda, :Λ, Λ, 10)
+    method = _kpm_method(:winding_marker, :method, method)
     _require_binary_position_space(H, "winding_marker")
     H.sublattice_s === nothing || dim(H.sublattice_s) == 2 ||
         error("winding_marker requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
@@ -791,7 +789,8 @@ function chern_marker(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                Λ::Union{Nothing,Real}         = nothing,   # deprecated: Lambda
                Nchebychev::Union{Nothing,Int} = nothing)   # deprecated: Ncheb
     Λ_val = Float64(_renamed_kw(:chern_marker, :Lambda, Lambda, :Λ, Λ, 10))
-    Ncheb = _renamed_kw(:chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    Ncheb  = _renamed_kw(:chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    method = _kpm_method(:chern_marker, :method, method)
     _require_binary_position_space(H, "chern_marker")
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
@@ -933,7 +932,8 @@ function valley_chern_marker(H::TBHamiltonian,
                       Λ::Union{Nothing,Real}         = nothing,   # deprecated: Lambda
                       Nchebychev::Union{Nothing,Int} = nothing)   # deprecated: Ncheb
     Λ     = _renamed_kw(:valley_chern_marker, :Lambda, Lambda, :Λ, Λ, 10)
-    Ncheb = _renamed_kw(:valley_chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    Ncheb  = _renamed_kw(:valley_chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    method = _kpm_method(:valley_chern_marker, :method, method)
     _require_binary_position_space(H, "valley_chern_marker")
     valley in (:K, :K_prime) ||
         error("valley must be :K or :K_prime, got :$valley")
@@ -1151,8 +1151,9 @@ function get_thouless_pump(H_of_t::Function, Nt::Int, T::Real, xfunc;
                            verbose::Bool                = false,
                            Nchebychev::Union{Nothing,Int} = nothing,   # deprecated: Ncheb
                            Λ::Union{Nothing,Real}       = nothing)     # deprecated: Lambda
-    Ncheb = _renamed_kw(:get_thouless_pump, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 200)
-    Λ     = _renamed_kw(:get_thouless_pump, :Lambda, Lambda, :Λ, Λ, -1.0)
+    Ncheb    = _renamed_kw(:get_thouless_pump, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 200)
+    Λ        = _renamed_kw(:get_thouless_pump, :Lambda, Lambda, :Λ, Λ, -1.0)
+    P_method = _kpm_method(:get_thouless_pump, :P_method, P_method)
     dt    = T / Nt
     H0    = H_of_t(0.0)
     sites = H0.sites

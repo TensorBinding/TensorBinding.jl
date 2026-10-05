@@ -20,13 +20,15 @@ spelling. Passing an old and a new keyword together is an `ArgumentError`.
 - `get_C` → `chern_marker`, `get_W` → `winding_marker`, `get_valley_C` →
   `valley_chern_marker`, `get_C_gpu` → `chern_marker_gpu`. The new names are exported (the
   old ones never were).
-- The keywords `Nchebychev` → `Ncheb` and `Λ` → `Lambda` of those four functions, of
-  `get_thouless_pump`, `get_C_op_MPO_from_P` and `get_pump_xop`: the canonical keyword
-  names are ASCII. (`get_C` and `get_C_gpu` took both `Λ` and `Lambda`, and `Lambda`
-  silently won when both were given; that is now the `ArgumentError` above.)
+- The keywords `Nchebychev` → `Ncheb` and `Λ` → `Lambda` of those four functions and of
+  `get_thouless_pump`, and `Λ` → `Lambda` of `get_C_op_MPO_from_P` and `get_pump_xop`:
+  the canonical keyword names are ASCII. (`get_C` and `get_C_gpu` took both `Λ` and
+  `Lambda`, and `Lambda` silently won when both were given; that is now the
+  `ArgumentError` above.)
 - The value `method=:KPM` → `:kpm` of the markers and `P_method=:KPM` of
   `get_thouless_pump`, the spelling the rest of the package uses (`:kpm` was an error
-  there). The error messages name the new functions and list `:kpm`.
+  there); each function warns for itself. The error messages name the new functions and
+  list `:kpm`.
 
 ### Removed
 

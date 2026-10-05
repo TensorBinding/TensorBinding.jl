@@ -114,12 +114,12 @@ end
     old === nothing || @test old ≈ new rtol = 1e-12
     @test_throws ArgumentError winding_marker(ssh_dep(); Nchebychev = 40, Ncheb = 40)
     old = deprecated_call(() -> marker_dep(winding_marker(ssh_dep(); method = :KPM, Ncheb = 40, maxdim = 30), m),
-                          r"method=:KPM is deprecated, use method=:kpm")
+                          r"winding_marker: method=:KPM is deprecated, use method=:kpm")
     old === nothing || @test old ≈ new rtol = 1e-12
 
     Hold = gapped_dep()
     Pold = deprecated_call(() -> TBD._get_projector(Hold; method = :KPM, Ncheb = 30, maxdim = 30),
-                           r"method=:KPM is deprecated")
+                           r"_get_projector: method=:KPM is deprecated")
     Hn = gapped_dep()
     Pold === nothing ||
         @test dense_dep(Pold, Hold.sites) ≈ dense_dep(TBD._get_projector(Hn; method = :kpm, Ncheb = 30, maxdim = 30), Hn.sites)
@@ -130,4 +130,13 @@ end
                           r"get_thouless_pump: the keyword `Λ` is deprecated, use `Lambda`")
     old === nothing ||
         @test old ≈ get_thouless_pump(pump, 3, 1.0, xp; maxdim = 30, quenched = true, Lambda = 5.0) rtol = 1e-12
+
+    # :KPM warns per function, under the keyword the caller used: one shared id let the
+    # first function's warning silence every other one in the session
+    if Base.JLOptions().depwarn != 2
+        @test_logs (:warn, r"winding_marker: method=:KPM") (:warn, r"get_thouless_pump: P_method=:KPM") match_mode = :any begin
+            winding_marker(ssh_dep(); method = :KPM, Ncheb = 20, maxdim = 30)
+            get_thouless_pump(pump, 3, 1.0, xp; maxdim = 30, P_method = :KPM, Ncheb = 20)
+        end
+    end
 end

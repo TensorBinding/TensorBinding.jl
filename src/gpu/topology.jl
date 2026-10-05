@@ -60,10 +60,7 @@ function chern_marker_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
 
     Λ_val = Float64(_renamed_kw(:chern_marker_gpu, :Lambda, Lambda, :Λ, Λ, 10))
     Ncheb = _renamed_kw(:chern_marker_gpu, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
-    if method === :KPM
-        _depwarn_once("method=:KPM is deprecated, use method=:kpm", :method_KPM)
-        method = :kpm
-    end
+    method = _kpm_method(:chern_marker_gpu, :method, method)
     _require_binary_position_space(H, "chern_marker_gpu")
     _check_gpu("chern_marker_gpu")
     gpu_type = _resolve_gpu_type("chern_marker_gpu", dtype, nothing, cutoff)
