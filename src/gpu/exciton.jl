@@ -51,10 +51,12 @@ or on large systems where F32 eigendecomposition can produce NaN; a warning is
 emitted for a 32-bit type with `cutoff < 1e-6`), or `Float32`/`Float64` for a real `H`.
 `dtype` is accepted as an alias for `type` for consistency with other GPU entry points.
 
-`return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`, where
-`linkdims[j]` is the `maxlinkdim` of the last Chebyshev vector of the last probe
-in column `j` (the χ the recursion hit under the given `maxdim`/`cutoff`). Useful
-for cutoff/tolerance studies where χ is the observable.
+`return_maxlinkdim=true` returns `(; ldos = result, maxlinkdims)` instead of just
+`result`, where `maxlinkdims[j]` is the `maxlinkdim` of the last Chebyshev vector of
+the last probe in column `j` (the χ the recursion hit under the given
+`maxdim`/`cutoff`); up to v0.1.1 it was the tuple `(result, linkdims)`, which
+destructures the same way. Useful for cutoff/tolerance studies where χ is the
+observable.
 
 !!! note "Block averaging not supported"
     `reduce=:block` is **not available** for the exciton LDOS. In the MPO-based LDOS
@@ -176,7 +178,7 @@ function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals
             _gpu_log("exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
-    return return_maxlinkdim ? (result, linkdims) : result
+    return return_maxlinkdim ? (; ldos = result, maxlinkdims = linkdims) : result
 end
 
 

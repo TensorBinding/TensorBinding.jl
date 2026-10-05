@@ -379,14 +379,17 @@ where `Htilde = (H - H.center * P) / H.scale`. These moments contain no kernel
 weights or energy-dependent normalization, and can therefore be reconstructed
 later on a different energy grid or with a different KPM kernel.
 
-With `return_maxlinkdim=true`, `linkdims[j]` is the largest MPS bond dimension
-reached by any probe in group `j`. Return values are unambiguous for all keyword
-combinations:
+With `return_maxlinkdim=true`, `maxlinkdims[j]` is the largest MPS bond dimension
+reached by any probe in group `j`. The extras come back as named fields:
 
 - neither keyword: `ldos`
-- `return_maxlinkdim=true`: `(ldos, linkdims)` (the existing API)
-- `return_moments=true`: `(ldos, moments)`
-- both keywords: `(ldos, moments, linkdims)`
+- `return_maxlinkdim=true`: `(; ldos, maxlinkdims)`
+- `return_moments=true`: `(; ldos, moments)`
+- both keywords: `(; ldos, moments, maxlinkdims)`
+
+Up to v0.1.1 these were the tuples `(ldos, linkdims)`, `(ldos, moments)` and
+`(ldos, moments, linkdims)`, so the second element changed meaning with the keywords;
+the named fields keep that order, and `ldos, links = …` still destructures them.
 
 This entry point intentionally supports position-only, one-dimensional point or
 explicit-group sampling. Grid/window/box/block sampling, non-physical ordering,
@@ -526,9 +529,10 @@ function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
     result = _reconstruct_ldos_moment_columns(moments, W, denom, valid)
 
     if return_moments
-        return return_maxlinkdim ? (result, moments, linkdims) : (result, moments)
+        return return_maxlinkdim ? (; ldos = result, moments, maxlinkdims = linkdims) :
+                                   (; ldos = result, moments)
     end
-    return return_maxlinkdim ? (result, linkdims) : result
+    return return_maxlinkdim ? (; ldos = result, maxlinkdims = linkdims) : result
 end
 
 

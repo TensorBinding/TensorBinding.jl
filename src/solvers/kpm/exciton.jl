@@ -43,10 +43,11 @@ are generated over `x_start:x_end`, with `num_avg` subpositions per group.
 `:lorentz` with `lambda`, `:fejer`, `:dirichlet`). `maxdim` and `cutoff` truncate
 each MPS recursion step; `verbose` or `printinfo` prints progress every 5 columns.
 
-`return_maxlinkdim=true` returns `(result, linkdims)` instead of just `result`,
-where `linkdims::Vector{Int}` is the reached MPS bond dimension per output column
-(the χ the Chebyshev recursion hit under the given `maxdim`/`cutoff`). Mirrors the
-GPU entry point; useful for cutoff/tolerance studies where χ is the observable.
+`return_maxlinkdim=true` returns `(; ldos = result, maxlinkdims)` instead of just
+`result`, where `maxlinkdims::Vector{Int}` is the reached MPS bond dimension per output
+column (the χ the Chebyshev recursion hit under the given `maxdim`/`cutoff`); up to
+v0.1.1 it was the tuple `(result, linkdims)`, which destructures the same way. Mirrors
+the GPU entry point; useful for cutoff/tolerance studies where χ is the observable.
 """
 function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   X_list           = nothing,
@@ -132,7 +133,7 @@ function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
             println("  exciton ldos $j/$nX (X=$(Xs[j]), n_avg=$(length(group)))  maxlinkdim=$last_linkdim")
     end
 
-    return return_maxlinkdim ? (result, linkdims) : result
+    return return_maxlinkdim ? (; ldos = result, maxlinkdims = linkdims) : result
 end
 
 """

@@ -1017,7 +1017,7 @@ end
 """
     thouless_pump(P_array, dt, x_op, sites; r_center, maxdim=100, cutoff=1e-8,
                   verbose=false, return_trajectory=false)
-        -> Float64 or (Float64, Vector{Float64})
+        -> Float64, or (; C, trajectory) with return_trajectory=true
 
 Compute the Thouless pump invariant (Chern number) using the local M1Q marker:
 
@@ -1040,9 +1040,11 @@ Finite differences for ∂P/∂t use central differences (one-sided at endpoints
 - `maxdim`            : max bond dimension for all MPO operations.
 - `cutoff`            : SVD truncation threshold.
 - `verbose`           : print M1Q(0), M1Q(T), and bond dimension at each step.
-- `return_trajectory` : if `true`, return `(C, M1Q_traj)` where `M1Q_traj` is a
-                        `Vector{Float64}` of length `Nt+1` with M1Q at each step
-                        (index 1 = t=0, index k+1 = t=k·dt).  Default `false`.
+- `return_trajectory` : if `true`, return `(; C, trajectory)` where `trajectory` is
+                        a `Vector{Float64}` of length `Nt+1` with M1Q at each step
+                        (index 1 = t=0, index k+1 = t=k·dt).  Default `false`. Up
+                        to v0.1.1 it was the tuple `(C, M1Q_traj)`, which
+                        destructures the same way.
 """
 function thouless_pump(P_array::Vector{<:MPO}, dt::Real, x_op::MPO,
                        sites::Vector{<:Index};
@@ -1106,7 +1108,7 @@ function thouless_pump(P_array::Vector{<:MPO}, dt::Real, x_op::MPO,
     verbose && println("M1Q(T) = $(round(M1Q_T; digits=6))")
 
     C = M1Q_T - M1Q_0
-    return return_trajectory ? (C, M1Q_traj) : C
+    return return_trajectory ? (; C, trajectory = M1Q_traj) : C
 end
 
 

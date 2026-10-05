@@ -720,10 +720,10 @@ const EKW = (maxdim = 32, cutoff = 1e-12)
 function exciton_case!(name, kw, cpu_kw; L = 2, tol = TOL64, Ncheb = 10)
     case!(name, () -> exciton(; L = L),
         H -> (r = TB.get_exciton_ldos_spatial_gpu(H, Ncheb, OMEGA; kw...);
-              r isa Tuple ? (ldos = r[1], linkdims = r[2]) : (ldos = r,)),
+              r isa AbstractMatrix ? (ldos = r,) : (ldos = r[1], linkdims = r[2])),
         cpu_kw === nothing ? nothing :
             (H -> (r = TB.get_exciton_ldos_spatial(H, Ncheb, OMEGA; cpu_kw(H)...);
-                   (ldos = r isa Tuple ? r[1] : r,)));
+                   (ldos = r isa AbstractMatrix ? r : r[1],)));
         tol = tol, cpu_rtol = tol === TOL32 ? 1e-4 : 1e-7, cpu_atol = tol === TOL32 ? 1e-5 : 1e-9)
 end
 

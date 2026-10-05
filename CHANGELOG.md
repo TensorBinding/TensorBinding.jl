@@ -118,6 +118,17 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Changed
 
+- **Named results for optional extras.** With `return_maxlinkdim=true` and/or
+  `return_moments=true`, `get_ldos_spatial_mps_gpu` returns `(; ldos, maxlinkdims)`,
+  `(; ldos, moments)` or `(; ldos, moments, maxlinkdims)`; `get_exciton_ldos_spatial` and
+  `get_exciton_ldos_spatial_gpu` with `return_maxlinkdim=true` return
+  `(; ldos, maxlinkdims)`; `thouless_pump` with `return_trajectory=true` returns
+  `(; C, trajectory)`. They were positional tuples, and the second element of
+  `get_ldos_spatial_mps_gpu`'s was the moments or the link dimensions depending on the
+  flags. The fields keep the tuples' order, so destructuring (`ldos, links = …`),
+  indexing (`r[1]`) and iteration work as before; `r isa Tuple`, `==` with a tuple,
+  broadcasting over the result and slicing (`r[1:2]`) do not (`Tuple(r)` gives the old
+  tuple). Without the flags the results are unchanged.
 - **Dependencies** (breaking for scripts that load only ITensors): ITensors 0.9,
   NDTensors 0.4, ITensorMPS 0.3.16 to 0.3.44, Quantics 0.4, TensorCrossInterpolation
   0.9.18 or newer and Julia 1.10 or newer (were ITensors 0.6, NDTensors 0.3, ITensorMPS
