@@ -78,7 +78,9 @@ Fields
 - `sublattice_s` : dim-k sublattice index (set by kagomé/Lieb/honeycomb/dice constructors)
 - `aux_side`     : `:pre` or `:post` — position of the outermost aux index in `sites`
 
-**Lazy caches** (cleared by `_invalidate_cache!` whenever `mpo` changes)
+**Lazy caches** (emptied by the `add_*!` mutators through `_invalidate_cache!`, and when
+`mpo`, `sites`, `position_space`, or a different `scale` or `center` is assigned; editing
+the MPO in place, as `truncate!(H.mpo)` or `H.mpo[j] = …` do, does not empty them)
 - `_tn_cache`      : MPO Chebyshev list; set by `KPM_Tn(H, N; mode=:mpo)`
 - `_tn_mps_cache`  : MPS Chebyshev state list; set by `KPM_Tn(H, N; mode=:mps, psi0=…)`
 - `_tn_Ncheb`      : order of the Chebyshev list built last, MPO or MPS; each reader
@@ -108,7 +110,7 @@ mutable struct TBHamiltonian
     layer_s       :: Union{Nothing, Index}    # set by bilayer/multilayer constructors
     sublattice_s  :: Union{Nothing, Index}    # set by the multi-atom lattice constructors
     aux_side :: Symbol                        # :pre (aux at front) or :post (aux at back)
-    # ---- lazy caches (invalidated whenever mpo changes) ----
+    # ---- lazy caches (see "Lazy caches" above) ----
     _tn_cache      :: Union{Nothing, Vector{MPO}}   # MPO Chebyshev list (mode=:mpo)
     _tn_mps_cache  :: Union{Nothing, Vector{MPS}}   # MPS Chebyshev list (mode=:mps)
     _tn_Ncheb      :: Int
@@ -271,7 +273,7 @@ end
 """
     _invalidate_cache!(H) -> H
 
-Clear all cached intermediate results.  Called automatically whenever `mpo` changes
+Clear all cached intermediate results.  Called by the mutators that change `mpo`
 (e.g. `add_hopping!`, `add_onsite!`, `add_zeeman!`, `add_superconductivity!`).
 
 Clears: `_tn_cache`, `_tn_mps_cache`, `_tn_Ncheb`, `_density_cache`.
@@ -279,14 +281,35 @@ Resets `scale` and `center` to `0.0` so that `_ensure_scale!` re-estimates them 
 DMRG on the next KPM call.
 """
 function _invalidate_cache!(H::TBHamiltonian)
-    H._tn_cache      = nothing
-    H._tn_mps_cache  = nothing
-    H._tn_Ncheb      = 0
-    H._density_cache = nothing
+    _drop_caches!(H)
     # Spectrum changed — force re-estimation of scale/center on next KPM call.
-    H.scale  = 0.0
-    H.center = 0.0
+    setfield!(H, :scale, 0.0)
+    setfield!(H, :center, 0.0)
     return H
+end
+
+# Empties the four caches and leaves the window (scale, center) alone.
+function _drop_caches!(H::TBHamiltonian)
+    setfield!(H, :_tn_cache, nothing)
+    setfield!(H, :_tn_mps_cache, nothing)
+    setfield!(H, :_tn_Ncheb, 0)
+    setfield!(H, :_density_cache, nothing)
+    return H
+end
+
+# Assigning a field the caches were computed for empties them: `mpo`, `sites` or
+# `position_space`, or a `scale` or `center` that differs from the stored one (a cached
+# McWeeny density belongs to its center too, its level being center + ϵF). The assigned
+# value is kept: unlike `_invalidate_cache!`, the window is not reset. Editing the MPO in
+# place is not seen. Up to v0.1.1 an assignment kept every cache, so later calls answered
+# for the old operator or window.
+function Base.setproperty!(H::TBHamiltonian, name::Symbol, x)
+    v = convert(fieldtype(TBHamiltonian, name), x)
+    if name === :mpo || name === :sites || name === :position_space ||
+       ((name === :scale || name === :center) && !isequal(getfield(H, name), v))
+        _drop_caches!(H)
+    end
+    return setfield!(H, name, v)
 end
 
 # The order N of a cached Chebyshev list T_0 … T_N (`_tn_cache` or `_tn_mps_cache`):

@@ -166,9 +166,11 @@ dos  = -imag(tr(G)) / π                              # total DoS
 ldos = real(inner(psi_i, apply(G, psi_i)))           # LDoS at site i
 gij  = inner(psi_i, apply(G, psi_j))                 # off-diagonal element
 
-# Warm-start from a cheap KPM estimate
+# Warm-start from a cheap KPM estimate (get_Green_retarded_from_Tn works in the
+# rescaled window: ω and η are rescaled, and the result is divided by the scale)
 TensorBinding.KPM_Tn(H, 15; maxdim=50)
-G_kpm = TensorBinding.get_Green_retarded_from_Tn(H._tn_cache, 15, ω; η=η, maxdim=50)
+G_kpm = (1 / H.scale) * TensorBinding.get_Green_retarded_from_Tn(H._tn_cache, 15,
+            (ω - H.center) / H.scale; η=η / H.scale, maxdim=50)
 G_ws  = get_green_krylov(H, ω; x0_mpo=G_kpm, nsweeps=6, maxdim=200)
 ```
 """

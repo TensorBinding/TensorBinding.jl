@@ -111,6 +111,19 @@ function _cached_density(H, key::Tuple)
     return (stored === nothing || stored == key) ? ρ : nothing
 end
 
+# `deepcopy(H)` copies the cached density with its record (the record is keyed by the MPO
+# object, which the copy replaces). Up to v0.1.1 the copy's density had no record and so
+# answered every method and level, like one set by hand.
+function Base.deepcopy_internal(H::TBHamiltonian, dict::IdDict)
+    Hc = invoke(Base.deepcopy_internal, Tuple{Any,IdDict}, H, dict)
+    ρ = getfield(H, :_density_cache)
+    if ρ !== nothing
+        key = get(_DENSITY_KEY, ρ, nothing)
+        key === nothing || (_DENSITY_KEY[getfield(Hc, :_density_cache)] = key)
+    end
+    return Hc
+end
+
 
 """
     _purified_pair(guess, a₊, a₋; maxiters, maxdim, cutoff, tol, verbose) -> (ρ₊, ρ₋)

@@ -139,6 +139,7 @@ include("bugfix_aux5.jl")
 include("bugfix_exciton_nh4.jl")
 include("bugfix_lattice4.jl")
 include("bugfix_density_cache.jl")
+include("bugfix_cache_safety.jl")
 
 # The keyword TBHamiltonian constructor (the positional overloads are gone).
 include("tbhamiltonian_ctor.jl")

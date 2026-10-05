@@ -212,9 +212,13 @@ function _ensure_scale!(H::TBHamiltonian;
                          dmrg_maxdim       = [10, 20, 40],
                          dmrg_linkdim::Int = 4)
     H.scale > 0.0 && return H
-    H.scale, H.center = _estimate_spectral_bounds(H.mpo, H.sites;
-                             dmrg_nsweeps = dmrg_nsweeps,
-                             dmrg_maxdim  = dmrg_maxdim,
-                             dmrg_linkdim = dmrg_linkdim)
+    sc, c = _estimate_spectral_bounds(H.mpo, H.sites;
+                                      dmrg_nsweeps = dmrg_nsweeps,
+                                      dmrg_maxdim  = dmrg_maxdim,
+                                      dmrg_linkdim = dmrg_linkdim)
+    # setfield!, not assignment: filling an undetermined window empties no cache (none is
+    # computed before the window is set, and a density set by hand stays).
+    setfield!(H, :scale, Float64(sc))
+    setfield!(H, :center, Float64(c))
     return H
 end

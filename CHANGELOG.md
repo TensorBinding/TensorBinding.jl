@@ -313,6 +313,19 @@ constructor that takes all 21 fields in order, caches included, remains.
   0.051 on an L = 3 chain); with an MPS list longer than the MPO list,
   `get_density(method=:kpm)` ran past the end of the MPO list (BoundsError). Each reader
   now takes the order from its own list. With one list cached nothing changes.
+- **Caches follow the fields they were computed for.** Assigning `mpo`, `sites` or
+  `position_space`, or a different `scale` or `center`, to a `TBHamiltonian` empties its
+  Chebyshev lists and its cached density; the assigned value is kept (the `add_*!`
+  mutators still reset the window, as before). Up to v0.1.1 the caches survived the
+  assignment: after `H.mpo = …`, `get_density` returned the projector of the old operator
+  and `get_ldos_spectrum` its LDOS, after `H.scale = …` the old Chebyshev list was read
+  in the new window (69 % off on a test chain), and a cached McWeeny density survived a
+  change of `center` (its level is `center + ϵF`). Editing the MPO in place
+  (`truncate!(H.mpo)`, `H.mpo[j] = …`) is not detected. `deepcopy(H)` keeps the record
+  of what its cached density was computed for (the copy answered every Fermi level and
+  method). `get_ldos(H, ω; mode=:mps, psi0)` throws an `ArgumentError` when `psi0` is not
+  the probe of the cached MPS list, also for a probe that differs only by a global phase
+  (it returned the cross term ⟨ψ|T_n|ψ₀⟩).
 - **Default KPM scales of the 2D multi-atom lattices** (`get_Hamiltonian` without `scale`)
   are `max(builder formula, estimate_scale(...; method=:small))`, like the presets:
   `"lieb"` 2.5|t| → 2.73|t| at L = 3 and 3.10|t| from 16 × 16 cells (its bulk radius is
@@ -366,6 +379,9 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Fixed
 
+- The warm-start example in the `get_green_krylov` docstring passed the physical `ω` and
+  `η` to `get_Green_retarded_from_Tn`, which takes them rescaled into the KPM window, and
+  left out the `1/scale` factor of the result (as `get_bubble_mpo` applies it).
 - `get_ldos(mode=:diag)`, `get_ldos_spectrum` and `extract_diagonal_to_mps` on a projected
   position space (Fibonacci, metallic-mean, k-bonacci): the Chebyshev term `T_0`, the
   physical projector, stores its legs as `(s, s')`, so its diagonal came out on the primed
