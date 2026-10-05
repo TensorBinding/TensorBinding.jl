@@ -24,7 +24,7 @@
                                  type=ComplexF32, dtype=nothing,
                                  verbose=false, printinfo=false,
                                  return_maxlinkdim=false)
-        -> Matrix{Float64}   (Nω × n_cols)
+        -> Matrix{Float64} (Nω × n_cols), or (; ldos, maxlinkdims) with return_maxlinkdim=true
 
 GPU-accelerated spatial exciton LDOS A(X,ω) = ⟨X,X|δ(ω−H)|X,X⟩ via MPS Chebyshev KPM.
 One GPU Chebyshev recursion runs per probe position X (electron = hole = X, 1-indexed

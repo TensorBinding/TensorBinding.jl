@@ -26,7 +26,7 @@
                              kernel=:jackson, lambda=4.0, eta=0.0, m_order=4,
                              maxdim=100, cutoff=1e-8, verbose=false,
                              printinfo=false, return_maxlinkdim=false)
-        -> Matrix{Float64}   # (result, linkdims) with return_maxlinkdim=true
+        -> Matrix{Float64}, or (; ldos, maxlinkdims) with return_maxlinkdim=true
 
 CPU spatial exciton LDOS. For each bound exciton position `X` (electron = hole =
 `X`, 1-indexed in `1:H.N`) this runs an online MPS Chebyshev recursion from

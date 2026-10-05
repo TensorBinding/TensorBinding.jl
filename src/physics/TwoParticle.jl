@@ -57,11 +57,16 @@ TensorBinding's KPM, DMRG, and spectral tools.
                           term from `Ufunc` is interpolated at a fixed `1e-8`, see
                           `build_interaction_op_exciton`.)
 - `maxbonddim_quantics` : QTCI max bond dimension for `on_site`. Default `100`.
-- `tol`                 : MPO assembly truncation tolerance. Default `1e-8`.
-- `cutoff`, `maxdim`    : accepted but unused: `Exciton_Hamiltonian` assembles the MPO
-                          with `tol` only and does not truncate the result (passing
-                          `cutoff=0.5, maxdim=1` gives the same MPO). Defaults `1e-8`
-                          and `200`.
+- `tol`                 : MPO assembly truncation tolerance. Default `1e-8`. The
+                          geometry method also passes it to `get_Hamiltonian` for both
+                          sectors.
+- `maxdim`              : the geometry method passes it to `get_Hamiltonian` for both
+                          sectors (default `200`, not `get_Hamiltonian`'s `15`); the
+                          assembled exciton MPO itself is not truncated, so with
+                          pre-built sectors it has no effect.
+- `cutoff`              : accepted but unused (default `1e-8`): `Exciton_Hamiltonian`
+                          assembles the MPO with `tol` only (passing `cutoff=0.5` gives
+                          the same MPO).
 """
 function exciton_hamiltonian(geometry::String, params, Ufunc;
                               L::Int,

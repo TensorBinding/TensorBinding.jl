@@ -428,8 +428,10 @@ Common keyword arguments
                 (dense spectrum of the model at a small size), `:geometry`
                 (row-sum bound) or `:dmrg` (DMRG spectral bounds of `H`, which also
                 set `center`)
-- `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`); one value
-                sets both
+- `tol`       : truncation cutoff of the built MPO (default `1e-8`); for `"custom"`
+                and `"haldane"` also the QTCI tolerance. The preset models take their
+                QTCI tolerance from `MODEL_REGISTRY` (`tol_quantics`: `1e-8`, `1e-9`
+                for `"qc2dsquare"`), which `params`/`mparams` override
 - `maxdim`    : maximum MPO bond dimension after construction (default `15`). It can
                 bind: `"qc2dsquare"` needs bond dimension 16 at `L = 8` and 17 at
                 `L = 10`, where the default truncates its MPO (relative error 1.4e-3

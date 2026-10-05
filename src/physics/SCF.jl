@@ -656,7 +656,8 @@ H_dn = H0_dn + U * diag(n_up   - background)
 Returns `(; converged, iterations, rms_error, rho_up, rho_dn, density_up_mpo,
 density_dn_mpo, H_up, H_dn, history)`: the mixed spin-resolved density profiles (MPS),
 the last density matrices of each spin (`nothing` when no iteration ran), the last
-mean-field `TBHamiltonian` of each spin, and one
+mean-field `TBHamiltonian` of each spin (the bare spin blocks when no iteration ran),
+and one
 `(; iter, rms_error, rms_up, rms_dn, particle_error)` per iteration in `history`.
 """
 function scf_magnetic_hubbard(H0::TBHamiltonian, U::Union{Number, MPO};
@@ -806,8 +807,9 @@ working copy before building BdG Hamiltonians.
 Returns `(; converged, iterations, rms_error, delta_mps, anomalous_mps, rho_up_mps,
 rho_dn_mps, hartree_up_mpo, hartree_dn_mpo, density_mpo, ham, history)`: the mixed gap
 profile Δ(i) and the last anomalous profile F(i) (MPS), the spin-resolved density
-profiles, the Hartree MPOs (`nothing` unless `include_hartree=true`), the last BdG
-density matrix and BdG `TBHamiltonian`, and one `(; iter, rms_error, rms_delta, rms_up,
+profiles (updated only with `include_hartree=true`, otherwise the initial seeds), the
+Hartree MPOs (`nothing` unless `include_hartree=true`), the last BdG density matrix and
+BdG `TBHamiltonian` (`nothing` when no iteration ran), and one `(; iter, rms_error, rms_delta, rms_up,
 rms_dn, maxlinkdim_H, maxlinkdim_density, maxlinkdim_delta)` per iteration.
 """
 function scf_swave_superconducting(H0::TBHamiltonian, g::Number;
@@ -995,7 +997,7 @@ equal-spin channels with the same sign.
 Returns `(; converged, iterations, rms_error, delta_up_mps, delta_dn_mps,
 anomalous_up_mps, anomalous_dn_mps, density_mpo, ham, history)`: the mixed equal-spin
 gap profiles and the last anomalous profiles (MPS), the last BdG density matrix and BdG
-`TBHamiltonian`, and one `(; iter, rms_error, rms_up, rms_dn, maxlinkdim_H,
+`TBHamiltonian` (`nothing` when no iteration ran), and one `(; iter, rms_error, rms_up, rms_dn, maxlinkdim_H,
 maxlinkdim_density, maxlinkdim_delta_up, maxlinkdim_delta_dn)` per iteration.
 """
 function scf_pwave_equalspin(H0::TBHamiltonian, V::Number;

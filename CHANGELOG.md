@@ -123,8 +123,10 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **Documentation of what stays.** The docstrings list the result fields of every SCF
   driver and of `get_scf`, and state behaviours that are kept as they are:
   `get_Hamiltonian`'s default `maxdim=15` can truncate (`"qc2dsquare"` loses 1.4e-3 at
-  L = 8 and 1.1e-2 at L = 10), `exciton_hamiltonian`/`Exciton_Hamiltonian` ignore
-  `cutoff` and `maxdim`, the non-Hermitian `n` is half the expansion (`2n` terms), the
+  L = 8 and 1.1e-2 at L = 10) and its `tol` is the QTCI tolerance only for `"custom"` and
+  `"haldane"`, `Exciton_Hamiltonian` ignores `cutoff` and `maxdim` (as does
+  `exciton_hamiltonian` with pre-built sectors; its geometry method passes `maxdim` to
+  `get_Hamiltonian`), the non-Hermitian `n` is half the expansion (`2n` terms), the
   default momenta of `get_exciton_bands` and `get_exciton_continuum` differ, 2D
   `get_bands` without `kpath` samples the diagonal cut, and `get_density_from_Tn`'s
   `fermi` is a rescaled energy.

@@ -341,7 +341,7 @@ end
                              spin_proj=false, proj_s=nothing,
                              layer_proj=false, proj_layer=nothing,
                              sublat_proj=false, proj_sl=nothing)
-        -> Matrix{Float64}
+        -> Matrix{Float64}, or a NamedTuple with return_moments/return_maxlinkdim
 
 GPU spatial LDOS from one independent MPS Chebyshev recursion per physical-site
 probe. Unlike [`get_ldos_spatial_gpu`](@ref), this path does not construct an MPO
