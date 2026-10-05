@@ -7,8 +7,36 @@ bugs without breaking the API.
 
 ## [Unreleased]
 
-Work towards v0.2.0: the code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md`,
-and fixes for the bugs it found. A fix that moves numbers is listed under **Changed results**.
+## [0.2.0] — 2026-10-05
+
+The code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md` (Tiers 1–3), the
+fixes for the bugs it found, and the move to ITensors 0.9. This is a breaking release:
+read **Upgrading from 0.1** first. A fix that moves numbers is listed under **Changed
+results**.
+
+### Upgrading from 0.1
+
+- Julia 1.10 or newer, ITensors 0.9 and ITensorMPS 0.3. A script that loads only
+  `using ITensors` and calls `dmrg`, `random_mps`, `op` or `apply` on an MPS adds
+  `using ITensorMPS` (see **Changed**, Dependencies).
+- `using TensorBinding` now exports 62 functions (see **Added**). A script that defines a
+  top-level function or variable with one of these names shadows the export (on Julia
+  1.11 and earlier that is an error if the script used the exported name first). Running
+  `include("src/TensorBinding.jl"); using .TensorBinding` twice in one session makes the
+  exported names ambiguous: restart the session, or use `] dev` with `using TensorBinding`.
+- Renamed, with deprecated aliases that warn once per session and go in 0.3 (see
+  **Deprecated**): `get_C` → `chern_marker`, `get_W` → `winding_marker`, `get_valley_C` →
+  `valley_chern_marker`, `get_C_gpu` → `chern_marker_gpu`, the keywords `Nchebychev` →
+  `Ncheb` and `Λ` → `Lambda`, and `method=:KPM` → `:kpm`.
+- Removed (see **Removed**): the positional `TBHamiltonian` constructors with 13 to 20
+  arguments (use the keyword constructor `TBHamiltonian(; L, N, sites, mpo, …)` or the
+  copy constructor `TBHamiltonian(H; field=value, …)`), and functions that had no caller.
+- With their optional flags, `get_ldos_spatial_mps_gpu`, `get_exciton_ldos_spatial(_gpu)`
+  and `thouless_pump` return named results; destructuring still works (see **Changed**).
+- Assigning `H.mpo`, `H.sites`, `H.scale` or `H.center` empties the KPM caches of `H`, and
+  a cached density is reused only for the same projector (see **Changed results**).
+- Many results change through bug fixes (**Changed results**): re-run the calculations
+  that depend on them.
 
 ### Deprecated
 
