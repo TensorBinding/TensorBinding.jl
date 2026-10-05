@@ -35,7 +35,8 @@ using TensorBinding: get_Hamiltonian, add_spin!, add_zeeman!, TBHamiltonian, rep
 # Comparison rules:
 #   * every field recorded in the golden data must still be returned;
 #   * floating-point scalars and arrays: same size and element type, and every
-#     entry isapprox(rtol=RTOL, atol=ATOL) on its own -- entry by entry, not
+#     entry isapprox(rtol=RTOL, atol=ATOL) on its own (FIELD_RTOL for the Wynn
+#     estimates, see below) -- entry by entry, not
 #     norm-wise, so that a small entry next to a large one (the 1e30 that
 #     wynn_epsilon returns for a singular table, say) is pinned
 #     to its own size; NaN/Inf entries must sit at the same positions with the
@@ -70,6 +71,12 @@ const TB = TensorBinding
 
 const RTOL = 1e-10
 const ATOL = 1e-12
+# Wynn ε_{2m} amplifies rounding: in `wynn_from_bubbles_defaults` the ε_6 entry at
+# (3, 2, 8) moves by 2.6e-10 (relative) between `julia` and `julia --check-bounds=yes`
+# (what Pkg.test and CI use) on the same machine, all other entries by less than 1e-10.
+# The accelerated estimates are pinned at FIELD_RTOL; the partial sums stay at RTOL.
+const FIELD_RTOL = Dict(:chi_wynn => 1e-8)
+const CURRENT_RTOL = Ref(RTOL)
 const MESSAGE_PREFIX_CHARS = 60
 
 # Number of cases per function in test/data/rpa_golden.jl. Update it by hand, in
@@ -545,12 +552,12 @@ approx_equal(a::Integer, b::Integer) = typeof(a) == typeof(b) && a == b
 function approx_equal(a::Number, b::Number)
     typeof(a) == typeof(b) || return false
     isfinite(a) && isfinite(b) || return isequal(a, b)
-    return isapprox(a, b; rtol=RTOL, atol=ATOL)
+    return isapprox(a, b; rtol=CURRENT_RTOL[], atol=ATOL)
 end
 # Entry by entry: a norm-wise isapprox would let every entry much smaller than the
 # largest one (next to a 1e30 Wynn sentinel, all of them) drift unchecked.
 entry_matches(x::Number, y::Number) =
-    isfinite(x) && isfinite(y) ? isapprox(x, y; rtol=RTOL, atol=ATOL) : isequal(x, y)
+    isfinite(x) && isfinite(y) ? isapprox(x, y; rtol=CURRENT_RTOL[], atol=ATOL) : isequal(x, y)
 function approx_equal(a::AbstractArray{<:Number}, b::AbstractArray{<:Number})
     size(a) == size(b) && eltype(a) == eltype(b) || return false
     return all(i -> entry_matches(a[i], b[i]), eachindex(a, b))
@@ -588,9 +595,14 @@ function field_matches(case_name::AbstractString, field::Symbol,
         return false
     end
     value = getfield(actual, field)
-    approx_equal(value, expected) && return true
-    @error "RPA output changed" case = case_name field = field detail = _detail(value, expected)
-    return false
+    CURRENT_RTOL[] = get(FIELD_RTOL, field, RTOL)
+    try
+        approx_equal(value, expected) && return true
+        @error "RPA output changed" case = case_name field = field detail = _detail(value, expected)
+        return false
+    finally
+        CURRENT_RTOL[] = RTOL
+    end
 end
 
 function message_prefix(err)

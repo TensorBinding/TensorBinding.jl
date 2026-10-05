@@ -33,8 +33,8 @@ results**.
   copy constructor `TBHamiltonian(H; field=value, …)`), and functions that had no caller.
 - With their optional flags, `get_ldos_spatial_mps_gpu`, `get_exciton_ldos_spatial(_gpu)`
   and `thouless_pump` return named results; destructuring still works (see **Changed**).
-- Assigning `H.mpo`, `H.sites`, `H.scale` or `H.center` empties the KPM caches of `H`, and
-  a cached density is reused only for the same projector (see **Changed results**).
+- Assigning `H.mpo`, `H.sites` or `H.position_space`, or a different `H.scale` or
+  `H.center`, empties the KPM caches of `H`, and a cached density is reused only for the same projector (see **Changed results**).
 - Many results change through bug fixes (**Changed results**): re-run the calculations
   that depend on them.
 
