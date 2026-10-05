@@ -15,6 +15,22 @@
 # Hamiltonian MPO is exact at any L. For k = 2 the construction coincides with
 # Fibonacci.jl on the same Qubit sites; the qubit digit operators FibLower,
 # FibRaise and FibP0 defined there are reused here.
+#
+# Contents: KBonacciPositionSpace and its position-space interface methods, the
+# numeration (kbonacci_number, kbonacci_digits) and the alphabet
+# (kbonacci_letters), the automaton MPS and the decrement MPO, the bond word,
+# kbonacci_hamiltonian with its get_Hamiltonian builder, and a dense test oracle.
+#
+# Main entry points: kbonacci_hamiltonian (get_Hamiltonian("kbonacci", …; k)),
+# kbonacci_site_count, kbonacci_digits, kbonacci_bond_symbol.
+#
+# Depends on: Utils (mps_to_diagonal_mpo, shift_adjoint_mpo), TBSystem
+# (TBHamiltonian and the position-space interface), Fibonacci (the FibLower,
+# FibRaise and FibP0 ops), geometry (_chain_geometry).
+
+# ============================================================
+# 1. Position-space type, k-bonacci numeration and alphabet
+# ============================================================
 
 """
     KBonacciPositionSpace(k, projector)
@@ -52,7 +68,11 @@ function kbonacci_number(k::Integer, n::Integer)
     return window[end]
 end
 
-"""Number `w_L` of admissible length-`L` binary strings of the k-bonacci chain."""
+"""
+    kbonacci_site_count(k, L) -> Int
+
+Number `w_L` of admissible length-`L` binary strings of the k-bonacci chain.
+"""
 kbonacci_site_count(k::Integer, L::Integer) = Int(kbonacci_number(k, L))
 
 """
@@ -90,11 +110,19 @@ function _kbonacci_trailing_ones(digits::AbstractVector{<:Integer})
     return r
 end
 
-"""Letter symbols `[:A, :B, …]` of the k-bonacci alphabet (`k <= 26`)."""
+"""
+    kbonacci_letters(k) -> Vector{Symbol}
+
+Letter symbols `[:A, :B, …]` of the k-bonacci alphabet (`k <= 26`).
+"""
 function kbonacci_letters(k::Integer)
     2 <= k <= 26 || throw(ArgumentError("letter symbols are defined for 2 <= k <= 26"))
     return [Symbol('A' + i) for i in 0:(k - 1)]
 end
+
+# ============================================================
+# 2. Automaton MPS and the decrement MPO
+# ============================================================
 
 # k-state automaton MPS on Qubit sites. Link state s (1-based) means "the string
 # read so far ends in s-1 ones" (state 1 after a 0 or before reading anything).
@@ -179,6 +207,10 @@ function kbonacci_decrement_mpo(k::Integer, sites; boundary::Symbol=:open)
     return MPO(shifts, sites)
 end
 
+# ============================================================
+# 3. Position-space interface
+# ============================================================
+
 function physical_projector(space::KBonacciPositionSpace, H::TBHamiltonian)
     length(H.sites) == H.L ||
         error("KBonacciPositionSpace currently supports position-only Hamiltonians")
@@ -208,6 +240,10 @@ function site_permutation(::KBonacciPositionSpace, H::TBHamiltonian;
     return collect(1:H.N)
 end
 
+# ============================================================
+# 4. Bond word
+# ============================================================
+
 """
     kbonacci_bond_symbol(k, L, bond) -> Symbol
 
@@ -222,6 +258,10 @@ function kbonacci_bond_symbol(k::Integer, L::Integer, bond::Integer)
     r = _kbonacci_trailing_ones(kbonacci_digits(k, bond - 1, L))
     return kbonacci_letters(k)[r + 1]
 end
+
+# ============================================================
+# 5. Hamiltonian constructors
+# ============================================================
 
 """
     kbonacci_hamiltonian(k, L; values, model=:hopping, t=1.0, onsite=0.0,
@@ -302,11 +342,9 @@ function kbonacci_hamiltonian(
     scale_value > 0 || throw(ArgumentError("KPM scale must be positive"))
 
     N = kbonacci_site_count(k, L)
-    H = TBHamiltonian(L, N, sites, mpo, _chain_geometry(),
-                      scale_value, Float64(center),
-                      nothing, nothing, nothing, nothing, 0, nothing)
-    H.position_space = KBonacciPositionSpace(Int(k), P)
-    return H
+    return TBHamiltonian(; L, N, sites, mpo, geometry=_chain_geometry(), scale=scale_value,
+                         center=Float64(center),
+                         position_space=KBonacciPositionSpace(Int(k), P))
 end
 
 function _build_kbonacci(params, L::Integer;
@@ -344,6 +382,10 @@ function _build_kbonacci(params, L::Integer;
         scale=scale, cutoff=tol, maxdim=maxdim, kwargs...,
     )
 end
+
+# ============================================================
+# 6. Dense test oracle
+# ============================================================
 
 # Dense small-system oracle used only by the test suite.
 function _dense_kbonacci_hamiltonian(

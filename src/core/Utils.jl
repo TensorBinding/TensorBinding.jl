@@ -1,11 +1,24 @@
-﻿# utils.jl - shared infrastructure used across TensorBinding
+﻿# Utils.jl — shared plumbing used across TensorBinding; no physics lives here.
 #
-# Functions here are pure plumbing: binary <-> MPS conversions,
-# site-index manipulation, diagonal MPO construction, and debug
-# helpers.  No physics lives here.
+# Contents: the Qubit ops sigma_plus/sigma_minus/sigma_d/sigma_u, binary shift
+# MPOs, basis-state MPS, site-index surgery on MPOs and MPS, MPS evaluation, the
+# sampling planners (real space, Fibonacci, k space), QTCI compression of
+# functions into MPS/MPO, diagonal MPO <-> MPS conversion, auxiliary-site
+# prepend/postpend, small-system debug helpers and the deprecation helpers
+# _depwarn_once/_renamed_kw.
+#
+# Main entry points: get_mps, get_mpo, get_diagonal_mpo, qtt_mpo, eval_mps,
+# eval_mps_spatial, spatial_sampling_plan, interval_sampling_plan,
+# kspace_sampling_plan, fibonacci_ldos_sampling_plan, shift_mpo,
+# extract_diagonal_to_mps, prepend_op/postpend_op, get_matrix.
+#
+# Depends on: Fibonacci* (fibonacci_rg_partition, fibonacci_site_count and
+# fibonacci_site_from_conumber, called by fibonacci_ldos_sampling_plan); a *
+# marks a file included later, see the source map in TensorBinding.jl. The
+# Symbol methods of prepend_op/postpend_op are defined in core/AuxDOF.jl.
 
 # ============================================================
-# Operator extensions (defined once to avoid duplicate definitions)
+# 1. Qubit operator extensions (defined once to avoid duplicate definitions)
 # ============================================================
 
 ITensors.op(::OpName"sigma_plus", ::SiteType"Qubit") =
@@ -16,16 +29,25 @@ ITensors.op(::OpName"sigma_minus", ::SiteType"Qubit") =
     [0 0
      1 0]
 
+ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
+ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
+
 # ============================================================
-# Binary / index utilities
+# 2. Shift MPOs: (Q f)(x) = f(x + q) on a binary-encoded chain
 # ============================================================
 
+"""
+    build_shift_mpo(sites, q, cyclic)       -> MPO
+    build_shift_mpo(sites, q; cyclic=false) -> MPO
 
-# ---------------------------------------------------------------------
-# Shift MPO:  (Q f)(x) = f(x + q)  on a binary-encoded chain
-# ---------------------------------------------------------------------
-
-function build_shift_mpo(sites, q,cyclic=true)
+Binary adder `|n⟩ → |n + q⟩` on the `L = length(sites)` qubits (site 1 the most
+significant bit), a bond-dimension-2 carry MPO, for `0 ≤ q < 2^L`: modulo `2^L` with
+`cyclic = true`, otherwise the states with `n + q ≥ 2^L` are mapped to zero. The keyword
+form defaults to the open shift; the positional `cyclic` has no default (its former
+default `true` was never reached: a two-argument call dispatches to the keyword method).
+Negative shifts: `shift_mpo`.
+"""
+function build_shift_mpo(sites, q, cyclic)
     N      = length(sites)
     q_bits = [(q >> (N - i)) & 1 for i in 1:N]
     links  = [Index(2, "Link,l$n") for n in 0:N+1]
@@ -61,8 +83,6 @@ end
 build_shift_mpo(sites, q::Integer; cyclic::Bool=false) =
     build_shift_mpo(sites, q, cyclic)
 
-build_cyclic_shift_mpo(sites, q::Integer) = build_shift_mpo(sites, q, true)
-
 shift_adjoint_mpo(K::MPO) = swapprime(dag(K), 0, 1)
 
 function shift_mpo(sites, q::Integer; cyclic::Bool=false)
@@ -91,6 +111,10 @@ function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
              (maxdim == typemax(Int) ? NamedTuple() : (; maxdim=maxdim))...)
 end
 
+
+# ============================================================
+# 3. Basis-state labels and MPS (binary states, exciton probes)
+# ============================================================
 
 """
     to_binary_vector(n, L) -> Vector{String}
@@ -124,23 +148,61 @@ function binary_to_MPS(n::Integer, L::Integer, sites)
     return MPS(sites, to_binary_vector(n, L))
 end
 
+
+# Exciton basis state |xe, xh> on the interleaved electron-hole chain.
+# xe, xh are 1-indexed (in {1, ..., 2^LPhys}), consistent with get_diagonal_mpo
+# and add_onsite! conventions in TensorBinding.
+function mpsexciton(xe, xh, sites)
+    L     = length(sites)
+    LPhys = div(L, 2)
+    bits_e = to_binary_vector(Int(xe) - 1, LPhys)   # shift to 0-indexed for binary encoding
+    bits_h = to_binary_vector(Int(xh) - 1, LPhys)
+
+    elechole = Vector{String}(undef, L)
+    for i in 1:LPhys
+        elechole[2i - 1] = bits_e[i]
+        elechole[2i]     = bits_h[i]
+    end
+
+    return MPS(sites, elechole)
+end
+
+# |x, x> bound electron-hole probe (d = 0 separation).
+mpsexciton(x, sites) = mpsexciton(x, x, sites)
+
 # ============================================================
-# MPO / MPS site-index manipulation
+# 4. MPO / MPS site-index manipulation
 # ============================================================
+
+# The (ket, bra) site indices of tensor i of an MPO. For a prime pair (s, s') they are
+# s and s', in whichever order the tensor stores them: most builders store (s', s), but
+# some (the physical projector of a projected position space) store (s, s'). The two
+# unrelated legs of a converted tensor train (`MPO(tt)` from QTCI) have no prime
+# relation; there the first leg is the bra (row) and the second the ket (column).
+function _mpo_site_pair(M::MPO, i::Integer)
+    a, b = siteinds(M, i)
+    noprime(a) == noprime(b) && plev(a) < plev(b) && return (a, b)
+    return (b, a)
+end
+
+# The ket site index of every tensor of an MPO (see _mpo_site_pair).
+_mpo_ket_sites(M::MPO) = [first(_mpo_site_pair(M, i)) for i in eachindex(M)]
 
 """
     fix_sites(mpo, sites) -> MPO
 
 Replace the site indices of `mpo` (typically built from a TCI
 tensor train whose indices do not match the system's physical sites)
-with `sites`.  Modifies `mpo` in-place and returns it.
+with `sites`: the ket leg of tensor `i` becomes `sites[i]` and the bra leg
+`sites[i]'`, whichever order the tensor stores them in.  Modifies `mpo`
+in-place and returns it.
 """
 function fix_sites(mpo, sites)
-    oldsites      = getindex.(siteinds(mpo), 2)   # unprimed (ket)
-    oldsitesprime = getindex.(siteinds(mpo), 1)   # primed   (bra)
+    pairs = [_mpo_site_pair(mpo, i) for i in eachindex(mpo)]
     for i in eachindex(mpo)
-        mpo[i] = replaceind(mpo[i], oldsites[i]      => sites[i])
-        mpo[i] = replaceind(mpo[i], oldsitesprime[i] => sites[i]')
+        ket, bra = pairs[i]
+        mpo[i] = replaceind(mpo[i], ket => sites[i])
+        mpo[i] = replaceind(mpo[i], bra => sites[i]')
     end
     return mpo
 end
@@ -205,7 +267,7 @@ Replace the site indices of an MPS obtained from a 1D TCI tensor
 train with the physical `sites` of the target system.
 """
 function custom_mps(qtt, sites)
-    old_mps = ITensors.MPS(qtt)
+    old_mps = MPS(qtt)
     N       = length(old_mps)
     new_mps = MPS(N)
     for i in 1:N
@@ -307,6 +369,10 @@ function hadamard_mpo(A::MPO, B::MPO, out_sites;
     return mpo
 end
 
+# ============================================================
+# 5. Evaluating an MPS at basis states and blocks
+# ============================================================
+
 """
     eval_mps(A, n) -> Real
 
@@ -321,17 +387,51 @@ function eval_mps(A::MPS, n::Int)
     return real(inner(psi, A))
 end
 
+"""
+    _eval_diag_mps(A, x) -> Float64
+
+Evaluate the diagonal MPS `A` at the 0-indexed position `x` using a
+LSB-first bit encoding (site 1 = bit 0 of x).  Equivalent to `eval_mps`
+(MSB-first) at the bit-reversed position, but contracts each site tensor with a
+one-hot vector instead of constructing the full basis MPS.
+"""
+function _eval_diag_mps(A::MPS, x::Int)
+    L     = length(A)
+    sites = siteinds(A)
+    acc   = ITensor(1.0)
+    for i in 1:L
+        b    = (x >> (i - 1)) & 1     # bit i-1 of x, LSB first
+        acc *= A[i] * setelt(sites[i] => b + 1)
+    end
+    return real(scalar(acc))
+end
+
+# The device hook of the kernels shared with src/gpu/: a kernel moves each tensor it
+# builds itself (one-hot and summing vectors, deltas, probe states, identities) with
+# `to_device(x, T)`, T the element type the tensor must have there. On the CPU that
+# is `_on_host`, which returns `x` unchanged (T is ignored); the GPU wrappers pass
+# `_to_gpu` (gpu/device.jl), so the same kernel runs on GPU tensors.
+_on_host(x, T) = x
+
 # Block-integrated MPS element (reduce=:block): the sum of `A` over one coarse
 # block, obtained by tracing out the within-block position bits (contracted with
 # [1,1]) and pinning the kept top a/b block bits to the coarse pixel (ixp, iyp).
 # Big-endian site order [iy_MSB..iy_LSB, ix_MSB..ix_LSB]: sites 1..Ly carry iy,
 # Ly+1..L carry ix. See [`spatial_sampling_plan`](@ref) `reduce=:block`.
+#
+# Also the point and all-sites evaluators of src/gpu/ (gpu/primitives.jl): Ly = b = 0
+# pins the top `a` of the Lx bits (a = Lx: one element, big-endian; a = 0: the sum of
+# all elements). The local vectors have the element type of `A` and are moved by
+# `to_device(·, eltype(A))` (the GPU passes `_to_gpu`; the CPU default `_on_host`
+# leaves them); `value` maps the contracted scalar to the result (`real`, or
+# `ComplexF64` for complex amplitudes).
 function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
-                         a::Int, b::Int, Lx::Int, Ly::Int)
+                         a::Int, b::Int, Lx::Int, Ly::Int;
+                         to_device = _on_host, value = real)
     s   = siteinds(A)
     ElT = eltype(A[1])
     L   = Lx + Ly
-    acc = ITensor(one(ElT))
+    acc = to_device(ITensor(one(ElT)), ElT)
     for i in 1:L
         v_arr = zeros(ElT, dim(s[i]))
         if i <= b                       # keep: iy block bit (b - i)
@@ -343,14 +443,20 @@ function _eval_block_mps(A::MPS, ixp::Int, iyp::Int,
         else                            # sum: ix within-block bit
             v_arr .= one(real(ElT))
         end
-        acc *= A[i] * ITensor(v_arr, s[i])
+        acc *= A[i] * to_device(ITensor(v_arr, s[i]), ElT)
     end
-    return real(scalar(acc))
+    return value(scalar(acc))
 end
 
+# ============================================================
+# 6. Sampling plans (real space, Fibonacci, k space) and the spatial MPS sampler
+# ============================================================
+
 """
-    spatial_sampling_plan(L; Lx, grid, reduce, n_sub, num_x, num_y, num_avg,
-                          x_start, x_end, xwin, ywin, x_groups, box_half, sublattice)
+    spatial_sampling_plan(L; Lx=nothing, grid=false, reduce=:point, n_sub=1,
+                          num_x=0, num_y=nothing, num_avg=1, x_start=1, x_end=2^L,
+                          xwin=nothing, ywin=nothing, x_groups=nothing,
+                          box_half=0, sublattice=:auto)
         -> (; centers, groups, resolve_sublattice, n_sub, stride_x, stride_y,
              grid, reduce, a, b)
 
@@ -360,10 +466,10 @@ Geometry-aware real-space sampling plan shared by every spatial sampler
 pixel reduces the cells under it (`reduce`), and — for multi-atom unit cells —
 whether to **resolve** or **average** the sublattice.
 
-# The three sampling procedures (`reduce`)
+# The two sampling procedures (`reduce`)
 
 A spatial map of a `2^Lx × 2^Ly`-unit-cell system at a coarse output resolution
-can reduce the cells beneath each pixel in three qualitatively different ways.
+can reduce the cells beneath each pixel in two qualitatively different ways.
 The right choice depends on whether the quantity is *smooth on the large scale*
 (e.g. a Chern marker, an SCF density envelope) or a *thin feature on a flat
 background* (e.g. in-gap edge/domain-wall LDOS, width ξ ≪ system size).
@@ -503,6 +609,8 @@ function spatial_sampling_plan(L::Int;
     if x_groups !== nothing
         groups = x_groups isa AbstractVector{<:AbstractVector} ?
                  [collect(Int, g) for g in x_groups] : [[Int(x)] for x in x_groups]
+        any(isempty, groups) &&
+            error("spatial_sampling_plan: every group in x_groups needs at least one position.")
         centers = Int[first(g) for g in groups]
         stride_known = false   # caller-supplied positions: stride is not defined
     elseif grid
@@ -595,8 +703,79 @@ function spatial_sampling_plan(L::Int;
 end
 
 """
-    eval_mps_spatial(A::MPS; num_x, num_avg, x_start, x_end, x_groups,
-                     box_half, Lx) -> (values, centers, groups)
+    interval_sampling_plan(N; x_groups=nothing, num_x=min(N, 100), num_avg=1,
+                           x_start=1, x_end=N, caller="interval_sampling_plan")
+        -> Vector{Vector{Int}}
+
+Probe groups over the physical sites `1:N` of a one-dimensional register (`N = H.N`),
+the plan of [`get_ldos_spatial_mps_gpu`](@ref): one group per output column, each
+group a vector of 1-based sites whose values are averaged.
+
+- `x_groups` given: a vector of sites (one group each) or a vector of site vectors,
+  used as they are.
+- otherwise the window `x_start:x_end` is cut into `num_x` intervals of nearly equal
+  length (interval `i` covers `x_start + fld((i-1)·w, num_x)` to
+  `x_start + fld(i·w, num_x) - 1`, `w` the window length), and each interval holds
+  `min(num_avg, its length)` approximately equidistant probes (both ends included).
+  Only `O(num_x · num_avg)` indices are allocated, so a huge projected space can be
+  sampled without enumerating it.
+
+Every group must be non-empty and inside `1:N`. Errors are `ArgumentError`s whose
+message starts with `caller`.
+"""
+function interval_sampling_plan(N::Integer;
+                                x_groups     = nothing,
+                                num_x::Int   = min(N, 100),
+                                num_avg::Int = 1,
+                                x_start::Int = 1,
+                                x_end::Int   = N,
+                                caller::AbstractString = "interval_sampling_plan")
+    groups = if x_groups !== nothing
+        x_groups isa AbstractVector{<:AbstractVector} ?
+            [collect(Int, group) for group in x_groups] :
+            [[Int(x)] for x in x_groups]
+    else
+        num_x > 0 || throw(ArgumentError(
+            "$caller: num_x must be positive."
+        ))
+        num_avg > 0 || throw(ArgumentError(
+            "$caller: num_avg must be positive."
+        ))
+        1 <= x_start <= x_end <= N || throw(ArgumentError(
+            "$caller: expected 1 <= x_start <= x_end <= H.N."
+        ))
+        window = x_end - x_start + 1
+        num_x <= window || throw(ArgumentError(
+            "$caller: num_x=$num_x exceeds the sampling " *
+            "window length $window."
+        ))
+        [let
+             lo = x_start + fld((i - 1) * window, num_x)
+             hi = x_start + fld(i * window, num_x) - 1
+             nsample = min(num_avg, hi - lo + 1)
+             nsample == 1 ? Int[lo] :
+                 unique(round.(Int, range(lo, hi; length=nsample)))
+         end for i in 1:num_x]
+    end
+
+    isempty(groups) && throw(ArgumentError(
+        "$caller: no spatial groups were selected."
+    ))
+    for group in groups
+        isempty(group) && throw(ArgumentError(
+            "$caller: spatial groups must not be empty."
+        ))
+        all(x -> 1 <= x <= N, group) || throw(ArgumentError(
+            "$caller: every position must lie in 1:H.N."
+        ))
+    end
+    return groups
+end
+
+"""
+    eval_mps_spatial(A::MPS; num_x=N, num_avg=1, x_start=1, x_end=N,
+                     x_groups=nothing, box_half=0, Lx=nothing)
+        -> (; values, centers, groups)
 
 Higher-level spatial sampler for a profile MPS such as an SCF occupation/density
 profile (`res.rho_up`). It mirrors `get_ldos_spatial`'s `num_x` / `num_avg` /
@@ -612,13 +791,17 @@ position is expanded into a `(2·box_half+1)²` neighborhood on the 2D grid
 from `Lx` (defaults to `L÷2`, with `Ly = L - Lx`).
 
 # Keyword arguments
+
+`N = prod(dim(s) for s in siteinds(A))` is the register size (`2^L` for qubits).
+
 - `num_x`    : number of sampled grid positions (default: all `2^L` sites).
 - `num_avg`  : sub-positions averaged per grid point along the 1D index (stride).
 - `x_start`, `x_end` : 1-indexed sampling window (default `1 … 2^L`).
 - `x_groups` : explicit groups — a vector of site indices (one per group) or a
   vector of vectors (each averaged). Overrides `num_x`/`num_avg`/`x_start`/`x_end`.
 - `box_half` : 2D neighborhood half-width for averaging (0 = no box averaging).
-- `Lx`       : number of x qubits for the 2D layout (default `L÷2`).
+- `Lx`       : number of x qubits for the 2D layout (default `nothing`; `L÷2` is
+  used when `box_half > 0`).
 
 # Returns
 - `values`  : `Vector{Float64}`, the averaged MPS value per group.
@@ -884,7 +1067,7 @@ function ilinspace(xmin, xmax, num_x::Int)
     xvals = xmin:xmax
     _N = length(xvals)
     @assert 1 ≤ num_x ≤ _N
-    num_x == 1 && return [0]
+    num_x == 1 && return [xmin]
     step = (_N - 1) ÷ (num_x - 1)
     return collect(xmin:step:(xmin+step*(num_x-1)))
 end
@@ -904,10 +1087,12 @@ QFT register labels `k in 0:2^L_pos-1`.
   (`xmax` defaults to `2^L_pos - 1`); with `num_avg > 1` each centre is widened
   to `num_avg` equidistant offsets within half a step on either side, clamped
   to the register.
-- `D == 2`: `Lx = L_pos ÷ 2`; the first `min(num_x, 2^Lx)` points of the
-  `ilinspace` grids in `x` and `y` are zipped diagonally into row-major labels
-  `(y << Lx) | x`, again with optional `num_avg` widening. This is the legacy
-  diagonal cut through the 2D zone; for high-symmetry paths use `kpath_2d`.
+- `D == 2`: `Lx = L_pos ÷ 2`; `nx = min(num_x, xmax - xmin + 1, ymax - ymin + 1)`
+  points of the diagonal cut from `(xmin, ymin)` to `(xmax, ymax)` (`xmax`, `ymax`
+  default to the last label of each axis): the `ilinspace` grids of `nx` points in
+  `x` and in `y`, zipped into row-major labels `(y << Lx) | x`, again with optional
+  `num_avg` widening. This is the legacy diagonal cut through the 2D zone; for
+  high-symmetry paths use `kpath_2d`.
 """
 function kspace_sampling_plan(L_pos::Int, D::Int;
                               num_x::Int,
@@ -933,11 +1118,12 @@ function kspace_sampling_plan(L_pos::Int, D::Int;
         Lx     = div(L_pos, 2)
         Nx_loc = 2^Lx
         Ny_loc = 2^(L_pos - Lx)
-        nx     = min(num_x, Nx_loc)   # can't have more output pts than grid positions
         _xmax  = xmax === nothing ? Nx_loc - 1 : Int(xmax)
         _ymax  = ymax === nothing ? Ny_loc - 1 : Int(ymax)
-        xcenters    = ilinspace(xmin, _xmax, Nx_loc)
-        ycenters    = ilinspace(ymin, _ymax, Ny_loc)
+        # at most one point per x and per y label of the window
+        nx     = min(num_x, _xmax - xmin + 1, _ymax - ymin + 1)
+        xcenters    = ilinspace(xmin, _xmax, nx)
+        ycenters    = ilinspace(ymin, _ymax, nx)
         half_step_x = nx > 1 ? (_xmax - xmin) / (2 * nx) : 0
         half_step_y = num_y > 1 ? (_ymax - ymin) / (2 * num_y) : 0
         x_offs = num_avg > 1 ? round.(Int, range(-half_step_x, half_step_x; length=num_avg)) : Int[0]
@@ -956,6 +1142,10 @@ function kspace_sampling_plan(L_pos::Int, D::Int;
     end
 end
 
+# ============================================================
+# 7. MPS / MPO from scalar functions (QTCI), constant MPS, RMS error
+# ============================================================
+
 """
     rms_error(a, b) -> Float64
 
@@ -964,7 +1154,9 @@ RMS distance between two MPS objects over all computational-basis states.
 function rms_error(a::MPS, b::MPS)
     diff = a - b
     n = prod(dim(s) for s in siteinds(a))
-    return sqrt(abs(real(inner(diff', diff))) / n)
+    # ⟨diff|diff⟩ with matching site indices (inner(diff', diff), up to v0.1.1, went
+    # through ITensors' deprecated index matching: the same contraction, with a warning)
+    return sqrt(abs(real(inner(diff, diff))) / n)
 end
 
 """
@@ -1036,35 +1228,42 @@ function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
 end
 
 
+# ============================================================
+# 8. Diagonal MPO <-> MPS conversion
+# ============================================================
+
 """
     extract_diagonal_to_mps(M) -> MPS
 
 Extract the diagonal of an MPO `M` as an MPS by projecting each local bra/ket
-pair onto equal physical values. This is shared by KPM trace/LDOS, SCF, RPA,
-QFT, and purification routines.
+pair onto equal physical values; the MPS carries the ket (unprimed) site index,
+whichever order the tensors store their legs in. This is shared by KPM
+trace/LDOS, SCF, RPA, QFT, and purification routines.
 """
-function extract_diagonal_to_mps(M::MPO)::MPS
+extract_diagonal_to_mps(M::MPO)::MPS = _extract_diagonal(M)
+
+# The kernel of extract_diagonal_to_mps and extract_diagonal_to_mps_gpu: the one-hot
+# vectors are moved by `to_device(·, eltype(M[i]))` (see `_on_host`), so on the GPU
+# they are dense GPU vectors of the site tensor's element type.
+function _extract_diagonal(M::MPO; to_device = _on_host)::MPS
     N = length(M)
     new_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         tensor = M[i]
-        bra, ket = siteinds(M, i)
+        ElT = eltype(tensor)
+        ket, bra = _mpo_site_pair(M, i)
         diagonal_inds = uniqueinds(tensor, ket, bra)
         result = ITensor(diagonal_inds..., ket)
         for value in 1:dim(ket)
-            slice = tensor * onehot(ket => value) * onehot(bra => value)
-            result += slice * onehot(ket => value)
+            ket_v = to_device(onehot(ket => value), ElT)
+            slice = tensor * ket_v * to_device(onehot(bra => value), ElT)
+            result += slice * ket_v
         end
         new_tensors[i] = result
     end
     return MPS(new_tensors)
 end
 
-
-
-# ---------------------------------------------------------------------
-# MPS -> diagonal MPO conversion
-# ---------------------------------------------------------------------
 
 """
     mps_to_diagonal_mpo(mps, sites) -> MPO
@@ -1074,12 +1273,21 @@ index with a bra-ket pair tied by a 3-leg delta.  Used to convert the
 output of a 2D QTCI (encoded as a flat MPS) into a diagonal MPO on the
 interleaved (e.g. electron-hole) site space.
 """
-function mps_to_diagonal_mpo(mps, sites)
+mps_to_diagonal_mpo(mps, sites) = _mps_to_diagonal(mps, sites)
+
+# The kernel of mps_to_diagonal_mpo and its GPU twin _mps_to_diagonal_mpo_gpu: each
+# delta is moved by `to_device(·, delta_type)` (see `_on_host`; the GPU makes it a
+# dense tensor of `delta_type`, ComplexF32 by default, whatever the element type of the
+# MPS; the real GPU SCF passes its own type). A one-site MPS has no
+# link to tell its site index apart, so it is taken as the only index.
+function _mps_to_diagonal(mps, sites; to_device = _on_host, delta_type::Type = ComplexF32)
     N          = length(mps)
     mpo_tensors = Vector{ITensor}(undef, N)
     for i in 1:N
         mps_t = mps[i]
-        old_s = if i == 1
+        old_s = if N == 1
+            only(siteinds(mps))
+        elseif i == 1
             uniqueind(mps_t, mps[i+1])
         elseif i == N
             uniqueind(mps_t, mps[i-1])
@@ -1088,13 +1296,48 @@ function mps_to_diagonal_mpo(mps, sites)
         end
         s              = sites[i]
         s_temp         = Index(dim(s), "temp")
-        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) * delta(s_temp, s, s')
+        mpo_tensors[i] = replaceind(mps_t, old_s => s_temp) *
+                         to_device(delta(s_temp, s, s'), delta_type)
     end
     return MPO(mpo_tensors)
 end
 
+
 # ============================================================
-# Auxiliary site prepend - unified prepend_op
+# 9. Fast diagonal MPO builder (via QTCI)
+# ============================================================
+
+"""
+    qtt_mpo(L, xvals, sites, func; tol_quantics=1e-8, maxbonddim_quantics=50) -> MPO
+
+Compress a scalar function `func(x)` evaluated on the explicit integer grid `xvals`
+(typically `0:2^L-1`) into a **diagonal MPO** via Quantics Tensor Cross Interpolation.
+
+The result is `diag(func(0), func(1), ..., func(2^L-1))` stored as an L-site MPO.
+Use this to encode spatially varying on-site potentials or hopping amplitudes as
+diagonal MPOs for use with `kineticNNN` and the 2D kinetic builders.
+
+`xvals = 0:2^L-1`        for a 1D chain of 2^L sites
+`xvals = 0:Nx*Ny-1`      for a row-major flattened 2D grid
+
+See also `get_diagonal_mpo` (also in core/Utils.jl) for a simpler 1-based-index wrapper.
+"""
+function qtt_mpo(L, xvals, sites, func;
+                 tol_quantics::Real    = 1e-8,
+                 maxbonddim_quantics::Int = 50)
+    qtt = QuanticsTCI.quanticscrossinterpolate(ComplexF64, func, xvals;
+              tolerance=tol_quantics, maxbonddim=maxbonddim_quantics)[1]
+    tt  = TCI.tensortrain(qtt.tci)
+    mps = MPS(tt; sites)
+    mpo = outer(mps', mps)
+    for s in 1:L
+        mpo.data[s] = Quantics._asdiagonal(mps.data[s], sites[s])
+    end
+    return mpo
+end
+
+# ============================================================
+# 10. Auxiliary-site prepend / postpend (prepend_op, postpend_op)
 # ============================================================
 
 """
@@ -1109,7 +1352,7 @@ L sites to L+1 sites.  The returned MPO has site indices `[s; original...]`.
 **Dispatch rules**
 - Matrix form: `mat[i,j]` = <i|op|j> (1-indexed).  Element type is preserved.
 - Symbol form: named operator looked up by the type of `s` (tag `"Spin"` or
-  `"Nambu"`).  Defined in Supercond_tk.jl after the op dictionaries.
+  `"Nambu"`).  Defined in core/AuxDOF.jl after the op dictionaries.
 - Integer pair `(k, l)`: places a single 1 at row `k`, col `l` in a
   `dim(s) x dim(s)` zero matrix.  Covers layer hops and projectors for any
   dimension Layer index.
@@ -1181,7 +1424,28 @@ postpend_op(H_mpo::MPO, s::Index, k::Int) = postpend_op(H_mpo, s, k, k)
 
 
 # ============================================================
-# Debug / validation utilities
+# 11. Layer prepend helpers (thin wrappers around prepend_op)
+# ============================================================
+
+"""
+    prepend_layer_projector(H, s, k) -> MPO
+
+Prepend the diagonal projector `|k⟩⟨k|` on the layer index `s` (1-based).
+Equivalent to `prepend_op(H, s, k)`.
+"""
+prepend_layer_projector(H::MPO, s::Index, k::Int) = prepend_op(H, s, k)
+
+"""
+    prepend_layer_hopping(H, s, k, l) -> MPO
+
+Prepend the off-diagonal operator `|k⟩⟨l|` on the layer index `s` (1-based).
+Equivalent to `prepend_op(H, s, k, l)`.
+"""
+prepend_layer_hopping(H::MPO, s::Index, k::Int, l::Int) = prepend_op(H, s, k, l)
+
+
+# ============================================================
+# 12. Debug / validation utilities
 # ============================================================
 
 # Build a product-state MPS with an explicit 1-indexed value per site.
@@ -1275,4 +1539,69 @@ function get_matrix(mpo, sites)
     return mat
 end
 get_matrix(mpo, ::Int, sites) = get_matrix(mpo, sites)
+
+"""
+    _mpo_dense_matrix(mpo::MPO) -> Matrix{ComplexF64}
+
+Dense matrix of `mpo`: rows on the primed (output) site indices, columns on the
+unprimed ones, the first MPO site the most significant digit. Contracted one site at
+a time with ordinary matrix products, so it stays cheap up to a few thousand states
+(`get_matrix` evaluates D² inner products). Every tensor must carry one site index
+(and its prime); several link indices on a bond are merged. Creates no new indices.
+"""
+function _mpo_dense_matrix(mpo::MPO)
+    n = length(mpo)
+    links = [collect(commoninds(mpo[k], mpo[k + 1])) for k in 1:n - 1]
+    R = ones(ComplexF64, 1, 1, 1)                 # (rows so far, columns so far, right link)
+    for k in 1:n
+        lk = k > 1 ? links[k - 1] : Index[]
+        rk = k < n ? links[k] : Index[]
+        s  = only(filter(i -> plev(i) == 0 && !(i in lk) && !(i in rk), inds(mpo[k])))
+        d, a, b = dim(s), prod(dim, lk; init=1), prod(dim, rk; init=1)
+        A = reshape(convert(Array{ComplexF64}, Array(mpo[k], lk..., prime(s), s, rk...)),
+                    a, d * d * b)
+        nr, nc, _ = size(R)
+        P = reshape(reshape(R, nr * nc, a) * A, nr, nc, d, d, b)
+        # new row = (output digit of site k, old row), the old row more significant
+        R = reshape(permutedims(P, (3, 1, 4, 2, 5)), d * nr, d * nc, b)
+    end
+    return R[:, :, 1]
+end
+
+# ============================================================
+# 13. Deprecation helpers
+# ============================================================
+
+# The 0.1 names and keywords renamed in 0.2 (src/deprecated.jl, `_renamed_kw`) keep
+# working through 0.2.x and go in 0.3. Each warns once per name and session:
+# `Base.depwarn` is silent unless Julia runs with --depwarn=yes, which plain sessions and
+# IJulia do not, so the warning is a `@warn` with `maxlog=1`. Under --depwarn=error it
+# throws, as `Base.depwarn` does, so a test run with that flag shows that no internal
+# caller still uses an old name.
+function _depwarn_once(msg::AbstractString, id::Symbol)
+    Base.JLOptions().depwarn == 2 && throw(ErrorException(msg))
+    @warn msg maxlog = 1 _id = id _group = :depwarn
+    return nothing
+end
+
+# A renamed keyword of `fn`: both spellings default to `nothing`; the old one is used with
+# a one-time warning, passing both is an ArgumentError, and an absent new one falls back
+# to `default`.
+function _renamed_kw(fn::Symbol, newname::Symbol, new, oldname::Symbol, old, default)
+    old === nothing && return something(new, default)
+    new === nothing ||
+        throw(ArgumentError("$fn: pass `$newname` or the deprecated `$oldname`, not both"))
+    _depwarn_once("$fn: the keyword `$oldname` is deprecated, use `$newname`",
+                  Symbol(fn, "_", oldname))
+    return old
+end
+
+# The value `:KPM` of the method keyword `kw` of `fn`, spelled `:kpm` since 0.2: mapped
+# with a one-time warning per function (one shared id would let the first function's
+# warning silence the others').
+function _kpm_method(fn::Symbol, kw::Symbol, method::Symbol)
+    method === :KPM || return method
+    _depwarn_once("$fn: $kw=:KPM is deprecated, use $kw=:kpm", Symbol(fn, "_", kw, "_KPM"))
+    return :kpm
+end
 

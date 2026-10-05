@@ -2,9 +2,9 @@
 
 Outcome of the code-organisation review of 2026-09-23 (four area sweeps over
 `lattice/` + `core/Hamiltonian.jl`, `solvers/`, `physics/`, `gpu/`, plus repo-wide
-metrics). Nothing here is implemented yet. Tiers are ordered so that each one can be
-done and merged on its own with the test suite as the guard; Tier 1 changes no
-behaviour, Tier 2 changes internals only, Tier 3 is user-visible.
+metrics). Items are ticked as they land, with their commits. Tiers are ordered so that
+each one can be done and merged on its own with the test suite as the guard; Tier 1
+changes no behaviour, Tier 2 changes internals only, Tier 3 is user-visible.
 
 Line numbers refer to the working tree on that date and will drift.
 
@@ -27,7 +27,7 @@ Line numbers refer to the working tree on that date and will drift.
       `Lx`, `interaction_mpo`, `fock_mpo` and `position_space`; SCF (l.364, 485, 1136),
       RPA (l.1141) and NH (l.99) copy Hamiltonians through it. Replace with a keyword copy
       constructor (see Tier 2) and delete the positional ones.
-      *Fixed in c87275a, bc4c9b4, cfe41cf.*
+      *Fixed in c87275a, bc4c9b4, cfe41cf; positional overloads deleted in aab063f (tier2/ctor).*
 - [x] `solvers/KPM_tk.jl` `get_density_quantics` uses an undefined global `sites`. Delete.
       *Fixed in f85750b.*
 - [x] `solvers/Timeev_tk.jl` `compare_propagator_and_tdvp_heatmaps` calls `heatmap`/`plot`/
@@ -74,70 +74,466 @@ Line numbers refer to the working tree on that date and will drift.
       √3·t2 instead of 3√3·t2). *Fixed in c1470e3, 2d529b6, test 9277c03.* The manuscript's
       `build_APSOS_hamiltonian` and `get_valley_operator` were already textbook; the manuscript
       model and `haldane` share the φ convention, `chernhex` has the opposite Chern sign.
-- [ ] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
+- [x] Default `chern8` / `qc2dsquare` scales (6|t|) can be below the spectral radius
       (`qc2dsquare` from L≈12). Decided: fix through the Tier 2 scale maker (below).
-- [ ] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
+      *Fixed by the scale maker (tier2/registry): max(6|t|, 1.1 × row-sum bound).*
+- [x] `get_Hamiltonian("custom", f)` and other `hopping2MPO` callers without pivots share the
       QTCI weakness that broke the Haldane build (wrong MPO for sparse `f`, seed-dependent).
-- [ ] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
+      *Fixed in 11a4e3c: `hopping2MPO(...; check=true)` compares the build with f on a fixed
+      sample and rebuilds it from the nonzero sampled entries as pivots (deterministic), or
+      errors; on in `get_Hamiltonian("custom")` and `add_hopping!(H, f(i, j))`. Off in the
+      twisted builders and the Timeev propagator (dense functions, see "Found by the bug
+      pass"); `add_soc!(:custom)` and `add_superconductivity!(:custom)` run it since
+      b40baa3, `pairing2MPO` takes `check`.*
+- [x] `H2DChernhex` (and `add_onsite!(H, 0.0)`) throw "maxsamplevalue is zero!" when a QTCI
       field is identically zero (e.g. `uniformsemenoff=true, ms=0`).
-- [ ] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
+      *Fixed in 11a4e3c: zero fields leave their terms out (also HUniform, HAAH, HChern8);
+      `add_onsite!(H, 0)` leaves the MPO alone.*
+- [x] `get_ldos_spatial(_gpu)` grid/block/box maps on 1D systems drawn in 2D (T-junction) use
       `Lx = H.L ÷ 2` silently; `tjunction_lattice_hamiltonian` has no meaningful `Lx`.
-- [ ] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
+      *They raise an error on T-junctions (`_is_tjunction`, the "TJunction" branch index),
+      87f6562. Haldane and custom 2D models keep the `L ÷ 2` fallback, the split of
+      `honeycomb_positions`' default layout.*
+- [x] `scf_magnetic_hubbard_gpu` with a real `type` silently switches to complex arithmetic
       after the first Hartree step.
-- [ ] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
+      *Fixed in bf9a6a1: the Hartree deltas take the real type (`delta_type`). 32-bit types
+      are still promoted to 64 bits after the first step by Float64 scalars in shared
+      kernels (casting them would move ComplexF32 results).*
+- [x] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
       asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
-- [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
-- [ ] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
+      *Fixed in 87f6562: `[xmin]`, and the 2D plan places `min(num_x, window)` points.*
+- [x] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
+      *Done in 893fdd5: `Lambda` is canonical (now `chern_marker`/`chern_marker_gpu`), `Λ` a
+      deprecated alias, and passing both is an `ArgumentError`.*
+- [x] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
+      *The cell builds it: the chain exciton of `H_exc` without its confinement potential
+      (15f791f).*
+
+### Found by the Tier 1 characterization sweep (2026-09-26)
+
+The golden tests pin today's behaviour, these bugs included; fixing one means regenerating
+the affected golden cases in the same commit.
+
+**Silently wrong results**
+- [x] `get_density_from_Tn` expands θ(x − μ), the projector onto the EMPTY states (verified
+      against exact diagonalisation: ‖ρ − θ(H − ϵF)‖ = 0.004). Affects `get_density(:kpm)`,
+      `_get_projector(:KPM)` (Chern/winding markers flip sign vs `:mcweeny`) and RPA
+      `P_method=:kpm`. The manuscript scripts use `:mcweeny` and are unaffected.
+      *Fixed in v0.1.1 (release-0.1.1, 5ef5b2d) and ported to `solvers/kpm/cached.jl` in the
+      merge of release-0.1.1 into Anouar: c₀ = 1 − acos(μ)/π, cₙ = −2 sin(n acos μ)/(nπ);
+      test/bugfix_density.jl. Regenerated golden cases: kpm 5, scftopo 11, rpa 42, gpu 1 (the
+      merge commit lists them). The winding marker σ_z(PxQ + QxP) is symmetric under P ↔ Q,
+      so `get_W(:KPM)` did not change; only the Chern marker changes sign (the pinned
+      Hofstadter case, whose marker is ~0, moved by 4e-11).*
+- [x] `chebyshev2d_gf_coeffs` is 4× too small (divides by (2N)²); all cheb2d bubbles inherit it.
+      *Fixed in ead1d66 (divides by N²). Nothing compensated it: bugfix_rpacheb2d's dense
+      reference used the same coefficients.*
+- [x] `exciton_hamiltonian`/`Exciton_Hamiltonian` put `H_c` on the hole sites and `−H_v` on the
+      electron sites (`interleave_mpo(..., 0)` targets even sites).
+      *Fixed in a64b949 (interleave n = 1 for H_c, plus the untransposed interleave_mpo).
+      The spectrum and every contact-probe |X, X⟩ result are unchanged in exact arithmetic;
+      for the same bipartite model on both carriers the truncated runs agree to rounding
+      too; x_e ≠ x_h probes swap electron and hole (separation ρ(d, R) → ρ(−d, R + d)). The
+      contact term is −Ufunc as documented.*
+- [x] 2D `kspace_sampling_plan` pairs `xcenters[i]` with `ycenters[i]`: a 2D k-grid samples only
+      the kx = ky diagonal.
+      *By design: its docstring calls it the legacy diagonal cut (`kpath_2d` gives paths; a
+      full 2D grid would change the output shape, Tier 3). The bug inside it is fixed
+      (87f6562): it took the first `num_x` points of a full-resolution grid, so
+      `num_x = 4` on a 16 × 16 zone sampled k = 0…3; the points now span the cut, which on
+      odd-`L` registers follows the physical kx = ky line.*
+- [x] `_estimate_scale("aah")` = 1.2(|t|+|V|) is below the AAH spectral radius (→ 2|t|+|V|).
+      *The default is now max(that, 1.1 × dense radius at L ≤ 10) (tier2/registry); the
+      formula itself stays in `_estimate_scale` (golden-pinned).*
+- [x] `honeycomb_sublattice_hamiltonian`/`honeycomb_nnn_hamiltonian` (and the `"honeycomb"`,
+      `"honeycomb_nnn"` presets) are ~1e-6 off after compression at cutoff 1e-8 (spurious entries).
+      *Fixed in 11a4e3c: not QTCI but ITensors' density-matrix `+` (non-orthonormal LAPACK
+      eigenvectors at a near-degenerate pair, Lx = 2, Ly = 1, |t| = 1 only);
+      `_checked_sum_mpos` falls back to the exact direct sum.*
+- [x] `get_C`/`get_C_gpu` on multi-atom unit cells return O(0.1) imaginary local markers.
+      *Fixed in bf9a6a1: not the cell geometry — C = 2πi(QXPYQ − PXQYP) is not Hermitian and
+      its traceless anti-Hermitian part gave the imaginary parts (single-orbital staggered
+      models too); the markers are the diagonal of the Hermitian part, the real part.*
+- [x] Not Hermitian for complex parameters: honeycomb sublattice intra-cell term, AA-stacked
+      bilayer `t_inter`, legacy `intrachain_hopping` / `interchain_hopping_*`.
+      *Fixed in 11a4e3c; `intrachain_hopping` was not Hermitian for real t either (row break
+      on the wrong side of the backward hop). Twisted `t_inter`: fixed in 4387a04
+      (V_lk = V_kl†).*
+- [x] `add_hopping_2D!` shells are wrong on non-Bravais layouts (`triangular_2d`, brick `hex_2d`).
+      *11a4e3c: a clear error on layouts that are not Bravais in the cell index (the shells
+      depend on row parity there; one shift per displacement cannot express them).
+      Alternative left open: parity-masked shells.*
+- [x] `sdf_convex_polygon` has its sign flipped (polygon masks are inverted).
+      *Fixed in 11a4e3c: not a plain flip; counter-clockwise input used the outward normals
+      (negative everywhere); the orientation now comes from the signed area.*
+- [x] RPA: `ϵF` never reaches the purification density (always half filling); `haydock_cf` uses
+      tr(conj(A)B) instead of tr(A†B).
+      *Fixed in ead1d66: McWeeny starts from `H.center + ϵF` (the `mcweeny_purify` level), SP2
+      refuses `ϵF ≠ 0`; `haydock_cf` takes the exact Frobenius product `inner(A, B)`.*
+- [x] SP2: diverges to NaN near convergence; default `Nel = H.N ÷ 2` counts unit cells, not
+      states (quarter filling on sublattice/spin/BdG models).
+      *Fixed in bf9a6a1: stop once Tr ρ² > Tr ρ (the truncation floor) with the best
+      iterate, error if still far from a projector; default Nel = `_half_filling(H)`.*
+- [x] `get_ldos(mode=:mps)` scales with `norm(psi0)` for unnormalised probes.
+      *Fixed in 87f6562: the moments take `ψ₀/‖ψ₀‖`, like the cache `KPM_Tn_mps` builds.*
+- [x] NH: `nh_spectrum_grid(mode=:diag)` drops the imaginary part of `Z_spatial`; rebuilding via
+      `hermitize(NH)` forgets the convention and scale; `hermitized_hamiltonian` reports
+      `aux_side=:pre` and the parent's `L`/`N`.
+      *Fixed in a64b949: Z_spatial ComplexF64; NonHermitianHamiltonian records convention
+      and scale, hermitize(NH) keeps them; aux_side is the block side. L/N: false alarm
+      (they mean position qubits and sites, like add_spin! keeps them).*
+- [x] `rk4_step_dm_nh_gpu` casts `dt/2`, `dt`, `dt/6` to Float32 even for ComplexF64 (~1e-8 error).
+      *Fixed in a64b949: coefficients in complex(real(eltype(ρ))); ComplexF32 bit for bit.*
+- [x] `fix_sites` transposes MPOs stored ket-first; `interleave_mpo` embeds `transpose(op)`
+      (see the memory note on interleave_mpo).
+      *`fix_sites` fixed in 87f6562 (legs by prime level, `_mpo_site_pair`); the exciton QFT
+      conjugation is unchanged by it.*
+      *`interleave_mpo` fixed in a64b949 (legs by prime level); `get_green_krylov` embeds (z
+      − H)ᵀ explicitly; the bubbles return the Lindhard Π₀ for complex H.*
+
+**Crashes and unhelpful errors**
+- [x] SEGFAULT: `get_bands` on a postpended spin (`add_spin!(...; position=:post)`) or sublattice
+      index — `project_aux` hard-codes `side=:pre` and never checks the index is on the tensor.
+      Same `:pre` hard-coding in `get_ldos_spatial(mode=:mpo)`.
+      *Fixed in 4954a37: every aux index is projected from its side in H.sites (`aux_site`);
+      `project_aux`/`_project_aux_gpu` check the end site (`_require_end_site`); low-level
+      `spin_side` keyword.*
+- [x] `get_bands(H)` default `num_x=60` fails for 1D systems with L < 6; low-level `get_bands`
+      with `sublat_s` but `sublat_proj=false` silently transforms the sublattice index.
+      *Fixed in 4954a37: the default is clamped to the window; an unprojected
+      nambu/layer/sublattice index in the low-level method is an ArgumentError.*
+- [x] `aux_site(H, :spin)` errors on every BdG+spin model.
+      *Fixed in 4954a37: the side is that of the block of aux sites holding the index (also
+      fixes spinful layered models).*
+- [x] `get_ldos(:diag)` and `get_ldos_spectrum` throw on Fibonacci (projector leg order).
+      *Fixed in 87f6562: `extract_diagonal_to_mps` takes the unprimed leg whatever the order.*
+- [x] Empty-group checks in `get_exciton_ldos_spatial`/`get_exciton_bands` are unreachable
+      (BoundsError first); `mps_to_diagonal_mpo` fails on a 1-site MPS.
+      *Fixed in 87f6562: `spatial_sampling_plan` rejects empty groups (the callers' dead
+      checks are gone); `mps_to_diagonal_mpo` takes a one-site MPS.*
+- [x] `mask_hamiltonian` fails on sublattice Hamiltonians; kagome/Lieb/dice reject complex `t`.
+      *Fixed in 11a4e3c: one QTCI mask per sublattice; complex amplitudes via
+      `_hermitian_intra`.*
+- [x] `haydock_cf` throws DomainError for complex Hermitian seeds.
+      *Fixed in ead1d66 (same change).*
+
+**Minor / API**
+- [x] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
+      `get_density`/`get_scf` only `:kpm` (Tier 3).
+      *Done in 893fdd5 and 72e909a: `:kpm` everywhere, `:KPM` a deprecated alias that warns
+      once per function; `get_scf` already accepted both (it lower-cases the symbol).*
+- [x] `add_superconductivity!`'s scale update is dead (`_invalidate_cache!` resets it);
+      `get_scf` passes `scale=nothing`, overriding `scf_magnetic_hubbard`'s default.
+      *Fixed in bf9a6a1: scale |center| + scale + 1.1‖Δ̂‖ when H had one and Δ is a number
+      (the literal scale + 1.1|Δ| is not a bound for p-wave); `get_scf` forwards `scale`
+      only when given.*
+- [x] `rms_error`/`_rms_error_gpu` and several `inner` calls rely on ITensors' deprecated index
+      matching ("will error in ITensors v0.4").
+      *Fixed in bf9a6a1: a --depwarn scan of 23 entry points found only these two; the
+      3-argument `inner(α', C, α)` of Topology is the documented form.*
+      *Three more calls in the NH KPM, which the scan missed, fixed in 6130261.*
+- [x] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
+      *Fixed in ead1d66: 1/(∞ − ∞) is taken as 0; singular tables keep the sentinel.*
+- [x] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
+      *Fixed in 11a4e3c (default removed, docstring added).*
+- [x] `MODEL_REGISTRY["chern8"]` uses absolute `t2=0.2` (HChern8 defaults to 0.2t); Lieb's
+      `geometry_uc` uses a triangular basis; `get_Hamiltonian` silently ignores `ref_sites` for
+      several geometries.
+      *Fixed in 11a4e3c: chern8 t2 = 0.2t; Lieb `geometry_uc` square; `ref_sites` honoured
+      (the L position qubits) or an ArgumentError.*
+- [x] `_nh_resolve_scale`: `scale=0.0` and `scale=nothing` mean different things.
+      *Fixed in a64b949: 0.0 means "not given" like nothing (a scale stored on NH.hermitized
+      is used), as everywhere else.*
+- [x] `scf_magnetic_hubbard_gpu` warns about ComplexF32 even with ComplexF64.
+      *Fixed with the shared GPU warning (tier2/gpuwrap): its extra `cutoff < 1e-5` warning for
+      every type is deleted; it now warns for a 32-bit type below 1e-5, its old 32-bit range.*
+- [x] `get_dos_stochastic` detects excitons by `length(H.sites) == 2H.L` (misfires at L = 1).
+      *Fixed in 87f6562: `_is_exciton_register` (2L sites and no auxiliary index) behind every
+      exciton check; any aux index could bring a one-particle model to 2L sites.*
+- [x] `_kpm_weight_matrix` rejects `:hodc` while `_dos_weight_matrix` accepts it.
+      *By design: the functions behind `_kpm_weight_matrix` have no `eta`/`m_order` keywords
+      and document the four damping kernels. The error now says which functions take
+      `:hodc` (87f6562).*
+- [x] Docstrings: `get_rpa_susceptibility_wynn` (π), exciton interaction sign convention,
+      `project_aux` error message names sublattice for every aux index.
+      *The π was already right (4cf039f: "no 1/π factor", as the code). The
+      `get_magnon_bubble` docstring had the spin-flip energy reversed (fixed in ead1d66).*
+      *Exciton interaction: the code (−Ufunc at contact) matched its docstring; the
+      Exciton_Hamiltonian example (x -> -U called attractive) is fixed in a64b949.
+      project_aux message: fixed in 4954a37.*
+
+### Found by the Tier 2 scale maker (2026-09-26)
+
+- [x] `"lieb"` default scale 2.5|t| is below the bulk spectral radius 2√2|t| (2.82 at
+      Lx = Ly = 4); `"honeycomb_nnn"` 3.5(|t| + |t2|) is below 3|t| + 6|t2| once
+      |t2| > 0.2|t| (t2 = 0.3, Lx = 5, Ly = 4: radius 4.76 > 4.55). The multi-atom lattices
+      keep their builder defaults because the max rule would also move the pinned
+      `lieb_L3_*` golden cases, whose radius (2.48) is below 2.5 but above 2.5/1.1.
+      `scale=:small` / `:geometry` give a bounding scale today.
+      *Fixed in 11a4e3c: the multi-atom entries use the max(formula, :small) rule; lieb_L3
+      cases moved as predicted.*
+- [x] `dice_hamiltonian` docstring says the bands reach ±3t; they reach ±3√2 t (the
+      4.5|t| default still bounds them).
+      *Fixed in 11a4e3c (and Lieb's ±2√2 t).*
+
+### Found by the Tier 2 KPM kernels (2026-09-26)
+
+- [x] `_jackson_kernel(N)` (rpa/cheb2d.jl, the `kernel=:jackson` option of the SVD/Tucker
+      cheb2d bubbles) has `(N − m)` where the Jackson kernel for N moments has `(N − m + 1)`:
+      it is the textbook g_m minus `cos(πm/(N+1))/(N+1)`, so g_0 = N/(N+1) instead of 1
+      (max deviation 1/(N+1): 0.1 at N = 9, 0.0066 at N = 151). Fixing it moves the pinned
+      `jackson_kernel_*` and low-rank cheb2d golden cases.
+      *Fixed in ead1d66: `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)`; `_jackson_kernel` deleted.*
+- [x] `get_qpi` accepts projected position spaces but is binary-only (the impurity sits
+      at the binary address `x0 − 1`, the QFT is over the binary register). With
+      `physical_projector` as T₀ a Fibonacci call now throws in the diagonal accumulation
+      (the projector leg-order bug listed under "Crashes"); before, it returned maps that
+      included the unphysical register states. A `_require_binary_position_space` guard
+      would give a clear error.
+      *Done in 492fac4 (Tier 2): `get_qpi` raises that `ArgumentError`.*
+- [x] RPA bubbles on projected spaces: the density (`P_method=:kpm`) now has an empty
+      unphysical block, but `_build_heff`, the numerator and the 2L-site Green's function
+      (`KPM_Tn(Heff, …, sites_combined)`) still use ambient identities. On an L = 4
+      Fibonacci chain the physical block of `get_bubble_mpo` is the same before and after
+      the switch without truncation (3e-12); at `maxdim = 30` both are ~30 % off that
+      converged value and differ from each other by ~19 %, so these bubbles need a
+      convergence check in `maxdim` on projected spaces.
+      *Not a correctness bug (2026-09-28 check): H, ρ and the identity are block-diagonal in
+      physical ⊕ unphysical, so the collapsed physical block is exact (0.0 difference on an
+      L = 4 Fibonacci chain without truncation). It is an accuracy cost: 92 % of ‖G·N‖ sits
+      outside P⊗P and is discarded, but uses bond dimension. The fix, bit for bit on binary
+      spaces (`physical_projector` = identity there): projectors in `_build_heff`, in the
+      bubble numerators and seeds, and T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim`
+      convergence study. Left open as an improvement.*
+      *Decision 2026-10-04: left as is for 0.2.0; Tiago takes it on (see "After 0.2.0"
+      at the end).*
+
+### Found by the Tier 2 aux and density kernels (2026-09-26)
+
+- [x] `_project_spin_sector` on a spin site inside the MPO (`add_spin!(H; position=:post)`
+      followed by `add_superconductivity!(H, Δ; position=:post)`, sites `[pos…, spin, nambu]`)
+      drops every site after the spin site from the MPO, while the returned `sites` keep
+      the Nambu index; `_project_aux_block` keeps them. Kept as one explicit line in
+      `_project_spin_sector`.
+      *Fixed in 4954a37: every other site is kept.*
+- [x] The density helpers differ from `get_density` in more than their method symbols:
+      `_get_projector(:KPM)` expands any cached Chebyshev list, also one shorter than
+      `Nchebychev`, and with cutoff 1e-8 whatever its `cutoff`; its `:sp2` runs 40
+      iterations where `get_density` runs 30; RPA `P_method=:kpm` builds a fresh uncached
+      list on every call and prints "Computed T_n …" (the raw `KPM_Tn`'s `verbose=true`
+      default) even with `verbose=false`; `get_density` checks the density cache before the
+      method (a cached McWeeny matrix answers `method=:kpm`), the helpers for purification
+      only. All kept, as keyword choices of the shared dispatcher `_density_matrix`.
+      *Fixed in bf9a6a1 and ead1d66: `_get_projector(:KPM)` rebuilds a short cached list and
+      honours `cutoff`; a density cache answers only its own method (weak side table
+      `_DENSITY_METHOD`), in `get_density`, `_get_projector` and the RPA purification; RPA's
+      verbose leak fixed. SP2's 40 vs 30 iterations stay (documented).*
+- [x] The projection chain takes the Nambu and spin sectors as `1:2`, the probe loops the
+      Nambu sectors as `1:dim(nambu index)` and the spin sectors as `1:2`: the same for every
+      Nambu index the package builds (dimension 2); kept as they were.
+      *Checked 2026-09-28: the package only builds dimension-2 Nambu and spin indices, so
+      the two ranges agree; no change.*
+
+### Found by the export-list checks (2026-09-26)
+
+- [x] `examples/spectral/aux_ldos_examples.ipynb` calls `TensorBinding.plot_ldos_2d`, which the
+      package does not define (the notebook's stored output already shows the UndefVarError).
+      *The notebook defines the helper in its second cell (a copy of the untracked
+      plotting helper's); the stale error output is cleared (15f791f).*
+- [x] `Arpack` is a declared dependency (Project.toml `[deps]` and `[compat]`) that `src/` never
+      uses; dropping it would remove a dependency (a Project.toml change, fine in any release).
+      *Dropped from `[deps]` and `[compat]`, and from the packages `test/exports.jl` checks
+      (15f791f).*
+
+### Found by the bug pass (2026-09-28)
+
+- [x] Sign: for real H the cheb2d bubbles are −1 × `get_bubble_mpo` (their D_mn carries the
+      numerator P₁⊗I − I⊗P₂, `get_bubble_mpo` has I⊗P₂ − P₁⊗I). Both are documented as Π₀
+      and feed the same Dyson/Wynn drivers, whose (I − Π₀V)χ = Π₀ is the Stoner form of
+      `get_bubble_mpo`'s sign; cheb2d's sign is the physical retarded response, which the
+      untracked Ward-conductivity script relies on. Decision for the author: which sign
+      Π₀ has, and whether the cheb2d bubbles flip.
+      *Decision 2026-10-04: both kept as they are (the docstrings already state the sign
+      difference).*
+- [x] cheb2d bubbles on complex H take the Hadamard product P_a ⊙ P_b where the Lindhard
+      bubble has P_aᵀ ⊙ P_b: 44 % off on a complex L = 2 chain, and ‖Σ_j Π_ij‖ = 0.34 for
+      ‖Π‖ = 0.62 (particle number not conserved).
+      *Fixed in 2eebb32: the H₁ factors are transposed (skipped for real H₁, bit for bit).*
+- [x] `rpa_from_bubble_diag` does not return χ: its output is rank one,
+      x[(i,j)] = [(Aᵀ)⁻¹ diag Π₀]_j with A = I − Π₀V (behind `get_rpa_susceptibility` and
+      `get_magnon_susceptibility`).
+      *Fixed in 11fec80 (right-hand side vec(Π₀), operator on the row sites after the
+      interleave_mpo fix): returns vec(χ) in the _vec_mps_from_mpo layout.*
+- [x] `get_green_krylov` (`get_bubble_mpo(GF_method=:krylov)`) is ~48 % off on the real
+      2L-site Heff whatever the sweeps; exact on L-site H and on complex Heff.
+      *Fixed in 11fec80: the default start is a global Krylov expansion of vec(I) (the stall
+      was the solver, not the formulation: a dense solve of the same system is exact).*
+- [x] The SCF drivers default to `Nel = H0.N ÷ 2` (`scf_meanfield`, `get_scf(:cdw)`) and
+      `Nel_up = Nel_dn = H0.N ÷ 2` (`scf_magnetic_hubbard(_gpu)`): half the unit cells, a
+      quarter filling if `H0` carries a sublattice or layer index. The drivers are built
+      for single-orbital `H0` (every manuscript model is); either support multi-atom `H0`
+      (per-spin half filling of the non-spin states) or reject it.
+      *Decision 2026-10-04: left as is; the drivers stay single-orbital in 0.2.0, and
+      multi-orbital support comes in a later version (see "After 0.2.0").*
+- [x] RPA: `_get_density_matrix(:purification)` and the SCF drivers keep a cached density
+      whatever `ϵF`/`Nel`/`Ncheb` (the cache key is the method only; documented). The
+      `scf_meanfield` initial density is `Nel / H0.N` per site, another single-orbital
+      assumption.
+      *Fixed in 44d034f: the cache records the method and the parameters that fix the
+      projector (`_density_key`: ϵF for McWeeny and KPM, Nel for SP2, the expanded
+      Chebyshev order, kernel and lambda for KPM), checked by `get_density`,
+      `_get_projector` and the RPA purification; the truncation keywords still reuse a
+      cached density, and one set by hand still answers everything. The SCF drivers were
+      not affected (each iteration works on a fresh copy, whose caches start empty). The
+      single-orbital start of `scf_meanfield` stays with the decision above.*
+- [x] `add_superconductivity!(H, Δ; position=:pre)` after `add_spin!(H; position=:post)`
+      fails at build time (ITensors' "not the same site indices"); `add_zeeman!` fails on
+      layered models. (Noticed by the aux-projection fixes, 4954a37.)
+      *Fixed in 8004f49: add_zeeman!, add_soc! and add_superconductivity! lift their terms to the
+      layout of H.sites (`_lift_to_aux_sites`); both failures, and the same on every
+      sublattice or layered model, are gone.*
+- [x] The sampled QTCI self-check of `hopping2MPO` (11a4e3c) is not yet on in the
+      twisted builders, the Timeev propagator (its `f` is expensive), `add_soc!(:custom)`
+      and `pairing2MPO`; complex `t_inter` in the twisted builder was not checked for
+      Hermiticity.
+      *The twisted `t_inter`: fixed in 4387a04 (V_lk = V_kl†, complex tensors for a complex
+      t_inter). The self-check stays off there: the twisted V_kl and the propagator are
+      dense functions, where QTCI does not miss bond classes.*
+      *Done in b40baa3: `add_superconductivity!(:custom)` and `add_soc!(:custom)` run it (both were 7 %
+      and 2 % off for nearest-neighbour Δ(i, j) and λ(i, j) at L = 6); `pairing2MPO` takes
+      `check`.*
+
+### Found by the consistency pass (2026-09-29; the examples are not edited until decided)
+
+- [x] `examples/basics/getting_started.ipynb` cell 15: `add_superconductivity!` on a chain
+      built with a scale now keeps the bound scale 2.5 + 1.1·2|Δ| = 3.6 (bf9a6a1) where the
+      DMRG estimate gave ≈ 2.2, so its three panels are ~1.7× coarser at the same Ncheb.
+      Decide: keep the bound (deterministic, cheap) or let a DMRG estimate refine it.
+      *Decision 2026-10-04: keep the bound.*
+- [x] `examples/dynamics/time_evolution.ipynb` cells 9–11: the drive
+      `intrachain_hopping(...; t = 1im * t_x)` was not Hermitian (11a4e3c fixed it), so the
+      stored energy, current and bond-dimension panels are those of the wrong operator; a
+      re-run gives different curves (E(0) = −10.94 = Tr H₀ρ₀, was −10.05).
+      *Decision 2026-10-04: re-run it. Re-run in 2fbfe42 (sources unchanged). The E(0)
+      values quoted above do not match the notebook's 8 × 8 run: E(0) = −48.327 =
+      Tr H₀ρ₀, the sum of the 28 negative eigenvalues (exact −48.3269), was −46.5. Tr ρ
+      stays at 28.99999 within 1e-6, and the bond dimension of ρ(t) stays at 16, the
+      bound for a drive acting on x only (it grew to 45 with the old operator). The
+      cell's "target: 32" is not reached, as before: the 8 zero modes of the bipartite
+      open lattice start at McWeeny's unstable fixed point ½ and end one filled, seven
+      empty (the 28 negative states are filled), so Tr ρ₀ = 29.*
+- [x] The manuscript scripts under `examples/manuscript_files/scripts` `include` and the
+      `.sh` files run `APSOS_*.jl` names; the tracked files are called `manuscript_*`, so
+      as tracked they do not run (predates the bug pass).
+      *Decision 2026-10-04: left as they are; they were written for the Triton runs and
+      use the old version of TensorBinding.*
+
+### Found while fixing the density cache (2026-10-04)
+
+- [x] `H._tn_Ncheb` is the order of the Chebyshev list built last, MPO or MPS, but
+      `get_ldos`, `get_ldos_spectrum` and the KPM density (`_density_matrix`) read it for
+      the other list too: after `KPM_Tn(H, 30; mode=:mps)` and `KPM_Tn(H, 20)`,
+      `get_ldos(mode=:mps)` used 20 of 31 moments (0.087 vs 0.051 on an L = 3 chain);
+      an MPS list longer than the MPO list made `get_density(:kpm)` read past the end of
+      the MPO list (BoundsError).
+      *Fixed in 44d034f: each reader takes the order of its own list (`_tn_order`, the
+      length minus one); `_tn_Ncheb` keeps its meaning. Unchanged with one list cached.*
+
+### Found by the v0.2.0 scope survey and the commit reviews (2026-10-05)
+
+- [x] Five stale-cache paths after 44d034f: `H.mpo = …` kept the old projector and
+      LDOS, `H.scale = …` read the old list in the new window, a McWeeny density survived
+      a change of `center`, `deepcopy` lost the density record, `get_ldos(:mps)` took
+      another probe without an error. *Fixed in 0833629; the Float32 probe tolerance and
+      the foreign-index check in d115e48.*
+- [x] The `get_green_krylov` warm-start example passed physical ω/η where rescaled ones
+      belong (74–117 % off; the fix is 1–4 % from dense). *0833629.*
+- [x] `scf_meanfield(max_scf_iter=0)` ended in a MethodError. *6130261.*
+- [x] Three more `inner` calls with ITensors' deprecated index matching
+      (`nh_reconstruct_spectral_mps`, the NH `:scalar`/`:diag` paths), which the earlier
+      item (bf9a6a1) missed. *6130261.*
+- [x] Compat floors: TensorCrossInterpolation 0.9.16/0.9.17 lack the `MPS(::TensorTrain)`
+      extension; ITensorMPS < 0.3.16 cannot pair with ITensors 0.9. *d115e48.*
+- [x] Pitfalls documented, behaviour kept: `get_Hamiltonian`'s `maxdim=15` truncates
+      `"qc2dsquare"` (1.4e-3 at L = 8, 1.1e-2 at L = 10); `Exciton_Hamiltonian` ignores
+      `cutoff`/`maxdim`; NH `n` is half the expansion; the default exciton Q grids of
+      bands and continuum differ; 2D `get_bands` without `kpath` samples the diagonal cut;
+      `get_density_from_Tn`'s `fermi` is rescaled. *6130261.*
+- [ ] `using TensorCrossInterpolation` in the module makes `contract` and `evaluate`
+      ambiguous there; nothing calls them bare today (a future bare call would throw).
+
+### Found by the first CI run of the v0.2.0 release (2026-10-05)
+
+- [x] `Logging` was missing from the test target (`Pkg.test` failed on it); the Wynn
+      `chi_wynn` estimates move by 2.6e-10 under `--check-bounds=yes` (pinned at rtol
+      1e-8 now); `qft_golden.jl` named `FieldError`, which Julia < 1.12 lacks.
+- [ ] The golden suites are skipped on CI (`test/runtests.jl`): off the reference machine
+      (Windows, Julia 1.12) KPM 4, RPA 29, Scftopo 35, Lattice 2 and Dynamics 2 cases
+      differ, most by 1e-9–1e-7 (rounding through truncated MPO products), a few by O(1)
+      (maxdim 2–3, DMRG, iteration counts), and 18 `dos_stochastic` cases on Julia 1.10
+      (`rand(rng, 1:N)` stream). 0.2.x: a portable CI mode, a loose rtol plus a tag on
+      the platform-sensitive cases.
 
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files
-- [ ] `solvers/KPM_tk.jl` (2067 lines) → `solvers/kpm/kernels.jl` (`_kpm_kernel`,
+- [x] `solvers/KPM_tk.jl` (2067 lines) → `solvers/kpm/kernels.jl` (`_kpm_kernel`,
       `_dos_weight_matrix`, HODC helpers, `_kpm_weight_matrix` from QFT), `recursion.jl`
       (`KPM_Tn`, `KPM_Tn_mps`, `_run_kpm_mps!`), `cached.jl` (`get_ldos`, `get_ldos_spectrum`,
       `*_from_Tn`, `*_from_mun`, Green's functions), `ldos.jl` (`get_ldos_online`,
       `get_ldos_spatial`, split into `_ldos_spatial_mps`/`_ldos_spatial_mpo`), `dos.jl`
       (`get_dos_stochastic`, `get_dos_trace`), `exciton.jl` (l.1648–1984).
-- [ ] `physics/RPA_tk.jl` (2148 lines) → `physics/rpa/Bubble.jl`, `Cheb2D.jl`, `Dyson.jl`;
+      *Split into `solvers/kpm/` (2acd149); `_kpm_weight_matrix` and `_reconstruct_ldos_moment_columns` moved into `kpm/kernels.jl` (c630c9c). `get_ldos_spatial` is not split into `_ldos_spatial_mps`/`_mpo` (not a pure move; Tier 2).*
+- [x] `physics/RPA_tk.jl` (2148 lines) → `physics/rpa/Bubble.jl`, `Cheb2D.jl`, `Dyson.jl`;
       MPO kron/interleave plumbing (l.10–287) → `core/Utils.jl`; Haydock recursion →
       `solvers/Krylov_tk.jl`; `get_spect_k` → QFT conjugation file; delete l.288–377.
-- [ ] `physics/QFT_tk.jl` (1643 lines) → `Conjugation.jl` (l.96–205), `Bands.jl`
+      *Split into `physics/rpa/` (a9bacc0); plumbing → `core/MPOTools.jl` (6ccf897), Haydock → `solvers/Krylov.jl` and `get_spect_k` → `qft/conjugation.jl` (c630c9c).*
+- [x] `physics/QFT_tk.jl` (1643 lines) → `Conjugation.jl` (l.96–205), `Bands.jl`
       (l.638–948, 1223–1370), `KPath.jl` (l.426–635); exciton spectra (l.206–281, 949–1220)
       → exciton folder; aux projection (l.1373–1505) → `core/AuxDOF.jl`.
-- [ ] `physics/NH_tk.jl` → `NH_model.jl` (struct, `hermitize`, `add_nh_*`) and `NH_KPM.jl`.
-- [ ] `lattice/2Dlattice_tk.jl` (1615 lines) → `Masks2D.jl`, `Hopping2D.jl`, `Presets.jl`
+      *Split into `physics/qft/` (c5b4353); aux projection → `core/AuxDOF.jl` (e36e505).*
+- [x] `physics/NH_tk.jl` → `NH_model.jl` (struct, `hermitize`, `add_nh_*`) and `NH_KPM.jl`.
+      *Split into `physics/nh/model.jl` and `nh/kpm.jl` (9407bf0).*
+- [x] `lattice/2Dlattice_tk.jl` (1615 lines) → `Masks2D.jl`, `Hopping2D.jl`, `Presets.jl`
       (QTCI `H*` builders incl. the 1D `HUniform`/`HSSH`/`HAAH`), `Sublattice.jl`
       (kagome/lieb/dice/honeycomb), `Geometry.jl`; `MODEL_REGISTRY`/`build_hamiltonian` →
       `core/ModelRegistry.jl`.
-- [ ] `gpu/GPU_tk.jl` (3647 lines) → `device.jl`, `primitives.jl`, `kpm.jl`, `bands.jl`,
+      *Split into `lattice/{masks2d,hopping2d,presets,sublattice}.jl` (a4dabbd); geometry → `lattice/geometry.jl`, registry → `core/ModelRegistry.jl` (a853263).*
+- [x] `gpu/GPU_tk.jl` (3647 lines) → `device.jl`, `primitives.jl`, `kpm.jl`, `bands.jl`,
       `topology.jl`, `purification.jl`, `scf.jl`, `exciton.jl`, `nh.jl`, `timeev.jl`;
       the conductivity-only Tucker/QFT/Hadamard block (~300 lines) → its example.
+      *Split into eleven `gpu/*.jl` files (8ba22a5); the conductivity block stays as `gpu/conductivity.jl` (an untracked script uses it).*
 
 ### Move misplaced helpers next to their callers
-- [ ] One `core/AuxDOF.jl` owning spin/Nambu indices and op tables, `prepend_spin`/`prepend_nambu`,
+- [x] One `core/AuxDOF.jl` owning spin/Nambu indices and op tables, `prepend_spin`/`prepend_nambu`,
       Symbol overloads of `prepend_op`/`postpend_op` (from `Supercond_tk.jl`), `project_aux`,
       `aux_site`, `_autoenable_proj` (from QFT), `_aux_setup`, `_ldos_make_psi0` (from KPM),
       and the four `add_spin!`/`add_zeeman!`/`add_superconductivity!`/`add_soc!` mutators
-      (from TBSystem). Include it right after TBSystem.
-- [ ] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM.
-- [ ] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
-      other product-state builders.
-- [ ] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
+      (from TBSystem). Include it right after TBSystem. (moved in tier1/move-auxdof)
+- [x] `_estimate_spectral_bounds` → `solvers/DMRG_tk.jl`; include DMRG before KPM. (moved in tier1/move-solvers)
+- [x] `_eval_diag_mps` → `core/Utils.jl` beside `eval_mps`; `mpsexciton` → Utils beside the
+      other product-state builders. (moved in tier1/move-utils)
+- [x] `qtt_mpo`, `compose_power`, `_row_break/_row_select/_col_select/_row_checker_mpo`,
       `_site_projector_mpo`, `sigma_d/sigma_u` ops, layer prepend helpers → `core/Utils.jl`
-      (or `lattice/Masks2D.jl` for the masks).
-- [ ] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
-- [ ] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
-- [ ] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
+      (or `lattice/Masks2D.jl` for the masks). (moved in tier1/move-utils)
+- [x] BdG/pairing builders in `SCF_tk.jl` (l.298–528) → AuxDOF / Supercond.
+      *Reviewed (e36e505): only the generic `_project_aux_block` moved to AuxDOF; the BdG/pairing builders use SCF state (µ, Hartree terms, `_split_spin_channels`) and stay in `physics/SCF.jl`.*
+- [x] `_project_spin_sector` (RPA) → AuxDOF as `project_sector(H, :spin, σ)`.
+      (moved in tier1/move-auxdof; name kept: the rename is left to Tier 2's `_project_aux_sectors`)
+- [x] All geometry (`*_positions`, `_*_geometry`, `lattice_positions`, `_resolve_2d_geometry`,
       junction geometry, `geometry_uc` closures) → `lattice/Geometry.jl` with one `(Lx, Ly)`
-      signature.
-- [ ] `_reconstruct_ldos_moment_columns` (GPU) → `solvers/kpm/kernels.jl`; move its test out of
-      `test/gpu_mps_ldos.jl`.
+      signature. (moved in tier1/move-geometry) Signatures unchanged (the one `(Lx, Ly)`
+      signature is Tier 3); the `geometry_uc` closures stay inline in their builders.
+- [x] `_reconstruct_ldos_moment_columns` (GPU) → `solvers/kpm/kernels.jl`; move its test out of
+      `test/gpu_mps_ldos.jl`. (moved in tier1/move-solvers)
 
 ### Delete dead and legacy code
-- [ ] Confirmed unreferenced everywhere (incl. notebooks and generated docs):
+- [x] Confirmed unreferenced everywhere (incl. notebooks and generated docs):
       `build_cyclic_shift_mpo`, `_geom_n_sub`, `_nsublat`, `nsitelegs`, `_tb_spatial_groups_gpu`,
       `get_nh_state_trajectory_gpu`, the `Delta_*` one-liners in SCF.
-- [ ] Unreferenced in src/test/tracked examples: `projop_2DSL`, `projop_1DSL`, `sample_diag`,
+      *Deleted in 9dbee85, fb8b2d8, 28f611f, d1b680c. The `Delta_*` "one-liners" are formulas
+      in the `scf_*` docstrings, not functions; nothing to delete.*
+- [x] Unreferenced in src/test/tracked examples: `projop_2DSL`, `projop_1DSL`, `sample_diag`,
       `project_spin`, `get_density_quantics`, `_get_exciton_ldos_cached` + exciton
       `KPM_Tn(H, N, X)`, `ldos_exc_KPM_Tn`, `get_mus_raw`, `compute_dos_ldos_hodc`,
       `kinetic_1d_nn_custom`, `qtci_matrix_to_MPO`, `quasicrystal_modulation_30deg`,
@@ -151,106 +547,451 @@ Line numbers refer to the working tree on that date and will drift.
       `nh_spectral_function_allsite_mpo`, `spin_hamiltonian`, `bdg_hamiltonian` (re-inlined
       in TBSystem), `_onehot_gpu_f32`, `nh_spectrum_grid_gpu`. Check each once more before
       deleting; `examples/nontracked/APSOS/Modified_GPU_funcs.jl` carries forks of some.
-- [ ] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
+      *Deleted in 9dbee85 (core), fb8b2d8 (lattice), c91ff65 (KPM), 44a79c2 (QFT), 28f611f (RPA),
+      fbc5a94 (TwoParticle), 6d79888 (NH), d1b680c (GPU); `get_density_quantics` was already
+      gone (f85750b). Kept, because they are used: `sdf_interval` (QPI_tk.jl apodization
+      window), `qtci_matrix_to_MPO` (test/bugfix_pivots.jl), `get_bubble_mpo_haydock` (fixed
+      in cfe41cf; test/bugfix_rpa.jl, golden_rpa), `fock_exchange_builder`
+      (examples/manybody/scf_examples.ipynb, golden_scftopo). Not decided yet: the four open
+      items below. Modified_GPU_funcs.jl only defines its own copies of
+      `_onehot_gpu_f32`/`nh_spectrum_grid_gpu` and is included nowhere.*
+- [x] Decide on `get_valley_projectors` (Topology_tk.jl): no library code calls it, but
+      golden_scftopo pins it without a skip-on-delete rule, so deleting it means deleting its
+      scftopo case in the same commit.
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `initial_guess_trivial_up_1D` / `initial_guess_trivial_down_1D` (SCF_tk.jl):
+      unused by the library, pinned by golden_scftopo (same situation).
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `spin_hamiltonian` (Supercond_tk.jl): unused by the library, pinned by
+      golden_scftopo (same situation).
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Decide on `bdg_hamiltonian` (Supercond_tk.jl): unused by the library (TBSystem builds
+      the BdG MPO inline), pinned by golden_scftopo (same situation); its docstring example
+      was fixed for v0.1.1 and the `pairingNNN`/`pairing2MPO` docstrings point to it.
+      *Decided 2026-09-26: keep (may be useful later).*
+- [x] Commented-out legacy: `QFT_tk.jl:1511–1643` (old `get_bands`, `get_spect_k*`),
       `Purification_tk.jl:95–96`, unreachable code after early `return` in
       `2Dlattice_tk.jl` (`generate_kin_u/d` l.33–63, six kinetic builders l.388–543).
-- [ ] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
+      *Removed in 3291292.*
+- [x] Six positional "backward-compatible" `TBHamiltonian` constructors (TBSystem l.98–116,
       190–214) once Tier 2 keyword constructor exists.
-- [ ] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
+      *Deleted in tier2/ctor, with the keyword constructor (Tier 2 below).*
+- [x] Unconditional `println` in library code (~70 in src): `Hamiltonian.jl` 85–123,
       `KPM_tk.jl` 14/30/31, `QFT_tk.jl` 1453–1470, `Topology_tk.jl` 499–539,
       `TBSystem.jl` 1175, RPA legacy pipeline; switch to `@info … maxlog=1` or `verbose` gates.
+      *Done except QFT: f6a29c4 made the progress chatter in Hamiltonian.jl and
+      Topology_tk.jl (no flag there) `@debug` and the spinless s-wave → p-wave notice in
+      TBSystem.jl `@info`; in KPM_tk.jl the "estimating…" line is gone and the DMRG estimate
+      of the spectral bounds is one `@info` record (56b3787: it is the only sign that an
+      automatic scale was chosen); the RPA legacy prints went with the pipeline (28f611f).
+      Every other `println` in src is behind `verbose`/`printinfo`, is the point of its
+      function (`get_shell_disps`, `check_tdvp_vs_U_mpo`) or is a `show` method.
+      Still open: the `QFT_tk.jl` `_autoenable_proj` "Info: … auto-enabling …" lines go to
+      stdout, and test/golden_qft.jl pins them in the captured `stdout` of 20 cases, so
+      switching them to `@info` means regenerating those fields in the same commit.*
+      *Progress prints → `@debug` (f6a29c4), DMRG scale report → `@info` (56b3787), `_autoenable_proj` → `@info` (4cf039f).*
 
 ### Make the structure legible
-- [ ] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
-- [ ] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
+- [x] Explicit `export` list (today only ITensors names are exported) so public vs private is visible.
+      (done in tier1/exports) 58 entry points in 12 groups next to the six ITensors names, listed
+      under "Public API" in `docs/src/index.md`. Only names specific to TensorBinding are
+      exported: generic names (`truncate!`, `hermitize`, `get_matrix`, `get_density`,
+      `add_loss!`, …), the lattice `*_hamiltonian` builders, types and constants, and the
+      names Tier 3 renames (`get_C`, `get_W`, `get_C_gpu`, `get_valley_C`, `hopping2MPO`,
+      `Exciton_Hamiltonian`, the magnon functions) stay qualified. So does `get_ldos`: an
+      untracked plotting helper (examples/nontracked/plotting_helpers) that notebooks include
+      next to the package defines a different top-level `get_ldos`. `test/exports.jl` checks
+      the list against the exports of the dependencies and standard libraries, and against
+      the docs list. Left for the user: the example notebooks and manuscript scripts load the
+      source with `include(...); using .TensorBinding`, and re-running that setup in one
+      session makes the exported names ambiguous (see "Public API"). They call everything
+      qualified, so nothing breaks today; moving them to `using TensorBinding` would remove
+      the trap.
+- [x] One banner style (`# ====` vs `# ───` vs none); numbered sections that match contents
       (2Dlattice runs 8, 8b, 8c, 8d, 8f; SCF header lists 8 sections, file has 9).
-- [ ] Rewrite the load-order comment in `TensorBinding.jl` as a real dependency graph; fix the
-      include order where a solver depends on a physics file (KPM ↔ QFT, TBSystem → Supercond,
-      Krylov → RPA, Bilayer → Twisted, SCF/RPA/Topology → Purification).
-- [ ] File names: drop the `_tk` suffix; rename `2Dlattice_tk.jl`; fix header comments that
+      *One `# ====` banner style with matching section numbers (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f).*
+- [x] Rewrite the load-order comment in `TensorBinding.jl` as a real dependency graph.
+      (done in tier1/rename) One entry per included file: what it holds and the files it calls
+      into, derived from the code (every package-defined name each file uses, plus ITensors op
+      names and the builders `build_hamiltonian` looks up by Symbol); `*` marks a call into a
+      file included later.
+- [x] Fix the include order where a file calls into a later one. Of the original list, KPM ↔ QFT
+      and Krylov → RPA are gone (the shared helpers moved to `solvers/kpm/kernels.jl` and
+      `solvers/Krylov.jl`) and TBSystem → Supercond is now AuxDOF → Supercond. The map in
+      `TensorBinding.jl` shows what is left: Utils → Fibonacci; TBSystem → position_spaces/,
+      geometry, ModelRegistry, sublattice, NNNeighbor (the `get_Hamiltonian` builders); AuxDOF →
+      hopping2d, Supercond; position_spaces/ → geometry; Bilayer → Twisted; SCF → Purification,
+      Supercond; rpa/bubble, Topology → Purification; rpa/cheb2d, rpa/dyson → qft/conjugation;
+      qft/bands → qft/kpath. Several are cycles (TBSystem ↔ the lattice builders), so not every
+      one can be fixed by reordering.
+      *Reordered: geometry before the position spaces, Twisted before Bilayer, Purification
+      and Supercond before SCF, the qft/ files before rpa/, kpath before bands. What is left
+      is cyclic and cannot be fixed by ordering: Utils → Fibonacci, TBSystem ↔ the
+      `get_Hamiltonian` builders, AuxDOF ↔ hopping2d/Supercond (marked with `*` in the map).*
+- [x] File names: drop the `_tk` suffix; rename `2Dlattice_tk.jl`; fix header comments that
       cite files that do not exist (`utils.jl`, `2D_lattice.jl`, `twoparticle_tk.jl`, `krylov_tk.jl`).
-- [ ] Re-save `2Dlattice_tk.jl` as UTF-8 and restore the mojibake symbols (√, ·, ≠ appear as
+      (renamed in 9f59782, comments in the next commit; tier1/rename) `lattice/{NNNeighbor,Flake,
+      Bilayer,Twisted,TJunction}.jl`, `solvers/{DMRG,Krylov,Timeev}.jl`, `physics/{SCF,Topology,
+      Purification,TwoParticle,QPI,Supercond}.jl`; `2Dlattice_tk.jl` had already been split into
+      `lattice/{masks2d,hopping2d,presets,sublattice,geometry}.jl` and `core/ModelRegistry.jl`.
+      Notes that record where code came from now say "the former …_tk.jl". Left as they are: the
+      `"NH_tk model-building helpers …"` error message in `physics/nh/model.jl` (a string that
+      test/data/nh_golden.jl pins, not a comment) and the old file names elsewhere in this checklist.
+- [x] Re-save `2Dlattice_tk.jl` as UTF-8 and restore the mojibake symbols (√, ·, ≠ appear as
       `-`/`_`, e.g. `b=(1+-)/2` for the golden ratio).
-- [ ] Docstrings vs signatures: `get_ldos_spatial` omits 9 kwargs; `get_ldos_from_mun` omits
+      *Done in the lattice split (a4dabbd).*
+- [x] Docstrings vs signatures: `get_ldos_spatial` omits 9 kwargs; `get_ldos_from_mun` omits
       `eta`/`m_order`; Bilayer/Twisted claim `(MPO, sites)` returns but return `TBHamiltonian`;
       Flake/TBSystem examples pass `Lx=16`/`32` where `Lx` is a qubit count; `get_Hamiltonian`
       table lists 8 of 21 names; QFT table of contents (l.76–92) wrong in five places;
       Topology header lists `berry_curvature_integrand`, which does not exist.
-- [ ] Tests: lattice builders, RPA, SCF, NH, Topology have no tests; add smoke tests before
+      *Docstring signatures checked against the code in every area (7582f6c, 7f2c568, aef25fc, c172d19, 4cf039f, 20c085c).*
+- [x] Tests: lattice builders, RPA, SCF, NH, Topology have no tests; add smoke tests before
       splitting so the moves are guarded.
+      *Golden characterization tests for eight areas (12acc5a..78a15a8, f3ebab3; gaps closed in d7bff9d, ac73a8e, e4a5682).*
 
 ## Tier 2 — shared kernels (internal behaviour only)
 
-- [ ] `_scaled_hamiltonian(H; cutoff)` = `(1/scale)·(H − center·physical_projector(H))`,
+- [x] `_scaled_hamiltonian(H; cutoff)` = `(1/scale)·(H − center·physical_projector(H))`,
       replacing ~20 inline copies (some use `MPO(sites,"Id")` and mishandle projected spaces:
       `KPM_tk.jl` 1799, 1917, 1675; `QPI_tk.jl` 155).
-- [ ] `chebyshev_foreach(f!, H̃, T₀; maxdim, cutoff)` working for MPO and MPS on any device,
+      *`solvers/kpm/recursion.jl` §1 (tier2/kpmkernels): a raw-MPO method
+      `(H_mpo, scale, center, identity; cutoff)` and a `TBHamiltonian` method (identity =
+      `physical_projector(H)` unless passed), both `(1 / scale) * +(H, (-center)·I; cutoff)`,
+      the only form in use; no `maxdim` option (no site truncates the shift by bond
+      dimension). 20 call sites (KPM_Tn(_mps), ldos, dos, exciton, qft/bands,
+      exciton_spectra, QPI, gpu/kpm ×4, gpu/bands, gpu/exciton ×2); binary outputs bit for
+      bit unchanged. Switched from `MPO(H.sites, "Id")` to `physical_projector`: the CPU and
+      GPU exciton LDOS, `get_exciton_bands/continuum`, `get_qpi`, `get_bands_gpu`,
+      `get_ldos_spatial_gpu`, `get_dos_stochastic_gpu`, and (as `identity_mpo` of the raw
+      `KPM_Tn`) the RPA `_get_density_matrix(:kpm)` and `_cheb2d_setup`. Reachable with a
+      projected space: only `get_qpi` and the RPA bubbles with `P_method=:kpm` (changelog);
+      the others are behind `_require_binary_position_space` or need a 2L-site exciton
+      register, which only binary spaces build. Left on the ambient identity: the raw-MPO
+      `get_bands` and `KPM_Tn_gpu` (no position space to ask) and the NH recursions
+      (`A = Hh.mpo / scale`, no centre, a division: a different formula; hermitized
+      Hamiltonians are binary-only).*
+- [x] `chebyshev_foreach(f!, H̃, T₀; maxdim, cutoff)` working for MPO and MPS on any device,
       replacing ~22 hand-written three-term loops (6 KPM, 14 GPU, QFT, QPI) and 5 NH partial
       recurrences; one truncation policy.
-- [ ] `_kpm_energy_grid(H, ωs; kernel, …) -> (ω_r, W, denom, valid)` replacing 14 copies of the
+      *`solvers/kpm/recursion.jl` §2 (tier2/cheb): `chebyshev_foreach(f!, H̃, T₀, N; maxdim,
+      cutoff, T1, apply_trunc, add_trunc, post_trunc, two, negone)` calls `f!(n, T_n)` for
+      n = 0…N−1 (T₀ and T₁ always, as the loops did); each later term is one
+      `_chebyshev_step`. Not one truncation policy, which would move results: the loops
+      differ in which of `cutoff`/`maxdim` the product `apply(H̃, T)`, the sum and an extra
+      `truncate!` receive (five combinations), in the factor (`2`, `2.0`, GPU-typed `T(2)`)
+      and in `-T` vs `T(-1) * T`. Each is a keyword (the docstring tables them per caller),
+      so every output is bit for bit unchanged: checked old vs new, tensor by tensor, on
+      51 cases at small `maxdim` (CPU, and GPU in ComplexF64/ComplexF32/Float64;
+      `get_qpi` with the RNG seeded, since the scale of its impurity Hamiltonian is a
+      DMRG estimate from a random start and differs run to run). Routed: `KPM_Tn`,
+      `KPM_Tn_mps`, `_run_kpm_mps!`, `get_dos_trace`, `get_ldos_spatial(:mpo)` (the other
+      solvers/kpm sites already called `_run_kpm_mps!`), `get_bands`, `get_qpi`,
+      `KPM_Tn_gpu`, `get_ldos_spatial_gpu`, `get_ldos_spatial_mps_gpu`, `get_bands_gpu`;
+      the GPU exciton LDOS and stochastic DOS loops were copies of `_run_kpm_mps!` and now
+      call it with GPU tensors. NH: the T_k(A) of the five CPU (`nh_kpm_partials`,
+      `_nh_kpm_mps_ldos`, `_nh_scalar_online`, `_nh_diag_online`, `_nh_stochastic_online`)
+      and three GPU recurrences run on `chebyshev_foreach`; the partial recurrence P_k is
+      not a Chebyshev recursion and rides in `f!` in the old order (after T_k; before
+      T_{k+1} in `nh_kpm_partials`), its step shared as `_nh_partial_step` by six of them
+      (`nh_kpm_partials` writes `apply(2S, T)` and a second sum, the GPU stochastic trace
+      skips the S product at odd k by parity: both keep their own). Left as a loop:
+      `get_exciton_cheb_convergence_gpu`, whose two recursions run in lockstep and are
+      compared order by order; each of its steps is `_chebyshev_step`. The GPU loops keep
+      their `_gpu_gc!()` after each step; since the recursion drops T_{n−1} before calling
+      `f!`, a GC inside the callback (the LDOS and bands accumulators have one) can
+      already reclaim it.*
+- [x] `_kpm_energy_grid(H, ωs; kernel, …) -> (ω_r, W, denom, valid)` replacing 14 copies of the
       rescale/weights/valid block and 7 hand-written `π²·N·√(1−ω²)` normalisations.
-- [ ] `_chebyshev_sum(Tn, coeffs; …)` replacing 6 weighted-sum copies; HODC variants become a
+      *`solvers/kpm/kernels.jl` §6 (tier2/kpmkernels): `_kpm_energy_grid(H, Ncheb, ωs; …)`
+      and `(Ncheb, ω_r; …)` for energies already rescaled, with `_rescaled_energies(H, ωs)`;
+      `allow_hodc=true` is `_dos_weight_matrix`, the default keeps the convolution kernels
+      and their `:hodc` error. 17 call sites (ldos ×2, dos ×2, exciton ×2,
+      `get_ldos_diag_from_Tn`, low-level `get_bands`, exciton_spectra ×2, QPI ×2, gpu ×5)
+      and 8 normalisations now `denom[iω]` (same expression, bit for bit).
+      `get_ldos_from_mun` (one scalar E) keeps its own.*
+- [x] `_chebyshev_sum(Tn, coeffs; …)` replacing 6 weighted-sum copies; HODC variants become a
       coefficient choice.
-- [ ] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
+      *`solvers/kpm/cached.jl` §3 (tier2/kpmkernels): each coefficient is a number or a
+      tuple of factors applied left to right, so `2 * T * g * k` stays `((T·2)·g)·k`;
+      `A = +(A, term; maxdim)` then `truncate!(A; cutoff)` as before. Used by
+      `get_density_from_Tn` (coefficients kept: the θ(x − μ) bug, fixed since by the
+      v0.1.1 merge, was then still pending),
+      `get_Green_retarded_from_Tn`, `get_ldos_w_from_Tn`, both `_hodc` variants (their
+      weight vectors) and `_weighted_mpo_sum` (rpa/cheb2d.jl, after dropping |w| < tol).
+      The per-energy diagonal accumulators (`get_ldos_diag_from_Tn`, QPI, cheb2d
+      `_accumulate_scaled!`) and the NH reconstructions (no truncation, first term
+      unweighted) keep their loops; `_weighted_mpo_sum_gpu` (conductivity only) too.*
+- [x] One Jackson kernel (`_kpm_kernel`) with a `normalize` keyword; delete `_jackson_kernel`
       (RPA) and `nh_jackson_weights` (NH).
-- [ ] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
+      *Partly done in tier2/kpmkernels: `nh_jackson_weights(N)` is bit for bit `_kpm_kernel(N + 1,
+      :jackson)[1:N]` (checked element by element for N = 1…4000) and is deleted; its eight
+      callers (nh/kpm.jl ×5, gpu/nh.jl ×3) call `_kpm_kernel`, and the golden case keeps its
+      record through a local definition. No `normalize` keyword was added: no caller would
+      use it without changing values.*
+      *Completed in ead1d66: `_jackson_kernel` was the off-by-one kernel; the cheb2d bubbles
+      now take `_kpm_kernel(N + 1, :jackson)[1:N] ./ (N + 1)` and it is deleted.*
+- [x] `AuxProjection` struct (or `aux...` kwargs forwarded to `_aux_setup`) replacing the
       8-keyword block copied into ~10 signatures; one `_project_aux_sectors` replacing the
       nambu→spin→layer→sublattice chain written 4× (KPM, QFT, GPU ×2) and the 4 sector
       projectors (`project_aux`, `_project_aux_block`, `_project_spin_sector`, `contract_nh_block`).
-- [ ] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
-- [ ] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
+      *`core/AuxDOF.jl` §8–9 (tier2/auxproj). A struct, because the chain needs a flag, a
+      selector, an Index and a side per DOF and the low-level `get_bands` supplies its
+      indices instead of detecting them: `AuxProjection(nambu, spin, layer, sublat)` of
+      `AuxDOFProjection(on, sector, index, side)`, built by `_aux_projection(H; <the eight
+      keywords>, autoenable)` (`_autoenable_proj` + `aux_site` detection) in the seven
+      TBHamiltonian bodies, and from the explicit keywords in the low-level `get_bands`;
+      the public keywords are unchanged. `_project_aux_sectors(T, aux; project, spin_index,
+      sublattice)` is the chain of `get_bands`, `get_ldos_spatial(:mpo)`, `get_bands_gpu`
+      and `get_ldos_spatial_gpu` (the GPU passes `project=_project_aux_gpu`), in the old
+      accumulation order (the spin step's 2D comprehension included). Projectors: two
+      kernels, `_project_end_site` (one-hot pair, keeps real operators real) behind
+      `project_aux` and `contract_nh_block`, and `_block_projector` + `_absorb_aux_site`
+      (ComplexF64, any site) behind `_project_aux_block` and `_project_spin_sector`; they
+      stay apart because merging would change element types, and the wrappers keep how
+      the site is found, their checks and messages. `_aux_setup` is now a view of the
+      struct (golden-pinned); `get_ldos_spatial_mps_gpu` keeps its rejection test (building
+      the struct would run the index detection first). Outputs bit for bit unchanged.*
+- [x] `probe_state(H, x, σ…)` replacing the psi0 selection duplicated 3× in KPM.
+      *`core/AuxDOF.jl` §10 (tier2/auxproj): `probe_state(H, x)` (position probe, or |x, x⟩ on
+      an exciton register) and `probe_state(H, x, σ)` with `σ` from `_probe_sectors(aux)`
+      (`_ldos_make_psi0`), in `get_ldos_online`, `get_ldos_spatial` (`:mps` and the `:mpo`
+      probe dictionary) and both stochastic DOS.*
+- [x] Keyword `TBHamiltonian(; L, N, sites, mpo, …)` plus `similar(H; mpo=, sites=, …)` copy
       constructor; delete the six positional overloads.
-- [ ] One model registry entry per model (builder → `TBHamiltonian`, dim, params, geometry,
+      *tier2/ctor: the 19 positional calls in `src` (chain, Haldane, custom, the preset
+      registry builder, the six sublattice builders, bilayer/multilayer/twisted, T-junction,
+      the three projected spaces) pass the same values by keyword; the `H.Lx = Lx` and
+      `H.position_space = …` lines after them moved into the call. Every builder's
+      Hamiltonian is field-by-field identical (MPO tensors bitwise). The copy constructor is
+      the existing `TBHamiltonian(H; field=value, …)` (v0.1.1), not a `similar` method; the
+      21-field positional constructor stays. The untracked scripts
+      `examples/nontracked/{exciton_benchmarking,Exciton_Resub}/scripts*/exciton_hio.jl` and
+      `examples/nontracked/Fibonacci_LDOS/fibonacci_hamiltonian_io.jl` call the 13-argument
+      form and need the keyword form.*
+- [x] One model registry entry per model (builder → `TBHamiltonian`, dim, params, geometry,
       scale) replacing `get_Hamiltonian`'s if-chain + `build_hamiltonian` + `_build_preset` +
       `_build_sublattice` + `_preset_geometry` + `_estimate_scale`; `_param(params, :t, default)`
       replacing the parsing ternaries; remove drifted `kw_defaults` from the registry.
-- [ ] Universal scale maker `estimate_scale` in the model registry (decided 2026-09-26):
+      *`MODELS` (one `ModelEntry` per geometry) in `core/ModelRegistry.jl` (tier2/registry);
+      `MODEL_REGISTRY` is now its preset view and `_preset_geometry`/`_estimate_scale` read
+      the entries. Not done: removing the drifted `kw_defaults`, which set the pinned MPOs
+      (e.g. `qc2dsquare` tol 1e-9); the quirks kept are listed in the file header.*
+- [x] Universal scale maker `estimate_scale` in the model registry (decided 2026-09-26):
       preset default = max(today's formula, estimate); `:small` = exact dense spectrum of
       the same preset at a small size, padded, for presets whose terms do not depend on
       the system size; `:geometry` = row-sum bound from the builder's terms for the
       size-scaled `chern8` and `qc2dsquare` (their defaults change; changelog); `:dmrg` =
       today's `scale=0` path for modified Hamiltonians; `scale=:small|:geometry|:dmrg`
       selects a method explicitly. Supersedes the held commit b6b9fba.
+      *Done in tier2/registry for `chain_1d` and the MODEL_REGISTRY presets (chernhex keeps
+      its analytic bound, the multi-atom lattices their builder defaults: see "Found by
+      the Tier 2 scale maker"); test/scale_maker.jl.*
 
-- [ ] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
+- [x] One `masked_shift_hopping(Lx, Ly, sites, hop, q; src_mask)` replacing six near-identical
       2D kinetic builders; retire `generate_kin_u/d` in favour of `shift_mpo`.
-- [ ] `_sublattice_bond` + `_sublattice_setup` replacing ~12 repeated bond blocks in
+      *af55259: `masked_shift_hopping` (lattice/hopping2d.jl) is the body of the seven NNN
+      builders (`kineticintra2DNNN` & co. keep their names and assertions); `src_mask` names
+      the mask (`:xplus`, `(:xplus, :even)`, `(:xplus, :checker)`, … or an MPO). The SSH
+      builder and `_bernal_interlayer_mpo` call `shift_mpo`. `generate_kin_u/d` stay as
+      public wrappers (documented; golden_lattice calls them by name), still used by
+      `add_hopping_2D!`, where their `num_site` assertion is the only thing that rejects a
+      projected (Fibonacci) position space, and by `add_soc!` (core/AuxDOF.jl).*
+- [x] `_sublattice_bond` + `_sublattice_setup` replacing ~12 repeated bond blocks in
       kagome/lieb/honeycomb/dice; `_basis_positions` replacing 4 identical position loops;
       `sum_mpos(terms; cutoff)`.
-- [ ] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
+      *af55259: all 18 bond blocks of the kagome/Lieb/honeycomb/honeycomb-NNN/dice/SSH
+      builders; `_basis_positions` (Bravais vectors + basis) for the four sublattice position
+      tables and `_closure_positions` for the four preset ones; `sum_mpos` (core/MPOTools.jl,
+      a left fold of `+(a, b; cutoff)`) in the sublattice builders, four presets, the
+      T-junction lattice and the multilayer/twisted layer sums, in their old order. Outputs
+      are bit for bit those of 0a8e5cb (2018 calls, tensor by tensor). One error type moved:
+      `interlayer_mpo(:honeycomb, :Bernal, Lx, Ly, sites)` with `Lx + Ly == 1` and a `sites`
+      vector of the wrong length throws DimensionMismatch instead of AssertionError.*
+- [x] `get_density` as the only projector dispatcher (delete `_get_density_matrix` in RPA and
       `_get_projector` in Topology); `_purified_pair` for the ρ± blocks in Purification.
-- [ ] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
+      *`physics/Purification.jl` §1 and §5 (tier2/auxproj): `get_density` keeps its position-space
+      and cache checks and calls `_density_matrix(H, method; …, Tn, store)`, the one dispatch
+      over `:mcweeny`/`:sp2`/`:kpm`. `_get_density_matrix` and `_get_projector` are not
+      deleted (golden-pinned by name, with their error texts) but are translation layers over
+      it: each keeps its accepted symbols (`:purification` + `purify_method`, `:KPM`), its
+      cache rule, prints and defaults (listed under "Found by the Tier 2 aux and density
+      kernels"), and the pending bugs stay (θ(x − μ) coefficients, fixed since by the v0.1.1
+      merge; RPA purification without ϵF). `_purified_pair(guess, a₊, a₋; …)` purifies the two initial guesses of `sign_mpo`,
+      `get_ldos_drho` and `get_dos_drho`. Outputs, caches and prints bit for bit unchanged.
+      Not covered: `get_C_gpu`'s own GPU McWeeny/SP2 loops (the GPU-wrapper item below;
+      since tier2/gpuwrap they are `mcweeny_purify`'s and `sp2_purify`'s loops).*
+- [x] RPA: `_cheb2d_setup` + `_tucker_bases` (5 copied prologues, 2 Tucker blocks); one Wynn
       driver (3 copies); magnon functions as `mode=:magnetic`.
-- [ ] Timeev: `_rk4_step(rhs, …)` (2 copies), one `evolve_rk4_dm_*`, one trajectory loop;
+      *`physics/rpa/cheb2d.jl` §2: `_cheb2d_setup`, the plain (m,n) sweep `_cheb2d_pair_sweep!`,
+      `_tucker_bases`, `_tucker_components`, `_tucker_hadamard`, `_tucker_accumulate`;
+      `physics/rpa/dyson.jl`: `_rpa_wynn_series` behind `rpa_wynn_from_bubbles`,
+      `get_rpa_susceptibility_wynn` and `get_magnon_susceptibility_wynn` (tier2/rpa). Outputs and
+      verbose lines unchanged. The magnon functions stay public: folding them into
+      `mode=:magnetic` changes the API, so it moved to Tier 3.*
+- [x] Timeev: `_rk4_step(rhs, …)` (2 copies), one `evolve_rk4_dm_*`, one trajectory loop;
       remove the double normalisation after `tdvp(normalize=true)`.
-- [ ] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
+      *Section 1 of `solvers/Timeev.jl` (tier2/timeev): `_rk4_step` (also behind
+      `rk4_step_dm_nh_gpu`, which passes its ComplexF32 coefficients and `maxdim` for the
+      MPO sums), `_evolve_rk4_dm`, `_trajectory` (all five `evolve_*` loops) and `_tdvp_step`
+      (every `tdvp` call, GPU included); outputs bit for bit unchanged. The second
+      normalisation is gone from `tdvp_evolve`, `evolve_with_tdvp(_timedep)` and
+      `get_state_amplitude_trajectory_gpu`: `tdvp` already ends each half-sweep with
+      `normalize!`, so only `tdvp_evolve` moved, by ≤ 4.5e-16. The two GPU sampled-trajectory
+      loops keep their own loops (they sample on the fly instead of storing states).*
+- [x] GPU: thin wrappers over CPU kernels with a `to_device` hook (stochastic DOS, McWeeny/SP2,
       Chern operator assembly, NH kernels, `_eval_block_mps`, `extract_diagonal_to_mps`,
       `mps_to_diagonal_mpo`, `density_profile_from_dm`); one `_to_gpu(x, T)`; one
-      `_resolve_gpu_type` with a single warning threshold; `_gpu_log`.
-- [ ] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
+      `_resolve_gpu_type` with a single warning helper; `_gpu_log`.
+      *tier2/gpuwrap. The hook is `to_device(x, T)`: a shared kernel moves every tensor it
+      builds itself (one-hot and summing vectors, deltas, identities, probe states, position
+      operators) with it; the CPU default `_on_host` (core/Utils.jl) returns `x`, the GPU
+      wrappers pass `_to_gpu`. Kernels, each behind its CPU function and its GPU twin:
+      `_extract_diagonal` (`extract_diagonal_to_mps(_gpu)`); `_mps_to_diagonal`
+      (`mps_to_diagonal_mpo`, `_mps_to_diagonal_mpo_gpu`: `delta_type` keeps the GPU's
+      ComplexF32 deltas, `one_site` its one-site MPS, which the CPU then rejected with the
+      golden-pinned BoundsError; since 87f6562 both accept it and `one_site` is gone); `_eval_block_mps` (also the GPU point, 1D-block and
+      all-sites evaluators: six copies gone, `value` gives the complex amplitudes);
+      `_dos_stochastic` (solvers/kpm/dos.jl: sampling and normalisation of both stochastic
+      DOS; the GPU's `continuum_only`, progress lines and GPU memory release are keywords);
+      `_mcweeny_iterate`, `_sp2_iterate`, `_linear_density_guess` (physics/Purification.jl:
+      `mcweeny_purify`, `sp2_purify`, `purification_initial_guess`, and on GPU `get_C_gpu`,
+      `_mcweeny_purify_gpu`, `_mcweeny_purify_mpo_gpu`, `_purification_initial_guess_gpu`;
+      the GPU truncates squares and updates with `cutoff` only and sums the SP2 expansion
+      with both: keywords `trunc`, `add_trunc`); `_chern_marker` (physics/Topology.jl:
+      `get_C_op_MPO_from_P` and `get_C_gpu`; keywords for the GPU's truncations of Q, C1–C4
+      and the flat operator, `Ck = +(Ck, -ck)` for both since `-1.0 * ck` would promote a
+      ComplexF32 site); `_project_end_site` (`project_aux`, `contract_nh_block`,
+      `_contract_nh_block_gpu`); `_nh_product_probe` (the ket/bra MPS of both stochastic NH
+      traces). `_to_gpu(x, T)` (ITensor, MPO, MPS) replaces `_to_gpu_mpo`/`_to_gpu_mps`
+      (six methods; the one-argument ones meant ComplexF32), `_mpo_to_f32`, `_onehot_gpu`
+      and every `cu` call (`_project_aux_gpu`'s one-hot projector now keeps the tensor's
+      element type, which is exact; the block evaluators' 0/1 vectors keep `cu`'s 32-bit cast
+      through `_to_gpu_vec`, so a mixed-precision MPS sums as before); `_ensure_gpu(x, T;
+      caller)` the four `_ensure_gpu_mp*`. `_resolve_gpu_type` = `_gpu_type` +
+      `_warn_gpu_cutoff` (32-bit type with cutoff < `below`, `_resolve_gpu_type`'s old text;
+      `below` = 1e-6, or each entry point's old threshold: 1e-4 for the two stochastic NH
+      entry points, 1e-5 for `scf_magnetic_hubbard_gpu`), now also behind
+      `get_bands_gpu`, `get_ldos_spatial_gpu` (which still warns just before its recursion),
+      `get_exciton_ldos_spatial_gpu` and the two stochastic NH entry points (changelog).
+      `_gpu_log(msg; indent)` prints the "[gpu] " progress lines, text unchanged.
+      Checked old vs new on 175 cases (43 CPU, 132 GPU in ComplexF64/ComplexF32/Float64/Float32,
+      small `maxdim` so truncation binds): every value bit for bit, tensor by tensor, and
+      every printed line; only the intended warnings differ.
+      Left, and why: `density_profile_from_dm_gpu`'s `:complement` branch (it truncates
+      1 − diag with `maxdim`/`cutoff`, uploads the constant profile as ComplexF32 and
+      defaults `sites` to the diagonal's; the CPU subtracts without truncation); the NH
+      recurrences `_nh_diag_trace_scalar_online_gpu`, `_nh_diag_trace_online_gpu`,
+      `_nh_stochastic_online_gpu` (the CPU ones trace through `nh_ones_mps` without
+      truncating the diagonal, do not re-truncate P_k, weight with Float64 instead of
+      ComplexF64 factors and draw their probes from the global RNG in another order: a
+      wrapper would move the GPU results; they already share `chebyshev_foreach` and
+      `_nh_partial_step`); `_eval_diag_mps_gpu` (LSB-first; `_eval_diag_mps` uses `setelt`,
+      which has no element type to match); `_project_aux_gpu` (a dense |σ⟩⟨σ| projector, and
+      it accepts a one-site MPO, where `_project_end_site` has no neighbour to absorb into);
+      the LDOS/bands accumulations, trajectories, the exciton LDOS and convergence check and
+      the conductivity helpers (GPU code with no CPU kernel of the same operations). The
+      NH diagonal-trace entry points still have no precision warning (none was added).
+      `_contract_nh_block_gpu` keeps `_onehot_gpu`'s range check and ErrorException for an
+      invalid `block_row`/`block_col`. After review: the per-caller thresholds, the 32-bit
+      evaluator vectors and the range check restore the old warnings, mixed-precision sums
+      and error.*
+- [x] Move the `get_ldos_spatial_mps_gpu` automatic plan into `core/Utils.jl` without
       changing its output (decided 2026-09-25); a balanced tiler may come later as an opt-in
       keyword with today's behaviour as the default.
+      *`interval_sampling_plan` (tier2/registry); the sampling golden calls it directly.*
 
 ## Tier 3 — API consistency (user-visible)
 
-- [ ] `Ncheb` everywhere, positional (today `N`, `Ncheb`, `Nchebychev`, NH `n` meaning 2n).
-- [ ] `cutoff` for SVD truncation; `tci_tol` / `krylov_tol` / `scf_tol` for the others
-      (`tol` currently means four things).
-- [ ] `boundary` only (drop `bc`, `cyclic` aliases); `maxdim` defaults from one
-      `const KPM_DEFAULTS`; document the loose `tol=1e-8, maxdim=15` that `get_Hamiltonian`
-      hands to every builder.
-- [ ] `dtype` only (drop `type`); one `verbose::Int` level (drop `printinfo`).
-- [ ] Method symbols in one case (`:kpm`, not `:KPM`); `fermi` vs `ϵF`; `Λ` vs `Lambda`;
-      `omega` vs `ω_phys_vals`; exciton momenta `Q_*` only, one indexing convention.
-- [ ] Return NamedTuples instead of kwarg-dependent shapes (`get_bands` Matrix/NamedTuple,
-      `get_ldos_spatial_mps_gpu` four shapes, `get_ldos` MPS/MPO/Real/nothing, `thouless_pump`,
-      `nh_spectrum_grid`, the four SCF drivers); an `SCFResult` struct.
-- [ ] Split `mode` into `output=:operator|:diagonal` and `algorithm=:mpo|:mps`.
-- [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases),
-      `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
-      `exciton_mpo` for `Exciton_Hamiltonian`, fix `get_bublle_expanded_from_Tn`.
-- [ ] Replace hidden mutable caches (`_tn_cache`, `_tn_mps_cache`, `_density_cache`,
-      `_ensure_scale!` side effects, solvers mutating user Hamiltonians) with an explicit
-      `KPMExpansion` object passed to the reconstruction functions.
-- [ ] CUDA as a package extension (`[weakdeps] CUDA`, `ext/TensorBindingCUDAExt/`), replacing
-      the `Base.loaded_modules` UUID lookup; fix the README dependency statement.
+Scope decided on 2026-10-05 after the v0.2.0 scope survey (six area surveys, three
+proposals): 0.2.0 takes the changes that cannot be deprecated, the topology names and
+the safety fixes; every other rename comes in a 0.2.x release behind a one-time
+deprecation warning (`_depwarn_once`, a `@warn`: `Base.depwarn` is silent by default,
+also in IJulia); 0.3.0 removes the aliases. Canonical public names are ASCII (the
+author's rule: `Lambda`, not `Λ`; `fermi`, not `ϵF`).
+
+### In 0.2.0
+- [x] Dependencies: ITensors 0.9, NDTensors 0.4, ITensorMPS 0.3.16–0.3.44, Quantics 0.4,
+      TensorCrossInterpolation 0.9.18, Julia 1.10. The CompatHelper PRs #75–#78 resolved
+      to the old stack even merged together (ITensorMPS 0.4 is blocked upstream). The cap
+      keeps every golden value: ITensorMPS 0.3.45 changed the last truncation sweep of
+      MPO×MPO `apply`. *6ca5598, d115e48.*
+- [x] Caches: assigning `mpo`, `sites`, `position_space` or a different `scale`/`center`
+      empties them; `deepcopy` keeps the density record; `get_ldos(:mps)` checks the probe
+      (the safety part of the `KPMExpansion` item). *0833629, d115e48.*
+- [x] Topology names: `chern_marker`, `winding_marker`, `valley_chern_marker`,
+      `chern_marker_gpu` (exported; `get_C`, `get_W`, `get_valley_C`, `get_C_gpu` are
+      deprecated aliases); `Nchebychev` → `Ncheb`, `Λ` → `Lambda`, `method=:KPM` → `:kpm`
+      (also in `get_thouless_pump`, `get_C_op_MPO_from_P`, `get_pump_xop`); an old and a
+      new keyword together are an `ArgumentError`. *893fdd5; a `:KPM` warning per
+      function in 72e909a.*
+- [x] Named results for the optional extras of `get_ldos_spatial_mps_gpu`,
+      `get_exciton_ldos_spatial(_gpu)` and `thouless_pump`. *dac1fca.*
+- [x] Small fixes and the docs of what stays: the NH `inner` index matching,
+      `scf_meanfield(max_scf_iter=0)`, the SCF result fields, `get_Hamiltonian`'s binding
+      `maxdim=15`, the unused `cutoff`/`maxdim` of `Exciton_Hamiltonian`, NH `n` = 2n
+      terms, the exciton Q grids, the 2D `get_bands` cut, `get_density_from_Tn`'s
+      rescaled `fermi`. *6130261.*
+
+### 0.2.x (additive; renames behind deprecated aliases)
+- [ ] RPA: `get_magnon_susceptibility(_wynn)` and `get_magnon_bubble` as aliases of the
+      `mode=:magnetic` functions, with `mode` → `channel=:charge|:magnetic` in the same
+      commit, so magnon users move once.
+- [ ] `hopping2MPO`/`pairing2MPO` → `hopping_mpo`/`pairing_mpo`, `Exciton_Hamiltonian` →
+      `exciton_mpo` (unexported builders; the registry symbol in `core/ModelRegistry.jl`
+      moves too); decide whether its unused `cutoff`/`maxdim` become operative (opt-in, a
+      changed result) or go.
+- [ ] Keyword families, one at a time, each name decided first: `printinfo` → `verbose`
+      (printing the union); `type` → `dtype` on CPU and GPU together, with a new name for
+      the model-kind `type` of `add_superconductivity!`/`add_soc!`; `bc` → `boundary`;
+      `get_scf`'s `tol`/`maxiters`/`mixing` → `scf_tol`/`max_scf_iter`/`mix`; `tol` →
+      `krylov_tol`; the `tol` split into `tci_tol` and `cutoff` (where one `tol` drives
+      both, the old keyword must set both); `ϵF` → `fermi` (`get_density_from_Tn`'s
+      rescaled `fermi` needs another name); the other Greek public keywords under the same
+      ASCII rule (`η` → `eta`, `α_decay` → `alpha_decay`, `ψ0` → `psi0`, found by the
+      review of 893fdd5); the exciton `K_*`/`k_*` → `Q_*`; `verbose::Integer` levels.
+- [ ] Explicit `density=` / `P1=`/`P2=` keywords (the RPA Wynn/Dyson drivers and
+      `valley_chern_marker` reuse a density through the cache today), then a
+      `KPMExpansion` object beside the cache API; design `get_ldos`'s `output` keyword on
+      its methods.
+- [ ] Opt-in uniform `get_bands` result `(; Ak, omega, k_groups, ticks, labels)` and an
+      opt-in full 2D k-grid; `nh_spectrum_grid` `output`/`algorithm` keywords with
+      `mode` as an alias.
+- [ ] Lift the ITensorMPS cap: pass `truncate_kwargs=(;)` explicitly on the MPO×MPO
+      `apply`s first (the golden values depend on the ≤ 0.3.44 truncation; lifting the
+      cap as is moves ~100 of them, some by percent); re-check when Quantics,
+      FastMPOContractions and TCI allow ITensorMPS 0.4. Optionally vendor
+      `Quantics._asdiagonal`; fix CompatHelper (deploy key) or use grouped Dependabot.
+
+### 0.3.0
+- [ ] Remove the deprecated aliases and keywords; the four cache fields too if
+      `KPMExpansion` landed and the cache readers were deprecated in 0.2.x (the
+      positional constructor then takes 17 fields instead of 21).
+
+### Dropped on 2026-10-05, with the reason
+- CUDA as a package extension: invisible to `using TensorBinding` users, but extensions
+  never load for an `include`d source (all of the author's GPU scripts), and a checkout
+  that lists CUDA in `[deps]` cannot load it once `[weakdeps]` lists it. A hybrid
+  (extension plus the current lookup as fallback) stays possible.
+- One global split of `mode` (`:mps` means four different things) and `algorithm=` for
+  `KPM_Tn`/`get_ldos_spatial` (`mode` already names the algorithm there); merging RPA's
+  `P_method` and `purify_method`.
+- One `KPM_DEFAULTS` constant (the defaults range from 15 to 500, so results would
+  move); making `Ncheb` positional, redefining NH `n`, unifying the exciton Q grids
+  (changes no warning can flag).
+- `cyclic` → `boundary` on the shift operators (a property of the operator); renaming
+  the `H*` presets.
+- NamedTuples for conventional pairs and for the functions that always return several
+  values (`nh_spectrum_grid`, the Wynn trio, `KPM_Tn`); flipping `get_bands`' default;
+  `SCFResult` (decide it with the multi-orbital SCF work).
+
+## After 0.2.0
+
+Decided on 2026-10-04 to leave out of 0.2.0; the details are in the items above.
+
+- Multi-orbital SCF drivers: per-spin half filling of the non-spin states as the default
+  `Nel`, and a starting density that is not `Nel / H0.N` per site ("Found by the bug
+  pass").
+- RPA bubbles on projected position spaces: physical projectors in `_build_heff`, the
+  numerators and seeds, T₀ = P₁⊗P₂ for the 2L-site KPM, then a `maxdim` convergence
+  study (Tiago; "Found by the Tier 2 KPM kernels").

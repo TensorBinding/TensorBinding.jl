@@ -1,10 +1,12 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test
-using TensorBinding: get_Hamiltonian, get_C
+using TensorBinding: get_Hamiltonian, chern_marker
 
-# get_C accepts the ASCII keyword `Lambda` as an alias for the quenching period
-# `Λ`; it used to be accepted and then ignored (the marker was always built with
-# Λ=10).  Uniform Haldane-type Chern insulator on a 4×4 hexagonal patch.
-@testset "get_C honours the Lambda alias" begin
+# chern_marker's quenching period is the ASCII keyword `Lambda`. Up to v0.1.1 the
+# function was get_C, whose `Lambda` was at first accepted and then ignored (the marker
+# was always built with Λ=10), and later silently won over `Λ` when both were given.
+# `Λ` is now a deprecated alias (test/deprecations.jl), and passing both is an
+# ArgumentError. Uniform Haldane-type Chern insulator on a 4×4 hexagonal patch.
+@testset "chern_marker's Lambda keyword" begin
     Lx, Ly = 2, 2
     Nx     = 2^Lx
     H  = get_Hamiltonian("chernhex", (t=1.0, t2=0.3, ms=0.1,
@@ -15,12 +17,11 @@ using TensorBinding: get_Hamiltonian, get_C
     kw = (method=:mcweeny, maxdim=64, cutoff=1e-10)
 
     marker(C) = [C(α) for α in 1:H.N]
-    C_Λ      = marker(get_C(H, xf, yf; Λ=2.5, kw...))
-    C_Lambda = marker(get_C(H, xf, yf; Lambda=2.5, kw...))
-    C_def    = marker(get_C(H, xf, yf; kw...))
+    C_Lambda = marker(chern_marker(H, xf, yf; Lambda=2.5, kw...))
+    C_def    = marker(chern_marker(H, xf, yf; kw...))
+    C_10     = marker(chern_marker(H, xf, yf; Lambda=10, kw...))
 
-    @test C_Lambda ≈ C_Λ
     @test !(C_Lambda ≈ C_def)
-    # Lambda takes precedence over Λ when both are given (as in get_C_gpu)
-    @test marker(get_C(H, xf, yf; Λ=10, Lambda=2.5, kw...)) ≈ C_Λ
+    @test C_10 ≈ C_def                       # the default period is 10
+    @test_throws ArgumentError chern_marker(H, xf, yf; Λ=10, Lambda=2.5, kw...)
 end

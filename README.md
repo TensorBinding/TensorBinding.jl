@@ -19,7 +19,7 @@ using Pkg
 Pkg.add("TensorBinding")
 ```
 
-Dependencies are resolved automatically: [ITensors.jl](https://github.com/ITensor/ITensors.jl), [ITensorMPS.jl](https://github.com/ITensor/ITensorMPS.jl), [QuanticsTCI.jl](https://github.com/tensor4all/QuanticsTCI.jl), and [FFTW.jl](https://github.com/JuliaMath/FFTW.jl). [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is optional and is not installed with the package — no GPU required for CPU workflows. To enable the `*_gpu` functions, add it to your own environment (`Pkg.add("CUDA")`) and run `using CUDA` at any point before the first GPU call (before or after `using TensorBinding`); without it, those calls stop with an error explaining how to load it.
+Dependencies are resolved automatically: [ITensors.jl](https://github.com/ITensor/ITensors.jl) (with NDTensors), [ITensorMPS.jl](https://github.com/ITensor/ITensorMPS.jl), [QuanticsTCI.jl](https://github.com/tensor4all/QuanticsTCI.jl) (with Quantics.jl, QuanticsGrids.jl and TensorCrossInterpolation.jl), and [FFTW.jl](https://github.com/JuliaMath/FFTW.jl). [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) is optional and is not installed with the package — no GPU required for CPU workflows. To enable the `*_gpu` functions, add it to your own environment (`Pkg.add("CUDA")`) and run `using CUDA` at any point before the first GPU call (before or after `using TensorBinding`); without it, those calls stop with an error explaining how to load it.
 
 ---
 
@@ -51,7 +51,7 @@ See the [`examples/`](examples/) folder for notebooks covering the main workflow
 - Kernels: Jackson (default), Lorentz, Fejér, Dirichlet, HODC
 - Three complementary modes: MPO (full operator), diagonal/online (memory-efficient LDOS), MPS (reference-state propagation)
 - Exact trace DOS from an online three-MPO recursion, including projected position spaces
-- Band structure *A(k,ω)* via QFT conjugation (`get_bands`); supports spin, BdG, layer, and sublattice projections via `aux_proj`
+- Band structure *A(k,ω)* via QFT conjugation (`get_bands`); supports spin, BdG, layer, and sublattice projections (`spin_proj`, `nambu_proj`, `layer_proj`, `sublat_proj`, switched on automatically for a `TBHamiltonian`)
 - Density matrix purification: McWeeny (quadratic convergence) and SP2 (electron-number controlled)
 
 **Topological invariants**

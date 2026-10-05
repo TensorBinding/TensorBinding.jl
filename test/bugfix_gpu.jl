@@ -1,8 +1,10 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test
 
-# Regressions for the audited GPU bugs in src/gpu/GPU_tk.jl: real-typed one-hot
-# extraction, `pointavg` on every trajectory sample, and the real-type guard in
-# get_bands_gpu. They need a functional CUDA.jl and are skipped without one.
+# Regressions for the audited GPU bugs in the former src/gpu/GPU_tk.jl (now split
+# over src/gpu/): real-typed one-hot extraction (gpu/primitives.jl), `pointavg` on
+# every trajectory sample (gpu/timeev.jl), and the real-type guard in
+# get_bands_gpu (gpu/bands.jl). They need a functional CUDA.jl and are skipped
+# without one.
 @testset "GPU bug fixes" begin
     cuda_functional = false
     if Base.find_package("CUDA") !== nothing

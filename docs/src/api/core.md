@@ -11,6 +11,13 @@ Modules = [TensorBinding]
 Pages   = ["core/Utils.jl"]
 ```
 
+## MPO Tools
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/MPOTools.jl"]
+```
+
 ## Hamiltonian Builders
 
 ```@autodocs
@@ -23,4 +30,18 @@ Pages   = ["core/Hamiltonian.jl"]
 ```@autodocs
 Modules = [TensorBinding]
 Pages   = ["core/TBSystem.jl"]
+```
+
+## Auxiliary Degrees of Freedom
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/AuxDOF.jl"]
+```
+
+## Model Registry
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["core/ModelRegistry.jl"]
 ```
