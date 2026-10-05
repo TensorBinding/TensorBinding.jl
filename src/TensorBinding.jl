@@ -51,7 +51,8 @@ export mcweeny_purify, sp2_purify
 # Mean-field self-consistency
 export get_scf
 # Topology
-export get_thouless_pump, get_valley_operator
+export chern_marker, get_thouless_pump, get_valley_operator, valley_chern_marker,
+       winding_marker
 # RPA response
 export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_wynn
 # Non-Hermitian models and spectra
@@ -65,11 +66,11 @@ export build_tdvp_propagator_mpo, evolve_rk4_dm_nh, evolve_rk4_dm_timedep,
 # Sampling plans
 export fibonacci_ldos_sampling_plan, kspace_sampling_plan, spatial_sampling_plan
 # GPU entry points (need `using CUDA`)
-export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
-       get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu, get_nh_density_trajectory_gpu,
-       get_nh_dos_grid_gpu, get_nh_dos_points_gpu, get_scf_bands_gpu,
-       get_scf_magnetization_gpu, get_state_amplitude_trajectory_gpu, KPM_Tn_gpu,
-       scf_magnetic_hubbard_gpu
+export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
+       get_exciton_ldos_spatial_gpu, get_ldos_spatial_gpu, get_ldos_spatial_mps_gpu,
+       get_nh_density_trajectory_gpu, get_nh_dos_grid_gpu, get_nh_dos_points_gpu,
+       get_scf_bands_gpu, get_scf_magnetization_gpu, get_state_amplitude_trajectory_gpu,
+       KPM_Tn_gpu, scf_magnetic_hubbard_gpu
 
 # Source map, in include order: one entry per file, what it holds on the first line
 # and, after →, the files it calls into (the files that define a function, type or
@@ -88,7 +89,7 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # order is therefore not a strict layering; a * says the callee is further down.
 #
 # core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans,
-#                            dense MPO matrices
+#                            dense MPO matrices, deprecation helpers (_depwarn_once, _renamed_kw)
 #                            → Fibonacci*
 # core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo,
 #                            sum_mpos, _checked_sum_mpos
@@ -200,8 +201,8 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # gpu/bands.jl               get_bands_gpu
 #                            → Utils, TBSystem, AuxDOF, masks2d, DMRG, kpm/kernels,
 #                              kpm/recursion, qft/kpath, qft/bands, gpu/device, gpu/primitives
-# gpu/topology.jl            get_C_gpu
-#                            → TBSystem, DMRG, Topology, Purification, gpu/device
+# gpu/topology.jl            chern_marker_gpu
+#                            → Utils, TBSystem, DMRG, Topology, Purification, gpu/device
 # gpu/purification.jl        McWeeny purification
 #                            → TBSystem, Purification, gpu/device
 # gpu/scf.jl                 scf_magnetic_hubbard_gpu and its observables
@@ -217,6 +218,9 @@ export get_bands_gpu, get_dos_stochastic_gpu, get_exciton_ldos_spatial_gpu,
 # gpu/conductivity.jl        conductivity-only Tucker/QFT/Hadamard helpers
 #                            → Utils, TBSystem, rpa/bubble, qft/conjugation, gpu/device,
 #                              gpu/primitives
+# deprecated.jl              the 0.1 names kept through 0.2.x as deprecated aliases (get_C,
+#                            get_W, get_valley_C, get_C_gpu)
+#                            → Utils, Topology, gpu/topology
 
 include("core/Utils.jl")
 include("core/MPOTools.jl")
@@ -272,5 +276,6 @@ include("gpu/exciton.jl")
 include("gpu/nh.jl")
 include("gpu/timeev.jl")
 include("gpu/conductivity.jl")
+include("deprecated.jl")
 
 end

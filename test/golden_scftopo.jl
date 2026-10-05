@@ -1,7 +1,7 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Random
 using TensorBinding: get_Hamiltonian, add_onsite!, add_hopping!, add_spin!, add_zeeman!,
                      add_soc!, add_interaction!, add_superconductivity!, get_scf, get_density,
-                     KPM_Tn, get_C, get_W
+                     KPM_Tn, chern_marker, winding_marker
 
 # Characterization ("golden") tests for the SCF, superconductivity, purification and
 # topology code and for the TBSystem mutators:
@@ -60,7 +60,7 @@ module ScftopoGolden
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Random
 using TensorBinding: get_Hamiltonian, add_onsite!, add_hopping!, add_spin!, add_zeeman!,
                      add_soc!, add_interaction!, add_superconductivity!, get_scf, get_density,
-                     KPM_Tn, get_C, get_W
+                     KPM_Tn, chern_marker, winding_marker
 const TB = TensorBinding
 
 const RTOL = 1e-10
@@ -679,12 +679,12 @@ end
 gapped_chain() = (H = chain(); add_onsite!(H, n -> 0.4 * (-1)^n); H.scale = 2.8; H)
 case!("topology/_get_projector/KPM_fresh") do
     H = gapped_chain()
-    (; P = dense(TB._get_projector(H; method = :KPM, fermi = 0.3, Nchebychev = 30, maxdim = 30)),
+    (; P = dense(TB._get_projector(H; method = :kpm, fermi = 0.3, Ncheb = 30, maxdim = 30)),
        cached_tn = H._tn_cache !== nothing, tn_Ncheb = H._tn_Ncheb)
 end
 case!("topology/_get_projector/KPM_rebuilds_short_tn_cache") do
     H = gapped_chain(); KPM_Tn(H, 20; maxdim = 30)
-    dense(TB._get_projector(H; method = :KPM, Nchebychev = 300, maxdim = 30))
+    dense(TB._get_projector(H; method = :kpm, Ncheb = 300, maxdim = 30))
 end
 case!("topology/_get_projector/mcweeny") do
     H = gapped_chain()
@@ -702,37 +702,37 @@ case!("topology/_get_projector/sp2_Nel") do
        default = attempt(() -> dense(TB._get_projector(gapped_chain(); method = :sp2, maxdim = 30))))
 end
 case!("topology/_get_projector/errors") do
-    (; kpm_lowercase = attempt(() -> TB._get_projector(gapped_chain(); method = :kpm)),
-       unknown = attempt(() -> TB._get_projector(gapped_chain(); method = :exact)))
+    # `:kpm` was an error here up to v0.1.1 (it is the canonical spelling since 0.2)
+    (; unknown = attempt(() -> TB._get_projector(gapped_chain(); method = :exact)))
 end
 
 winding(W, H) = [W(uc) for uc in 1:H.N]
 case!("topology/get_W/KPM_quenched") do
-    H = ssh(); winding(get_W(H; method = :KPM, Nchebychev = 40, maxdim = 30), H)
+    H = ssh(); winding(winding_marker(H; method = :kpm, Ncheb = 40, maxdim = 30), H)
 end
 case!("topology/get_W/KPM_flat") do
-    H = ssh(); winding(get_W(H; method = :KPM, Nchebychev = 40, maxdim = 30, quenched = false), H)
+    H = ssh(); winding(winding_marker(H; method = :kpm, Ncheb = 40, maxdim = 30, quenched = false), H)
 end
 case!("topology/get_W/mcweeny_explicit_xfunc") do
-    H = ssh(); winding(get_W(H, (i, _) -> Float64(i ÷ 2); method = :mcweeny, maxdim = 30), H)
+    H = ssh(); winding(winding_marker(H, (i, _) -> Float64(i ÷ 2); method = :mcweeny, maxdim = 30), H)
 end
 case!("topology/get_W/mcweeny_l_Lambda") do
-    H = ssh(); winding(get_W(H; method = :mcweeny, l = 2, Λ = 4, maxdim = 30), H)
+    H = ssh(); winding(winding_marker(H; method = :mcweeny, l = 2, Lambda = 4, maxdim = 30), H)
 end
 case!("topology/get_W/sp2_half_filling") do       # SP2 diverged to NaN here up to v0.1.1
-    H = ssh(); winding(get_W(H; method = :sp2, Nel = 8, maxdim = 30), H)
+    H = ssh(); winding(winding_marker(H; method = :sp2, Nel = 8, maxdim = 30), H)
 end
 case!("topology/get_W/sp2_default_Nel") do     # default Nel: half the states (H.N ÷ 2 up to v0.1.1)
-    H = ssh(); winding(get_W(H; method = :sp2, maxdim = 30), H)
+    H = ssh(); winding(winding_marker(H; method = :sp2, maxdim = 30), H)
 end
 case!("topology/get_W/trivial_mcweeny_flat") do
-    H = ssh(; d = 0.3); winding(get_W(H; method = :mcweeny, quenched = false, maxdim = 30), H)
+    H = ssh(; d = 0.3); winding(winding_marker(H; method = :mcweeny, quenched = false, maxdim = 30), H)
 end
 case!("topology/get_W/errors") do
     Hng = ssh(); Hng.geometry = nothing; Hng.geometry_uc = nothing
-    (; no_sublattice = attempt(() -> get_W(chain())),
-       three_sublattices = attempt(() -> get_W(kagome())),
-       no_geometry = attempt(() -> get_W(Hng; method = :mcweeny)))
+    (; no_sublattice = attempt(() -> winding_marker(chain())),
+       three_sublattices = attempt(() -> winding_marker(kagome())),
+       no_geometry = attempt(() -> winding_marker(Hng; method = :mcweeny)))
 end
 
 case!("topology/position_operators") do
@@ -753,7 +753,7 @@ case!("topology/get_C_op_MPO_from_P/plain_flat") do
 end
 case!("topology/get_C_op_MPO_from_P/plain_sequential_l1") do
     H, P = chern_P()
-    marker(TB.get_C_op_MPO_from_P(P, H.L, H.sites, XSQ(4), YSQ(4); maxdim = 40, l = 1, Λ = 3,
+    marker(TB.get_C_op_MPO_from_P(P, H.L, H.sites, XSQ(4), YSQ(4); maxdim = 40, l = 1, Lambda = 3,
                                   sequential = true), H.N)
 end
 case!("topology/get_C_op_MPO_from_P/pk_mpo") do
@@ -765,31 +765,32 @@ case!("topology/get_C_op_MPO_from_P/pk_mpo") do
                                                   sequential = true), H.N))
 end
 case!("topology/get_C/hofstadter_KPM") do
-    H = hofstadter(); marker(get_C(H, XSQ(4), YSQ(4); method = :KPM, Nchebychev = 40, maxdim = 40), H.N)
+    H = hofstadter(); marker(chern_marker(H, XSQ(4), YSQ(4); method = :kpm, Ncheb = 40, maxdim = 40), H.N)
 end
 case!("topology/get_C/hofstadter_mcweeny") do
-    H = hofstadter(); marker(get_C(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40), H.N)
+    H = hofstadter(); marker(chern_marker(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40), H.N)
 end
 case!("topology/get_C/hofstadter_sp2_flat") do
-    H = hofstadter(); marker(get_C(H, XSQ(4), YSQ(4); method = :sp2, Nel = 8, maxdim = 40, quenched = false), H.N)
+    H = hofstadter(); marker(chern_marker(H, XSQ(4), YSQ(4); method = :sp2, Nel = 8, maxdim = 40, quenched = false), H.N)
 end
 case!("topology/get_C/hofstadter_mcweeny_sequential_Lambda") do
+    # passing the deprecated Λ next to Lambda is an error since 0.2 (Lambda won up to v0.1.1)
     H = hofstadter()
-    (; Lambda = marker(get_C(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40, Lambda = 2.5,
-                             sequential = true), H.N),
-       both = marker(get_C(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40, Λ = 7, Lambda = 2.5,
-                           sequential = true), H.N))
+    (; Lambda = marker(chern_marker(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40, Lambda = 2.5,
+                                    sequential = true), H.N),
+       both = attempt(() -> chern_marker(H, XSQ(4), YSQ(4); method = :mcweeny, maxdim = 40, Λ = 7,
+                                         Lambda = 2.5, sequential = true)))
 end
 case!("topology/get_C/hofstadter_auto_geometry_staggered") do
     H = hofstadter(); add_onsite!(H, (ix, iy) -> 0.3 * (-1)^(ix + iy); Lx = 2); H.scale = 3.2
-    marker(get_C(H; method = :mcweeny, maxdim = 40), H.N)
+    marker(chern_marker(H; method = :mcweeny, maxdim = 40), H.N)
 end
 case!("topology/get_C/honeycomb_semenoff_auto_geometry_uc") do
-    H = semenoff_honeycomb(); marker(get_C(H; method = :mcweeny, maxdim = 40), H.N)
+    H = semenoff_honeycomb(); marker(chern_marker(H; method = :mcweeny, maxdim = 40), H.N)
 end
 case!("topology/get_C/errors") do
-    (; kpm_lowercase = attempt(() -> get_C(hofstadter(), XSQ(4), YSQ(4); method = :kpm)),
-       no_geometry = attempt(() -> get_C(TB.TBHamiltonian(hofstadter(); geometry = nothing); method = :mcweeny)))
+    # `:kpm` was an error here up to v0.1.1 (it is the canonical spelling since 0.2)
+    (; no_geometry = attempt(() -> chern_marker(TB.TBHamiltonian(hofstadter(); geometry = nothing); method = :mcweeny)))
 end
 
 case!("topology/valley/operator_and_projectors") do
@@ -804,15 +805,15 @@ case!("topology/valley/operator_errors") do
 end
 case!("topology/valley/C_K") do
     H = semenoff_honeycomb()
-    (; quenched = marker(TB.get_valley_C(H; valley = :K, maxdim = 40), H.N),
-       sequential = marker(TB.get_valley_C(semenoff_honeycomb(); valley = :K, maxdim = 40, sequential = true), H.N))
+    (; quenched = marker(TB.valley_chern_marker(H; valley = :K, maxdim = 40), H.N),
+       sequential = marker(TB.valley_chern_marker(semenoff_honeycomb(); valley = :K, maxdim = 40, sequential = true), H.N))
 end
 case!("topology/valley/C_K_prime_nosign_flat") do
     H = semenoff_honeycomb()
-    marker(TB.get_valley_C(H; valley = :K_prime, use_sign = false, quenched = false, maxdim = 40), H.N)
+    marker(TB.valley_chern_marker(H; valley = :K_prime, use_sign = false, quenched = false, maxdim = 40), H.N)
 end
 case!("topology/valley/C_bad_valley") do
-    TB.get_valley_C(semenoff_honeycomb(); valley = :Gamma)
+    TB.valley_chern_marker(semenoff_honeycomb(); valley = :Gamma)
 end
 
 xpump(i, N) = Float64(i + 1)
@@ -821,7 +822,7 @@ case!("topology/pump/xop") do
     s = siteinds("Qubit", 3)
     (; flat = dense(TB.get_pump_xop(3, s, xpump), s),
        quenched = dense(TB.get_pump_xop(3, s, xpump; quenched = true), s),
-       quenched_L5 = dense(TB.get_pump_xop(3, s, xpump; quenched = true, Λ = 5.0), s))
+       quenched_L5 = dense(TB.get_pump_xop(3, s, xpump; quenched = true, Lambda = 5.0), s))
 end
 case!("topology/pump/thouless_pump") do
     base = chain()
@@ -835,7 +836,7 @@ case!("topology/pump/get_thouless_pump") do
     base = chain()
     (; flat = TB.get_thouless_pump(t -> pump_H(base, t), 3, 1.0, xpump; maxdim = 30),
        quenched_r2 = TB.get_thouless_pump(t -> pump_H(base, t), 3, 1.0, xpump; quenched = true,
-                                          Λ = 5.0, r_center = 2, maxdim = 30),
+                                          Lambda = 5.0, r_center = 2, maxdim = 30),
        sp2 = attempt(() -> TB.get_thouless_pump(t -> pump_H(base, t), 3, 1.0, xpump; P_method = :sp2,
                                                 maxdim = 30)))
 end

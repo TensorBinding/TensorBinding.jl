@@ -1,6 +1,6 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Test, Logging
 using TensorBinding: get_Hamiltonian, add_onsite!, add_spin!, add_superconductivity!,
-                     get_C, get_W, get_density, get_scf, KPM_Tn, get_density_from_Tn
+                     chern_marker, winding_marker, get_density, get_scf, KPM_Tn, get_density_from_Tn
 
 # Regressions for the topology / purification / SCF items of the Tier 1 characterization
 # sweep (docs/dev/REORGANISATION_TODO.md): the imaginary Chern markers, the SP2
@@ -69,7 +69,7 @@ ssh() = get_Hamiltonian("ssh_sublattice", (t = 1.0, d = -0.3); L = 3)   # 8 cell
     for quenched in (true, false), sequential in (false, true)
         (sequential && !quenched) && continue
         Λ = 10.0
-        C = TB.get_C_op_MPO_from_P(P, 2, sites, xf, yf; Λ = Λ, maxdim = 64, cutoff = 1e-14,
+        C = TB.get_C_op_MPO_from_P(P, 2, sites, xf, yf; Lambda = Λ, maxdim = 64, cutoff = 1e-14,
                                    quenched = quenched, sequential = sequential)
         for uc in 1:4
             got = C(uc)
@@ -101,7 +101,7 @@ ssh() = get_Hamiltonian("ssh_sublattice", (t = 1.0, d = -0.3); L = 3)   # 8 cell
     add_onsite!(H, -0.4; sublat = 2)
     H.scale = 3.5
     for quenched in (true, false)
-        m = [get_C(H; method = :mcweeny, maxdim = 40, quenched = quenched)(uc) for uc in 1:H.N]
+        m = [chern_marker(H; method = :mcweeny, maxdim = 40, quenched = quenched)(uc) for uc in 1:H.N]
         @test all(iszero ∘ imag, m)
         @test maximum(abs, m) < 1e-10
     end
@@ -140,9 +140,9 @@ end
         @test real(tr(Md)) ≈ 8 atol = 1e-2
         @test norm(Md - lowest_projector(Hd, 8)) < 1e-2
     end
-    # get_W with the default SP2 filling agrees with McWeeny at half filling
-    Wsp2 = get_W(ssh(); method = :sp2, maxdim = 30)
-    Wmcw = get_W(ssh(); method = :mcweeny, maxdim = 30)
+    # winding_marker with the default SP2 filling agrees with McWeeny at half filling
+    Wsp2 = winding_marker(ssh(); method = :sp2, maxdim = 30)
+    Wmcw = winding_marker(ssh(); method = :mcweeny, maxdim = 30)
     @test [real(Wsp2(uc)) for uc in 1:8] ≈ [real(Wmcw(uc)) for uc in 1:8] atol = 1e-2
 end
 
@@ -194,20 +194,20 @@ end
 @testset "Density helpers: Chebyshev order, cutoff and cache method" begin
     gapped() = (H = chain(); add_onsite!(H, n -> 0.4 * (-1)^n); H.scale = 2.8; H)
 
-    # A cached Chebyshev list shorter than Nchebychev is rebuilt at Nchebychev.
+    # A cached Chebyshev list shorter than Ncheb is rebuilt at Ncheb.
     H = gapped(); KPM_Tn(H, 10; maxdim = 30)
-    P = TB._get_projector(H; method = :KPM, Nchebychev = 60, maxdim = 30)
+    P = TB._get_projector(H; method = :kpm, Ncheb = 60, maxdim = 30)
     @test H._tn_Ncheb == 60
-    Pfresh = TB._get_projector(gapped(); method = :KPM, Nchebychev = 60, maxdim = 30)
+    Pfresh = TB._get_projector(gapped(); method = :kpm, Ncheb = 60, maxdim = 30)
     @test dense_st4(P) ≈ dense_st4(Pfresh) atol = 1e-12
     # a longer one is used at its own order, as get_density does
     H = gapped(); KPM_Tn(H, 80; maxdim = 30)
-    TB._get_projector(H; method = :KPM, Nchebychev = 60, maxdim = 30)
+    TB._get_projector(H; method = :kpm, Ncheb = 60, maxdim = 30)
     @test H._tn_Ncheb == 80
 
     # The expansion uses `cutoff`, like the Chebyshev list.
     H = gapped()
-    Pc = TB._get_projector(H; method = :KPM, Nchebychev = 30, maxdim = 30, cutoff = 1e-3)
+    Pc = TB._get_projector(H; method = :kpm, Ncheb = 30, maxdim = 30, cutoff = 1e-3)
     fermi = (0.0 - H.center) / H.scale
     ref = get_density_from_Tn(H._tn_cache, 30; fermi = fermi, maxdim = 30, cutoff = 1e-3)
     @test dense_st4(Pc, H.sites) == dense_st4(ref, H.sites)
@@ -229,7 +229,7 @@ end
     @test_throws ErrorException get_density(H; method = :nonsense)
 end
 
-@testset "GPU: real scf_magnetic_hubbard_gpu, real get_C_gpu, rms without warning" begin
+@testset "GPU: real scf_magnetic_hubbard_gpu, real chern_marker_gpu, rms without warning" begin
     cuda_functional = false
     if Base.find_package("CUDA") !== nothing
         try
@@ -263,7 +263,7 @@ end
 
         H = get_Hamiltonian("honeycomb", 1.0; L = 2, Lx = 1, Ly = 1)
         add_onsite!(H, 0.4; sublat = 1); add_onsite!(H, -0.4; sublat = 2); H.scale = 3.5
-        C = TB.get_C_gpu(H; maxdim = 40, cutoff = 1e-10, dtype = ComplexF64)
+        C = TB.chern_marker_gpu(H; maxdim = 40, cutoff = 1e-10, dtype = ComplexF64)
         @test all(uc -> imag(C(uc)) == 0 && abs(C(uc)) < 1e-8, 1:H.N)
     end
 end

@@ -182,7 +182,7 @@ end
     _mcweeny_iterate(ρ; maxiters, maxdim, cutoff, tol, trunc=(:maxdim, :cutoff),
                      progress=nothing, after_step=nothing) -> MPO
 
-The McWeeny loop of `mcweeny_purify`, also run on GPU MPOs by `get_C_gpu` and the
+The McWeeny loop of `mcweeny_purify`, also run on GPU MPOs by `chern_marker_gpu` and the
 GPU purifications of gpu/purification.jl. Each iteration: `ρ² = apply(ρ, ρ; maxdim,
 cutoff)`, `truncate!(ρ²; <trunc>)`, the residual ‖ρ² − ρ‖/‖ρ‖, `progress(iter, err, ρ)`,
 a stop when it is below `tol`, then `ρ ← apply(ρ, +(3ρ, −2ρ²; cutoff); maxdim, cutoff)`,
@@ -256,7 +256,7 @@ end
     _sp2_iterate(ρ, Nel; maxiters, maxdim, cutoff, tol, trunc=(:maxdim, :cutoff),
                  add_trunc=(:cutoff,), progress=nothing, after_step=nothing) -> MPO
 
-The SP2 loop of `sp2_purify`, also run on GPU MPOs by `get_C_gpu`. Each iteration:
+The SP2 loop of `sp2_purify`, also run on GPU MPOs by `chern_marker_gpu`. Each iteration:
 `ρ² = apply(ρ, ρ; maxdim, cutoff)`, `truncate!(ρ²; <trunc>)`, the residual,
 `progress(iter, err, ρ)`, a stop below `tol`, the stop on Tr ρ² > Tr ρ (below), then
 `ρ ← ρ²` when Tr ρ² ≥ `Nel`, else `ρ ← +(2ρ, −ρ²; <add_trunc>)` and

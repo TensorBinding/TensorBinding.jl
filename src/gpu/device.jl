@@ -58,7 +58,7 @@
 #     get_nh_density_trajectory_gpu(H, rho0; ...)          — NH density diag vs t
 #     get_state_amplitude_trajectory_gpu(H, psi0; ...)     — TDVP state amplitudes vs t
 #   Topology  [topology.jl]
-#     get_C_gpu(H, xfunc, yfunc; ...)                     — real-space Chern marker
+#     chern_marker_gpu(H, xfunc, yfunc; ...)              — real-space Chern marker
 #   Magnetic Hubbard SCF  [scf.jl]
 #     scf_magnetic_hubbard_gpu(H0, U; ...)                — collinear mean-field loop
 #     get_scf_magnetization_gpu(res; ...)                 — post-hoc <Sz>(r) map
@@ -83,7 +83,7 @@
 # PRECISION (ELEMENT TYPES)
 #   Every upload is _to_gpu(x, T), with element type T. The entry points take T
 #   from their `type` keyword (alias `dtype`), or from `dtype` alone for
-#   get_C_gpu and the NH-DOS and time-evolution entry points: ComplexF32 by
+#   chern_marker_gpu and the NH-DOS and time-evolution entry points: ComplexF32 by
 #   default (ComplexF64 for the NH-DOS entry points), and a real type only
 #   where the docstring allows it, for a real Hamiltonian. A few internal steps
 #   upload with ComplexF32 whatever the entry point's type (a CPU MPO passed to
@@ -187,7 +187,7 @@ _to_gpu(ψ::MPS, ::Type{T}) where {T<:Number} = MPS([_to_gpu(ψ[i], T) for i in 
 
 # The GPU element type of an entry point: its `type` keyword, or the alias `dtype`
 # when given; both at once is an error unless they agree or `type` is left at its
-# default ComplexF32. The complex-only entry points (get_C_gpu, the NH-DOS and
+# default ComplexF32. The complex-only entry points (chern_marker_gpu, the NH-DOS and
 # trajectory entry points) have only `dtype` and pass `dtype, nothing`.
 function _gpu_type(caller::String, type, dtype)
     gpu_type = dtype === nothing ? type : dtype

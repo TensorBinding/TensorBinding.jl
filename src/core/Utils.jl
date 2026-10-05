@@ -4,7 +4,8 @@
 # MPOs, basis-state MPS, site-index surgery on MPOs and MPS, MPS evaluation, the
 # sampling planners (real space, Fibonacci, k space), QTCI compression of
 # functions into MPS/MPO, diagonal MPO <-> MPS conversion, auxiliary-site
-# prepend/postpend and small-system debug helpers.
+# prepend/postpend, small-system debug helpers and the deprecation helpers
+# _depwarn_once/_renamed_kw.
 #
 # Main entry points: get_mps, get_mpo, get_diagonal_mpo, qtt_mpo, eval_mps,
 # eval_mps_spatial, spatial_sampling_plan, interval_sampling_plan,
@@ -1565,5 +1566,33 @@ function _mpo_dense_matrix(mpo::MPO)
         R = reshape(permutedims(P, (3, 1, 4, 2, 5)), d * nr, d * nc, b)
     end
     return R[:, :, 1]
+end
+
+# ============================================================
+# 13. Deprecation helpers
+# ============================================================
+
+# The 0.1 names and keywords renamed in 0.2 (src/deprecated.jl, `_renamed_kw`) keep
+# working through 0.2.x and go in 0.3. Each warns once per name and session:
+# `Base.depwarn` is silent unless Julia runs with --depwarn=yes, which plain sessions and
+# IJulia do not, so the warning is a `@warn` with `maxlog=1`. Under --depwarn=error it
+# throws, as `Base.depwarn` does, so a test run with that flag shows that no internal
+# caller still uses an old name.
+function _depwarn_once(msg::AbstractString, id::Symbol)
+    Base.JLOptions().depwarn == 2 && throw(ErrorException(msg))
+    @warn msg maxlog = 1 _id = id _group = :depwarn
+    return nothing
+end
+
+# A renamed keyword of `fn`: both spellings default to `nothing`; the old one is used with
+# a one-time warning, passing both is an ArgumentError, and an absent new one falls back
+# to `default`.
+function _renamed_kw(fn::Symbol, newname::Symbol, new, oldname::Symbol, old, default)
+    old === nothing && return something(new, default)
+    new === nothing ||
+        throw(ArgumentError("$fn: pass `$newname` or the deprecated `$oldname`, not both"))
+    _depwarn_once("$fn: the keyword `$oldname` is deprecated, use `$newname`",
+                  Symbol(fn, "_", oldname))
+    return old
 end
 

@@ -25,7 +25,7 @@
 # Position MPOs are built on the L position qubits only and then extended
 # to the full site chain via postpend_op(⋅, sublattice_s, I).
 #
-# get_C and get_W both accept xfunc=nothing / yfunc=nothing, in which case
+# chern_marker and winding_marker both accept xfunc=nothing / yfunc=nothing, in which case
 # they auto-derive from H.geometry_uc (sublattice models) or H.geometry:
 #   xfunc(i, _) = geom(i+1)[1],   yfunc(i, _) = geom(i+1)[2]
 # geometry_uc returns the same Bravais UC position for all sublattice atoms
@@ -45,15 +45,17 @@
 #       or averages.
 #
 # == Projector methods ==
-#   method=:KPM      — KPM Chebyshev expansion (uses cached Tn of sufficient order)
+#   method=:kpm      — KPM Chebyshev expansion (uses cached Tn of sufficient order)
 #   method=:mcweeny  — McWeeny purification (uses a McWeeny density cache)
 #   method=:sp2      — SP2 purification (uses an SP2 density cache)
 #
 # Bond dimension and truncation are controlled uniformly through `maxdim` and
 # `cutoff` kwargs, which are threaded into every apply, add, and truncate! call.
 #
-# Entry points: get_C, get_W, get_valley_C, get_valley_operator, get_thouless_pump,
-#   thouless_pump, get_C_op_MPO_from_P.
+# Entry points: chern_marker, winding_marker, valley_chern_marker, get_valley_operator,
+#   get_thouless_pump, thouless_pump, get_C_op_MPO_from_P. The 0.1 names get_C, get_W
+#   and get_valley_C are deprecated aliases (src/deprecated.jl); so are the keywords
+#   Nchebychev (→ Ncheb), Λ (→ Lambda) and the value method=:KPM (→ :kpm).
 # Depends on: core/Utils.jl, core/TBSystem.jl, lattice/NNNeighbor.jl,
 #   solvers/kpm/recursion.jl, physics/Purification.jl (the density dispatcher
 #   _density_matrix behind _get_projector, _cached_density, _density_key,
@@ -65,13 +67,13 @@
 # ============================================================
 
 """
-    _get_projector(H; method=:KPM, fermi=0.0, Nchebychev=300, maxdim=40,
+    _get_projector(H; method=:kpm, fermi=0.0, Ncheb=300, maxdim=40,
                    cutoff=1e-8, Nel=nothing) -> MPO
 
 Compute or retrieve the ground-state projector P for `H`.
 
-- `method=:KPM` (default): uses the cached `H._tn_cache` if it has at least
-  `Nchebychev` moments; otherwise runs `KPM_Tn(H, Nchebychev)`.  The Fermi level
+- `method=:kpm` (default): uses the cached `H._tn_cache` if it has at least
+  `Ncheb` moments; otherwise runs `KPM_Tn(H, Ncheb)`.  The Fermi level
   `fermi` (in physical units) is rescaled internally.
 - `method=:mcweeny`: returns `H._density_cache` if it was computed by McWeeny
   purification at the same `fermi` (or set by hand); otherwise runs McWeeny
@@ -82,22 +84,27 @@ Compute or retrieve the ground-state projector P for `H`.
   underlying method.
 
 The projector comes from `get_density`'s dispatcher (`_density_matrix`,
-physics/Purification.jl), with the rules above: `:KPM` (not `get_density`'s
-`:kpm`) never touches the density cache; `:sp2` runs `sp2_purify`'s default 40
-iterations. Up to v0.1.1 `:KPM` also expanded a cached Chebyshev list shorter than
-`Nchebychev`, always with cutoff 1e-8, and `:mcweeny`/`:sp2` returned a density
-matrix cached by any method, at any Fermi level or filling.
+physics/Purification.jl), with the rules above: `:kpm` here, unlike `get_density`'s,
+never touches the density cache; `:sp2` runs `sp2_purify`'s default 40 iterations.
+`method=:KPM`, the spelling up to v0.1.1, is a deprecated alias of `:kpm` (until v0.1.1
+`:kpm` was an error here). Up to v0.1.1 `:KPM` also expanded a cached Chebyshev list
+shorter than `Ncheb`, always with cutoff 1e-8, and `:mcweeny`/`:sp2` returned a
+density matrix cached by any method, at any Fermi level or filling.
 """
 function _get_projector(H::TBHamiltonian;
-                         method::Symbol   = :KPM,
+                         method::Symbol   = :kpm,
                          fermi::Real      = 0.0,
-                         Nchebychev::Int  = 300,
+                         Ncheb::Int       = 300,
                          maxdim::Int      = 40,
                          cutoff::Float64  = 1e-8,
                          Nel              = nothing)
-    if method == :KPM
-        # H._tn_cache when it has ≥ Nchebychev moments, else a fresh KPM_Tn(H, Nchebychev)
-        return _density_matrix(H, :kpm; ϵF=fermi, Ncheb=Nchebychev, maxdim=maxdim,
+    if method === :KPM
+        _depwarn_once("method=:KPM is deprecated, use method=:kpm", :method_KPM)
+        method = :kpm
+    end
+    if method == :kpm
+        # H._tn_cache when it has ≥ Ncheb moments, else a fresh KPM_Tn(H, Ncheb)
+        return _density_matrix(H, :kpm; ϵF=fermi, Ncheb=Ncheb, maxdim=maxdim,
                                cutoff=cutoff, store=false)
     elseif method == :mcweeny
         cached = _cached_density(H, _density_key(:mcweeny; ϵF=fermi))
@@ -111,7 +118,7 @@ function _get_projector(H::TBHamiltonian;
         return _density_matrix(H, :sp2; Nel=Nel_val, maxiters=40, maxdim=maxdim,
                                cutoff=cutoff, tol=1e-5, verbose=false)
     else
-        error("Unknown method: :$method. Choose :KPM, :mcweeny, or :sp2")
+        error("Unknown method: :$method. Choose :kpm, :mcweeny, or :sp2")
     end
 end
 
@@ -121,10 +128,10 @@ end
 # ============================================================
 
 """
-    get_W(H::TBHamiltonian, xfunc=nothing;
-          method=:KPM, fermi=0.0, Nchebychev=300,
-          maxdim=15, cutoff=1e-8, Nel=nothing,
-          quenched=true, l=nothing, Λ=10) -> Function
+    winding_marker(H::TBHamiltonian, xfunc=nothing;
+                   method=:kpm, fermi=0.0, Ncheb=300,
+                   maxdim=15, cutoff=1e-8, Nel=nothing,
+                   quenched=true, l=nothing, Lambda=10) -> Function
 
 Compute the real-space winding number and return a closure
 `calculate_winding(uc::Int) -> ComplexF64` that evaluates the local winding
@@ -153,41 +160,49 @@ assigns the same x-coordinate to both A and B sites of each UC.
 # Quenched vs flat mode
 
 - `quenched=true` (default): pre-computes two α-independent MPOs W1 and W2.
-      W(α) = Λ · ⟨α| cos(x_α/Λ) W1 − sin(x_α/Λ) W2 |α⟩
+      W(α) = Λ · ⟨α| cos(x_α/Λ) W1 − sin(x_α/Λ) W2 |α⟩,  Λ = `Lambda`
 - `quenched=false`: builds a global position operator and returns a closure
   over the resulting W_op MPO.
 
 # Arguments
-- `method`    : `:KPM`, `:mcweeny`, or `:sp2` (see `_get_projector`).
-- `fermi`     : Fermi level in physical energy units (`:KPM` and `:mcweeny`).
-- `Nchebychev`: Chebyshev order when `method=:KPM` and no cache is present.
+- `method`    : `:kpm`, `:mcweeny`, or `:sp2` (see `_get_projector`).
+- `fermi`     : Fermi level in physical energy units (`:kpm` and `:mcweeny`).
+- `Ncheb`     : Chebyshev order when `method=:kpm` and no cache is present.
 - `maxdim`    : MPO bond dimension during all multiplications.
 - `cutoff`    : truncation threshold during all multiplications.
 - `Nel`       : target electron count for SP2 (default: half the number of states,
                 `prod(dim, H.sites) ÷ 2`).
 - `l`         : qubits per direction; inferred as `H.L ÷ 2` if `nothing`.
-- `Λ`         : quenching period (angle = xfunc/Λ); sets the Λ prefactor.
+- `Lambda`    : quenching period Λ (angle = xfunc/Λ); sets the Λ prefactor.
+
+The keywords `Nchebychev` and `Λ` and the value `method=:KPM` (the spellings up to
+v0.1.1, when this function was `get_W`) are deprecated aliases of `Ncheb`, `Lambda`
+and `:kpm`; passing an old and a new spelling together is an `ArgumentError`.
 
 # Returns
 `calculate_winding(uc::Int) -> ComplexF64` where `uc` is a 1-indexed unit
 cell number (1 … 2^L).  The value is the sum of the winding marker over both
 sublattice atoms (A and B) within that unit cell.
 """
-function get_W(H::TBHamiltonian, xfunc=nothing;
-               method::Symbol   = :KPM,
+function winding_marker(H::TBHamiltonian, xfunc=nothing;
+               method::Symbol   = :kpm,
                fermi::Real      = 0.0,
-               Nchebychev::Int  = 300,
+               Ncheb::Union{Nothing,Int}  = nothing,
                maxdim::Int      = 15,
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
                quenched::Bool   = true,
                l                = nothing,
-               Λ::Real          = 10)
-    _require_binary_position_space(H, "get_W")
+               Lambda::Union{Nothing,Real} = nothing,
+               Nchebychev::Union{Nothing,Int} = nothing,   # deprecated: Ncheb
+               Λ::Union{Nothing,Real}  = nothing)          # deprecated: Lambda
+    Ncheb = _renamed_kw(:winding_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    Λ     = _renamed_kw(:winding_marker, :Lambda, Lambda, :Λ, Λ, 10)
+    _require_binary_position_space(H, "winding_marker")
     H.sublattice_s === nothing || dim(H.sublattice_s) == 2 ||
-        error("get_W requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
+        error("winding_marker requires a 2-component sublattice index (dim=2); got dim=$(dim(H.sublattice_s)).")
     H.sublattice_s !== nothing ||
-        error("get_W requires H.sublattice_s to be set (n_sub=2 sublattice model).")
+        error("winding_marker requires H.sublattice_s to be set (n_sub=2 sublattice model).")
 
     if xfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
@@ -207,7 +222,7 @@ function get_W(H::TBHamiltonian, xfunc=nothing;
     # xfunc for position MPOs (2^L UC positions, 0-indexed)
     xfunc_pos = (i, Lc) -> xfunc(i * 2, Lc)
 
-    P       = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
+    P       = _get_projector(H; method=method, fermi=fermi, Ncheb=Ncheb,
                               maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     Q       = MPO(H.sites, "Id") - P
     l_bits  = l === nothing ? div(H.L, 2) : l
@@ -265,7 +280,7 @@ end
 # 3. Quenched (periodic) position operator builders
 # ============================================================
 #
-# These are low-level helpers called by get_W, get_C_op_MPO_from_P and
+# These are low-level helpers called by winding_marker, get_C_op_MPO_from_P and
 # get_pump_xop.
 # `sites` must be the L position-qubit indices only (not the full H.sites
 # for sublattice models); callers extend the result with postpend_op.
@@ -324,7 +339,7 @@ end
 
 """
     get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
-                        l=nothing, Λ=10, maxdim=500, cutoff=1e-8,
+                        l=nothing, Lambda=10, maxdim=500, cutoff=1e-8,
                         quenched=true, sequential=false, pk_mpo=nothing) -> Function
 
 Build the real-space Chern marker and return a closure `calculate_chern_number(uc)`
@@ -347,7 +362,8 @@ site number `i` and return the raw coordinate (not yet quenched).
 
 # Quenched mode (`quenched=true`, default)
 
-Position operators are quenched: `sin(xfunc/Λ)`, `cos(xfunc/Λ)`, and similarly
+Position operators are quenched with the period Λ = `Lambda`: `sin(xfunc/Λ)`,
+`cos(xfunc/Λ)`, and similarly
 for y.  The Chern marker uses a **4-term trig decomposition** that pre-computes
 4 α-independent MPOs (C1–C4) and combines them per site in the closure:
 
@@ -380,14 +396,15 @@ traceless anti-Hermitian part gave the local markers imaginary parts of O(0.1)
 - `sites`   : full ITensor site index list (`length == L` or `L+1` for sublattice)
 - `xfunc`, `yfunc` : coordinate functions; `i` is 0-indexed over all physical sites
 - `l`       : qubits per spatial direction; inferred as `L ÷ 2` if `nothing`
-- `Λ`       : quenching period (quenching angle = coord / Λ)
+- `Lambda`  : quenching period Λ (quenching angle = coord / Λ); `Λ`, the spelling up
+  to v0.1.1, is a deprecated alias
 - `maxdim`  : MPO bond dimension during all multiplications
 - `cutoff`  : truncation threshold during all multiplications and subtractions
 - `quenched`: `true` = 4-term sin/cos decomposition; `false` = flat operators
 - `sequential`: quenched mode only; `true` skips the C1–C4 MPO×MPO products and
   applies `P` and the position operators to each basis state inside the closure
-  (see `get_C`)
-- `pk_mpo`  : optional MPO `PK` (e.g. a valley projector, see `get_valley_C`);
+  (see `chern_marker`)
+- `pk_mpo`  : optional MPO `PK` (e.g. a valley projector, see `valley_chern_marker`);
   when given, the marker is evaluated as `⟨α|PK C_op PK|α⟩`
 
 # Returns
@@ -402,14 +419,14 @@ number density as a `Float64`.
 L_chain = 2^(L ÷ 2)
 xfunc(i, _) = Float64(mod(i, L_chain))
 yfunc(i, _) = Float64(div(i, L_chain))
-C_at  = get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc; Λ=L_chain, maxdim=100)
+C_at  = get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc; Lambda=L_chain, maxdim=100)
 uc_c  = (L_chain ÷ 2) * L_chain + L_chain ÷ 2 + 1   # central unit cell
 C_c   = real(C_at(uc_c))
 ```
 
-# Example — honeycomb via get_C (auto-derived geometry)
+# Example — honeycomb via chern_marker (auto-derived geometry)
 ```julia
-C_at  = get_C(H)   # xfunc/yfunc from H.geometry_uc automatically
+C_at  = chern_marker(H)   # xfunc/yfunc from H.geometry_uc automatically
 Nx    = 2^(H.L ÷ 2)                                  # unit cells per row
 uc_c  = (Nx ÷ 2) * Nx + Nx ÷ 2 + 1                   # central unit cell
 C_c   = real(C_at(uc_c))   # sums the A and B atoms of that cell
@@ -417,12 +434,14 @@ C_c   = real(C_at(uc_c))   # sums the A and B atoms of that cell
 """
 function get_C_op_MPO_from_P(P, L, sites, xfunc, yfunc;
                               l               = nothing,
-                              Λ::Real         = 10,
+                              Lambda::Union{Nothing,Real} = nothing,
                               maxdim::Int     = 500,
                               cutoff::Float64 = 1e-8,
                               quenched::Bool  = true,
                               sequential::Bool = false,
-                              pk_mpo          = nothing)
+                              pk_mpo          = nothing,
+                              Λ::Union{Nothing,Real} = nothing)   # deprecated: Lambda
+    Λ = _renamed_kw(:get_C_op_MPO_from_P, :Lambda, Lambda, :Λ, Λ, 10)
     return _chern_marker(P, L, sites, xfunc, yfunc; l, Λ, maxdim, cutoff, quenched,
                          sequential, pk_mpo)
 end
@@ -442,7 +461,7 @@ the mean of the Bianco–Resta P- and Q-forms. The anti-Hermitian remainder is
 traceless (it drops out of the Chern number) but not locally small: on a trivial
 Semenoff honeycomb (2 × 2 cells), where P is real and every local marker vanishes,
 it is up to 0.16i per unit cell. Up to v0.1.1 it was the imaginary part of every
-`get_C` value.
+`get_C` (now `chern_marker`) value.
 """
 _hermitian_diag(z::Number) = complex(real(z))
 
@@ -453,7 +472,7 @@ _hermitian_diag(z::Number) = complex(real(z))
                   progress=nothing, after_step=nothing) -> Function
 
 The Chern-marker assembly of `get_C_op_MPO_from_P` (documented there), also run on
-GPU MPOs by `get_C_gpu`. The operators the kernel builds itself (the identity of
+GPU MPOs by `chern_marker_gpu`. The operators the kernel builds itself (the identity of
 `Q = I − P`, the four quenched or two flat position operators, the basis states of
 the closure) are moved by `to_device(·, device_type)` (see `_on_host`). The keywords
 name the truncation parameters (see `_trunc_kwargs`) of the steps in which the GPU
@@ -508,7 +527,7 @@ function _chern_marker(P, L, sites, xfunc, yfunc;
     A_cell = abs(a1x * a2y - a1y * a2x)
 
     # Q = I − P (-1.0 * P is -P: the same values on the CPU, while on a 32-bit GPU MPO
-    # the Float64 factor promotes that site, as get_C_gpu always did).
+    # the Float64 factor promotes that site, as chern_marker_gpu always did).
     Q = +(to_device(MPO(sites, "Id"), device_type), -1.0 * P; _trunc_kwargs(q_add, maxdim, cutoff)...)
     isempty(q_trunc) || ITensorMPS.truncate!(Q; _trunc_kwargs(q_trunc, maxdim, cutoff)...)
     step!()
@@ -715,10 +734,10 @@ end
 # ============================================================
 
 """
-    get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
-          method=:KPM, fermi=0.0, l=nothing, Λ=10, Lambda=nothing,
-          Nchebychev=300, maxdim=500, cutoff=1e-8,
-          Nel=nothing, quenched=true, sequential=false) -> Function
+    chern_marker(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
+                 method=:kpm, fermi=0.0, l=nothing, Lambda=10,
+                 Ncheb=300, maxdim=500, cutoff=1e-8,
+                 Nel=nothing, quenched=true, sequential=false) -> Function
 
 High-level wrapper: compute the ground-state projector via `method` and
 return the Chern marker closure from `get_C_op_MPO_from_P`.
@@ -740,8 +759,11 @@ Reuses `H._tn_cache` or `H._density_cache` when available.  `maxdim` and
 `cutoff` are forwarded uniformly to the projector computation and to all
 MPO multiplications in the Chern marker assembly.
 
-`Lambda` is an ASCII alias for `Λ`; when given, it takes precedence over `Λ`
-(as in `get_C_gpu`).
+`Lambda` is the quenching period Λ (see `get_C_op_MPO_from_P`). The keywords `Λ` and
+`Nchebychev` and the value `method=:KPM` (the spellings up to v0.1.1, when this
+function was `get_C`) are deprecated aliases of `Lambda`, `Ncheb` and `:kpm`; passing
+an old and a new spelling together is an `ArgumentError` (up to v0.1.1 `Lambda`
+silently won over `Λ`).
 
 `sequential=true` (quenched mode only) skips the C1–C4 MPO×MPO products and
 instead applies `P` and the position operators to each basis state inside the
@@ -755,20 +777,22 @@ unit cell number; the closure sums the marker over all `n_sub` sublattice
 atoms in that UC.  The value is real (zero imaginary part; see
 `get_C_op_MPO_from_P`); `real(·)` gives the density as a `Float64`.
 """
-function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
-               method::Symbol   = :KPM,
+function chern_marker(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
+               method::Symbol   = :kpm,
                fermi::Real      = 0.0,
                l                = nothing,
-               Λ::Real          = 10,
-               Lambda           = nothing,  # ASCII alias for Λ
-               Nchebychev::Int  = 300,
+               Lambda::Union{Nothing,Real} = nothing,
+               Ncheb::Union{Nothing,Int}   = nothing,
                maxdim::Int      = 500,
                cutoff::Float64  = 1e-8,
                Nel              = nothing,
                quenched::Bool   = true,
-               sequential::Bool = false)
-    _require_binary_position_space(H, "get_C")
-    Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)
+               sequential::Bool = false,
+               Λ::Union{Nothing,Real}         = nothing,   # deprecated: Lambda
+               Nchebychev::Union{Nothing,Int} = nothing)   # deprecated: Ncheb
+    Λ_val = Float64(_renamed_kw(:chern_marker, :Lambda, Lambda, :Λ, Λ, 10))
+    Ncheb = _renamed_kw(:chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    _require_binary_position_space(H, "chern_marker")
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
@@ -776,10 +800,10 @@ function get_C(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
         xfunc === nothing && (xfunc = (i, _) -> geom(i + 1)[1])
         yfunc === nothing && (yfunc = (i, _) -> geom(i + 1)[2])
     end
-    P = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
+    P = _get_projector(H; method=method, fermi=fermi, Ncheb=Ncheb,
                        maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
-                                l=l, Λ=Λ_val, maxdim=maxdim, cutoff=cutoff,
+                                l=l, Lambda=Λ_val, maxdim=maxdim, cutoff=cutoff,
                                 quenched=quenched, sequential=sequential)
 end
 
@@ -861,10 +885,10 @@ end
 
 
 """
-    get_valley_C(H, xfunc=nothing, yfunc=nothing;
-                 valley=:K, use_sign=true, method=:mcweeny, fermi=0.0, l=nothing,
-                 Λ=10, Nchebychev=300, maxdim=500, cutoff=1e-8,
-                 Nel=nothing, quenched=true, sequential=false) -> Function
+    valley_chern_marker(H, xfunc=nothing, yfunc=nothing;
+                        valley=:K, use_sign=true, method=:mcweeny, fermi=0.0, l=nothing,
+                        Lambda=10, Ncheb=300, maxdim=500, cutoff=1e-8,
+                        Nel=nothing, quenched=true, sequential=false) -> Function
 
 Compute the valley-resolved Chern marker and return a closure
 `calculate_valley_chern(uc::Int) -> ComplexF64`.
@@ -888,23 +912,29 @@ to `get_C_op_MPO_from_P`, which evaluates the Chern marker as
                the valley operator spectrum is not already close to ±1).
 
 All remaining arguments are forwarded to `_get_projector` and
-`get_C_op_MPO_from_P`; see those functions for documentation.
+`get_C_op_MPO_from_P`; see those functions for documentation. The keywords `Λ` and
+`Nchebychev` and the value `method=:KPM` (the spellings up to v0.1.1, when this
+function was `get_valley_C`) are deprecated aliases of `Lambda`, `Ncheb` and `:kpm`.
 """
-function get_valley_C(H::TBHamiltonian,
+function valley_chern_marker(H::TBHamiltonian,
                       xfunc=nothing, yfunc=nothing;
                       valley::Symbol  = :K,
                       use_sign::Bool  = true,
                       method::Symbol  = :mcweeny,
                       fermi::Real     = 0.0,
                       l               = nothing,
-                      Λ::Real         = 10,
-                      Nchebychev::Int = 300,
+                      Lambda::Union{Nothing,Real} = nothing,
+                      Ncheb::Union{Nothing,Int}   = nothing,
                       maxdim::Int     = 500,
                       cutoff::Float64 = 1e-8,
                       Nel             = nothing,
                       quenched::Bool  = true,
-                      sequential::Bool = false)
-    _require_binary_position_space(H, "get_valley_C")
+                      sequential::Bool = false,
+                      Λ::Union{Nothing,Real}         = nothing,   # deprecated: Lambda
+                      Nchebychev::Union{Nothing,Int} = nothing)   # deprecated: Ncheb
+    Λ     = _renamed_kw(:valley_chern_marker, :Lambda, Lambda, :Λ, Λ, 10)
+    Ncheb = _renamed_kw(:valley_chern_marker, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    _require_binary_position_space(H, "valley_chern_marker")
     valley in (:K, :K_prime) ||
         error("valley must be :K or :K_prime, got :$valley")
 
@@ -918,7 +948,7 @@ function get_valley_C(H::TBHamiltonian,
 
     V_mpo = get_valley_operator(H; maxdim=maxdim, cutoff=cutoff)
     S     = use_sign ? sign_mpo(V_mpo, collect(H.sites); maxdim=maxdim, cutoff=cutoff) : V_mpo
-    P     = _get_projector(H; method=method, fermi=fermi, Nchebychev=Nchebychev,
+    P     = _get_projector(H; method=method, fermi=fermi, Ncheb=Ncheb,
                            maxdim=maxdim, cutoff=cutoff, Nel=Nel)
     vsign = valley == :K ? 1.0 : -1.0
     I_mpo = MPO(H.sites, "Id")
@@ -927,7 +957,7 @@ function get_valley_C(H::TBHamiltonian,
     PK    = 0.5 * +(PK, dag(swapprime(PK, 0, 1)); maxdim=maxdim, cutoff=cutoff)
 
     return get_C_op_MPO_from_P(P, H.L, H.sites, xfunc, yfunc;
-                                l=l, Λ=Λ, maxdim=maxdim, cutoff=cutoff,
+                                l=l, Lambda=Λ, maxdim=maxdim, cutoff=cutoff,
                                 quenched=quenched, sequential=sequential,
                                 pk_mpo=PK)
 end
@@ -953,7 +983,7 @@ end
 
 
 """
-    get_pump_xop(L, sites, xfunc; quenched=false, Λ=-1.0) -> MPO
+    get_pump_xop(L, sites, xfunc; quenched=false, Lambda=-1.0) -> MPO
 
 Diagonal position operator MPO for the Thouless pump formula.
 
@@ -962,14 +992,18 @@ length `N = 2^L`, and returns the raw coordinate.  For a 1-indexed chain:
 `xfunc(i, N) = Float64(i + 1)`.
 
 - `quenched=false` (default): diagonal entries are `xfunc(i, N)` directly.
-- `quenched=true`: entries are `Λ * sin(xfunc(i, N) / Λ)`, which smooths
-  the discontinuity at PBC at the cost of a `Λ` prefactor.  A negative `Λ`
-  (the default `-1.0`) means `Λ = N` (one full period), giving
+- `quenched=true`: entries are `Λ * sin(xfunc(i, N) / Λ)` with Λ = `Lambda`, which
+  smooths the discontinuity at PBC at the cost of a `Λ` prefactor.  A negative
+  `Lambda` (the default `-1.0`) means `Λ = N` (one full period), giving
   `sin(x/N) * N ≈ x` for `x ≪ N`.
+
+`Λ`, the spelling up to v0.1.1, is a deprecated alias of `Lambda`.
 """
 function get_pump_xop(L::Int, sites::Vector{<:Index}, xfunc;
                       quenched::Bool = false,
-                      Λ::Real        = -1.0)
+                      Lambda::Union{Nothing,Real} = nothing,
+                      Λ::Union{Nothing,Real}      = nothing)   # deprecated: Lambda
+    Λ     = _renamed_kw(:get_pump_xop, :Lambda, Lambda, :Λ, Λ, -1.0)
     N     = 2^L
     Λ_val = Λ < 0 ? Float64(N) : Λ
     if quenched
@@ -1078,9 +1112,9 @@ end
 
 """
     get_thouless_pump(H_of_t, Nt, T, xfunc;
-                      P_method=:mcweeny, fermi=0.0, Nchebychev=200,
+                      P_method=:mcweeny, fermi=0.0, Ncheb=200,
                       maxdim=100, cutoff=1e-8,
-                      quenched=false, Λ=-1.0,
+                      quenched=false, Lambda=-1.0,
                       Nel=nothing, r_center=nothing, verbose=false) -> Float64
 
 High-level Thouless pump: build `P(t_k)` for `k = 0…Nt-1` via `P_method`,
@@ -1092,27 +1126,35 @@ then compute the M1Q invariant C = M1Q(T) − M1Q(0).
 - `Nt`       : number of time steps.
 - `T`        : period of the pump cycle.
 - `xfunc`    : coordinate function `(i, N) -> Float64`, 0-indexed.
-- `P_method` : `:mcweeny`, `:sp2`, or `:KPM`; `fermi`, `Nchebychev` and `Nel` are
+- `P_method` : `:mcweeny`, `:sp2`, or `:kpm`; `fermi`, `Ncheb` and `Nel` are
                passed to `_get_projector` with it.
 - `r_center` : 0-indexed bulk site for M1Q evaluation; defaults to `N ÷ 2`.
 - `quenched` : `false` = flat x̂; `true` = sin-quenched (removes PBC discontinuity).
+- `Lambda`   : quenching period of the sin-quenched x̂ (see `get_pump_xop`).
 - `verbose`  : print progress.
+
+The keywords `Nchebychev` and `Λ` and the value `P_method=:KPM` (the spellings up to
+v0.1.1) are deprecated aliases of `Ncheb`, `Lambda` and `:kpm`.
 """
 function get_thouless_pump(H_of_t::Function, Nt::Int, T::Real, xfunc;
                            P_method::Symbol             = :mcweeny,
                            fermi::Real                  = 0.0,
-                           Nchebychev::Int              = 200,
+                           Ncheb::Union{Nothing,Int}    = nothing,
                            maxdim::Int                  = 100,
                            cutoff::Float64              = 1e-8,
                            quenched::Bool               = false,
-                           Λ::Real                      = -1.0,
+                           Lambda::Union{Nothing,Real}  = nothing,
                            Nel                          = nothing,
                            r_center::Union{Nothing,Int} = nothing,
-                           verbose::Bool                = false)
+                           verbose::Bool                = false,
+                           Nchebychev::Union{Nothing,Int} = nothing,   # deprecated: Ncheb
+                           Λ::Union{Nothing,Real}       = nothing)     # deprecated: Lambda
+    Ncheb = _renamed_kw(:get_thouless_pump, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 200)
+    Λ     = _renamed_kw(:get_thouless_pump, :Lambda, Lambda, :Λ, Λ, -1.0)
     dt    = T / Nt
     H0    = H_of_t(0.0)
     sites = H0.sites
-    x_op  = get_pump_xop(H0.L, H0.sites, xfunc; quenched=quenched, Λ=Λ)
+    x_op  = get_pump_xop(H0.L, H0.sites, xfunc; quenched=quenched, Lambda=Λ)
     rc    = isnothing(r_center) ? (2^H0.L) ÷ 2 : r_center
 
     P_array = MPO[]
@@ -1121,7 +1163,7 @@ function get_thouless_pump(H_of_t::Function, Nt::Int, T::Real, xfunc;
         verbose && println("Building P(t=$(round(t_k; digits=4)))  [$(k+1)/$Nt]...")
         H_k = H_of_t(t_k)
         P_k = _get_projector(H_k; method=P_method, fermi=fermi,
-                              Nchebychev=Nchebychev, maxdim=maxdim,
+                              Ncheb=Ncheb, maxdim=maxdim,
                               cutoff=cutoff, Nel=Nel)
         push!(P_array, P_k)
     end

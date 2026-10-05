@@ -10,6 +10,24 @@ bugs without breaking the API.
 Work towards v0.2.0: the code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md`,
 and fixes for the bugs it found. A fix that moves numbers is listed under **Changed results**.
 
+### Deprecated
+
+Renamed in 0.2. The old spellings keep working through 0.2.x and go in 0.3: each warns
+once per name and session (a `@warn`, so it shows in scripts and notebooks too, unlike
+`Base.depwarn`; under `julia --depwarn=error` it throws) and gives the result of the new
+spelling. Passing an old and a new keyword together is an `ArgumentError`.
+
+- `get_C` → `chern_marker`, `get_W` → `winding_marker`, `get_valley_C` →
+  `valley_chern_marker`, `get_C_gpu` → `chern_marker_gpu`. The new names are exported (the
+  old ones never were).
+- The keywords `Nchebychev` → `Ncheb` and `Λ` → `Lambda` of those four functions, of
+  `get_thouless_pump`, `get_C_op_MPO_from_P` and `get_pump_xop`: the canonical keyword
+  names are ASCII. (`get_C` and `get_C_gpu` took both `Λ` and `Lambda`, and `Lambda`
+  silently won when both were given; that is now the `ArgumentError` above.)
+- The value `method=:KPM` → `:kpm` of the markers and `P_method=:KPM` of
+  `get_thouless_pump`, the spelling the rest of the package uses (`:kpm` was an error
+  there). The error messages name the new functions and list `:kpm`.
+
 ### Removed
 
 - The `Arpack` dependency, which the package never used (a script that relies on it being
@@ -54,9 +72,10 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Added
 
-- An export list: `using TensorBinding` now brings 58 main entry points into scope
+- An export list: `using TensorBinding` now brings 62 main entry points into scope
   (`get_Hamiltonian`, the `add_*!` mutators, `KPM_Tn`, `get_ldos_spatial`, `get_bands`,
-  `get_scf`, the main `*_gpu` functions, …), listed by area under "Public API" on the
+  `get_scf`, the topology markers `chern_marker`, `winding_marker`,
+  `valley_chern_marker`, the main `*_gpu` functions, …), listed by area under "Public API" on the
   documentation home page. Only names specific to TensorBinding are added (next to the six
   ITensors names re-exported since v0.1.0); the rest of the API, including every type, is
   still called as `TensorBinding.name`. Qualified calls
@@ -219,14 +238,14 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`wynn_epsilon`** returns the limit of an exactly converged sequence (a constant or
   geometric one) instead of the `1e30` sentinel; a singular table (an arithmetic
   sequence) keeps the sentinel. The Wynn RPA drivers' pinned results are unchanged.
-- **Local Chern markers are real.** `get_C`, `get_C_gpu`, `get_valley_C` and
-  `get_C_op_MPO_from_P` evaluate ⟨α|C|α⟩ for C = 2πi(QXPYQ − PXQYP), which is not
+- **Local Chern markers are real.** `chern_marker`, `chern_marker_gpu`, `valley_chern_marker`
+  (`get_C`, `get_C_gpu`, `get_valley_C` up to v0.1.1) and `get_C_op_MPO_from_P` evaluate ⟨α|C|α⟩ for C = 2πi(QXPYQ − PXQYP), which is not
   Hermitian: its traceless anti-Hermitian part gave every site an imaginary part of up to
   O(0.1) (±0.16i on a trivial Semenoff honeycomb, whose marker is 0). They now return the
   diagonal of its Hermitian part, the real part, which is the mean of the Bianco–Resta
   P- and Q-forms. Real parts are unchanged, bit for bit; the values stay `ComplexF64`.
 - **SP2 purification** (`sp2_purify`, `get_density(method=:sp2)`, the SP2 paths of the
-  topology markers, `get_C_gpu`, the SCF drivers and the RPA bubbles) stopped only at `tol`
+  topology markers, `chern_marker_gpu`, the SCF drivers and the RPA bubbles) stopped only at `tol`
   or `maxiters`. With the default cutoff its truncation floor (1e-5 to 1e-3) lies above
   the default `tol` = 1e-5, and once truncation pushes eigenvalues out of [0, 1] the
   iteration doubles them each step, to NaN or to a matrix far from a projector. It now
@@ -236,7 +255,7 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **Default SP2 electron count**: half the number of states, `prod(dim, H.sites) ÷ 2`,
   instead of `H.N ÷ 2` (half the unit cells: quarter filling on sublattice, layer, spin and
   BdG models), in `sp2_purify(H)`, `get_density`, `_get_projector` (the topology markers),
-  `get_C_gpu` and the RPA bubbles with `purify_method=:sp2`. Models with only position
+  `chern_marker_gpu` and the RPA bubbles with `purify_method=:sp2`. Models with only position
   sites are unchanged. (The SCF drivers keep their documented `Nel = H0.N ÷ 2` defaults.)
 - **`add_superconductivity!`** keeps a KPM scale: `|center| + scale + 1.1‖Δ̂‖` (center 0;
   ‖Δ̂‖ = |Δ| for s-wave, 2|Δ| for p-wave) when `H` had a scale and `Δ` is a number. Its
@@ -246,8 +265,9 @@ constructor that takes all 21 fields in order, caches included, remains.
 - **`get_scf(H, U, :magnetic)`** without `scale` uses `scf_magnetic_hubbard`'s default
   `H0.scale`: `get_scf` passed `scale=nothing` and so estimated every mean-field
   Hamiltonian by DMRG. The other channels are unchanged.
-- **`_get_projector(:KPM)`** (the KPM paths of `get_C`, `get_W`, `get_thouless_pump`)
-  rebuilds a cached Chebyshev list shorter than `Nchebychev` (it used the short one) and
+- **`_get_projector(:kpm)`** (the KPM paths of `chern_marker`, `winding_marker`,
+  `get_thouless_pump`; `:KPM` up to v0.1.1) rebuilds a cached Chebyshev list shorter than
+  `Ncheb` (it used the short one) and
   expands with `cutoff` (it used 1e-8 whatever `cutoff`).
 - **Exciton Hamiltonian.** `exciton_hamiltonian` / `Exciton_Hamiltonian` put `H_c` on the
   hole (even) sites and `−H_v` on the electron (odd) sites, both transposed (see

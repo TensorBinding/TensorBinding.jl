@@ -355,11 +355,11 @@ push!(GPU_GOLDEN_CASES, (name = "chern_honeycomb_nnn_sublattice_geometry_c64",
     cpu = (C = ComplexF64[6.597794543617257e-5 + 0.0im, -6.597831698670418e-5 + 0.0im],)))
 
 push!(GPU_GOLDEN_CASES, (name = "chern_unknown_method_throws",
-    gpu = (exception = :ErrorException, message_prefix = "get_C_gpu: unknown method :bogus. Choose :mcweeny, :sp2, or "),
+    gpu = (exception = :ErrorException, message_prefix = "chern_marker_gpu: unknown method :bogus. Choose :mcweeny, :s"),
     cpu = nothing))
 
 push!(GPU_GOLDEN_CASES, (name = "chern_no_geometry_throws",
-    gpu = (exception = :ErrorException, message_prefix = "get_C_gpu: H has no geometry; provide xfunc and yfunc explic"),
+    gpu = (exception = :ErrorException, message_prefix = "chern_marker_gpu: H has no geometry; provide xfunc and yfunc"),
     cpu = nothing))
 
 push!(GPU_GOLDEN_CASES, (name = "scf_hubbard_local_U_pipeline_c64",

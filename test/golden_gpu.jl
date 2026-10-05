@@ -786,8 +786,8 @@ const CKW = (maxdim = 64, cutoff = 1e-10)
 
 function chern_case!(name, setup, xy, kw, ucs; cpu_rtol = 1e-4, cpu_atol = 1e-5)
     case!(name, setup,
-        H -> (C = ComplexF64[TB.get_C_gpu(H, xy...; kw...)(uc) for uc in ucs],),
-        H -> (C = ComplexF64[TB.get_C(H, xy...; (k => v for (k, v) in pairs(kw) if k ∉ (:dtype,))...)(uc)
+        H -> (C = ComplexF64[TB.chern_marker_gpu(H, xy...; kw...)(uc) for uc in ucs],),
+        H -> (C = ComplexF64[TB.chern_marker(H, xy...; (k => v for (k, v) in pairs(kw) if k ∉ (:dtype,))...)(uc)
                              for uc in ucs],);
         cpu_rtol = cpu_rtol, cpu_atol = cpu_atol)
 end
@@ -797,18 +797,18 @@ chern_case!("chern_chern8_mcweeny_c64", chern8, (XF8, YF8),
 chern_case!("chern_chern8_sp2_flat_c64", chern8, (XF8, YF8),
     (; CKW..., method = :sp2, Nel = 7, quenched = false, dtype = ComplexF64), [2, 7])
 chern_case!("chern_chern8_kpm_lambda_c64", chern8, (XF8, YF8),
-    (; CKW..., method = :KPM, Nchebychev = 30, Lambda = 5, dtype = ComplexF64), [3, 10])
+    (; CKW..., method = :kpm, Ncheb = 30, Lambda = 5, dtype = ComplexF64), [3, 10])
 chern_case!("chern_honeycomb_nnn_sublattice_geometry_c64", honeycomb_nnn, (),
     (; CKW..., method = :mcweeny, dtype = ComplexF64), [1, 4])
 
 case!("chern_unknown_method_throws",
     chern8,
-    H -> TB.get_C_gpu(H, XF8, YF8; method = :bogus, dtype = ComplexF64, CKW...);
+    H -> TB.chern_marker_gpu(H, XF8, YF8; method = :bogus, dtype = ComplexF64, CKW...);
     throws = true)
 
 case!("chern_no_geometry_throws",
     chern8,
-    H -> TB.get_C_gpu(H; dtype = ComplexF64, CKW...);
+    H -> TB.chern_marker_gpu(H; dtype = ComplexF64, CKW...);
     throws = true)
 
 # ═════════════════════════════════════════════════════════════════════════════

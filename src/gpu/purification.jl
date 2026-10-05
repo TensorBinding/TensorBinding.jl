@@ -3,7 +3,7 @@
 # _mcweeny_purify_mpo_gpu with its initial guess _purification_initial_guess_gpu.
 # Moved from the former gpu/GPU_tk.jl. The loop is the CPU kernel _mcweeny_iterate
 # and the guess the CPU kernel _linear_density_guess (physics/Purification.jl), run
-# on GPU MPOs; get_C_gpu (gpu/topology.jl) calls the same McWeeny and SP2 kernels.
+# on GPU MPOs; chern_marker_gpu (gpu/topology.jl) calls the same McWeeny and SP2 kernels.
 #
 # Main entry points (internal): _mcweeny_purify_mpo_gpu (used by
 # scf_magnetic_hubbard_gpu in gpu/scf.jl) and _mcweeny_purify_gpu (called by

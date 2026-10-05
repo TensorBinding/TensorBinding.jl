@@ -3,7 +3,7 @@
 # Provides TBHamiltonian, which wraps the Hamiltonian MPO together with
 # metadata (geometry, KPM scale) and lazy caches for Chebyshev moments
 # and the density matrix.  All observable methods (get_ldos_spatial,
-# get_dos_stochastic, get_density, get_C, get_bands …) dispatch on this struct.
+# get_dos_stochastic, get_density, chern_marker, get_bands …) dispatch on this struct.
 #
 # Contents: the position-space policy types and the interface the projected
 # spaces of position_spaces/ specialize (ambient_dimension, physical_projector,

@@ -1,28 +1,29 @@
-# gpu/topology.jl — the GPU real-space Chern marker get_C_gpu, the GPU mirror of
-# get_C (physics/Topology.jl): a thin wrapper that runs the CPU kernels on GPU MPOs,
+# gpu/topology.jl — the GPU real-space Chern marker chern_marker_gpu, the GPU mirror of
+# chern_marker (physics/Topology.jl): a thin wrapper that runs the CPU kernels on GPU MPOs,
 # the McWeeny/SP2 loops (_mcweeny_iterate, _sp2_iterate) and the marker assembly
 # (_chern_marker), with the GPU truncations as keywords. One entry point, so the
 # file has no sections. Moved from the former gpu/GPU_tk.jl.
 #
-# Main entry point: get_C_gpu.
+# Main entry point: chern_marker_gpu (get_C_gpu up to v0.1.1, now a deprecated alias in
+# src/deprecated.jl).
 # Depends on: core/TBSystem.jl, solvers/DMRG.jl (_ensure_scale!), physics/Topology.jl
 # (_chern_marker, _get_projector), physics/Purification.jl
 # (purification_initial_guess, _mcweeny_iterate, _sp2_iterate, _half_filling),
 # gpu/device.jl.
 
 """
-    get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
-              method=:mcweeny, fermi=0.0, l=nothing, Λ=10, Lambda=nothing,
-              Nchebychev=300, maxdim=500, cutoff=1e-8,
-              Nel=nothing, quenched=true, dtype=ComplexF32,
-              printinfo=false) -> Function
+    chern_marker_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
+                     method=:mcweeny, fermi=0.0, l=nothing, Lambda=10,
+                     Ncheb=300, maxdim=500, cutoff=1e-8,
+                     Nel=nothing, quenched=true, dtype=ComplexF32,
+                     printinfo=false) -> Function
 
-GPU-accelerated real-space Chern marker.  Mirrors `get_C` but runs all
+GPU-accelerated real-space Chern marker.  Mirrors `chern_marker` but runs all
 MPO×MPO products (projector assembly and C1–C4 construction) on GPU.
 
-Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
+Returns the same closure `C_at(uc::Int) -> ComplexF64` as `chern_marker`.
 
-# Key differences from `get_C`
+# Key differences from `chern_marker`
 - All `apply`/`truncate!` operations run on GPU tensors.
 - `dtype` (default `ComplexF32`) selects the GPU element type; the marker is
   intrinsically complex, so only `ComplexF32` / `ComplexF64` are accepted. Use
@@ -30,39 +31,48 @@ Returns the same closure `C_at(uc::Int) -> ComplexF64` as `get_C`.
   systems at tight cutoffs (a warning is emitted for `ComplexF32` + `cutoff < 1e-6`).
 - For `method=:mcweeny` and `method=:sp2`, only the initial guess
   (`purification_initial_guess`) is built on CPU; it is moved to GPU and the
-  purification loop runs there. For `method=:KPM` the whole projector is built
+  purification loop runs there. For `method=:kpm` the whole projector is built
   on CPU (via `_get_projector`), then moved to GPU.
-- `get_C`'s `sequential` keyword is not accepted; the quenched marker is always
+- `chern_marker`'s `sequential` keyword is not accepted; the quenched marker is always
   assembled from the C1–C4 MPOs.
-- The default `method` is `:mcweeny` (`get_C` defaults to `:KPM`), and
+- The default `method` is `:mcweeny` (`chern_marker` defaults to `:kpm`), and
   `printinfo` prints progress.
 
-All other keyword arguments are identical to `get_C`.
+All other keyword arguments are identical to `chern_marker`, including the deprecated
+spellings up to v0.1.1 (when this function was `get_C_gpu`): `Λ` for `Lambda`,
+`Nchebychev` for `Ncheb` and `method=:KPM` for `:kpm`; passing an old and a new
+spelling together is an `ArgumentError` (up to v0.1.1 `Lambda` silently won over `Λ`).
 """
-function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
+function chern_marker_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                    method::Symbol   = :mcweeny,
                    fermi::Real      = 0.0,
                    l                = nothing,
-                   Λ::Real          = 10,
-                   Lambda           = nothing,
-                   Nchebychev::Int  = 300,
+                   Lambda::Union{Nothing,Real} = nothing,
+                   Ncheb::Union{Nothing,Int}   = nothing,
                    maxdim::Int      = 500,
                    cutoff::Real     = 1e-8,
                    Nel              = nothing,
                    quenched::Bool   = true,
                    dtype::Type{<:Complex} = ComplexF32,
-                   printinfo::Bool  = false)
+                   printinfo::Bool  = false,
+                   Λ::Union{Nothing,Real}         = nothing,   # deprecated: Lambda
+                   Nchebychev::Union{Nothing,Int} = nothing)   # deprecated: Ncheb
 
-    _require_binary_position_space(H, "get_C_gpu")
-    _check_gpu("get_C_gpu")
-    gpu_type = _resolve_gpu_type("get_C_gpu", dtype, nothing, cutoff)
-    Λ_val = Lambda !== nothing ? Float64(Lambda) : Float64(Λ)
+    Λ_val = Float64(_renamed_kw(:chern_marker_gpu, :Lambda, Lambda, :Λ, Λ, 10))
+    Ncheb = _renamed_kw(:chern_marker_gpu, :Ncheb, Ncheb, :Nchebychev, Nchebychev, 300)
+    if method === :KPM
+        _depwarn_once("method=:KPM is deprecated, use method=:kpm", :method_KPM)
+        method = :kpm
+    end
+    _require_binary_position_space(H, "chern_marker_gpu")
+    _check_gpu("chern_marker_gpu")
+    gpu_type = _resolve_gpu_type("chern_marker_gpu", dtype, nothing, cutoff)
 
     # ── geometry ──────────────────────────────────────────────────────────────
     if xfunc === nothing || yfunc === nothing
         geom = H.geometry_uc !== nothing ? H.geometry_uc :
                H.geometry   !== nothing ? H.geometry   :
-               error("get_C_gpu: H has no geometry; provide xfunc and yfunc explicitly.")
+               error("chern_marker_gpu: H has no geometry; provide xfunc and yfunc explicitly.")
         xfunc === nothing && (xfunc = (i, _) -> geom(i + 1)[1])
         yfunc === nothing && (yfunc = (i, _) -> geom(i + 1)[2])
     end
@@ -94,13 +104,13 @@ function get_C_gpu(H::TBHamiltonian, xfunc=nothing, yfunc=nothing;
                          progress = printinfo ? function (iter, err, ρ)
                              println("  SP2 iter $iter: err=$err  maxlinkdim=$(maxlinkdim(ρ))")
                          end : nothing)
-    elseif method == :KPM
+    elseif method == :kpm
         # KPM: use CPU projector, just move to GPU
-        P_cpu = _get_projector(H; method=:KPM, fermi=fermi, Nchebychev=Nchebychev,
+        P_cpu = _get_projector(H; method=:kpm, fermi=fermi, Ncheb=Ncheb,
                                maxdim=maxdim, cutoff=cutoff)
         P = _to_gpu(P_cpu, gpu_type)
     else
-        error("get_C_gpu: unknown method :$method. Choose :mcweeny, :sp2, or :KPM")
+        error("chern_marker_gpu: unknown method :$method. Choose :mcweeny, :sp2, or :kpm")
     end
     printinfo && _gpu_log("Projector ready, maxlinkdim=$(maxlinkdim(P))"; indent=0)
 

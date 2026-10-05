@@ -54,7 +54,8 @@ functions need CUDA.jl to be loaded (see the README).
 - Band structure and quasiparticle interference: `get_bands`, `get_qpi`
 - Density-matrix purification: `mcweeny_purify`, `sp2_purify`
 - Mean-field self-consistency: `get_scf`
-- Topology: `get_thouless_pump`, `get_valley_operator`
+- Topology: `chern_marker`, `get_thouless_pump`, `get_valley_operator`,
+  `valley_chern_marker`, `winding_marker`
 - RPA response: `get_bubble_mpo`, `get_rpa_susceptibility`, `get_rpa_susceptibility_wynn`
 - Non-Hermitian models and spectra: `add_nh_nonreciprocal_hopping!`, `add_nh_onsite!`,
   `add_nh_skin_hopping!`, `nh_spectral_function`, `nh_spectrum_grid`
@@ -63,11 +64,11 @@ functions need CUDA.jl to be loaded (see the README).
   `evolve_with_propagator`, `evolve_with_tdvp`, `evolve_with_tdvp_timedep`
 - Sampling plans: `fibonacci_ldos_sampling_plan`, `kspace_sampling_plan`,
   `spatial_sampling_plan`
-- GPU: `get_bands_gpu`, `get_dos_stochastic_gpu`, `get_exciton_ldos_spatial_gpu`,
-  `get_ldos_spatial_gpu`, `get_ldos_spatial_mps_gpu`, `get_nh_density_trajectory_gpu`,
-  `get_nh_dos_grid_gpu`, `get_nh_dos_points_gpu`, `get_scf_bands_gpu`,
-  `get_scf_magnetization_gpu`, `get_state_amplitude_trajectory_gpu`, `KPM_Tn_gpu`,
-  `scf_magnetic_hubbard_gpu`
+- GPU: `chern_marker_gpu`, `get_bands_gpu`, `get_dos_stochastic_gpu`,
+  `get_exciton_ldos_spatial_gpu`, `get_ldos_spatial_gpu`, `get_ldos_spatial_mps_gpu`,
+  `get_nh_density_trajectory_gpu`, `get_nh_dos_grid_gpu`, `get_nh_dos_points_gpu`,
+  `get_scf_bands_gpu`, `get_scf_magnetization_gpu`, `get_state_amplitude_trajectory_gpu`,
+  `KPM_Tn_gpu`, `scf_magnetic_hubbard_gpu`
 
 If you load the source rather than the installed package, with
 `include("src/TensorBinding.jl"); using .TensorBinding` as the example notebooks do, run

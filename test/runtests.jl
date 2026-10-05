@@ -7,7 +7,7 @@ using Test
 # The API functions tested below, imported by name (most are also exported; the export
 # list is checked in test/exports.jl).
 using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
-                     mcweeny_purify, get_ldos, get_bands, get_W,
+                     mcweeny_purify, get_ldos, get_bands, winding_marker,
                      add_spin!, add_interaction!, get_scf
 
 @testset "TensorBinding.jl" begin
@@ -70,11 +70,11 @@ using TensorBinding: get_Hamiltonian, KPM_Tn, get_density_from_Tn,
     @testset "SSH winding number" begin
         L = 4
         H_top = get_Hamiltonian("ssh_sublattice", (t=1.0, d=-0.5); L=L)
-        W_top = get_W(H_top; method=:KPM, Nchebychev=100, maxdim=40, l=L, Λ=10)
+        W_top = winding_marker(H_top; method=:kpm, Ncheb=100, maxdim=40, l=L, Lambda=10)
         @test real(W_top(H_top.N ÷ 2 + 1)) ≈ 1.0 atol=0.1
 
         H_triv = get_Hamiltonian("ssh_sublattice", (t=1.0, d=0.5); L=L)
-        W_triv = get_W(H_triv; method=:KPM, Nchebychev=100, maxdim=40, l=L, Λ=10)
+        W_triv = winding_marker(H_triv; method=:kpm, Ncheb=100, maxdim=40, l=L, Lambda=10)
         @test real(W_triv(H_triv.N ÷ 2 + 1)) ≈ 0.0 atol=0.1
     end
 
@@ -140,6 +140,9 @@ include("bugfix_exciton_nh4.jl")
 include("bugfix_lattice4.jl")
 include("bugfix_density_cache.jl")
 include("bugfix_cache_safety.jl")
+
+# The 0.1 names and keywords renamed in 0.2: deprecated aliases with a one-time warning.
+include("deprecations.jl")
 
 # The keyword TBHamiltonian constructor (the positional overloads are gone).
 include("tbhamiltonian_ctor.jl")
