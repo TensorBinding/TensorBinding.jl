@@ -102,7 +102,9 @@ Line numbers refer to the working tree on that date and will drift.
 - [x] `ilinspace(xmin, xmax, 1)` returns `[0]` even when `xmin > 0`; 2D `kspace_sampling_plan`
       asserts whenever `xmin > 0` or `xmax < 2^Lx - 1` (both pinned by the golden test).
       *Fixed in 87f6562: `[xmin]`, and the 2D plan places `min(num_x, window)` points.*
-- [ ] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
+- [x] `get_C`/`get_C_gpu` cannot detect `Λ` and `Lambda` passed together; fold into Tier 3.
+      *Done in 893fdd5: `Lambda` is canonical (now `chern_marker`/`chern_marker_gpu`), `Λ` a
+      deprecated alias, and passing both is an `ArgumentError`.*
 - [x] `examples/manybody/excitons.ipynb` cell 5 uses an undefined `H_exc_band`.
       *The cell builds it: the chain exciton of `H_exc` without its confinement potential
       (15f791f).*
@@ -216,8 +218,10 @@ the affected golden cases in the same commit.
       *Fixed in ead1d66 (same change).*
 
 **Minor / API**
-- [ ] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
+- [x] Method symbols: `_get_projector`, `get_C`, `get_W`, `get_thouless_pump` accept only `:KPM`,
       `get_density`/`get_scf` only `:kpm` (Tier 3).
+      *Done in 893fdd5 and 72e909a: `:kpm` everywhere, `:KPM` a deprecated alias that warns
+      once per function; `get_scf` already accepted both (it lower-cases the symbol).*
 - [x] `add_superconductivity!`'s scale update is dead (`_invalidate_cache!` resets it);
       `get_scf` passes `scale=nothing`, overriding `scf_magnetic_hubbard`'s default.
       *Fixed in bf9a6a1: scale |center| + scale + 1.1‖Δ̂‖ when H had one and Δ is a number
@@ -227,6 +231,7 @@ the affected golden cases in the same commit.
       matching ("will error in ITensors v0.4").
       *Fixed in bf9a6a1: a --depwarn scan of 23 entry points found only these two; the
       3-argument `inner(α', C, α)` of Topology is the documented form.*
+      *Three more calls in the NH KPM, which the scan missed, fixed in 6130261.*
 - [x] `wynn_epsilon` returns the 1e30 sentinel for exactly converged sequences.
       *Fixed in ead1d66: 1/(∞ − ∞) is taken as 0; singular tables keep the sentinel.*
 - [x] `build_shift_mpo(sites, q)` positional `cyclic=true` default is unreachable.
@@ -433,6 +438,29 @@ the affected golden cases in the same commit.
       the MPO list (BoundsError).
       *Fixed in 44d034f: each reader takes the order of its own list (`_tn_order`, the
       length minus one); `_tn_Ncheb` keeps its meaning. Unchanged with one list cached.*
+
+### Found by the v0.2.0 scope survey and the commit reviews (2026-10-05)
+
+- [x] Five stale-cache paths after 44d034f: `H.mpo = …` kept the old projector and
+      LDOS, `H.scale = …` read the old list in the new window, a McWeeny density survived
+      a change of `center`, `deepcopy` lost the density record, `get_ldos(:mps)` took
+      another probe without an error. *Fixed in 0833629; the Float32 probe tolerance and
+      the foreign-index check in d115e48.*
+- [x] The `get_green_krylov` warm-start example passed physical ω/η where rescaled ones
+      belong (74–117 % off; the fix is 1–4 % from dense). *0833629.*
+- [x] `scf_meanfield(max_scf_iter=0)` ended in a MethodError. *6130261.*
+- [x] Three more `inner` calls with ITensors' deprecated index matching
+      (`nh_reconstruct_spectral_mps`, the NH `:scalar`/`:diag` paths), which the earlier
+      item (bf9a6a1) missed. *6130261.*
+- [x] Compat floors: TensorCrossInterpolation 0.9.16/0.9.17 lack the `MPS(::TensorTrain)`
+      extension; ITensorMPS < 0.3.16 cannot pair with ITensors 0.9. *d115e48.*
+- [x] Pitfalls documented, behaviour kept: `get_Hamiltonian`'s `maxdim=15` truncates
+      `"qc2dsquare"` (1.4e-3 at L = 8, 1.1e-2 at L = 10); `Exciton_Hamiltonian` ignores
+      `cutoff`/`maxdim`; NH `n` is half the expansion; the default exciton Q grids of
+      bands and continuum differ; 2D `get_bands` without `kpath` samples the diagonal cut;
+      `get_density_from_Tn`'s `fermi` is rescaled. *6130261.*
+- [ ] `using TensorCrossInterpolation` in the module makes `contract` and `evaluate`
+      ambiguous there; nothing calls them bare today (a future bare call would throw).
 
 ## Tier 1 — mechanical, no behaviour change
 
@@ -863,36 +891,87 @@ the affected golden cases in the same commit.
 
 ## Tier 3 — API consistency (user-visible)
 
-- [ ] `Ncheb` everywhere, positional (today `N`, `Ncheb`, `Nchebychev`, NH `n` meaning 2n).
-- [ ] `cutoff` for SVD truncation; `tci_tol` / `krylov_tol` / `scf_tol` for the others
-      (`tol` currently means four things).
-- [ ] `boundary` only (drop `bc`, `cyclic` aliases); `maxdim` defaults from one
-      `const KPM_DEFAULTS`; document the loose `tol=1e-8, maxdim=15` that `get_Hamiltonian`
-      hands to every builder.
-- [ ] `dtype` only (drop `type`); one `verbose::Int` level (drop `printinfo`).
-- [ ] Method symbols in one case (`:kpm`, not `:KPM`); `fermi` vs `ϵF`; `Λ` vs `Lambda`;
-      `omega` vs `ω_phys_vals`; exciton momenta `Q_*` only, one indexing convention.
-- [ ] Return NamedTuples instead of kwarg-dependent shapes (`get_bands` Matrix/NamedTuple,
-      `get_ldos_spatial_mps_gpu` four shapes, `get_ldos` MPS/MPO/Real/nothing, `thouless_pump`,
-      `nh_spectrum_grid`, the four SCF drivers); an `SCFResult` struct.
-- [ ] Split `mode` into `output=:operator|:diagonal` and `algorithm=:mpo|:mps`.
-- [ ] RPA: `get_magnon_susceptibility(_wynn)` as deprecated aliases of
-      `get_rpa_susceptibility(_wynn)(…; mode=:magnetic)`, which already compute the same channel
-      (today the magnon functions forward any `kwargs...` to `get_bubble_mpo` and have their own
-      error messages); `get_magnon_bubble` likewise. Moved from Tier 2's RPA item.
-- [ ] Naming: `chern_marker`/`winding_marker` (keep `get_C`/`get_W` as deprecated aliases;
-      `get_C_gpu` and the valley-resolved `get_valley_C` are renamed with them),
-      `<model>_hamiltonian` everywhere, lowercase `_mpo` (`hopping2MPO` → `hopping_mpo`),
-      `exciton_mpo` for `Exciton_Hamiltonian` (`get_bublle_expanded_from_Tn` was deleted in
-      Tier 1).
-      Export the new names that are specific enough (add them to "Public API" in
-      `docs/src/index.md` too; `test/exports.jl` checks both).
-- [ ] Replace hidden mutable caches (`_tn_cache`, `_tn_mps_cache`, `_density_cache`,
-      `_ensure_scale!` side effects, solvers mutating user Hamiltonians) with an explicit
-      `KPMExpansion` object passed to the reconstruction functions.
-- [ ] CUDA as a package extension (`[weakdeps] CUDA`, `ext/TensorBindingCUDAExt/`), replacing
-      the `Base.loaded_modules` UUID lookup (the README dependency statement was fixed in
-      4738800).
+Scope decided on 2026-10-05 after the v0.2.0 scope survey (six area surveys, three
+proposals): 0.2.0 takes the changes that cannot be deprecated, the topology names and
+the safety fixes; every other rename comes in a 0.2.x release behind a one-time
+deprecation warning (`_depwarn_once`, a `@warn`: `Base.depwarn` is silent by default,
+also in IJulia); 0.3.0 removes the aliases. Canonical public names are ASCII (the
+author's rule: `Lambda`, not `Λ`; `fermi`, not `ϵF`).
+
+### In 0.2.0
+- [x] Dependencies: ITensors 0.9, NDTensors 0.4, ITensorMPS 0.3.16–0.3.44, Quantics 0.4,
+      TensorCrossInterpolation 0.9.18, Julia 1.10. The CompatHelper PRs #75–#78 resolved
+      to the old stack even merged together (ITensorMPS 0.4 is blocked upstream). The cap
+      keeps every golden value: ITensorMPS 0.3.45 changed the last truncation sweep of
+      MPO×MPO `apply`. *6ca5598, d115e48.*
+- [x] Caches: assigning `mpo`, `sites`, `position_space` or a different `scale`/`center`
+      empties them; `deepcopy` keeps the density record; `get_ldos(:mps)` checks the probe
+      (the safety part of the `KPMExpansion` item). *0833629, d115e48.*
+- [x] Topology names: `chern_marker`, `winding_marker`, `valley_chern_marker`,
+      `chern_marker_gpu` (exported; `get_C`, `get_W`, `get_valley_C`, `get_C_gpu` are
+      deprecated aliases); `Nchebychev` → `Ncheb`, `Λ` → `Lambda`, `method=:KPM` → `:kpm`
+      (also in `get_thouless_pump`, `get_C_op_MPO_from_P`, `get_pump_xop`); an old and a
+      new keyword together are an `ArgumentError`. *893fdd5; a `:KPM` warning per
+      function in 72e909a.*
+- [x] Named results for the optional extras of `get_ldos_spatial_mps_gpu`,
+      `get_exciton_ldos_spatial(_gpu)` and `thouless_pump`. *dac1fca.*
+- [x] Small fixes and the docs of what stays: the NH `inner` index matching,
+      `scf_meanfield(max_scf_iter=0)`, the SCF result fields, `get_Hamiltonian`'s binding
+      `maxdim=15`, the unused `cutoff`/`maxdim` of `Exciton_Hamiltonian`, NH `n` = 2n
+      terms, the exciton Q grids, the 2D `get_bands` cut, `get_density_from_Tn`'s
+      rescaled `fermi`. *6130261.*
+
+### 0.2.x (additive; renames behind deprecated aliases)
+- [ ] RPA: `get_magnon_susceptibility(_wynn)` and `get_magnon_bubble` as aliases of the
+      `mode=:magnetic` functions, with `mode` → `channel=:charge|:magnetic` in the same
+      commit, so magnon users move once.
+- [ ] `hopping2MPO`/`pairing2MPO` → `hopping_mpo`/`pairing_mpo`, `Exciton_Hamiltonian` →
+      `exciton_mpo` (unexported builders; the registry symbol in `core/ModelRegistry.jl`
+      moves too); decide whether its unused `cutoff`/`maxdim` become operative (opt-in, a
+      changed result) or go.
+- [ ] Keyword families, one at a time, each name decided first: `printinfo` → `verbose`
+      (printing the union); `type` → `dtype` on CPU and GPU together, with a new name for
+      the model-kind `type` of `add_superconductivity!`/`add_soc!`; `bc` → `boundary`;
+      `get_scf`'s `tol`/`maxiters`/`mixing` → `scf_tol`/`max_scf_iter`/`mix`; `tol` →
+      `krylov_tol`; the `tol` split into `tci_tol` and `cutoff` (where one `tol` drives
+      both, the old keyword must set both); `ϵF` → `fermi` (`get_density_from_Tn`'s
+      rescaled `fermi` needs another name); the other Greek public keywords under the same
+      ASCII rule (`η` → `eta`, `α_decay` → `alpha_decay`, `ψ0` → `psi0`, found by the
+      review of 893fdd5); the exciton `K_*`/`k_*` → `Q_*`; `verbose::Integer` levels.
+- [ ] Explicit `density=` / `P1=`/`P2=` keywords (the RPA Wynn/Dyson drivers and
+      `valley_chern_marker` reuse a density through the cache today), then a
+      `KPMExpansion` object beside the cache API; design `get_ldos`'s `output` keyword on
+      its methods.
+- [ ] Opt-in uniform `get_bands` result `(; Ak, omega, k_groups, ticks, labels)` and an
+      opt-in full 2D k-grid; `nh_spectrum_grid` `output`/`algorithm` keywords with
+      `mode` as an alias.
+- [ ] Lift the ITensorMPS cap: pass `truncate_kwargs=(;)` explicitly on the MPO×MPO
+      `apply`s first (the golden values depend on the ≤ 0.3.44 truncation; lifting the
+      cap as is moves ~100 of them, some by percent); re-check when Quantics,
+      FastMPOContractions and TCI allow ITensorMPS 0.4. Optionally vendor
+      `Quantics._asdiagonal`; fix CompatHelper (deploy key) or use grouped Dependabot.
+
+### 0.3.0
+- [ ] Remove the deprecated aliases and keywords; the four cache fields too if
+      `KPMExpansion` landed and the cache readers were deprecated in 0.2.x (the
+      positional constructor then takes 17 fields instead of 21).
+
+### Dropped on 2026-10-05, with the reason
+- CUDA as a package extension: invisible to `using TensorBinding` users, but extensions
+  never load for an `include`d source (all of the author's GPU scripts), and a checkout
+  that lists CUDA in `[deps]` cannot load it once `[weakdeps]` lists it. A hybrid
+  (extension plus the current lookup as fallback) stays possible.
+- One global split of `mode` (`:mps` means four different things) and `algorithm=` for
+  `KPM_Tn`/`get_ldos_spatial` (`mode` already names the algorithm there); merging RPA's
+  `P_method` and `purify_method`.
+- One `KPM_DEFAULTS` constant (the defaults range from 15 to 500, so results would
+  move); making `Ncheb` positional, redefining NH `n`, unifying the exciton Q grids
+  (changes no warning can flag).
+- `cyclic` → `boundary` on the shift operators (a property of the operator); renaming
+  the `H*` presets.
+- NamedTuples for conventional pairs and for the functions that always return several
+  values (`nh_spectrum_grid`, the Wynn trio, `KPM_Tn`); flipping `get_bands`' default;
+  `SCFResult` (decide it with the multi-orbital SCF work).
 
 ## After 0.2.0
 
