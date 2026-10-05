@@ -145,7 +145,7 @@ push!(QFT_GOLDEN_CASES, (name = "kpath_setup_square_GXMG_default", throws = noth
 push!(QFT_GOLDEN_CASES, (name = "kpath_setup_triangular_GMKG", throws = nothing,
     expected = (kg = [[0], [2], [4], [3], [10], [1], [0]], ticks = [1, 3, 5, 7], labels = ["Γ", "M", "K", "Γ"], stdout = "")))
 
-push!(QFT_GOLDEN_CASES, (name = "kpath_setup_unknown_symbol", throws = FieldError,
+push!(QFT_GOLDEN_CASES, (name = "kpath_setup_unknown_symbol", throws = (isdefined(Core, :FieldError) ? Core.FieldError : ErrorException),
     expected = (message_prefix = nothing,)))
 
 push!(QFT_GOLDEN_CASES, (name = "bands_low_1d_default_grid", throws = nothing,

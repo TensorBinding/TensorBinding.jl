@@ -462,6 +462,18 @@ the affected golden cases in the same commit.
 - [ ] `using TensorCrossInterpolation` in the module makes `contract` and `evaluate`
       ambiguous there; nothing calls them bare today (a future bare call would throw).
 
+### Found by the first CI run of the v0.2.0 release (2026-10-05)
+
+- [x] `Logging` was missing from the test target (`Pkg.test` failed on it); the Wynn
+      `chi_wynn` estimates move by 2.6e-10 under `--check-bounds=yes` (pinned at rtol
+      1e-8 now); `qft_golden.jl` named `FieldError`, which Julia < 1.12 lacks.
+- [ ] The golden suites are skipped on CI (`test/runtests.jl`): off the reference machine
+      (Windows, Julia 1.12) KPM 4, RPA 29, Scftopo 35, Lattice 2 and Dynamics 2 cases
+      differ, most by 1e-9–1e-7 (rounding through truncated MPO products), a few by O(1)
+      (maxdim 2–3, DMRG, iteration counts), and 18 `dos_stochastic` cases on Julia 1.10
+      (`rand(rng, 1:N)` stream). 0.2.x: a portable CI mode, a loose rtol plus a tag on
+      the platform-sensitive cases.
+
 ## Tier 1 — mechanical, no behaviour change
 
 ### Split the three grab-bag files

@@ -93,6 +93,11 @@ function src_info()
     end
 end
 
+# FieldError exists from Julia 1.12; before that the same access throws an ErrorException.
+_throws_repr(T) = T === nothing ? "nothing" :
+    nameof(T) === :FieldError ? "(isdefined(Core, :FieldError) ? Core.FieldError : ErrorException)" :
+    repr(T)
+
 function write_golden(path, entries)
     source = src_info()
     open(path, "w") do io
@@ -115,7 +120,7 @@ function write_golden(path, entries)
         println(io, "QFT_GOLDEN_CASES = Any[]")
         for e in entries
             println(io)
-            println(io, "push!(QFT_GOLDEN_CASES, (name = ", repr(e.name), ", throws = ", repr(e.throws), ",")
+            println(io, "push!(QFT_GOLDEN_CASES, (name = ", repr(e.name), ", throws = ", _throws_repr(e.throws), ",")
             println(io, "    expected = ", repr(e.expected), "))")
         end
         println(io)
