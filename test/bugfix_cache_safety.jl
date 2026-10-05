@@ -124,3 +124,23 @@ end
            cutoff = 1e-12)
     @test get_ldos(Hf, 0.3; mode = :mps, psi0 = binary_to_MPS(5, Hf.L, Hf.sites)) isa Real
 end
+
+@testset "Cache safety: Float32 probes, foreign site indices, reassignment" begin
+    kw = (; maxdim = 100, cutoff = 1e-12)
+    H  = chain_cs()
+    ψ  = binary_to_MPS(2, H.L, H.sites) + binary_to_MPS(5, H.L, H.sites)
+    # a Float32 list rounds the overlap of its own probe to ~6e-8: the check follows the
+    # element type (it rejected the probe the list was built with)
+    to32(φ) = MPS([ITensor(Float32.(Array(φ[i], inds(φ[i])...)), inds(φ[i])...) for i in 1:length(φ)])
+    ψ32 = to32(ψ)
+    KPM_Tn(H, 20; mode = :mps, psi0 = ψ32, kw...)
+    @test get_ldos(H, 0.3; mode = :mps, psi0 = ψ32) isa Real
+    # a probe on other site indices is refused explicitly (it passed through ITensors'
+    # deprecated index matching)
+    KPM_Tn(H, 20; mode = :mps, psi0 = ψ, kw...)
+    @test_throws ArgumentError get_ldos(H, 0.3; mode = :mps, psi0 = binary_to_MPS(2, H.L, siteinds("Qubit", 3)))
+    # assigning the stored MPO empties the caches too (after an in-place edit)
+    KPM_Tn(H, 20; kw...)
+    H.mpo = H.mpo
+    @test H._tn_cache === nothing && H._tn_mps_cache === nothing
+end

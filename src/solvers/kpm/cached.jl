@@ -49,8 +49,9 @@ Chebyshev expansion cached in `H` by a prior `KPM_Tn` or `KPM_Tn_mps` call.
   calls `get_ldos_from_mun`, returning a **Real**.  Requires
   `KPM_Tn(H, N; mode=:mps, psi0=...)` and the same `psi0` here.  Both normalise
   `psi0`, so the result is the LDOS of `ψ₀/‖ψ₀‖` whatever the norm of `psi0`.  Another
-  `psi0`, also one that differs only by a global phase, is an `ArgumentError` (up to
-  v0.1.1 it returned the cross term ⟨ψ|T_n|ψ₀⟩ without an error).
+  `psi0`, also one that differs only by a global phase or lives on other site indices
+  than `H.sites`, is an `ArgumentError` (up to v0.1.1 it returned the cross term
+  ⟨ψ|T_n|ψ₀⟩ without an error).
 
 **Keywords**
 
@@ -104,8 +105,13 @@ function get_ldos(H::TBHamiltonian, ω_phys::Real;
         # The cache holds φₙ = T_n(H̃)|ψ₀⟩ for the normalised ψ₀ (KPM_Tn_mps normalises
         # it), so the moments take the normalised probe too.
         psi0_n = psi0 / norm(psi0)
+        siteinds(psi0_n) == siteinds(H._tn_mps_cache[1]) ||
+            throw(ArgumentError("get_ldos(mode=:mps): psi0 is not on the site indices of " *
+                                "the cached MPS Chebyshev list (H.sites)"))
         overlap = inner(psi0_n, H._tn_mps_cache[1])
-        abs(overlap - 1) < 1e-8 ||
+        # sqrt(eps): 1.5e-8 in Float64; a Float32 list rounds the overlap of its own
+        # probe to ~6e-8
+        abs(overlap - 1) < sqrt(eps(real(typeof(overlap)))) ||
             throw(ArgumentError("get_ldos(mode=:mps): psi0 is not the probe of the cached " *
                                 "MPS Chebyshev list (⟨ψ|φ₀⟩ = $overlap); build the list " *
                                 "for it with KPM_Tn(H, N; mode=:mps, psi0)"))

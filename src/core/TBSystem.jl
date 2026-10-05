@@ -80,7 +80,9 @@ Fields
 
 **Lazy caches** (emptied by the `add_*!` mutators through `_invalidate_cache!`, and when
 `mpo`, `sites`, `position_space`, or a different `scale` or `center` is assigned; editing
-the MPO in place, as `truncate!(H.mpo)` or `H.mpo[j] = …` do, does not empty them)
+the MPO in place, as `truncate!(H.mpo)` or `H.mpo[j] = …` do, does not empty them, but
+assigning `mpo`, `sites` or `position_space` empties them even when the assigned object
+is the stored one, so `H.mpo = H.mpo` after an in-place edit does)
 - `_tn_cache`      : MPO Chebyshev list; set by `KPM_Tn(H, N; mode=:mpo)`
 - `_tn_mps_cache`  : MPS Chebyshev state list; set by `KPM_Tn(H, N; mode=:mps, psi0=…)`
 - `_tn_Ncheb`      : order of the Chebyshev list built last, MPO or MPS; each reader
@@ -322,7 +324,8 @@ _tn_order(list) = length(list) - 1
     truncate!(H::TBHamiltonian; cutoff=1e-10, maxdim=nothing) -> H
 
 Truncate the Hamiltonian MPO in-place using `ITensorMPS.truncate!`.
-Invalidates all caches (Chebyshev list, density matrix, scale/center).
+Empties all caches (Chebyshev lists, density matrix) and resets scale/center to 0 for a
+lazy re-estimate; on projected position spaces the window is kept.
 
 Useful after a series of `add_hopping!` / `add_onsite!` calls that may
 have inflated the bond dimension.

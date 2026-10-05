@@ -132,7 +132,7 @@ function _hopping2MPO(f, N, sites; tol, initial_positions, type, unfoldingscheme
         ci, _, _ = quanticscrossinterpolate(type, f, qgrid; qkw...)
     end
     citt = TensorCrossInterpolation.TensorTrain(ci.tci)
-    mps  = MPS(citt) # modified from ITensors.MPS to MPS 
+    mps  = MPS(citt)
     @debug "hopping2MPO: QTCI tensor train converted to MPS"
     mpo  = unfoldingscheme == :fused ? fused_mpo(mps, sites) : custom_mpo(mps, sites)
     @debug "hopping2MPO: MPS turned into MPO"

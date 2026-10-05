@@ -119,16 +119,20 @@ constructor that takes all 21 fields in order, caches included, remains.
 ### Changed
 
 - **Dependencies** (breaking for scripts that load only ITensors): ITensors 0.9,
-  NDTensors 0.4, ITensorMPS 0.3 up to 0.3.44, Quantics 0.4 and Julia 1.10 or newer (were
-  ITensors 0.6, NDTensors 0.3, ITensorMPS 0.2, Quantics 0.3 and Julia 1.9). Since ITensors
-  0.7 the MPS functions live in ITensorMPS: a script that loads only `using ITensors` and
-  calls `dmrg`, `random_mps`, `op` or `apply` on an MPS adds `using ITensorMPS`. The six
-  names TensorBinding re-exports (`expect`, `inner`, `MPO`, `MPS`, `OpSum`, `siteinds`)
-  keep working; on a clash with another package write `ITensorMPS.OpSum` and so on.
-  ITensorMPS is capped below 0.3.45, whose MPO×MPO `apply` (ITensorMPS#97) truncates its
-  last sweep with the caller's `cutoff` and `maxdim` and so moves results (most by
-  1e-10–1e-5, heavily truncated non-Hermitian spectra by up to ~8 %); with the cap every
-  result is unchanged.
+  NDTensors 0.4, ITensorMPS 0.3.16 to 0.3.44, Quantics 0.4, TensorCrossInterpolation
+  0.9.18 or newer and Julia 1.10 or newer (were ITensors 0.6, NDTensors 0.3, ITensorMPS
+  0.2, Quantics 0.3, TensorCrossInterpolation 0.9 and Julia 1.9). ITensors 0.9 no longer
+  exports the MPS functions (in ITensorMPS since ITensors 0.7) nor the site-type and
+  operator names `op`, `siteinds`, `state` and `OpSum`, which ITensorMPS exports instead:
+  a script that loads only `using ITensors` and calls `dmrg`, `random_mps`, `op` or
+  `apply` on an MPS adds `using ITensorMPS`. The six names TensorBinding re-exports
+  (`expect`, `inner`, `MPO`, `MPS`, `OpSum`, `siteinds`) keep working; on a clash with
+  another package write `ITensorMPS.OpSum` and so on. The tensor-train → MPS conversion
+  behind every QTCI-built Hamiltonian now comes from TensorCrossInterpolation's ITensors
+  extension (0.9.18 and newer). ITensorMPS is capped below 0.3.45, whose MPO×MPO `apply`
+  truncates its last sweep with the caller's `cutoff` and `maxdim` and so moves results
+  (most by 1e-10–1e-5, heavily truncated non-Hermitian spectra by up to ~8 %); with the
+  cap every result is unchanged.
 - Unconditional progress prints in library code ("MPS COMPUTED!", "C1 done", …) are
   `@debug` messages (`JULIA_DEBUG=TensorBinding` shows them). The DMRG estimate of the
   spectral bounds, which sets an automatic KPM scale, is reported as an `@info` message.
@@ -345,7 +349,9 @@ constructor that takes all 21 fields in order, caches included, remains.
   of what its cached density was computed for (the copy answered every Fermi level and
   method). `get_ldos(H, ω; mode=:mps, psi0)` throws an `ArgumentError` when `psi0` is not
   the probe of the cached MPS list, also for a probe that differs only by a global phase
-  (it returned the cross term ⟨ψ|T_n|ψ₀⟩).
+  or lives on other site indices than `H.sites` (it returned the cross term ⟨ψ|T_n|ψ₀⟩;
+  a probe on other indices went through ITensors' deprecated index matching). The check
+  allows the rounding of the list's element type (a Float32 list passes its own probe).
 - **Default KPM scales of the 2D multi-atom lattices** (`get_Hamiltonian` without `scale`)
   are `max(builder formula, estimate_scale(...; method=:small))`, like the presets:
   `"lieb"` 2.5|t| → 2.73|t| at L = 3 and 3.10|t| from 16 × 16 cells (its bulk radius is
