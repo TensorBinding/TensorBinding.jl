@@ -528,7 +528,15 @@ Workflow per iteration:
 3. Extract a density profile MPS.
 4. Compute RMS error, mix density, rebuild Hartree term.
 
-Returns a named tuple with density, Hartree term, final Hamiltonian, and history.
+Returns `(; converged, stopped_by_residual_increase, iterations, history, rms_error,
+density_mpo, density_mps, hartree_mpo, fock_mpo, ham)`: the density matrix, its density
+profile (MPS), the Hartree and Fock MPOs (`fock_mpo = nothing` without `fock_builder`)
+and the mean-field `TBHamiltonian`. When the loop converges they belong to the last
+iteration and the profile is the mixed one; otherwise (also when `stop_on_increase=true`
+stops it) they belong to the iteration with the lowest residual, with its unmixed
+profile, and `rms_error` is that residual. `history` holds one
+`(; iter, rms_error, particle_error, maxlinkdim_H, maxlinkdim_density)` per iteration.
+`max_scf_iter` must be at least 1.
 """
 function scf_meanfield(H0::TBHamiltonian, hartree_builder;
                        initial_density::Union{Nothing,MPS}=nothing,
@@ -552,6 +560,9 @@ function scf_meanfield(H0::TBHamiltonian, hartree_builder;
                        purif_tol::Real = 1e-6,
                        stop_on_increase::Bool = false,
                        verbose::Bool = true)
+    # max_scf_iter = 0 ended in a MethodError (no best state to return) up to v0.1.1
+    max_scf_iter >= 1 ||
+        throw(ArgumentError("scf_meanfield: max_scf_iter must be at least 1, got $max_scf_iter"))
     sites = H0.sites
     density_mps = initial_density === nothing ?
         constant_mps(collect(sites), float(Nel) / float(H0.N)) :
@@ -641,6 +652,12 @@ spinless, the previous two-copy behavior is retained.
 H_up = H0_up + U * diag(n_down - background)
 H_dn = H0_dn + U * diag(n_up   - background)
 ```
+
+Returns `(; converged, iterations, rms_error, rho_up, rho_dn, density_up_mpo,
+density_dn_mpo, H_up, H_dn, history)`: the mixed spin-resolved density profiles (MPS),
+the last density matrices of each spin (`nothing` when no iteration ran), the last
+mean-field `TBHamiltonian` of each spin, and one
+`(; iter, rms_error, rms_up, rms_dn, particle_error)` per iteration in `history`.
 """
 function scf_magnetic_hubbard(H0::TBHamiltonian, U::Union{Number, MPO};
                               initial_up::Union{Nothing,MPS}=nothing,
@@ -785,6 +802,13 @@ V_dn(i)      = hartree_sign * hartree_coupling * (rho_up(i) - background)
 where `F_singlet` is extracted from the Nambu off-diagonal block of the BdG
 density matrix. If `H0` is spinless, a spin degree of freedom is added to a
 working copy before building BdG Hamiltonians.
+
+Returns `(; converged, iterations, rms_error, delta_mps, anomalous_mps, rho_up_mps,
+rho_dn_mps, hartree_up_mpo, hartree_dn_mpo, density_mpo, ham, history)`: the mixed gap
+profile Δ(i) and the last anomalous profile F(i) (MPS), the spin-resolved density
+profiles, the Hartree MPOs (`nothing` unless `include_hartree=true`), the last BdG
+density matrix and BdG `TBHamiltonian`, and one `(; iter, rms_error, rms_delta, rms_up,
+rms_dn, maxlinkdim_H, maxlinkdim_density, maxlinkdim_delta)` per iteration.
 """
 function scf_swave_superconducting(H0::TBHamiltonian, g::Number;
                                    initial_delta = 0.1,
@@ -938,6 +962,8 @@ Delta_i = -U F_i
 V_up    = -U (rho_dn - background)
 V_dn    = -U (rho_up - background)
 ```
+
+Returns the result of `scf_swave_superconducting` (see there for the fields).
 """
 function scf_swave_hubbard(H0::TBHamiltonian, U::Number;
                            pairing_sign::Real=-1.0,
@@ -965,6 +991,12 @@ Delta_dn(i) = pairing_sign * V * F_dn(i, i + distance)
 
 `eta_down=-1` gives a helical initial seed, while `eta_down=1` starts the two
 equal-spin channels with the same sign.
+
+Returns `(; converged, iterations, rms_error, delta_up_mps, delta_dn_mps,
+anomalous_up_mps, anomalous_dn_mps, density_mpo, ham, history)`: the mixed equal-spin
+gap profiles and the last anomalous profiles (MPS), the last BdG density matrix and BdG
+`TBHamiltonian`, and one `(; iter, rms_error, rms_up, rms_dn, maxlinkdim_H,
+maxlinkdim_density, maxlinkdim_delta_up, maxlinkdim_delta_dn)` per iteration.
 """
 function scf_pwave_equalspin(H0::TBHamiltonian, V::Number;
                              initial_up = 0.1,
@@ -1180,7 +1212,9 @@ For `:cdw` the default `interaction=:dense` passes the stored MPO directly to
 `scf_magnetic_hubbard` which dispatches on `U::Union{Number,MPO}`.
 
 Calling with `:swave` or `:pwave` raises an informative error — those channels
-require an explicit coupling constant.
+require an explicit coupling constant. Returns the result of the channel's driver
+(`scf_meanfield` for `:cdw`, `scf_magnetic_hubbard` for `:magnetic`); see their
+docstrings for the fields.
 """
 function get_scf(H0::TBHamiltonian, channel::Symbol;
                  interaction::Symbol = :dense,
@@ -1210,7 +1244,10 @@ Hmf = res.ham
 
 Supported channels are `:CDW`, `:magnetic`, `:swave`, and `:pwave`.
 The wrapper keeps the lower-level SCF routines available while providing a
-single `get_*` style entry point for notebooks.
+single `get_*` style entry point for notebooks. It returns the result of the channel's
+driver: `scf_meanfield` (`:cdw`), `scf_magnetic_hubbard` (`:magnetic`),
+`scf_swave_hubbard` (`:swave`) or `scf_pwave_equalspin` (`:pwave`); their docstrings
+list the fields, which differ by channel.
 
 **Keywords** (defaults; the channels a keyword reaches, if not all)
 - `interaction=:local` (`:local`, `:dense` or `:distance`), `distance=1`: CDW

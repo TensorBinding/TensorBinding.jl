@@ -267,3 +267,9 @@ end
         @test all(uc -> imag(C(uc)) == 0 && abs(C(uc)) < 1e-8, 1:H.N)
     end
 end
+
+@testset "scf_meanfield refuses max_scf_iter < 1" begin
+    # max_scf_iter = 0 ended in a MethodError (no best state to return) up to v0.1.1
+    H = get_Hamiltonian("chain_1d", 1.0; L = 3, scale = 2.5)
+    @test_throws ArgumentError get_scf(H, 1.0, :cdw; maxiters = 0, verbose = false)
+end

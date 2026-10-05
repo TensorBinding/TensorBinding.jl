@@ -340,7 +340,7 @@ function nh_reconstruct_spectral_mps(partials::AbstractVector{<:MPO}, n::Int,
     end
     A *= 2.0 / (pi^2 * (N + 1))
 
-    dos = inner(nh_ones_mps(siteinds(A))', A)
+    dos = inner(nh_ones_mps(siteinds(A)), A)
     return A, dos
 end
 
@@ -351,7 +351,8 @@ end
                          block_row=2, block_col=1) -> (A_mps, dos, partials)
 
 Convenience wrapper for the full non-Hermitian KPM spectral calculation at
-the reference point stored in `NH.z`.
+the reference point stored in `NH.z`. `n` is half the expansion: the NH recursion keeps
+the `2n` Chebyshev terms `P_0 … P_{2n-1}`.
 """
 function nh_spectral_function(NH::NonHermitianHamiltonian, n::Int;
                               scale::Union{Nothing,Real} = nothing,
@@ -531,7 +532,7 @@ function _nh_scalar_online(NH::NonHermitianHamiltonian, n::Int;
     Pkm2 = 0.0 * source
     Pkm1 = source   # P_1
 
-    _tr(P) = inner(ones_p',
+    _tr(P) = inner(ones_p,
                    extract_diagonal_to_mps(
                        contract_nh_block(P, NH.block_s; row=block_row, col=block_col)))
 
@@ -624,7 +625,7 @@ function _nh_diag_online(NH::NonHermitianHamiltonian, n::Int;
     end
 
     A_mps = A_mps * (2.0 / (π^2 * (N + 1)))
-    dos   = inner(nh_ones_mps(siteinds(A_mps))', A_mps)
+    dos   = inner(nh_ones_mps(siteinds(A_mps)), A_mps)
     return A_mps, dos
 end
 
@@ -779,15 +780,16 @@ Evaluate the NH KPM spectral weight on a rectangular complex energy grid.
 | `:stochastic`   | stochastic trace, `n_random` probes | `(xgrid, ygrid, Z)`            |
 
 - `:scalar` — full NH partial MPO recursion; total DOS. O(Ncheb × χ_P²).
-- `:mps` — dual-chain MPS at a single site (`probe_site`, 0-indexed). LDOS at
-  that site. O(χ_H × χ_ψ) per step.
+- `:mps` — dual-chain MPS at a single site (`probe_site`, 0-indexed). `Z` is the
+  LDOS at that site, not the total DOS of the other modes. O(χ_H × χ_ψ) per step.
 - `:diag` — same as `:scalar` but also extracts site-resolved diagonal MPS A(r,z).
   Extra return `Z_spatial` has shape `(H.N, ny, nx)` and is complex like `Z`; its
   sum over the sites is `Z`.
 - `:stochastic` — Monte Carlo trace: average over `n_random` random product-state
   probes. Total DOS estimate. O(n_random × Ncheb × χ_H × χ_ψ). No MPO×MPO products.
 
-Set `verbose=true` to print one progress line per Re(z) column.
+`n` is half the expansion: every mode uses `2n` Chebyshev terms (the progress line
+prints `Ncheb = 2n`). Set `verbose=true` to print one progress line per Re(z) column.
 If `scale` is omitted or zero, a single conservative scale is estimated from
 `nh_kpm_scale` and reused over the whole grid.
 """

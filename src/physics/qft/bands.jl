@@ -230,7 +230,11 @@ an `ArgumentError` instead.
 
 # k-point sampling keyword arguments
 - `xmin, xmax, num_x` : grid in x (1D) or kx (2D).  Default: full range, 10 pts.
-- `ymin, ymax, num_y` : grid in ky (2D only).
+- `ymin, ymax, num_y` : grid in ky (2D only). In 2D the kx and ky grids are zipped,
+                   not crossed: without `kpath` or `k_groups_override` the columns lie
+                   on the diagonal cut from `(xmin, ymin)` to `(xmax, ymax)` (see
+                   `kspace_sampling_plan`), not on a `num_x × num_y` grid; use `kpath`
+                   for band paths.
 - `num_avg`      : number of offset points averaged around each center (default 1).
 - `k_groups_override` : explicit k-point groups (e.g. from `kpath_2d`); bypasses
                    the grid parameters above (default `nothing`).

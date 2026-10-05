@@ -37,7 +37,11 @@ Rows are energies, columns are total momenta/groups. `Q_list` selects momenta
 directly. `Q_groups` (or alias `q_groups`) averages several momentum probes into
 one output column. `K_list`, `K_groups`, `k_groups`, `num_k`, `k_start`, and
 `k_end` are accepted as backward-compatible aliases; `num_q`, `q_start` and
-`q_end` fall back to `num_k = H.N`, `k_start = 1` and `k_end = H.N`.
+`q_end` fall back to `num_k = H.N`, `k_start = 1` and `k_end = H.N`. Momenta are
+1-indexed. With the same `num_q`, the default momenta here (a sampling plan of `num_q`
+coarse cells) and in `get_exciton_continuum` differ, e.g. `[1, 4, 7, 10, 13]` and
+`[1, 5, 8, 12, 16]` for `N = 16`, `num_q = 5`: pass `Q_list` to both to compare them
+at the same momenta.
 """
 function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                            Q_list           = nothing,
@@ -167,8 +171,9 @@ original `H::TBHamiltonian` supplies metadata (`sites`, `N`, `L`, `scale`,
 `center`) and the exciton site convention. The exciton continuum remains an
 MPS-KPM calculation: no exciton MPO-KPM / `get_bands` path is used.
 
-Rows are energies, columns are total momenta. If `k_list` is provided, those
-1-indexed relative momenta are used deterministically for every `Q`; otherwise
+Rows are energies, columns are total momenta (1-indexed; with the same `num_q` the
+default momenta differ from those of `get_exciton_bands`, see there). If `k_list` is
+provided, those 1-indexed relative momenta are used deterministically for every `Q`; otherwise
 `N_sample` compact random-phase trace probes are drawn for each `Q`. Each trace
 probe is a randomized superposition over all `|k,Q-k>` states, so this avoids a
 full KPM recursion for every explicit relative momentum.

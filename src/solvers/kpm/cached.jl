@@ -284,6 +284,15 @@ end
 _chebyshev_term(T, c::Number) = T * c
 _chebyshev_term(T, c::Tuple)  = foldl(*, c; init=T)
 
+"""
+    get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8, kernel=:jackson,
+                        lambda=4.0) -> MPO
+
+The KPM density matrix θ(fermi − H̃), the projector onto the states below `fermi`, from
+a Chebyshev list `Tn_list` of the rescaled H̃ = (H − center)/scale, expanded with the
+first `N` terms. `fermi` is a rescaled energy in (−1, 1), not a physical one: pass
+`(ϵF − H.center) / H.scale`, as `get_density` does.
+"""
 function get_density_from_Tn(Tn_list, N; fermi=0, maxdim=40, cutoff=1e-8,
                               kernel=:jackson, lambda=4.0)
     jackson_kernel = _kpm_kernel(N, kernel; lambda=lambda)

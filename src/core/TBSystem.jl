@@ -428,8 +428,12 @@ Common keyword arguments
                 (dense spectrum of the model at a small size), `:geometry`
                 (row-sum bound) or `:dmrg` (DMRG spectral bounds of `H`, which also
                 set `center`)
-- `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`)
-- `maxdim`    : maximum MPO bond dimension after construction (default `15`)
+- `tol`       : QTCI tolerance and truncation cutoff (default `1e-8`); one value
+                sets both
+- `maxdim`    : maximum MPO bond dimension after construction (default `15`). It can
+                bind: `"qc2dsquare"` needs bond dimension 16 at `L = 8` and 17 at
+                `L = 10`, where the default truncates its MPO (relative error 1.4e-3
+                and 1.1e-2); pass a larger `maxdim` for such models
 - `ref_sites` : the `L` position qubits to build on (default `nothing`): they replace the
                 MPO's position site indices, so that Hamiltonians built with the
                 same `ref_sites` share `Index` objects; the multi-atom lattices keep

@@ -58,8 +58,10 @@ TensorBinding's KPM, DMRG, and spectral tools.
                           `build_interaction_op_exciton`.)
 - `maxbonddim_quantics` : QTCI max bond dimension for `on_site`. Default `100`.
 - `tol`                 : MPO assembly truncation tolerance. Default `1e-8`.
-- `cutoff`              : SVD cutoff for MPO arithmetic. Default `1e-8`.
-- `maxdim`              : max bond dimension of the final MPO. Default `200`.
+- `cutoff`, `maxdim`    : accepted but unused: `Exciton_Hamiltonian` assembles the MPO
+                          with `tol` only and does not truncate the result (passing
+                          `cutoff=0.5, maxdim=1` gives the same MPO). Defaults `1e-8`
+                          and `200`.
 """
 function exciton_hamiltonian(geometry::String, params, Ufunc;
                               L::Int,
@@ -136,6 +138,9 @@ band edge modulation, compressed via QTCI. Applied as `+V` to the electron secto
 and `−V` to the valence sector, so that the hole also feels `+V` after the
 `H_c − H_v` subtraction (type-I semiconductor convention: both carriers confined).
 `tol_quantics` and `maxbonddim_quantics` control the QTCI compression of `V`.
+
+`tol` is the cutoff of the sums that add `V`; the keywords `cutoff` and `maxdim` are
+accepted but unused (the returned MPO is not truncated).
 
 Examples
 --------

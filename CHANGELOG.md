@@ -118,6 +118,14 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Changed
 
+- **Documentation of what stays.** The docstrings list the result fields of every SCF
+  driver and of `get_scf`, and state behaviours that are kept as they are:
+  `get_Hamiltonian`'s default `maxdim=15` can truncate (`"qc2dsquare"` loses 1.4e-3 at
+  L = 8 and 1.1e-2 at L = 10), `exciton_hamiltonian`/`Exciton_Hamiltonian` ignore
+  `cutoff` and `maxdim`, the non-Hermitian `n` is half the expansion (`2n` terms), the
+  default momenta of `get_exciton_bands` and `get_exciton_continuum` differ, 2D
+  `get_bands` without `kpath` samples the diagonal cut, and `get_density_from_Tn`'s
+  `fermi` is a rescaled energy.
 - **Named results for optional extras.** With `return_maxlinkdim=true` and/or
   `return_moments=true`, `get_ldos_spatial_mps_gpu` returns `(; ldos, maxlinkdims)`,
   `(; ldos, moments)` or `(; ldos, moments, maxlinkdims)`; `get_exciton_ldos_spatial` and
@@ -416,6 +424,12 @@ constructor that takes all 21 fields in order, caches included, remains.
 
 ### Fixed
 
+- `scf_meanfield(...; max_scf_iter=0)` (and `get_scf(H0, U, :cdw; maxiters=0)`) throws an
+  `ArgumentError`; it ended in a `MethodError` (no best state to return).
+- Three `inner` calls of the non-Hermitian KPM (`nh_reconstruct_spectral_mps` and the
+  `:scalar` and `:diag` paths behind `nh_spectral_function` and `nh_spectrum_grid`)
+  relied on ITensors' deprecated index matching (a "will be an error" warning); they now
+  contract on matching site indices. The results are unchanged.
 - The warm-start example in the `get_green_krylov` docstring passed the physical `ω` and
   `η` to `get_Green_retarded_from_Tn`, which takes them rescaled into the KPM window, and
   left out the `1/scale` factor of the result (as `get_bubble_mpo` applies it).
