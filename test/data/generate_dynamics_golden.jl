@@ -16,7 +16,11 @@
 # Line 4 of the data file records the git tree hash of the working-tree src/,
 # i.e. the src/ that the regenerating commit will contain. It does not move when
 # only tests or docs change, so such a rerun reproduces the file byte for byte
-# (floating-point results are written with `repr`, which round-trips exactly).
+# (floating-point results are written with `repr`, which round-trips exactly) up
+# to rounding: the rerun for 8d4eb10 also moved the three krylov_green cases by up
+# to 5e-14, although src/solvers/Krylov.jl had not changed. After a rerun, keep the
+# stored lines of the cases whose code did not change, so that the data diff shows
+# only the cases the change moves.
 #
 # Regenerate ONLY when a behaviour change is intentional. Do it in the same
 # commit as the change, review the diff of dynamics_golden.jl case by case, and
