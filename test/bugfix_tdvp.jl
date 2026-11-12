@@ -96,4 +96,13 @@ end
     ψf = @test_logs (:warn, r"tdvp_evolve: reverse_step=false") tdvp_evolve(H, ψ0, dt; normalize = false, reverse_step = false)
     @test norm(ψf - ex1) > 0.01
     @test_logs (:warn, r"evolve_with_tdvp: reverse_step=false") evolve_with_tdvp(H, ψ0, 1, dt; reverse_step = false)
+
+    # check_tdvp_vs_U_mpo names its own keyword
+    H2 = get_Hamiltonian("chain_1d", 1.0; L = 2)
+    seed!(3)
+    U2 = build_tdvp_propagator_mpo(H2, dt)
+    @test_logs (:warn, r"check_tdvp_vs_U_mpo: tdvp_reverse_step=false") match_mode=:any redirect_stdout(devnull) do
+        TensorBinding.check_tdvp_vs_U_mpo(H2, U2, dt; test_states = [0], tdvp_reverse_step = false,
+                                          print_sample_amplitudes = false)
+    end
 end

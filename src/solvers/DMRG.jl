@@ -82,6 +82,17 @@ v0.2.0: ‖ΔK‖ = 9.7e-5 ≈ η²). The default is `1e-8` for η ≥ 0.1 (and 
 and `1e-4 η⁴` below, which assumes eigenvalues of H − ω of order one: for a wider
 spectrum pass a smaller `cutoff_K`. A `cutoff_K` of η⁴ or more is used as given and
 warns.
+
+!!! warning "Large systems"
+    The norm of K grows like 2^L, so a term that lives on a few sites, such as the
+    missing bond at the end of an open chain, falls below the cutoff in large systems:
+    the product `apply(H − ω, H − ω)` then drops it once `cutoff_K` exceeds about
+    `0.3·4^(−L)`. On a uniform chain (ω = 0.05) `⟨0|K|0⟩` comes out as 2.01 instead of
+    1.01, K wrong by t² at both ends, from L ≈ 14 with the default at η ≥ 0.1 and at
+    L = 20 with the default at η = 0.01. A cutoff below that bound keeps K exact: the
+    default divided by 2^L, which stays below it up to L = 24 at η ≥ 0.1, gives errors of
+    1e-10 at L = 20 and 24. `build_K` warns once when `cutoff_K` is above `0.3/D²`, D the
+    dimension of the site space (2^L for qubits), and uses the value as given.
 """
 function build_K(H_mpo::MPO, sites, ω::Real, η::Real;
                  maxdim_K::Int  = 200,
@@ -90,6 +101,12 @@ function build_K(H_mpo::MPO, sites, ω::Real, η::Real;
     η != 0 && cutoff_K >= η^4 &&
         @warn "build_K: cutoff_K = $cutoff_K is not below η⁴ = $(η^4); the truncation of " *
               "K = (H − ω)² + η² can drop its η² term (the default is min(1e-8, 1e-4η⁴))." maxlog=1
+    D = prod(Float64 ∘ dim, sites)
+    cutoff_K > 0.3 / D^2 &&
+        @warn "build_K: cutoff_K = $cutoff_K on $(length(sites)) sites can drop the terms of K " *
+              "that live on a few sites, such as the end bond of an open chain (K wrong by t² " *
+              "there); keep it well below 0.3/D² = $(0.3 / D^2) (D the dimension of the " *
+              "site space)." maxlog=1
     I_mpo   = MPO(sites, "Id")
     H_shift = +(H_mpo, (-ω) * I_mpo; cutoff = cutoff_K)
     H_sq    = apply(H_shift, H_shift; cutoff = cutoff_K, maxdim = maxdim_K)

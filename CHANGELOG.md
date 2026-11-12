@@ -26,7 +26,8 @@ bugs without breaking the API.
   than `√tol · max|f|`; up to 2^20 points every point is compared and a wrong build (or a
   throw) is replaced by the TT-SVD of the values, above that a sample is compared (ends,
   carry boundaries, a golden-ratio stride) and a wrong build is redone from the missed
-  points as pivots, then checked again (an error if it still fails). As in
+  points as pivots, then checked again (an error if it still fails); a feature between
+  the sampled points goes unchecked there, which an `@info` says once. As in
   `hopping2MPO(...; check=true)`, a build that passes is returned unchanged.
 
 ### Changed
@@ -80,7 +81,8 @@ bugs without breaking the API.
   one-term `τ_z ⊗ H` it got before, so every result with a real Hamiltonian is unchanged
   bit for bit (no golden case moves). The `bdg_spin_hamiltonian` docstring named the basis
   `(c↑, c↓, c†↓, −c†↑)`, in which its `iσ_y` pairing would vanish; it now names the basis
-  the code uses.
+  the code uses. `H` must be Hermitian, as before: for a non-Hermitian `H` the hole block
+  would be `−Hᵀ`, which neither build gives (now documented).
 - **`build_K` and `dmrg_spectral`: `cutoff_K` defaults to `min(1e-8, 1e-4·η⁴)`.** The
   cutoff is relative to the squared norm of each sum and product, and `η² I` is the
   smallest part of `K = (H − ω)² + η²`, so the fixed default `1e-8` truncated most of it
@@ -89,6 +91,12 @@ bugs without breaking the API.
   bit; below η = 0.1, K and the DMRG results built on it move. An explicit
   `cutoff_K ≥ η⁴` is used as given and warns once. The default assumes eigenvalues of
   `H − ω` of order one; pass a smaller `cutoff_K` for a wider spectrum.
+  It does not fix large systems: the norm of K grows like 2^L, and once `cutoff_K`
+  exceeds about `0.3·4^(−L)` the product drops terms that live on a few sites, such as the
+  end bond of an open chain (K wrong by t² there: from L ≈ 14 with the default at
+  η ≥ 0.1, the v0.2.0 behaviour, and at L = 20 with the default at η = 0.01). `build_K`
+  now warns once in that regime and uses the value as given; the docstring gives the
+  bound (a cutoff below it keeps K exact: errors of 1e-10 at L = 20 and 24).
 
 ### Fixed
 

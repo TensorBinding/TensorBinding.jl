@@ -24,4 +24,14 @@ using TensorBinding: get_Hamiltonian, add_onsite!, build_K, get_matrix
         @test (@test_logs min_level=Logging.Warn Kd(η)) == Kd(η; cutoff_K=1e-8)
     end
     @test TensorBinding._default_cutoff_K(0.05) ≈ 1e-4 * 0.05^4
+
+    # Large systems: a cutoff above about 0.3·4^(-L) drops the end bond of an open chain
+    # (<0|K|0> = 2.01 instead of 1.01 at L = 16 with 1e-8); build_K warns there, and a
+    # cutoff below the bound keeps K exact.
+    L16 = 16
+    H16 = get_Hamiltonian("chain_1d", 1.0; L=L16)
+    ψ0  = TensorBinding.binary_to_MPS(0, L16, H16.sites)
+    @test_logs (:warn, r"live on a few sites") build_K(H16.mpo, H16.sites, ω, 0.1)
+    K16 = build_K(H16.mpo, H16.sites, ω, 0.1; cutoff_K = 1e-8 / 2^L16)
+    @test abs(real(inner(ψ0', K16, ψ0)) - (ω^2 + 1 + 0.1^2)) < 1e-8
 end

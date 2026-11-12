@@ -260,7 +260,10 @@ _mpo_is_real(M::MPO) = all(T -> eltype(T) <: Real || all(isreal, Array(T, inds(T
 # one term as before, so real Hamiltonians give the same MPO bit for bit. Up to v0.2.0
 # every M got τz ⊗ M, whose hole block −M flips the sign of the imaginary entries (σ_y
 # terms, Peierls phases, complex hoppings). `dag` conjugates each tensor and keeps the
-# primes, so `-dag(M)` is −M*.
+# primes, so `-dag(M)` is −M*. The hole block of a general quadratic term is −Mᵀ, which is
+# −M* only for a Hermitian M: a non-Hermitian term (loss, nonreciprocal hopping) would need
+# −Mᵀ, which neither this nor the τz build gives, so BdG of non-Hermitian Hamiltonians is
+# not supported.
 function _nambu_normal_block(M::MPO, s::Index, side::Symbol; cutoff::Real)
     attach = side === :pre ? prepend_nambu : postpend_nambu
     _mpo_is_real(M) && return attach(M, s, :tz)
@@ -390,7 +393,8 @@ The BdG structure, in the Nambu basis `(c↑, c↓, c†↑, c†↓)` (spinless
 with `P_p`, `P_h` the particle and hole projectors of the Nambu index. For a real `H`
 the first two terms are `τ_z ⊗ H`, built as one term; up to v0.2.0 every `H` got
 `τ_z ⊗ H`, which is wrong when `H` has imaginary entries (a Zeeman field along y,
-Peierls phases, complex hoppings).
+Peierls phases, complex hoppings). `H` must be Hermitian: for a non-Hermitian `H` (loss,
+nonreciprocal hopping) the hole block is `−Hᵀ`, which is not built.
 
 - **Spinless + p-wave** (`type=:pwave`, or auto-selected when spinless + `:swave`):
   `H_pair = Δ·(K_forward − K_backward)`, the antisymmetric nearest-neighbour

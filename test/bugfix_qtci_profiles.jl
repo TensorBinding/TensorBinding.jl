@@ -30,6 +30,19 @@ _diag(M::MPO, sites) = _TBq._mps_dense_vector(extract_diagonal_to_mps(M), sites)
         @test _TBq._mps_dense_vector(get_mps(1, s1, [2.0, -1.0]), s1) ≈ [2.0, -1.0]
         @test_throws DimensionMismatch get_diagonal_mpo(L, s, vbox[1:end-1])
         @test maxlinkdim(get_mps(L, s, vbox)) <= 4                         # a box is low rank
+        # abstractly typed vectors
+        s3 = siteinds("Qubit", 3)
+        @test _TBq._mps_dense_vector(get_mps(3, s3, Any[1.0, 2, 3, 4, 5, 6, 7, 8]), s3) ≈ 1.0:8.0
+        @test _TBq._mps_dense_vector(get_mps(3, s3, Real[1, 2.5, 3, 4, 5, 6, 7, 8]), s3) ≈ [1, 2.5, 3, 4, 5, 6, 7, 8]
+        # L = 16: plain-array TT-SVD and readout, so ITensors prints no order-16 contraction warning
+        L16 = 16; s16 = siteinds("Qubit", L16)
+        v16 = [x == 40_000 ? 1.0 : 0.0 for x in 1:2^L16]
+        path, io = mktemp()
+        m16 = redirect_stdout(() -> get_mps(L16, s16, v16), io)
+        d16 = redirect_stdout(() -> _TBq._mps_dense_vector(m16, s16), io)
+        close(io)
+        @test isempty(read(path, String)); rm(path)
+        @test maximum(abs.(d16 .- v16)) < 1e-10
     end
 
     @testset "check=true on a function" begin

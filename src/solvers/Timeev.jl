@@ -57,8 +57,8 @@ end
 # projector splitting needs: terms of H are then counted twice and every step is wrong
 # at O(dt). It was the default of the state-evolution functions up to v0.2.0; passing it
 # now warns once per function (build_tdvp_propagator_mpo has its own warning).
-_warn_no_reverse_step(fname, reverse_step) =
-    reverse_step || @warn "$fname: reverse_step=false skips TDVP's backward bond evolution " *
+_warn_no_reverse_step(fname, reverse_step; keyword = "reverse_step") =
+    reverse_step || @warn "$fname: $keyword=false skips TDVP's backward bond evolution " *
                           "and counts terms of H twice; each step is wrong at O(dt)." maxlog=1 _id=Symbol(fname)
 
 # The trajectory loop of every evolve_* function: returns [x0, x1, …, x_nsteps]
@@ -564,6 +564,7 @@ function check_tdvp_vs_U_mpo(
     print_sample_amplitudes = true,
     sample_amplitudes = [0, 1, 2, 3],
 )
+    _warn_no_reverse_step("check_tdvp_vs_U_mpo", tdvp_reverse_step; keyword = "tdvp_reverse_step")
     println("Checking TDVP evolution against applying U_mpo")
     println("L = $L, dt = $dt")
     println()
