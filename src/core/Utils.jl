@@ -21,6 +21,12 @@
 # 1. Qubit operator extensions (defined once to avoid duplicate definitions)
 # ============================================================
 
+# Naming convention: spin flips with |0⟩ = ↑ (rows are outputs). sigma_plus = |0⟩⟨1|
+# therefore LOWERS the bit value (1 → 0) and sigma_minus = |1⟩⟨0| raises it; sigma_u and
+# sigma_d project on |0⟩ and |1⟩. The +1 shift is written with sigma_minus on the bit it
+# raises and sigma_plus on the less significant bits it clears (pairingNNN,
+# physics/Supercond.jl). The companion paper (arXiv:2607.00991, App. A) names the
+# operators by the bit value instead (↓ = 0, ↑ = 1): its τ̂⁺ = |1⟩⟨0| is sigma_minus here.
 ITensors.op(::OpName"sigma_plus", ::SiteType"Qubit") =
     [0 1
      0 0]
@@ -33,7 +39,7 @@ ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
 ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 
 # ============================================================
-# 2. Shift MPOs: (Q f)(x) = f(x + q) on a binary-encoded chain
+# 2. Shift MPOs: |n⟩ → |n + q⟩ on a binary-encoded chain, so (Qψ)(x) = ψ(x − q)
 # ============================================================
 
 """

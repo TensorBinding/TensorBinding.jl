@@ -70,6 +70,8 @@ spin_index() = Index(2, "Spin")
 
 # 2×2 spin-½ operator matrices, ComplexF64 throughout for uniformity.
 # Basis: |↑⟩ = 1, |↓⟩ = 2.
+# Mind the factor: :Sx, :Sy, :Sz are spin-½ operators (½σ) and :Sp, :Sm the spin flips,
+# but :iSy and :miSy are the full ±iσ_y (the singlet-pairing factor), not i·S_y = (i/2)σ_y.
 const _SPIN_OPS = Dict{Symbol, Matrix{ComplexF64}}(
     :Id   => [1   0;  0   1],
     :Pup  => [1   0;  0   0],          # |↑⟩⟨↑|  — spin-up projector
@@ -146,6 +148,10 @@ Equivalent to `prepend_op(H, s, op)`.
 | `:miSy` | −i·σ_y                 | h.c. of singlet pairing          |
 
 Basis: state 1 = ↑, state 2 = ↓.
+
+Mind the factor: `:Sx`, `:Sy` and `:Sz` are spin-½ operators (½σ), but `:iSy` and
+`:miSy` are the full ±iσ_y, not i·S_y = (i/2)σ_y. The singlet pairing and the Rashba
+term of `add_soc!` use them as such.
 """
 prepend_spin(H::MPO, s::Index, op::Symbol)           = prepend_op(H, s, op)
 prepend_spin(H::MPO, s::Index, mat::AbstractMatrix)  = prepend_op(H, s, mat)

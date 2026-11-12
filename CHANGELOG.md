@@ -7,6 +7,15 @@ bugs without breaking the API.
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented conventions.** The spin table of `prepend_spin` states the factors:
+  `:Sx`, `:Sy` and `:Sz` are ½σ, but `:iSy` and `:miSy` are the full ±iσ_y, not i·S_y.
+  The qubit operators state their naming: `sigma_plus` = |0⟩⟨1| lowers the bit value
+  (spin naming with |0⟩ = ↑), the opposite of the bit naming in the companion paper,
+  whose τ̂⁺ is `sigma_minus`. The shift-MPO section of `core/Utils.jl` now says
+  `|n⟩ → |n + q⟩`, so `(Qψ)(x) = ψ(x − q)`; it said `(Q f)(x) = f(x + q)`.
+
 ## [0.2.0] — 2026-10-05
 
 The code reorganisation tracked in `docs/dev/REORGANISATION_TODO.md` (Tiers 1–3), the
