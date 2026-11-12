@@ -53,6 +53,14 @@ function _tdvp_step(H, psi, dt; nsite, maxdim, cutoff, normalize, reverse_step,
     )
 end
 
+# reverse_step = false skips TDVP's backward evolution of the bond tensor, which the
+# projector splitting needs: terms of H are then counted twice and every step is wrong
+# at O(dt). It was the default of the state-evolution functions up to v0.2.0; passing it
+# now warns once per function (build_tdvp_propagator_mpo has its own warning).
+_warn_no_reverse_step(fname, reverse_step) =
+    reverse_step || @warn "$fname: reverse_step=false skips TDVP's backward bond evolution " *
+                          "and counts terms of H twice; each step is wrong at O(dt)." maxlog=1 _id=Symbol(fname)
+
 # The trajectory loop of every evolve_* function: returns [x0, x1, …, x_nsteps]
 # as a Vector{T}, with x_step = advance(step, x_{step-1}). `snapshot` makes the
 # stored copies and the working copy of x0: `copy` for the MPS loops, `deepcopy`
@@ -255,13 +263,18 @@ end
 
 """
     tdvp_evolve(H, psi, dt; maxdim=200, cutoff=1e-10, normalize=true,
-                reverse_step=false, outputlevel=0, nsite=2) -> MPS
+                reverse_step=true, outputlevel=0, nsite=2) -> MPS
 
 Apply one TDVP step to `psi` under Hamiltonian `H` for time `dt`.
 
 `H` must already carry the `-im` prefactor for Schrödinger evolution.
 When `normalize=true` the output is normalised (`tdvp` normalises the state at the
 end of each half-sweep).
+
+`reverse_step` evolves the bond tensor backwards between site updates, as the TDVP
+projector splitting requires (the ITensorMPS default). `false` counts terms of `H`
+twice, so the step is wrong at O(dt); it warns. The default was `false` up to v0.2.0
+(see the CHANGELOG); pass `reverse_step=false` to reproduce those results.
 
 A `TBHamiltonian` overload applies `-im` internally:
 `tdvp_evolve(H::TBHamiltonian, psi, dt; ...)`.
@@ -273,10 +286,11 @@ function tdvp_evolve(
     maxdim = 200,
     cutoff = 1e-10,
     normalize = true,
-    reverse_step = false,
+    reverse_step = true,
     outputlevel = 0,
     nsite = 2,
 )
+    _warn_no_reverse_step("tdvp_evolve", reverse_step)
     return _tdvp_step(
         H,
         psi,
@@ -337,13 +351,15 @@ end
 
 """
     evolve_with_tdvp(H, psi0, nsteps, dt; normalize_each_step=true, maxdim=200,
-                     cutoff=1e-10, reverse_step=false, outputlevel=0, nsite=2)
+                     cutoff=1e-10, reverse_step=true, outputlevel=0, nsite=2)
         -> Vector{MPS}
 
 Run a TDVP loop for `nsteps` steps of size `dt` under a fixed Hamiltonian `H`,
 returning `[psi(0), psi(dt), ..., psi(nsteps*dt)]`.
 
-`H` must carry the `-im` prefactor for Schrödinger evolution.
+`H` must carry the `-im` prefactor for Schrödinger evolution. `reverse_step` is as in
+[`tdvp_evolve`](@ref): `true` by default (it was `false` up to v0.2.0, which is wrong at
+O(dt) per step and now warns).
 
 A `TBHamiltonian` overload applies `-im` internally:
 `evolve_with_tdvp(H::TBHamiltonian, psi0, nsteps, dt; ...)`.
@@ -352,10 +368,11 @@ function evolve_with_tdvp(H, psi0, nsteps, dt;
     normalize_each_step = true,
     maxdim = 200,
     cutoff = 1e-10,
-    reverse_step = false,
+    reverse_step = true,
     outputlevel = 0,
     nsite = 2,
 )
+    _warn_no_reverse_step("evolve_with_tdvp", reverse_step)
     return _trajectory(psi0, nsteps, MPS) do _, psi
         return _tdvp_step(
             H,
@@ -374,7 +391,7 @@ end
 
 """
     evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt; normalize_each_step=true,
-                             maxdim=200, cutoff=1e-10, reverse_step=false,
+                             maxdim=200, cutoff=1e-10, reverse_step=true,
                              outputlevel=0, nsite=2, krylovdim=20, tol=1e-10)
         -> Vector{MPS}
 
@@ -384,7 +401,8 @@ TDVP loop for a time-dependent Hamiltonian `H(t)`.
 Hamiltonian is frozen at the midpoint `t + dt/2` (midpoint rule).  `Hoft` must
 return the physical Hamiltonian; the `-im` prefactor is applied internally.
 `krylovdim` and `tol` go to the TDVP exponentiation step (`updater_kwargs`);
-the other keywords are as in `evolve_with_tdvp`.
+the other keywords are as in `evolve_with_tdvp` (`reverse_step=true` by default; it was
+`false` up to v0.2.0).
 
 Returns `[psi(0), psi(dt), ..., psi(nsteps*dt)]`.
 """
@@ -392,12 +410,13 @@ function evolve_with_tdvp_timedep(Hoft, psi0, nsteps, dt;
     normalize_each_step = true,
     maxdim = 200,
     cutoff = 1e-10,
-    reverse_step = false,
+    reverse_step = true,
     outputlevel = 0,
     nsite = 2,
     krylovdim = 20,
     tol = 1e-10,
 )
+    _warn_no_reverse_step("evolve_with_tdvp_timedep", reverse_step)
     return _trajectory(psi0, nsteps, MPS) do step, psi
         t_mid = (step - 1) * dt + dt / 2
         Hmid = Hoft(t_mid)
@@ -500,7 +519,7 @@ end
     check_tdvp_vs_U_mpo(H, U_mpo, dt, L, sites;
                         test_states=[0, 1, 3, 7, 13, 29, 57, 2^L - 1],
                         tdvp_maxdim=200, tdvp_cutoff=1e-10, tdvp_normalize=true,
-                        tdvp_reverse_step=false, tdvp_outputlevel=0, tdvp_nsite=2,
+                        tdvp_reverse_step=true, tdvp_outputlevel=0, tdvp_nsite=2,
                         apply_maxdim=500, apply_cutoff=1e-12,
                         print_sample_amplitudes=true, sample_amplitudes=[0, 1, 2, 3])
         -> (max_overlap_error, max_phase_error)
@@ -520,10 +539,10 @@ Prints per-state overlap errors and phase-aligned distances, then returns the ma
 
 The reference is one TDVP step from the bare basis state, so it has the errors described
 in `build_tdvp_propagator_mpo`: it drops the hops that flip three or more qubits, and
-with the default `tdvp_reverse_step=false` it also counts terms of `H` twice.  An error
-of order `dt` therefore does not mean `U_mpo` is wrong (chain_1d, L = 4, `dt = 0.05`: a
-phase error of 0.056 for a `U_mpo` within 8e-5 of `exp(-iH dt)`).  At small L, compare
-with a dense `exp(-iH dt)` instead.
+with `tdvp_reverse_step=false` (the default up to v0.2.0) it also counts terms of `H`
+twice.  An error of order `dt` therefore does not mean `U_mpo` is wrong (chain_1d, L = 4,
+`dt = 0.05`, `tdvp_reverse_step=false`: a phase error of 0.056 for a `U_mpo` within 8e-5
+of `exp(-iH dt)`).  At small L, compare with a dense `exp(-iH dt)` instead.
 
 The `TBHamiltonian` method applies `-im` internally and takes `L`, `sites` from `H`.
 """
@@ -537,7 +556,7 @@ function check_tdvp_vs_U_mpo(
     tdvp_maxdim = 200,
     tdvp_cutoff = 1e-10,
     tdvp_normalize = true,
-    tdvp_reverse_step = false,
+    tdvp_reverse_step = true,
     tdvp_outputlevel = 0,
     tdvp_nsite = 2,
     apply_maxdim = 500,

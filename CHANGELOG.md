@@ -35,6 +35,25 @@ bugs without breaking the API.
   textbook kernel for `Ncheb − 1` moments (the last weight is zero). Results are
   unchanged.
 
+### Changed results
+
+- **TDVP state evolution defaults to `reverse_step=true`.** `tdvp_evolve`,
+  `evolve_with_tdvp`, `evolve_with_tdvp_timedep`, `get_state_amplitude_trajectory_gpu`
+  and the reference step of `check_tdvp_vs_U_mpo` (`tdvp_reverse_step`) defaulted to
+  `false`, which skips TDVP's backward evolution of the bond tensor and counts terms of
+  `H` twice: every step was wrong at O(dt). On a full-rank state of a 3-site chain one
+  step of `dt = 0.05` was off by 0.07 in norm (0.21 after three steps); with the backward
+  step TDVP matches `exp(-iH dt)` to 1e-15. `build_tdvp_propagator_mpo` already defaulted
+  to `true` (since v0.1.1), and ITensorMPS does. Passing `reverse_step=false` reproduces
+  the old results and warns once per function. The example
+  `examples/dynamics/propagator_vs_tdvp_heatmaps.jl` now uses `true` as well.
+  Regenerated golden cases: the ten TDVP cases of `test/data/dynamics_golden.jl`
+  (`tdvp_evolve_*`, `evolve_with_tdvp_*`, and `basis_amplitude` and
+  `phase_aligned_distance`, whose states come from `tdvp_evolve`), moved by 0.04 to 0.26,
+  and the five `state_traj_*` cases of `test/data/gpu_golden.jl` (with the new
+  `--only` option of its generator, which reruns the named cases and keeps every other
+  stored entry).
+
 ### Fixed
 
 - The `add_soc!` docstring gave the Rashba term as `λ·(S_y ⊗ K_u − S_y ⊗ K_d)`, which

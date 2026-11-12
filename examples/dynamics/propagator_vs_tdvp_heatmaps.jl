@@ -44,7 +44,7 @@ function compare_propagator_and_tdvp_heatmaps(U_mpo, H, psi0, L, sites, nsteps;
     mpo_maxdim = 10_000,
     tdvp_maxdim = 200,
     tdvp_cutoff = 1e-10,
-    tdvp_reverse_step = false,
+    tdvp_reverse_step = true,
     tdvp_outputlevel = 0,
     tdvp_nsite = 2,
 )
