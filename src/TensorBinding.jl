@@ -18,8 +18,8 @@ using ITensorMPS
 using Quantics
 using QuanticsTCI
 using QuanticsGrids
-using TensorCrossInterpolation
-import TensorCrossInterpolation as TCI
+import TensorCrossInterpolation          # import, not using: its exports contract and
+import TensorCrossInterpolation as TCI   # evaluate would be ambiguous names in this module
 using FFTW
 using Base.Threads
 

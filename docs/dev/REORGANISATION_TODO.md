@@ -459,8 +459,10 @@ the affected golden cases in the same commit.
       `cutoff`/`maxdim`; NH `n` is half the expansion; the default exciton Q grids of
       bands and continuum differ; 2D `get_bands` without `kpath` samples the diagonal cut;
       `get_density_from_Tn`'s `fermi` is rescaled. *6130261.*
-- [ ] `using TensorCrossInterpolation` in the module makes `contract` and `evaluate`
-      ambiguous there; nothing calls them bare today (a future bare call would throw).
+- [x] `using TensorCrossInterpolation` in the module made `contract` and `evaluate`
+      ambiguous there; nothing called them bare (a future bare call would have thrown).
+      It is now `import TensorCrossInterpolation`, which keeps the module name for the
+      four qualified calls in `core/Hamiltonian.jl` and `core/Utils.jl` (2026-11-12).
 
 ### Found by the first CI run of the v0.2.0 release (2026-10-05)
 
