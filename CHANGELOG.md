@@ -7,14 +7,29 @@ bugs without breaking the API.
 
 ## [Unreleased]
 
+### Added
+
+- `add_soc!` keyword `boundary` for the Rashba term: `:periodic` (the default, as
+  before) or `:open`, which drops the bond between the last and the first site. The
+  default chain, `get_Hamiltonian("chain_1d", t; L)`, is open, so a Rashba term that
+  matches it needs `boundary=:open`.
+
 ### Changed
 
+- `add_soc!(type=:rashba)` warns on a 2D Hamiltonian (`H.Lx` set): the term couples
+  neighbours along the linear position index only, i.e. along x and across the row
+  ends, with no y bonds. Results are unchanged.
 - **Documented conventions.** The spin table of `prepend_spin` states the factors:
   `:Sx`, `:Sy` and `:Sz` are ½σ, but `:iSy` and `:miSy` are the full ±iσ_y, not i·S_y.
   The qubit operators state their naming: `sigma_plus` = |0⟩⟨1| lowers the bit value
   (spin naming with |0⟩ = ↑), the opposite of the bit naming in the companion paper,
   whose τ̂⁺ is `sigma_minus`. The shift-MPO section of `core/Utils.jl` now says
   `|n⟩ → |n + q⟩`, so `(Qψ)(x) = ψ(x − q)`; it said `(Q f)(x) = f(x + q)`.
+
+### Fixed
+
+- The `add_soc!` docstring gave the Rashba term as `λ·(S_y ⊗ K_u − S_y ⊗ K_d)`, which
+  is not Hermitian; the code builds `λ·iσ_y ⊗ (K_u − K_d)`, as the docstring now says.
 
 ## [0.2.0] — 2026-10-05
 

@@ -488,17 +488,25 @@ end
 # ============================================================
 
 """
-    add_soc!(H, λ; type=:rashba, direction=:z, tol=1e-8, maxdim=200,
-             position=nothing, check=true) -> H
+    add_soc!(H, λ; type=:rashba, direction=:z, boundary=:periodic, tol=1e-8,
+             maxdim=200, position=nothing, check=true) -> H
 
 Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed,
 placing the spin index at `position` (default `H.aux_side`).
 
 `type`:
 - `:rashba` — nearest-neighbour Rashba SOC on the position chain:
-              `λ · (S_y ⊗ K_u − S_y ⊗ K_d)` where `K_u/K_d` are the ±1 shift
-              operators.  `λ` must be a scalar.  Breaks SU(2) spin symmetry
-              while preserving time-reversal.
+              `λ · iσ_y ⊗ (K_u − K_d)`, where `K_u`/`K_d` are the ±1 shift
+              operators and `iσ_y = [0 1; −1 0]` is the spin factor `:iSy`; both
+              factors are anti-Hermitian, so the term is Hermitian for real `λ`.
+              `λ` must be a scalar.  Breaks SU(2) spin symmetry while preserving
+              time-reversal.  `boundary` sets the bond between the last and the
+              first site: `:periodic` (the default, as before) includes it, `:open`
+              drops it; pass `boundary=:open` on an open chain, such as the default
+              `get_Hamiltonian("chain_1d", t; L)`.  1D only: on a 2D Hamiltonian
+              (`H.Lx` set) the term couples neighbours along the linear position
+              index, i.e. along x and across the row ends, with no y bonds, and
+              `add_soc!` warns.
 - `:ising`  — diagonal Ising SOC `λ(i) · S_z` (equivalent to a position-dependent
               Zeeman along z; useful for Kane–Mele type models).
 - `:custom` — arbitrary position-space MPO `λ_mpo` tensor-producted with the
@@ -510,10 +518,14 @@ placing the spin index at `position` (default `H.aux_side`).
               itself be Hermitian: `λ(i,j) = conj(λ(j,i))`.  Diagonal and
               real-symmetric inputs satisfy this automatically.
 
+`boundary` (`:periodic` or `:open`; `:pbc`/`:obc` are accepted too) is read by `:rashba`
+only and checked for every `type`.
+
 Examples
 --------
 ```julia
-add_soc!(H, 0.05)                             # Rashba λ=0.05
+add_soc!(H, 0.05)                             # Rashba λ=0.05, periodic chain
+add_soc!(H, 0.05; boundary=:open)             # Rashba on an open chain
 add_soc!(H, i -> 0.1*cos(2π*i/H.N); type=:ising)
 add_soc!(H, (i,j)->...; type=:custom, direction=:y)
 ```
@@ -521,11 +533,13 @@ add_soc!(H, (i,j)->...; type=:custom, direction=:y)
 function add_soc!(H::TBHamiltonian, λ;
                   type::Symbol      = :rashba,
                   direction::Symbol = :z,
+                  boundary::Symbol  = :periodic,
                   tol::Real         = 1e-8,
                   maxdim::Int       = 200,
                   position::Union{Nothing,Symbol} = nothing,
                   check::Bool       = true)
     _require_binary_position_space(H, "add_soc!")
+    periodic = _tb_periodic_boundary(boundary)   # errors on an unsupported boundary
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
@@ -545,8 +559,15 @@ function add_soc!(H::TBHamiltonian, λ;
 
     elseif type === :rashba
         λ isa Number || error("Rashba SOC requires a scalar λ; got $(typeof(λ)).")
-        K_u = generate_kin_u(pos_s, H.N)
-        K_d = generate_kin_d(pos_s, H.N)
+        H.Lx !== nothing && H.Lx < H.L &&
+            @warn "add_soc!(type=:rashba) couples neighbours along the linear position " *
+                  "index only: on this 2D Hamiltonian it hops along x and across the row " *
+                  "ends, with no y bonds. A 2D Rashba term is not implemented yet."
+        # The default keeps the periodic shifts of generate_kin_u/d (results as in
+        # v0.2.0); boundary=:open drops the bond between the last and the first site.
+        K_u, K_d = periodic ?
+            (generate_kin_u(pos_s, H.N), generate_kin_d(pos_s, H.N)) :
+            (shift_mpo(pos_s, 1; cyclic=false), shift_mpo(pos_s, -1; cyclic=false))
         # λ·(iσ_y) ⊗ (K_u − K_d): both factors anti-Hermitian → product Hermitian.
         # :Sy (Hermitian) ⊗ anti-Hermitian would give a non-Hermitian term.
         +(spin_prepend( λ * K_u, H.spin_s, :iSy),
