@@ -42,6 +42,13 @@ bugs without breaking the API.
 - The `get_dos_stochastic` docstring called its `normalize=false` output the total
   spectral weight `Tr[δ(ω − H)]`; with the convolution kernels it is
   `Tr[δ(ω̃ − H̃)]/π` per unit rescaled energy (`:hodc`: without the `1/π`).
+- **Golden suites run with one BLAS thread.** `test/runtests.jl` sets
+  `BLAS.set_num_threads(1)` around the characterization suites (and restores the count),
+  as the generators prescribe. At OpenBLAS's default thread count 11 golden tests failed
+  on the reference machine (the kagome RPA bubble by 6e-3, Chern markers by 5e-8), with
+  no code change: every one passes with one thread, at v0.2.0 as now. The GPU case
+  `chern_honeycomb_nnn_sublattice_geometry_c64`, a near-zero marker that moved by 1e-7
+  under a newer CUDA runtime, is pinned at `atol = 1e-6`.
 
 ## [0.2.0] — 2026-10-05
 

@@ -165,17 +165,29 @@ include("sampling_golden.jl")
 # DMRG cases by O(1), and `rand(rng, 1:N)` streams differ before Julia 1.11. They run
 # by default, are skipped on CI (ENV["CI"] == "true"), and TB_GOLDEN=1 / TB_GOLDEN=0
 # forces them on / off.
+#
+# The data were generated with one BLAS thread (see each generator's header), and the
+# suites run with one too: threaded BLAS sums in another order, and the same
+# amplification fails 11 golden tests on this machine at OpenBLAS's default 12 threads
+# (the kagome RPA bubble moves by 6e-3, the Chern markers by 5e-8). Run a golden file on
+# its own with OPENBLAS_NUM_THREADS=1 for the same reason.
 const RUN_GOLDEN = get(ENV, "TB_GOLDEN", get(ENV, "CI", "false") == "true" ? "0" : "1") == "1"
 if RUN_GOLDEN
-    @testset "Characterization (golden)" begin
-        include("golden_kpm.jl")
-        include("golden_rpa.jl")
-        include("golden_qft.jl")
-        include("golden_nh.jl")
-        include("golden_lattice.jl")
-        include("golden_scftopo.jl")
-        include("golden_gpu.jl")
-        include("golden_dynamics.jl")
+    blas_threads = BLAS.get_num_threads()
+    BLAS.set_num_threads(1)
+    try
+        @testset "Characterization (golden)" begin
+            include("golden_kpm.jl")
+            include("golden_rpa.jl")
+            include("golden_qft.jl")
+            include("golden_nh.jl")
+            include("golden_lattice.jl")
+            include("golden_scftopo.jl")
+            include("golden_gpu.jl")
+            include("golden_dynamics.jl")
+        end
+    finally
+        BLAS.set_num_threads(blas_threads)
     end
 else
     @info "Characterization (golden) suites skipped: CI, or TB_GOLDEN=0 (set TB_GOLDEN=1 to run them)"
