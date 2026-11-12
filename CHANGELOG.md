@@ -66,6 +66,14 @@ bugs without breaking the API.
   bit for bit (no golden case moves). The `bdg_spin_hamiltonian` docstring named the basis
   `(c↑, c↓, c†↓, −c†↑)`, in which its `iσ_y` pairing would vanish; it now names the basis
   the code uses.
+- **`build_K` and `dmrg_spectral`: `cutoff_K` defaults to `min(1e-8, 1e-4·η⁴)`.** The
+  cutoff is relative to the squared norm of each sum and product, and `η² I` is the
+  smallest part of `K = (H − ω)² + η²`, so the fixed default `1e-8` truncated most of it
+  at small η: on a 5-qubit chain at η = 1e-2, ‖ΔK‖ = 9.7e-5 ≈ η² (now below 1e-7). The
+  default stays `1e-8` for η ≥ 0.1 and for η = 0, so those results are unchanged bit for
+  bit; below η = 0.1, K and the DMRG results built on it move. An explicit
+  `cutoff_K ≥ η⁴` is used as given and warns once. The default assumes eigenvalues of
+  `H − ω` of order one; pass a smaller `cutoff_K` for a wider spectrum.
 
 ### Fixed
 

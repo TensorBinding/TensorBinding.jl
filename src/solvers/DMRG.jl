@@ -62,7 +62,7 @@ end
 # ============================================================
 
 """
-    build_K(H_mpo::MPO, sites, ω, η; maxdim_K=200, cutoff_K=1e-8) -> MPO
+    build_K(H_mpo::MPO, sites, ω, η; maxdim_K=200, cutoff_K=min(1e-8, 1e-4η⁴)) -> MPO
 
 Build the resolvent-squared MPO
 
@@ -74,15 +74,31 @@ eigenstate of H nearest to ω.
 
 `maxdim_K` and `cutoff_K` control truncation of the intermediate MPO product;
 larger `maxdim_K` gives a more accurate K at the cost of DMRG wall time.
+
+`cutoff_K` is relative (to the squared Frobenius norm of each sum and product), and
+`η² I` is the smallest part of K: from `cutoff_K ≈ η⁴` on, the truncation can drop it
+(a 5-qubit chain at η = 1e-2 kept almost none of it with the fixed default `1e-8` of
+v0.2.0: ‖ΔK‖ = 9.7e-5 ≈ η²). The default is `1e-8` for η ≥ 0.1 (and η = 0), as before,
+and `1e-4 η⁴` below, which assumes eigenvalues of H − ω of order one: for a wider
+spectrum pass a smaller `cutoff_K`. A `cutoff_K` of η⁴ or more is used as given and
+warns.
 """
 function build_K(H_mpo::MPO, sites, ω::Real, η::Real;
                  maxdim_K::Int  = 200,
-                 cutoff_K::Real = 1e-8)
+                 cutoff_K::Union{Nothing,Real} = nothing)
+    cutoff_K = something(cutoff_K, _default_cutoff_K(η))
+    η != 0 && cutoff_K >= η^4 &&
+        @warn "build_K: cutoff_K = $cutoff_K is not below η⁴ = $(η^4); the truncation of " *
+              "K = (H − ω)² + η² can drop its η² term (the default is min(1e-8, 1e-4η⁴))." maxlog=1
     I_mpo   = MPO(sites, "Id")
     H_shift = +(H_mpo, (-ω) * I_mpo; cutoff = cutoff_K)
     H_sq    = apply(H_shift, H_shift; cutoff = cutoff_K, maxdim = maxdim_K)
     return +(H_sq, (η^2) * I_mpo; cutoff = cutoff_K)
 end
+
+# The default cutoff_K of build_K and dmrg_spectral: the fixed 1e-8 of v0.2.0 where it
+# keeps the η² I term of K (η ≥ 0.1, or η = 0, where there is none), 1e-4 η⁴ below.
+_default_cutoff_K(η::Real) = iszero(η) ? 1e-8 : min(1e-8, 1e-4 * Float64(η)^4)
 
 
 # ============================================================
@@ -90,8 +106,9 @@ end
 # ============================================================
 
 """
-    dmrg_spectral(H_mpo::MPO, sites, ω, η; ψ0=nothing, maxdim_K=200, cutoff_K=1e-8,
-                  linkdim_init=10, nsweeps=10, maxdim=[10, 20, 50, 100, 200],
+    dmrg_spectral(H_mpo::MPO, sites, ω, η; ψ0=nothing, maxdim_K=200,
+                  cutoff_K=min(1e-8, 1e-4η⁴), linkdim_init=10, nsweeps=10,
+                  maxdim=[10, 20, 50, 100, 200],
                   cutoff=1e-8, noise=[1e-6, 1e-7, 1e-8, 0.0], kwargs...) -> (E_K, ψ)
 
 Find the ground state of `K(ω,η) = (H−ωI)² + η²I` using DMRG.
@@ -102,7 +119,8 @@ Use `local_weight(ψ, i, L, sites)` to read off the LDoS proxy `|⟨i|ψ(ω)⟩|
 # Keyword arguments
 - `ψ0`                 : warm-start MPS (random if `nothing`, the default)
 - `maxdim_K`, `cutoff_K` : truncation for building K (see `build_K`). Defaults
-                         `200`, `1e-8`.
+                         `200` and `min(1e-8, 1e-4η⁴)` (`1e-8` up to v0.2.0, which
+                         drops most of the η² term at η = 1e-2).
 - `linkdim_init`       : bond dimension of the random initial MPS (if ψ0=nothing).
                          Default `10`.
 - `nsweeps`, `maxdim`, `cutoff`, `noise` : DMRG sweep parameters, with the same
@@ -114,7 +132,7 @@ Returns `(E_K, ψ)` where `E_K ≈ η²` at spectral peaks.
 function dmrg_spectral(H_mpo::MPO, sites, ω::Real, η::Real;
                        ψ0                = nothing,
                        maxdim_K::Int     = 200,
-                       cutoff_K::Real    = 1e-8,
+                       cutoff_K::Union{Nothing,Real} = nothing,
                        linkdim_init::Int = 10,
                        nsweeps::Int      = 10,
                        maxdim            = [10, 20, 50, 100, 200],
