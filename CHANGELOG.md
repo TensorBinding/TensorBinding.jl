@@ -53,6 +53,19 @@ bugs without breaking the API.
   and the five `state_traj_*` cases of `test/data/gpu_golden.jl` (with the new
   `--only` option of its generator, which reruns the named cases and keeps every other
   stored entry).
+- **BdG hole block is `−H*`.** In the Nambu basis `(c↑, c↓, c†↑, c†↓)` of the package
+  (singlet pairing `iσ_y ⊗ Δ`) the hole block of a normal-state term `H` is `−H*`, but
+  `add_superconductivity!`, `bdg_hamiltonian`, `bdg_spin_hamiltonian` and the
+  equal-spin triplet BdG of the SCF built `τ_z ⊗ H`, whose hole block `−H` is wrong
+  whenever `H` has imaginary entries: a Zeeman field along y, Peierls phases, complex
+  hoppings. `add_zeeman!` and `add_soc!` on a Hamiltonian that already has a Nambu index
+  lifted their term the same way, so a y-field added after the doubling was wrong too.
+  On an L = 2 spinful chain with `h = 0.3` along y and `Δ = 0.25`, the BdG spectrum was
+  off by 1.4e-2. They now build `P_p ⊗ H + P_h ⊗ (−H*)`; a real `H` still gets the
+  one-term `τ_z ⊗ H` it got before, so every result with a real Hamiltonian is unchanged
+  bit for bit (no golden case moves). The `bdg_spin_hamiltonian` docstring named the basis
+  `(c↑, c↓, c†↓, −c†↑)`, in which its `iσ_y` pairing would vanish; it now names the basis
+  the code uses.
 
 ### Fixed
 

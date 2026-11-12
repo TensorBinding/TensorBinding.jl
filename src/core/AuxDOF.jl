@@ -249,6 +249,37 @@ function _lift_to_aux_sites(H, M::MPO, ops::AbstractDict)
     return M
 end
 
+# True when every tensor of M holds real numbers (imaginary parts exactly zero), so that
+# M equals its entrywise complex conjugate.
+_mpo_is_real(M::MPO) = all(T -> eltype(T) <: Real || all(isreal, Array(T, inds(T)...)), M)
+
+# The normal-state part of a BdG Hamiltonian, the Nambu index `s` attached on `side`
+# (:pre or :post) of M. In the Nambu basis (c↑, c↓, c†↑, c†↓) (spinless: (c, c†)) of the
+# BdG builders, whose singlet pairing is iσ_y ⊗ Δ, it is Pp ⊗ M + Ph ⊗ (−M*): the hole
+# block is minus the complex conjugate. For a real M that is τz ⊗ M, which is built as
+# one term as before, so real Hamiltonians give the same MPO bit for bit. Up to v0.2.0
+# every M got τz ⊗ M, whose hole block −M flips the sign of the imaginary entries (σ_y
+# terms, Peierls phases, complex hoppings). `dag` conjugates each tensor and keeps the
+# primes, so `-dag(M)` is −M*.
+function _nambu_normal_block(M::MPO, s::Index, side::Symbol; cutoff::Real)
+    attach = side === :pre ? prepend_nambu : postpend_nambu
+    _mpo_is_real(M) && return attach(M, s, :tz)
+    return +(attach(M, s, :Pp), attach((-1) * dag(M), s, :Ph); cutoff = cutoff)
+end
+
+# A normal-state term M (on the position sites) lifted to the sites of H for adding to
+# H.mpo: `ops` on the auxiliary sites it names, the identity on the others, and on a
+# Nambu site the particle-hole structure of _nambu_normal_block (τz for a real term,
+# lifted as before).
+function _lift_normal_term(H, M::MPO, ops::AbstractDict; cutoff::Real)
+    H.nambu_s === nothing && return _lift_to_aux_sites(H, M, ops)
+    T = _lift_to_aux_sites(H, M, merge(ops, Dict{Index,Any}(H.nambu_s => :tz)))
+    _mpo_is_real(T) && return T
+    Tp = _lift_to_aux_sites(H, M, merge(ops, Dict{Index,Any}(H.nambu_s => :Pp)))
+    Th = _lift_to_aux_sites(H, M, merge(ops, Dict{Index,Any}(H.nambu_s => :Ph)))
+    return +(Tp, (-1) * dag(Th); cutoff = cutoff)
+end
+
 
 # ============================================================
 # 3. Spin extension
@@ -301,8 +332,9 @@ Add a Zeeman coupling `h · Sα` to `H`.  Calls `add_spin!` automatically if
 
 `direction`: `:x`, `:y`, or `:z` (default).
 
-If `add_superconductivity!` was already called, the Zeeman term is wrapped in
-`τ_z` so it enters with opposite sign in the hole sector, as required in BdG.
+If `add_superconductivity!` was already called, the Zeeman term `Z` enters the hole
+block as `−Z*`, as required in BdG: `τ_z ⊗ Z` along x and z, `+h·S_y` in the hole block
+along y (up to v0.2.0 every direction got `τ_z ⊗ Z`, wrong along y).
 
 Examples
 --------
@@ -328,10 +360,9 @@ function add_zeeman!(H::TBHamiltonian, h;
     h_mpo   = h isa Number ? h * MPO(pos_s, "Id") :
                              get_diagonal_mpo(H.L, pos_s, h)
 
-    # h σ on the spin, τ_z on a Nambu site, the identity on any other aux site
-    ops = Dict{Index,Any}(H.spin_s => spin_op)
-    H.nambu_s === nothing || (ops[H.nambu_s] = :tz)
-    H_Z = _lift_to_aux_sites(H, h_mpo, ops)
+    # h σ on the spin, the particle-hole structure on a Nambu site (τ_z for a real term),
+    # the identity on any other aux site
+    H_Z = _lift_normal_term(H, h_mpo, Dict{Index,Any}(H.spin_s => spin_op); cutoff=tol)
 
     H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=tol)
     ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
@@ -352,8 +383,12 @@ Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending
 (`position=:pre`) or postpending (`position=:post`) a Nambu (particle–hole)
 index; `position` defaults to `H.aux_side`.
 
-The BdG structure is:
-    H_BdG = τ_z ⊗ H_kin  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
+The BdG structure, in the Nambu basis `(c↑, c↓, c†↑, c†↓)` (spinless: `(c, c†)`), is:
+    H_BdG = P_p ⊗ H  +  P_h ⊗ (−H*)  +  τ_+ ⊗ H_pair  +  τ_- ⊗ H_pair†
+with `P_p`, `P_h` the particle and hole projectors of the Nambu index. For a real `H`
+the first two terms are `τ_z ⊗ H`, built as one term; up to v0.2.0 every `H` got
+`τ_z ⊗ H`, which is wrong when `H` has imaginary entries (a Zeeman field along y,
+Peierls phases, complex hoppings).
 
 - **Spinless + p-wave** (`type=:pwave`, or auto-selected when spinless + `:swave`):
   `H_pair = Δ·(K_forward − K_backward)`, the antisymmetric nearest-neighbour
@@ -452,12 +487,12 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     # ── BdG assembly ─────────────────────────────────────────────────────────
     nambu_s = nambu_index()
     if pos === :pre
-        H_bdg = +(+(prepend_nambu(H.mpo,      nambu_s, :tz),
+        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :pre; cutoff=tol),
                     prepend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
                     prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
         H.sites = [nambu_s; H.sites]
     else
-        H_bdg = +(+(postpend_nambu(H.mpo,      nambu_s, :tz),
+        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :post; cutoff=tol),
                     postpend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
                     postpend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
         H.sites = [H.sites; nambu_s]
@@ -469,7 +504,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     H.nambu_s  = nambu_s
     H.aux_side = pos
     _invalidate_cache!(H)
-    # KPM scale of the BdG Hamiltonian (center 0): the normal part τ_z ⊗ H lies within
+    # KPM scale of the BdG Hamiltonian (center 0): the normal blocks H and −H* lie within
     # ±(|center| + scale) of H, the pairing adds at most its norm ‖Δ̂‖ (|Δ| on site,
     # 2|Δ| for the p-wave Δ K_f − Δ* K_b), padded by 10 %. Only when that bound is
     # known: a scale set on H (not the DMRG sentinel 0) and a number Δ; otherwise the
@@ -544,13 +579,9 @@ function add_soc!(H::TBHamiltonian, λ;
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
 
-    # The SOC term on the spin (op), τ_z on a Nambu site, the identity on any other
-    # aux site, each on the side H.sites puts it.
-    function spin_prepend(M, _, op)
-        ops = Dict{Index,Any}(H.spin_s => op)
-        H.nambu_s === nothing || (ops[H.nambu_s] = :tz)
-        return _lift_to_aux_sites(H, M, ops)
-    end
+    # The SOC term on the spin (op), the particle-hole structure on a Nambu site (τ_z for
+    # a real term), the identity on any other aux site, each on the side H.sites puts it.
+    spin_prepend(M, _, op) = _lift_normal_term(H, M, Dict{Index,Any}(H.spin_s => op); cutoff=tol)
 
     H_soc = if type === :ising
         λ_mpo = λ isa Number ? λ * MPO(pos_s, "Id") :
