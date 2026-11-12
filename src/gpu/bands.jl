@@ -49,6 +49,11 @@ res = TensorBinding.get_bands_gpu(H, 500, omega;
         num_x=50, maxdim=200, type=ComplexF64, printinfo=true)
 heatmap(1:size(res.Ak,2), omega, res.Ak; xticks=(res.ticks, res.labels))
 ```
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each momentum state integrates to `1/π`; multiply by `π/H.scale` for physical
+units.
 """
 function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        kpath             = nothing,

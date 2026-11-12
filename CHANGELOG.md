@@ -25,11 +25,23 @@ bugs without breaking the API.
   (spin naming with |0⟩ = ↑), the opposite of the bit naming in the companion paper,
   whose τ̂⁺ is `sigma_minus`. The shift-MPO section of `core/Utils.jl` now says
   `|n⟩ → |n + q⟩`, so `(Qψ)(x) = ψ(x − q)`; it said `(Q f)(x) = f(x + q)`.
+- **KPM normalisation documented.** With the convolution kernels every Hermitian KPM
+  spectrum is the spectral density per unit rescaled energy `(ω − H.center)/H.scale`
+  times `1/π`: one state integrates to `1/π`, and `π/H.scale` converts to physical
+  units. `kernel=:hodc` is normalised to 1, so switching kernel rescales the output by
+  `π`. Only `get_ldos_from_mun` said so; the docstrings of the LDOS, DOS, band, exciton
+  and QPI functions (CPU and GPU) and a new *Conventions* section on the Solvers page now
+  do, with the Jackson moment count: `kernel=:jackson` with `Ncheb` moments is the
+  textbook kernel for `Ncheb − 1` moments (the last weight is zero). Results are
+  unchanged.
 
 ### Fixed
 
 - The `add_soc!` docstring gave the Rashba term as `λ·(S_y ⊗ K_u − S_y ⊗ K_d)`, which
   is not Hermitian; the code builds `λ·iσ_y ⊗ (K_u − K_d)`, as the docstring now says.
+- The `get_dos_stochastic` docstring called its `normalize=false` output the total
+  spectral weight `Tr[δ(ω − H)]`; with the convolution kernels it is
+  `Tr[δ(ω̃ − H̃)]/π` per unit rescaled energy (`:hodc`: without the `1/π`).
 
 ## [0.2.0] — 2026-10-05
 

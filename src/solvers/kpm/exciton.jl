@@ -48,6 +48,12 @@ each MPS recursion step; `verbose` or `printinfo` prints progress every 5 column
 column (the χ the Chebyshev recursion hit under the given `maxdim`/`cutoff`); up to
 v0.1.1 it was the tuple `(result, linkdims)`, which destructures the same way. Mirrors
 the GPU entry point; useful for cutoff/tolerance studies where χ is the observable.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_exciton_ldos_spatial(H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                   X_list           = nothing,
@@ -146,7 +152,8 @@ end
 Bound-pair exciton LDOS at the single position `X` (1-indexed in `1:H.N`): a
 one-column call of `get_exciton_ldos_spatial` with `X_list=[X]`. Note that the
 Chebyshev order is the keyword `Ncheb` here, and that `maxdim` defaults to `40`
-(`get_exciton_ldos_spatial`: `100`).
+(`get_exciton_ldos_spatial`: `100`). The normalisation is that of
+`get_exciton_ldos_spatial` (the package's KPM convention, `1/π` per state).
 """
 function get_exciton_ldos(H::TBHamiltonian, X::Int, omega_phys::Real;
                           Ncheb::Int     = 200,

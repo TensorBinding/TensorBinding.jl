@@ -42,6 +42,12 @@ one output column. `K_list`, `K_groups`, `k_groups`, `num_k`, `k_start`, and
 coarse cells) and in `get_exciton_continuum` differ, e.g. `[1, 4, 7, 10, 13]` and
 `[1, 5, 8, 12, 16]` for `N = 16`, `num_q = 5`: pass `Q_list` to both to compare them
 at the same momenta.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_exciton_bands(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                            Q_list           = nothing,
@@ -181,6 +187,12 @@ full KPM recursion for every explicit relative momentum.
 With `normalize=true` (default), the result estimates the per-relative-momentum
 average `(1/N) * Tr_Q`. With `normalize=false`, it is multiplied by `H.N` and
 estimates the total fixed-`Q` trace `Tr_Q`.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_exciton_continuum(H_QFT::MPO, H::TBHamiltonian, Ncheb::Int, omega_phys_vals;
                                Q_list::Union{Nothing,AbstractVector} = nothing,

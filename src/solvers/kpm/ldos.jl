@@ -70,6 +70,10 @@ ldos_tot = get_ldos_online(H_spin, 200, 16, ωlist; spin_proj=true)
 # Spin-↑ LDOS only
 ldos_up  = get_ldos_online(H_spin, 200, 16, ωlist; spin_proj=true, proj_s=1)
 ```
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each state integrates to `1/π`; multiply by `π/H.scale` for physical units.
 """
 function get_ldos_online(H::TBHamiltonian, Ncheb::Int, X::Int, ω_phys_vals;
                           kernel::Symbol = :jackson,
@@ -258,6 +262,10 @@ ldos_blk = get_ldos_spatial(H_big, 200, ωlist; reduce=:block, num_x=128, num_y=
 # Kagome: sublattice A only — only A columns filled, B/C columns zero
 ldos_A   = get_ldos_spatial(H_kg, 200, ωlist; proj_sl=1, num_x=H_kg.N)
 ```
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each state integrates to `1/π`; multiply by `π/H.scale` for physical units.
 """
 function get_ldos_spatial(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                            num_x::Int     = H.N,

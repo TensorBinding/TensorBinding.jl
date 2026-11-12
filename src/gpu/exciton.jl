@@ -66,6 +66,12 @@ observable.
     from |X,X⟩, so block averaging would cost O(block_size) recursions per pixel —
     equivalent to computing every site. Use `reduce=:point` with `num_avg` for light
     spatial averaging (each output pixel averages `num_avg` nearby positions).
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_exciton_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                        Lx::Union{Nothing,Int}    = nothing,

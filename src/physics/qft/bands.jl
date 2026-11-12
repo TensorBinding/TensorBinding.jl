@@ -497,6 +497,11 @@ When `kpath` is set the return value is a `NamedTuple`:
   ```
 
 Otherwise returns `Matrix{Float64}` as usual (backward-compatible).
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each momentum state integrates to `1/π`; multiply by `π/H.scale` for physical
+units.
 """
 function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           kpath             = nothing,

@@ -112,6 +112,10 @@ H     = get_Hamiltonian("square_2d", 1.0; L=8, Lx=4)
 qpi   = get_qpi(H, 80, ωlist; V=2.0, window_fraction=0.8)
 # Reshape to 2D: reshape(qpi[1,:], 2^Lx, 2^Ly)'
 ```
+
+**Normalisation:** built from LDOS in the package's KPM convention (see
+[`get_ldos_from_mun`](@ref)): per unit rescaled energy `(ω − H.center)/H.scale` and
+times `1/π`; multiply by `π/H.scale` for physical units.
 """
 function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                  impurity_site::Union{Int,Nothing}  = nothing,
