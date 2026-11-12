@@ -899,7 +899,7 @@ end
 
 """
     add_onsite!(H, f; layer=nothing, sublat=nothing, Lx=nothing,
-                tol=1e-8, maxdim=nothing) -> H
+                tol=1e-8, maxdim=nothing, check=false) -> H
 
 Add a diagonal (on-site) potential to `H`.
 
@@ -910,6 +910,14 @@ Add a diagonal (on-site) potential to `H`.
 - `f(n)` — 1-arg function; `n ∈ {0, …, N-1}` is the 0-indexed unit-cell index.
 - `f(ix, iy)` — 2-arg function; `ix, iy` are 0-indexed 2D coordinates
   (`ix = n % Nx`, `iy = n ÷ Nx`). Requires `Lx=` keyword so that `Nx = 2^Lx`.
+- `f::AbstractVector` — the values themselves, `f[n+1]` at unit cell `n` (length `N`;
+  a 2D map `V[ix+1, iy+1]` is `vec(V)`), compressed exactly by TT-SVD.
+
+The functions are compressed by QTCI, which can lose narrow features (a box of a few
+cells, a single impurity) for some RNG states, or throw on a profile that vanishes
+almost everywhere (see [`get_mps`](@ref)). Pass the values as a vector, or
+`check=true` to check the QTCI build against `f` and replace it when it is wrong
+(`false` by default, the build of v0.2.0).
 
 **`sublat` keyword** (`H.sublattice_s` must be set)
 
@@ -938,7 +946,7 @@ projectors.
 Invalidates all caches.
 """
 function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
-                     Lx=nothing, tol=1e-8, maxdim=nothing)
+                     Lx=nothing, tol=1e-8, maxdim=nothing, check::Bool=false)
     _require_binary_position_space(H, "add_onsite!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
@@ -960,7 +968,7 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                                   spin_s=nothing, nambu_s=nothing, layer_s=nothing,
                                   sublattice_s=H.sublattice_s, aux_side=:post)
             add_onsite!(H_pos, f; layer=nothing, sublat=sublat,
-                        Lx=Lx, tol=tol, maxdim=maxdim)
+                        Lx=Lx, tol=tol, maxdim=maxdim, check=check)
             term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
             H_layered_term = H_layered_term === nothing ? term :
                 +(H_layered_term, term; cutoff=tol)
@@ -981,13 +989,15 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
 
     fkind = if f isa Number
         :scalar
+    elseif f isa AbstractVector  # f[n+1] — the values, compressed by TT-SVD
+        :vector
     elseif applicable(f, 0, 0)   # f(ix, iy) — 0-indexed 2D
         :pos2d
     elseif applicable(f, 0)      # f(n) — 0-indexed 1D
         :pos1d
     else
         error("add_onsite!: unsupported f signature.\n" *
-              "Supported: Number, f(n), f(ix, iy)")
+              "Supported: Number, f(n), f(ix, iy), a vector f[n+1]")
     end
 
     Nx = if fkind === :pos2d
@@ -1002,10 +1012,12 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
 
     diag_mpo = if fkind === :scalar
         get_diagonal_mpo(L, pos_s, x -> f)
+    elseif fkind === :vector
+        get_diagonal_mpo(L, pos_s, f)
     elseif fkind === :pos1d
-        get_diagonal_mpo(L, pos_s, i -> f(round(Int, i) - 1))
+        get_diagonal_mpo(L, pos_s, i -> f(round(Int, i) - 1); check=check)
     else  # :pos2d
-        get_diagonal_mpo(L, pos_s, i -> (n = round(Int, i) - 1; f(n % Nx, n ÷ Nx)))
+        get_diagonal_mpo(L, pos_s, i -> (n = round(Int, i) - 1; f(n % Nx, n ÷ Nx)); check=check)
     end
 
     if H.sublattice_s !== nothing

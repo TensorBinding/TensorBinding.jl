@@ -328,7 +328,9 @@ Add a Zeeman coupling `h · Sα` to `H`.  Calls `add_spin!` automatically if
 
 `h` can be:
 - a `Number`    — uniform field amplitude `h₀`
-- a `Function`  — spatially varying `h(i)`, `i ∈ {1, …, N}` (1-indexed)
+- a `Function`  — spatially varying `h(i)`, `i ∈ {1, …, N}` (1-indexed), compressed by
+  QTCI, which can lose narrow features (see [`get_diagonal_mpo`](@ref))
+- an `AbstractVector` — the values `h[i]` (length N), compressed exactly by TT-SVD
 
 `direction`: `:x`, `:y`, or `:z` (default).
 

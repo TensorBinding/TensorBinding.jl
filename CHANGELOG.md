@@ -13,6 +13,21 @@ bugs without breaking the API.
   before) or `:open`, which drops the bond between the last and the first site. The
   default chain, `get_Hamiltonian("chain_1d", t; L)`, is open, so a Rashba term that
   matches it needs `boundary=:open`.
+- **Diagonal profiles from vectors.** `get_mps`, `get_mpo`, `get_diagonal_mpo`,
+  `add_onsite!` and `add_zeeman!` accept the values themselves as a vector of length
+  `2^L` (`v[n+1]` at the 0-indexed point `n`), compressed by TT-SVD: exact up to `tol`,
+  with no sampling and no RNG. Functions keep the QTCI build, which can lose a narrow
+  feature depending on the RNG state (at L = 10 a 4-site box on a 0.1 background was lost
+  for 3 of 5 seeds) or throw "maxsamplevalue is zero!" on a profile that vanishes almost
+  everywhere.
+- **`check` keyword for the QTCI profiles** (`get_mps`, the one-argument `get_mpo`,
+  `get_diagonal_mpo`, `add_onsite!`; default `false`, the build of v0.2.0). With
+  `check=true` the QTCI build is compared with `f` and kept when no entry is off by more
+  than `√tol · max|f|`; up to 2^20 points every point is compared and a wrong build (or a
+  throw) is replaced by the TT-SVD of the values, above that a sample is compared (ends,
+  carry boundaries, a golden-ratio stride) and a wrong build is redone from the missed
+  points as pivots, then checked again (an error if it still fails). As in
+  `hopping2MPO(...; check=true)`, a build that passes is returned unchanged.
 
 ### Changed
 

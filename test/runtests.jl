@@ -143,6 +143,7 @@ include("bugfix_cache_safety.jl")
 include("bugfix_soc_boundary.jl")
 include("bugfix_bdg_hole_block.jl")
 include("bugfix_build_K.jl")
+include("bugfix_qtci_profiles.jl")
 
 # The 0.1 names and keywords renamed in 0.2: deprecated aliases with a one-time warning.
 include("deprecations.jl")
