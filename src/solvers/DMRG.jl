@@ -62,7 +62,7 @@ end
 # ============================================================
 
 """
-    build_K(H_mpo::MPO, sites, ω, η; maxdim_K=200, cutoff_K=min(1e-8, 1e-4η⁴, 0.1/D²)) -> MPO
+    build_K(H_mpo::MPO, sites, ω, η; maxdim_K=200, cutoff_K=min(1e-8, 1e-4η⁴, 0.1r²/D²)) -> MPO
 
 Build the resolvent-squared MPO
 
@@ -82,44 +82,60 @@ the two smallest parts of K:
   (a 5-qubit chain at η = 1e-2 kept almost none of it with `1e-8`: ‖ΔK‖ = 9.7e-5 ≈ η²).
   It assumes eigenvalues of H − ω of order one: for a wider spectrum pass a smaller
   `cutoff_K`.
-- `0.1/D²`, D the dimension of the site space (2^L for qubits), keeps the terms that live
-  on a few sites, such as the missing bond at the end of an open chain. The norm of K
-  grows with D, and the product `apply(H − ω, H − ω)` drops such a term once `cutoff_K`
-  exceeds about `0.5/D²` (measured on a uniform chain, L = 12–16): with `1e-8`,
-  `⟨0|K|0⟩` came out as 2.01 instead of 1.01 from L = 13 on, K wrong by t² at both ends.
+- `0.1 r²/D²`, D the dimension of the site space (2^L for qubits) and
+  `r = min(1, ‖H‖²/‖H − ω‖²)` (Frobenius norms), keeps the terms that live on a few
+  sites, such as the missing bond at the end of an open chain. The norm of K grows with D
+  and, through `‖H − ω‖`, with ω, and the product `apply(H − ω, H − ω)` drops such a term
+  once `cutoff_K` exceeds about `0.5 r²/D²` (uniform chain): with `1e-8`, `⟨0|K|0⟩` came
+  out as 2.01 instead of 1.01 from L = 13 on at ω = 0.05, and from L = 12 at ω = 1.7t,
+  K wrong by t² at both ends.
 
-The default is therefore `1e-8`, as in v0.2.0, for η ≥ 0.1 (and η = 0) up to L = 11. On
-an open chain (ω = 0.05) it keeps K to within 2e-7 up to L = 30, the largest size tested,
-provided `H_mpo` itself is exact: an MPO truncated with a relative cutoff of its own can
-already lack such terms. An explicit `cutoff_K` is used as given; it warns once when it
-is not below η⁴ or when it is above `0.3/D²`.
+The default is therefore `1e-8`, as in v0.2.0, as long as `D ≤ 3162 r` (L ≤ 11 near the
+band centre, η ≥ 0.1 or η = 0). On an open chain it keeps K within 5e-7 for |ω| ≤ 5t at
+L = 14–26 and within 2e-7 at ω = 0.05 up to L = 30, provided `H_mpo` itself is exact: an
+MPO truncated with a relative cutoff of its own can already lack such terms. Terms that
+are weak next to the rest of H are not protected: with an on-site potential of a few t
+part of K is lost again (a 14-qubit chain with `V cos(2πbn)`: 0.17 at V = 2t), and
+`cutoff_K = 1e-2/D²` (V ≲ 3t) or `1e-3/D²` (V ≲ 5t) is needed there. An explicit
+`cutoff_K` is used as given; it warns once when it is not below η⁴ or when it is above
+`0.3 r²/D²`.
 """
 function build_K(H_mpo::MPO, sites, ω::Real, η::Real;
                  maxdim_K::Int  = 200,
                  cutoff_K::Union{Nothing,Real} = nothing)
     D = prod(Float64 ∘ dim, sites)
-    cutoff_K = something(cutoff_K, _default_cutoff_K(η, D))
+    I_mpo = MPO(sites, "Id")
+    r = _K_norm_ratio(H_mpo, I_mpo, ω, D)
+    cutoff_K = something(cutoff_K, _default_cutoff_K(η, D, r))
     η != 0 && cutoff_K >= η^4 &&
         @warn "build_K: cutoff_K = $cutoff_K is not below η⁴ = $(η^4); the truncation of " *
               "K = (H − ω)² + η² can drop its η² term (the default is " *
-              "min(1e-8, 1e-4η⁴, 0.1/D²))." maxlog=1
-    cutoff_K > 0.3 / D^2 &&
+              "min(1e-8, 1e-4η⁴, 0.1r²/D²))." maxlog=1
+    cutoff_K > 0.3 * r^2 / D^2 &&
         @warn "build_K: cutoff_K = $cutoff_K on $(length(sites)) sites can drop the terms of K " *
               "that live on a few sites, such as the end bond of an open chain (K wrong by t² " *
-              "there); keep it below 0.3/D² = $(0.3 / D^2), D the dimension of the site " *
-              "space (the default is at most 0.1/D²)." maxlog=1
-    I_mpo   = MPO(sites, "Id")
+              "there); keep it below 0.3r²/D² = $(0.3 * r^2 / D^2), D the dimension of the " *
+              "site space and r = min(1, ‖H‖²/‖H − ω‖²) (the default is at most 0.1r²/D²)." maxlog=1
     H_shift = +(H_mpo, (-ω) * I_mpo; cutoff = cutoff_K)
     H_sq    = apply(H_shift, H_shift; cutoff = cutoff_K, maxdim = maxdim_K)
     return +(H_sq, (η^2) * I_mpo; cutoff = cutoff_K)
 end
 
 # The default cutoff_K of build_K and dmrg_spectral: the fixed 1e-8 of v0.2.0, lowered to
-# 1e-4 η⁴ to keep the η² I term of K (η < 0.1; η = 0 has none) and to 0.1/D² to keep the
-# terms that live on a few sites (D the dimension of the site space: from L = 12 qubits).
-function _default_cutoff_K(η::Real, D::Real)
-    c = min(1e-8, 0.1 / Float64(D)^2)
+# 1e-4 η⁴ to keep the η² I term of K (η < 0.1; η = 0 has none) and to 0.1 r²/D² to keep
+# the terms that live on a few sites (D the dimension of the site space: from L = 12
+# qubits; r = min(1, ‖H‖²/‖H − ω‖²), since ‖K‖ grows with ω while those terms do not).
+function _default_cutoff_K(η::Real, D::Real, r::Real = 1.0)
+    c = min(1e-8, 0.1 * Float64(r)^2 / Float64(D)^2)
     return iszero(η) ? c : min(c, 1e-4 * Float64(η)^4)
+end
+
+# r = min(1, ‖H‖²/‖H − ω‖²) for the default cutoff_K, with ‖H − ω‖² = ‖H‖² − 2ω tr H + ω² D
+# (Frobenius norms; exact, from two MPO inner products).
+function _K_norm_ratio(H_mpo::MPO, I_mpo::MPO, ω::Real, D::Real)
+    nH2 = real(inner(H_mpo, H_mpo))
+    nS2 = nH2 - 2ω * real(inner(I_mpo, H_mpo)) + ω^2 * D
+    return nS2 > 0 ? min(1.0, nH2 / nS2) : 1.0
 end
 
 
@@ -129,7 +145,7 @@ end
 
 """
     dmrg_spectral(H_mpo::MPO, sites, ω, η; ψ0=nothing, maxdim_K=200,
-                  cutoff_K=min(1e-8, 1e-4η⁴, 0.1/D²), linkdim_init=10, nsweeps=10,
+                  cutoff_K=min(1e-8, 1e-4η⁴, 0.1r²/D²), linkdim_init=10, nsweeps=10,
                   maxdim=[10, 20, 50, 100, 200],
                   cutoff=1e-8, noise=[1e-6, 1e-7, 1e-8, 0.0], kwargs...) -> (E_K, ψ)
 
@@ -141,10 +157,10 @@ Use `local_weight(ψ, i, L, sites)` to read off the LDoS proxy `|⟨i|ψ(ω)⟩|
 # Keyword arguments
 - `ψ0`                 : warm-start MPS (random if `nothing`, the default)
 - `maxdim_K`, `cutoff_K` : truncation for building K (see `build_K`). Defaults
-                         `200` and `min(1e-8, 1e-4η⁴, 0.1/D²)`, D the dimension of
-                         the site space (`1e-8` up to v0.2.0, which drops most of the
-                         η² term at η = 1e-2 and the end bonds of an open chain from
-                         L = 13).
+                         `200` and `min(1e-8, 1e-4η⁴, 0.1r²/D²)`, D the dimension of
+                         the site space and `r = min(1, ‖H‖²/‖H − ω‖²)` (`1e-8` up to
+                         v0.2.0, which drops most of the η² term at η = 1e-2 and the
+                         end bonds of an open chain from L = 13).
 - `linkdim_init`       : bond dimension of the random initial MPS (if ψ0=nothing).
                          Default `10`.
 - `nsweeps`, `maxdim`, `cutoff`, `noise` : DMRG sweep parameters, with the same

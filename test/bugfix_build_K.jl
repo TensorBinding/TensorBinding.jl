@@ -44,4 +44,13 @@ using TensorBinding: get_Hamiltonian, add_onsite!, build_K, get_matrix
     Kold = @test_logs (:warn, r"live on a few sites") build_K(H16.mpo, H16.sites, ω, 0.1;
                                                              cutoff_K = 1e-8)
     @test abs(K00(Kold) - (ω^2 + 1 + 0.1^2)) > 0.9             # the end bond is lost
+
+    # ‖K‖ grows with ω while the end bond does not: the default scales with
+    # r = min(1, ‖H‖²/‖H − ω‖²) (r ≈ 1/3 here). At ω = 2 a plain 0.1/D² lost the end bond
+    # from L = 12 (<0|K|0> off by 1).
+    @test dc(0.1, 2.0^14, 1/3) ≈ 0.1 / 9 / 4.0^14
+    H14 = get_Hamiltonian("chain_1d", 1.0; L=14)
+    ψ14 = TensorBinding.binary_to_MPS(0, 14, H14.sites)
+    K14 = build_K(H14.mpo, H14.sites, 2.0, 0.1)
+    @test abs(real(inner(ψ14', K14, ψ14)) - (1 + 2.0^2 + 0.1^2)) < 1e-6
 end
