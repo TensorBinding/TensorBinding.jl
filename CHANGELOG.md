@@ -127,6 +127,14 @@ bugs without breaking the API.
 
 ### Fixed
 
+- **`add_onsite!` on a spinful or BdG Hamiltonian** threw ("the input MPS or MPO do not
+  have the same site indices"): the potential was built on the position (and sublattice)
+  sites only, so it had to come before `add_spin!` and `add_superconductivity!`. It is
+  now the identity on the spin and `τ_z ⊗ V` on the Nambu index, the same matrix as
+  adding it before; a complex `V` on a BdG Hamiltonian is an error, since it is not
+  Hermitian. A layered Hamiltonian with spin or Nambu is still not supported. The
+  golden case `tbsystem/add_onsite!/spinful` of `test/data/scftopo_golden.jl`, which
+  pinned the old error, now pins the value.
 - The `add_soc!` docstring gave the Rashba term as `λ·(S_y ⊗ K_u − S_y ⊗ K_d)`, which
   is not Hermitian; the code builds `λ·iσ_y ⊗ (K_u − K_d)`, as the docstring now says.
 - The `get_dos_stochastic` docstring called its `normalize=false` output the total

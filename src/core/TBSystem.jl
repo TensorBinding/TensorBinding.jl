@@ -971,6 +971,13 @@ For layered sublattice Hamiltonians, the onsite term is first built on the
 `position ⊗ sublattice` monolayer space, then wrapped with the selected layer
 projectors.
 
+**Spin and Nambu indices** (not layered): on a spinful Hamiltonian the potential is the
+identity on the spin (a spin-dependent one goes through [`add_zeeman!`](@ref)); on a BdG
+Hamiltonian it enters as `τ_z ⊗ V`, `V` in the particle and `−V` in the hole block, so `f`
+must be real there. Up to v0.2.0 `add_onsite!` threw on a Hamiltonian with a spin or
+Nambu index; it had to come before [`add_spin!`](@ref) and
+[`add_superconductivity!`](@ref), which give the same result.
+
 `tol` is the relative cutoff of the sum, by default `min(1e-8, 0.1/D)`, D the dimension
 of the site space (`1e-8` up to D = 2^23; see "Large systems" in [`get_Hamiltonian`](@ref)).
 
@@ -1042,17 +1049,38 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
 
     fkind === :scalar && iszero(f) && return _add_zero_onsite!(H, sublat)
 
+    # On a BdG Hamiltonian a complex value is rejected with the error of a complex vector
+    # (below), before the real-valued QTCI build would stop on it with an InexactError.
+    bdg = H.nambu_s !== nothing
+    bdg && fkind === :scalar && !isreal(f) && error(_BDG_COMPLEX_ONSITE_MSG)
+    val = bdg ? (v -> isreal(v) ? v : error(_BDG_COMPLEX_ONSITE_MSG)) : identity
+
     diag_mpo = if fkind === :scalar
         get_diagonal_mpo(L, pos_s, x -> f)
     elseif fkind === :vector
         get_diagonal_mpo(L, pos_s, f)
     elseif fkind === :pos1d
-        get_diagonal_mpo(L, pos_s, i -> f(round(Int, i) - 1); check=check)
+        get_diagonal_mpo(L, pos_s, i -> val(f(round(Int, i) - 1)); check=check)
     else  # :pos2d
-        get_diagonal_mpo(L, pos_s, i -> (n = round(Int, i) - 1; f(n % Nx, n ÷ Nx)); check=check)
+        get_diagonal_mpo(L, pos_s, i -> (n = round(Int, i) - 1; val(f(n % Nx, n ÷ Nx))); check=check)
     end
 
-    if H.sublattice_s !== nothing
+    if H.spin_s !== nothing || H.nambu_s !== nothing
+        # Spinful or BdG: the identity on the spin, τ_z ⊗ V on the Nambu index (the hole
+        # block −V* of _nambu_normal_block, −V for a real V), the sublattice matrix below on
+        # a sublattice index, each on the side H.sites puts it. Up to v0.2.0 the term was
+        # added on the position (and sublattice) sites only, which threw.
+        ops = Dict{Index,Any}()
+        if H.sublattice_s !== nothing
+            n = dim(H.sublattice_s)
+            ops[H.sublattice_s] = isnothing(sublat) ? Matrix{Float64}(I, n, n) :
+                (proj = zeros(Float64, n, n); proj[sublat, sublat] = 1.0; proj)
+        elseif !isnothing(sublat)
+            error("add_onsite! with sublat=$sublat requires H.sublattice_s to be set.")
+        end
+        (H.nambu_s === nothing || _mpo_is_real(diag_mpo)) || error(_BDG_COMPLEX_ONSITE_MSG)
+        new_term = _lift_normal_term(H, diag_mpo, ops; cutoff=cut)
+    elseif H.sublattice_s !== nothing
         sl_s  = H.sublattice_s
         n     = dim(sl_s)
         sl_pos = findfirst(==(sl_s), H.sites)
@@ -1079,6 +1107,10 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
     _invalidate_cache!(H)
     return H
 end
+
+const _BDG_COMPLEX_ONSITE_MSG =
+    "add_onsite!: a complex on-site term on a BdG Hamiltonian is not Hermitian, and the " *
+    "BdG hole block (−H*) is only right for a Hermitian H; pass real values."
 
 # add_onsite! of the constant 0: nothing to add (its QTCI compression would throw
 # "maxsamplevalue is zero!"), so H.mpo is left as it is; the `sublat` check and the cache
