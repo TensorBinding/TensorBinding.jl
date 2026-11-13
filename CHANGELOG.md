@@ -98,6 +98,32 @@ bugs without breaking the API.
   unchanged bit for bit (no golden case moves); below η = 0.1, or from L = 12 on, K and
   the DMRG results built on it move. An explicit `cutoff_K` is used as given and warns
   once when it is not below `η⁴` or when it is above `0.3/D²`.
+- **Size-aware truncation cutoff of the Hamiltonian builders.** Their cutoff (`1e-8` up
+  to v0.2.0) is relative to the squared norm of the MPO, which grows with the dimension D
+  of the site space, so in large systems it dropped terms carried by a single matrix
+  element. The bond across the middle of a 1D chain, `2^(L-1) - 1 → 2^(L-1)`, whose carry
+  flips every qubit, is such a term: `"chain_1d"`, `"uniform"`, `"aah"` and
+  `"ssh_sublattice"` lost it at L = 26 (`"ssh"` at L = 28), from L = 28 the chain was cut
+  every `2^26` sites, and `"custom"` with nearest-neighbour hops threw (its self-check
+  caught the missing bond). `add_onsite!` and the other term adders cut a correct chain
+  again. The default is now `min(1e-8, 0.1/D)`: in `get_Hamiltonian` and
+  `estimate_scale` (`tol`), `add_hopping!`, `add_hopping_2D!`, `add_onsite!`,
+  `add_spin!` (`cutoff`), `add_zeeman!`, `add_soc!`, `add_superconductivity!`,
+  `exciton_hamiltonian` and `Exciton_Hamiltonian` (`tol`), `spin_hamiltonian`,
+  `bdg_hamiltonian`, `bdg_spin_hamiltonian`, `ssh_sublattice_hamiltonian`,
+  `add_tjunction!` and `tjunction_hamiltonian` (`cutoff`), and in the fixed truncations
+  inside `hopping2MPO`, `qtci_matrix_to_MPO` and the `"uniform"` and `"aah"` presets. It
+  equals `1e-8` up to D = 2^23 (L = 23 for a spinless chain, 22 spinful, 21 for spinful
+  BdG or three atoms per cell), so smaller systems build the same MPOs bit for bit (no
+  golden case moves); larger ones move at the truncation level, and the 1D ones are
+  right again (checked up to L = 30). A given value is used as given and warns once when
+  it is above `0.3/D`; a given `tol` is still also the QTCI tolerance where it was
+  (`"custom"`, `"haldane"`, two-argument terms), whose default stays `1e-8`. Not changed:
+  the 2D-only builders, where a long carry repeats along a whole row or column and `1e-8`
+  keeps it until `Lx` or `Ly` reaches about 24 (estimated; checked at `Lx = Ly = 13`);
+  the projected quasicrystal spaces (still `1e-8`, not checked at large L); the solvers.
+  At L = 40 the chain MPO of `kinetic_1d_nn` itself loses the bond across the middle,
+  whatever the cutoff.
 
 ### Fixed
 

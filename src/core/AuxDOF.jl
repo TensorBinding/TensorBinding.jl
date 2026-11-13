@@ -289,16 +289,20 @@ end
 # ============================================================
 
 """
-    add_spin!(H; cutoff=1e-8, maxdim=200, position=:pre) -> H
+    add_spin!(H; cutoff=nothing, maxdim=200, position=:pre) -> H
 
 Extend `H` to a spin-½ degenerate system by adding a spin-½ index in front of
 (`position=:pre`) or behind (`position=:post`) the existing sites.
 The resulting Hamiltonian is `I_spin ⊗ H` (both spin sectors identical).
 
+`cutoff` is the relative cutoff of the final truncation, by default `min(1e-8, 0.1/D)`, D
+the dimension of the new site space (`1e-8` up to D = 2^23; see "Large systems" in
+[`get_Hamiltonian`](@ref)).
+
 No-op if `H` is already spinful (`H.spin_s !== nothing`).
 Invalidates all caches.
 """
-function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200,
+function add_spin!(H::TBHamiltonian; cutoff::Union{Nothing,Real}=nothing, maxdim::Int=200,
                    position::Symbol=:pre)
     _require_binary_position_space(H, "add_spin!")
     H.spin_s === nothing || return H
@@ -310,7 +314,9 @@ function add_spin!(H::TBHamiltonian; cutoff::Real=1e-8, maxdim::Int=200,
         H.mpo   = postpend_spin(H.mpo, spin_s, :Id)
         H.sites = [H.sites; spin_s]
     end
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cutoff)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim,
+                         cutoff=_mpo_cutoff(cutoff, _site_space_dim(H.sites), "add_spin!";
+                                            keyword="cutoff"))
     H.spin_s   = spin_s
     H.aux_side = position
     _invalidate_cache!(H)
@@ -323,7 +329,7 @@ end
 # ============================================================
 
 """
-    add_zeeman!(H, h; direction=:z, tol=1e-8, maxdim=200, position=nothing) -> H
+    add_zeeman!(H, h; direction=:z, tol=nothing, maxdim=200, position=nothing) -> H
 
 Add a Zeeman coupling `h · Sα` to `H`.  Calls `add_spin!` automatically if
 `H` is not yet spinful, placing the spin index at `position` (default
@@ -341,6 +347,9 @@ If `add_superconductivity!` was already called, the Zeeman term `Z` enters the h
 block as `−Z*`, as required in BdG: `τ_z ⊗ Z` along x and z, `+h·S_y` in the hole block
 along y (up to v0.2.0 every direction got `τ_z ⊗ Z`, wrong along y).
 
+`tol` is the relative cutoff of the sums, by default `min(1e-8, 0.1/D)`, D the dimension of
+the site space (`1e-8` up to D = 2^23; see "Large systems" in [`get_Hamiltonian`](@ref)).
+
 Examples
 --------
 ```julia
@@ -351,7 +360,7 @@ add_zeeman!(H, 0.05; direction=:x)          # in-plane
 """
 function add_zeeman!(H::TBHamiltonian, h;
                      direction::Symbol = :z,
-                     tol::Real  = 1e-8,
+                     tol::Union{Nothing,Real} = nothing,
                      maxdim::Int = 200,
                      position::Union{Nothing,Symbol} = nothing)
     _require_binary_position_space(H, "add_zeeman!")
@@ -359,6 +368,7 @@ function add_zeeman!(H::TBHamiltonian, h;
         error("direction must be :x, :y, or :z; got :$direction")
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
+    cut = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_zeeman!")
 
     spin_op = direction == :z ? :Sz : direction == :x ? :Sx : :Sy
     pos_s   = _pos_sites(H)
@@ -367,10 +377,10 @@ function add_zeeman!(H::TBHamiltonian, h;
 
     # h σ on the spin, the particle-hole structure on a Nambu site (τ_z for a real term),
     # the identity on any other aux site
-    H_Z = _lift_normal_term(H, h_mpo, Dict{Index,Any}(H.spin_s => spin_op); cutoff=tol)
+    H_Z = _lift_normal_term(H, h_mpo, Dict{Index,Any}(H.spin_s => spin_op); cutoff=cut)
 
-    H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=tol)
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
+    H.mpo = +(H.mpo, H_Z; maxdim=maxdim, cutoff=cut)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cut)
     _invalidate_cache!(H)
     return H
 end
@@ -381,7 +391,7 @@ end
 # ============================================================
 
 """
-    add_superconductivity!(H, Δ; type=:swave, tol=1e-8, maxdim=200,
+    add_superconductivity!(H, Δ; type=:swave, tol=nothing, maxdim=200,
                            position=nothing, check=true) -> H
 
 Extend `H` to a Bogoliubov–de Gennes (BdG) Hamiltonian by prepending
@@ -418,6 +428,11 @@ automatically redirects to `:pwave` (uniform `Δ`) or errors (spatially varying 
 - `:pwave`  — antisymmetric NN pairing `Δ·(K_f − K_b)` for spinless chains; `Δ` must be a `Number`
 - `:custom` — arbitrary `Δ(i,j)`; pass a 2-arg function
 
+`tol` is the relative cutoff of the BdG assembly, by default `min(1e-8, 0.1/D)`, D the
+dimension of the BdG site space (`1e-8` up to D = 2^23; see "Large systems" in
+[`get_Hamiltonian`](@ref)); a given `tol` is also the QTCI tolerance of `type=:custom`
+(default `1e-8`).
+
 Errors if BdG has already been applied.  Invalidates all caches.  The KPM scale
 becomes `|H.center| + H.scale + 1.1‖Δ̂‖` (center 0), with ‖Δ̂‖ = `abs(Δ)` for
 s-wave and `2abs(Δ)` for p-wave, when `H.scale` is set and `Δ` is a `Number`;
@@ -435,7 +450,7 @@ add_superconductivity!(H, (i,j) -> ...; type=:custom)          # general pairing
 """
 function add_superconductivity!(H::TBHamiltonian, Δ;
                                 type::Symbol = :swave,
-                                tol::Real    = 1e-8,
+                                tol::Union{Nothing,Real} = nothing,
                                 maxdim::Int  = 200,
                                 position::Union{Nothing,Symbol} = nothing,
                                 check::Bool  = true)
@@ -445,6 +460,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
 
     pos   = something(position, H.aux_side)
     pos_s = _pos_sites(H)
+    cut   = _mpo_cutoff(tol, 2 * _site_space_dim(H.sites), "add_superconductivity!")
 
     # ── Spinless + :swave redirect ───────────────────────────────────────────
     if H.spin_s === nothing && type === :swave
@@ -477,7 +493,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     elseif type === :custom
         Δ isa Function ||
             error("For type=:custom, Δ must be a 2-arg Function Δ(i,j).")
-        pairing2MPO(Δ, H.N, pos_s; tol=tol, type=ComplexF64, check=check)
+        pairing2MPO(Δ, H.N, pos_s; tol=something(tol, 1e-8), type=ComplexF64, check=check)
     else
         error("Unknown pairing type :$type.  Use :swave, :pwave, or :custom.")
     end
@@ -493,17 +509,17 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
     # ── BdG assembly ─────────────────────────────────────────────────────────
     nambu_s = nambu_index()
     if pos === :pre
-        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :pre; cutoff=tol),
-                    prepend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
-                    prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :pre; cutoff=cut),
+                    prepend_nambu(H_pair,     nambu_s, :tp); cutoff=cut),
+                    prepend_nambu(H_pair_adj, nambu_s, :tm); cutoff=cut)
         H.sites = [nambu_s; H.sites]
     else
-        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :post; cutoff=tol),
-                    postpend_nambu(H_pair,     nambu_s, :tp); cutoff=tol),
-                    postpend_nambu(H_pair_adj, nambu_s, :tm); cutoff=tol)
+        H_bdg = +(+(_nambu_normal_block(H.mpo, nambu_s, :post; cutoff=cut),
+                    postpend_nambu(H_pair,     nambu_s, :tp); cutoff=cut),
+                    postpend_nambu(H_pair_adj, nambu_s, :tm); cutoff=cut)
         H.sites = [H.sites; nambu_s]
     end
-    ITensorMPS.truncate!(H_bdg; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(H_bdg; maxdim=maxdim, cutoff=cut)
 
     old_scale, old_center = H.scale, H.center
     H.mpo      = H_bdg
@@ -529,7 +545,7 @@ end
 # ============================================================
 
 """
-    add_soc!(H, λ; type=:rashba, direction=:z, boundary=:periodic, tol=1e-8,
+    add_soc!(H, λ; type=:rashba, direction=:z, boundary=:periodic, tol=nothing,
              maxdim=200, position=nothing, check=true) -> H
 
 Add spin-orbit coupling to `H`.  Calls `add_spin!` automatically if needed,
@@ -562,6 +578,10 @@ placing the spin index at `position` (default `H.aux_side`).
 `boundary` (`:periodic` or `:open`; `:pbc`/`:obc` are accepted too) is read by `:rashba`
 only and checked for every `type`.
 
+`tol` is the relative cutoff of the sums, by default `min(1e-8, 0.1/D)`, D the dimension of
+the site space (`1e-8` up to D = 2^23; see "Large systems" in [`get_Hamiltonian`](@ref));
+a given `tol` is also the QTCI tolerance of a two-argument `λ` (default `1e-8`).
+
 Examples
 --------
 ```julia
@@ -575,7 +595,7 @@ function add_soc!(H::TBHamiltonian, λ;
                   type::Symbol      = :rashba,
                   direction::Symbol = :z,
                   boundary::Symbol  = :periodic,
-                  tol::Real         = 1e-8,
+                  tol::Union{Nothing,Real} = nothing,
                   maxdim::Int       = 200,
                   position::Union{Nothing,Symbol} = nothing,
                   check::Bool       = true)
@@ -584,10 +604,11 @@ function add_soc!(H::TBHamiltonian, λ;
     pos = something(position, H.aux_side)
     add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
+    cut   = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_soc!")
 
     # The SOC term on the spin (op), the particle-hole structure on a Nambu site (τ_z for
     # a real term), the identity on any other aux site, each on the side H.sites puts it.
-    spin_prepend(M, _, op) = _lift_normal_term(H, M, Dict{Index,Any}(H.spin_s => op); cutoff=tol)
+    spin_prepend(M, _, op) = _lift_normal_term(H, M, Dict{Index,Any}(H.spin_s => op); cutoff=cut)
 
     H_soc = if type === :ising
         λ_mpo = λ isa Number ? λ * MPO(pos_s, "Id") :
@@ -608,7 +629,7 @@ function add_soc!(H::TBHamiltonian, λ;
         # λ·(iσ_y) ⊗ (K_u − K_d): both factors anti-Hermitian → product Hermitian.
         # :Sy (Hermitian) ⊗ anti-Hermitian would give a non-Hermitian term.
         +(spin_prepend( λ * K_u, H.spin_s, :iSy),
-          spin_prepend(-λ * K_d, H.spin_s, :iSy); cutoff=tol)
+          spin_prepend(-λ * K_d, H.spin_s, :iSy); cutoff=cut)
 
     elseif type === :custom
         direction in (:x, :y, :z) ||
@@ -619,7 +640,7 @@ function add_soc!(H::TBHamiltonian, λ;
         elseif λ isa Function && applicable(λ, 1)
             get_diagonal_mpo(H.L, pos_s, λ)
         elseif λ isa Function
-            hopping2MPO(λ, H.N, pos_s; tol=tol, type=ComplexF64, check=check)
+            hopping2MPO(λ, H.N, pos_s; tol=something(tol, 1e-8), type=ComplexF64, check=check)
         else
             error("λ must be a Number or a Function.")
         end
@@ -629,8 +650,8 @@ function add_soc!(H::TBHamiltonian, λ;
         error("Unknown SOC type :$type.  Use :rashba, :ising, or :custom.")
     end
 
-    H.mpo = +(H.mpo, H_soc; maxdim=maxdim, cutoff=tol)
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
+    H.mpo = +(H.mpo, H_soc; maxdim=maxdim, cutoff=cut)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cut)
     _invalidate_cache!(H)
     return H
 end

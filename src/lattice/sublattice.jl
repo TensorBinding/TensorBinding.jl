@@ -425,7 +425,7 @@ end
 # ============================================================
 
 """
-    ssh_sublattice_hamiltonian(L, t=1.0, d=0.0; cutoff=1e-8, maxdim=200) -> TBHamiltonian
+    ssh_sublattice_hamiltonian(L, t=1.0, d=0.0; cutoff=nothing, maxdim=200) -> TBHamiltonian
 
 Build an SSH (Su-Schrieffer-Heeger) tight-binding Hamiltonian with an explicit
 2-component sublattice index, as a `TBHamiltonian`.
@@ -446,10 +446,15 @@ Build an SSH (Su-Schrieffer-Heeger) tight-binding Hamiltonian with an explicit
 
 The chain has periodic boundary conditions (B(N-1) ↔ A(0) inter-cell bond from
 the binary-increment wrap-around), consistent with all other QTT Hamiltonians.
+
+`cutoff` defaults to `min(1e-8, 0.1/D)`, D = 2·2^L the number of atoms: with the fixed
+`1e-8` of v0.2.0 the inter-cell bonds whose carry flips the top two qubits were lost at
+L = 26 (see "Large systems" in [`get_Hamiltonian`](@ref)).
 """
 function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0;
-                                    cutoff::Real = 1e-8,
+                                    cutoff::Union{Nothing,Real} = nothing,
                                     maxdim::Int  = 200)
+    cutoff = _mpo_cutoff(cutoff, 2 * 2.0^L, "ssh_sublattice_hamiltonian"; keyword="cutoff")
     # A 1D chain: the setup of a 2^L × 2^0 grid.
     S = _sublattice_setup(L, 0, 2, "SSH"; cutoff, maxdim)
 

@@ -175,7 +175,7 @@ function _preset_params(name::AbstractString, params, kwargs)
 end
 
 function _build_preset(geometry, params, L, N, sites;
-                       scale=nothing, tol=1e-8, maxdim=15,
+                       scale=nothing, tol=nothing, maxdim=15,
                        ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                        kwargs...)
     # Route through build_hamiltonian, which reads MODEL_REGISTRY; params (a scalar,
@@ -191,7 +191,7 @@ function _build_preset(geometry, params, L, N, sites;
         kw_filtered = Dict(k => v for (k, v) in kwargs if k ∉ (:Lx, :Ly))
         build_hamiltonian(geometry, Lx, Ly; mparam_dict, kw_filtered...)
     end
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=_mpo_cutoff(tol, 2.0^L, "get_Hamiltonian"))
     # The model builders (HAAH, HSSH, …) create their own site indices internally,
     # so we extract the actual sites from the MPO rather than using the ones
     # created by get_Hamiltonian (which would be a different set).
@@ -212,12 +212,13 @@ end
 # The 2D multi-atom lattices: the builder `entry.builder(Lx, Ly, params...)` with the
 # parameters of `entry.defaults` in order, the geometry from `entry.positions`.
 function _build_sublattice(entry::ModelEntry, params, L;
-                           scale=nothing, tol=1e-8, maxdim=200, ref_sites=nothing, kwargs...)
+                           scale=nothing, tol=nothing, maxdim=200, ref_sites=nothing, kwargs...)
     Lx = get(kwargs, :Lx, L ÷ 2)
     Ly = get(kwargs, :Ly, L - Lx)
     args = Tuple(_param(params, k, v; scalar = k === :t) for (k, v) in pairs(entry.defaults))
+    cut  = _mpo_cutoff(tol, entry.n_sub * 2.0^L, "get_Hamiltonian")
 
-    H  = getfield(@__MODULE__, entry.builder)(Lx, Ly, args...; cutoff=tol, maxdim=maxdim)
+    H  = getfield(@__MODULE__, entry.builder)(Lx, Ly, args...; cutoff=cut, maxdim=maxdim)
     rs = getfield(@__MODULE__, entry.positions)(Lx, Ly)
     H.geometry = let m = rs; i -> m[i, :]; end
 
@@ -237,11 +238,13 @@ function _build_sublattice(entry::ModelEntry, params, L;
 end
 
 # SSH chain with an explicit sublattice index: `t` (or the single number) and `d`.
-function _build_ssh_sublattice(params, L; scale=nothing, tol=1e-8, maxdim=15,
+function _build_ssh_sublattice(params, L; scale=nothing, tol=nothing, maxdim=15,
                                ref_sites=nothing)
     t = _param(params, :t, 1.0; scalar=true)
     d = _param(params, :d, 0.0)
-    H = ssh_sublattice_hamiltonian(L, t, d; cutoff=tol, maxdim=maxdim)
+    H = ssh_sublattice_hamiltonian(L, t, d;
+                                   cutoff=_mpo_cutoff(tol, 2 * 2.0^L, "get_Hamiltonian"),
+                                   maxdim=maxdim)
     isnothing(scale) || (H.scale = Float64(scale))
     ref_sites === nothing || _replace_pos_sites!(H, ref_sites, "ssh_sublattice")
     return H
@@ -276,10 +279,12 @@ end
 
 # get_Hamiltonian build function of a projected position space: rejects ref_sites.
 _projected_build(f, space::AbstractString) =
-    function (params, L, N, sites; ref_sites=nothing, kwargs...)
+    function (params, L, N, sites; ref_sites=nothing, tol=nothing, kwargs...)
         ref_sites === nothing ||
             throw(ArgumentError("ref_sites is not supported for $space"))
-        return f(params, L; kwargs...)
+        # get_Hamiltonian's default tol is size-aware (_default_mpo_cutoff); the projected
+        # spaces keep the 1e-8 it was up to v0.2.0, their large-L behaviour being unchecked
+        return f(params, L; tol=something(tol, 1e-8), kwargs...)
     end
 
 
@@ -426,7 +431,7 @@ const _MODEL_ENTRIES = ModelEntry[
             rowsum=(params, kwargs) -> _ssh_rowsum(_preset_params("ssh", params, kwargs))),
     ModelEntry("ssh_sublattice"; kind=:sublattice, dim=1, n_sub=2, params=[:t, :d],
                defaults=(; t=1.0, d=0.0), builder=:ssh_sublattice_hamiltonian,
-               build=(params, L, N, sites; ref_sites=nothing, scale=nothing, tol=1e-8,
+               build=(params, L, N, sites; ref_sites=nothing, scale=nothing, tol=nothing,
                       maxdim=15, kwargs...) ->
                    _build_ssh_sublattice(params, L; scale, tol, maxdim, ref_sites),
                auto=:small,
@@ -653,8 +658,8 @@ function _small_scale(entry::ModelEntry, H, params, L; tol, maxdim, kwargs...)
         return _SCALE_PADDING * _preserving_rngs(() -> _dense_spectral_radius(H.mpo))
     end
     cacheable = entry.resizable
-    key = (entry.name, _freeze(params), small, Float64(tol), maxdim,
-           _freeze_kwargs(kwargs, (:Lx, :Ly)))
+    key = (entry.name, _freeze(params), small, tol === nothing ? nothing : Float64(tol),
+           maxdim, _freeze_kwargs(kwargs, (:Lx, :Ly)))
     if cacheable
         cached = lock(() -> get(_SMALL_SCALE_CACHE, key, nothing), _SMALL_SCALE_LOCK)
         cached === nothing || return cached
@@ -690,7 +695,7 @@ function _check_scale_method(entry::ModelEntry, method::Symbol, L, kwargs)
 end
 
 """
-    estimate_scale(geometry, params; L, method=:auto, tol=1e-8, maxdim=15, kwargs...) -> Float64
+    estimate_scale(geometry, params; L, method=:auto, tol=nothing, maxdim=15, kwargs...) -> Float64
 
 KPM half-bandwidth estimate (spectral centre 0) for
 `get_Hamiltonian(geometry, params; L, tol, maxdim, kwargs...)`; `kwargs` are that call's
@@ -729,7 +734,7 @@ estimate_scale("square_2d", 1.0; L=12, Lx=6, method=:geometry)       # 4.4
 ```
 """
 function estimate_scale(geometry::AbstractString, params; L::Integer, method::Symbol=:auto,
-                        tol=1e-8, maxdim=15, ref_sites=nothing, kwargs...)
+                        tol=nothing, maxdim=15, ref_sites=nothing, kwargs...)
     entry = _model_entry(geometry)
     m = _check_scale_method(entry, method, L, kwargs)
     m === :geometry && return _SCALE_PADDING * entry.rowsum(params, kwargs)

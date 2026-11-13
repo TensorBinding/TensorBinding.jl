@@ -80,6 +80,10 @@ from the RNG. `get_Hamiltonian("custom", f)`, `add_hopping!(H, f)` with a two-ar
 `f`, `add_superconductivity!(H, Δ; type=:custom)` (through `pairing2MPO`) and
 `add_soc!(H, λ; type=:custom)` with a two-argument `λ` turn the check on (their keyword
 `check`); the default here is `false`.
+
+The QTCI output is truncated at a relative cutoff of `min(1e-8, 0.1/N)`: the fixed `1e-8`
+of v0.2.0 dropped bonds carried by a single matrix element from N = 2^26 on, such as the
+bond across the middle of a chain (see "Large systems" in [`get_Hamiltonian`](@ref)).
 """
 function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                      unfoldingscheme=:interleaved, nrandominitpivot::Int=5,
@@ -136,7 +140,9 @@ function _hopping2MPO(f, N, sites; tol, initial_positions, type, unfoldingscheme
     @debug "hopping2MPO: QTCI tensor train converted to MPS"
     mpo  = unfoldingscheme == :fused ? fused_mpo(mps, sites) : custom_mpo(mps, sites)
     @debug "hopping2MPO: MPS turned into MPO"
-    ITensorMPS.truncate!(mpo; cutoff=1e-8)
+    # 1e-8 up to N = 2^23, 0.1/N above: the fixed 1e-8 of v0.2.0 dropped the bond across
+    # the middle of a chain from L = 26 on (see _default_mpo_cutoff)
+    ITensorMPS.truncate!(mpo; cutoff=_default_mpo_cutoff(N))
     return mpo
 end
 
@@ -236,7 +242,7 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     @debug "qtci_matrix_to_MPO: MPS built"
     mpo  = custom_mpo(mps, sites)
     @debug "qtci_matrix_to_MPO: MPO built"
-    ITensorMPS.truncate!(mpo; maxdim=20, cutoff=1e-8)
+    ITensorMPS.truncate!(mpo; maxdim=20, cutoff=_default_mpo_cutoff(Nc))   # see hopping2MPO
     return mpo
 end
 

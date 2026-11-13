@@ -56,7 +56,7 @@ _is_tjunction(H) = H.sublattice_s !== nothing && hastags(H.sublattice_s, "TJunct
 
 """
     add_tjunction!(H, t_j; junction_site=0, coupling=nothing,
-                   cutoff=1e-8, maxdim=200) -> H
+                   cutoff=nothing, maxdim=200) -> H
 
 Extend a 1D `TBHamiltonian` to a T/Y-junction by postpending a dim-3
 "TJunction" index.  The three states |1⟩≡|-1⟩, |2⟩≡|0⟩, |3⟩≡|+1⟩ label
@@ -103,8 +103,10 @@ add_tjunction!(H3, 0.5; coupling=[0 1 0; 1 0 1; 0 1 0])
 function add_tjunction!(H::TBHamiltonian, t_j;
                         junction_site::Int = 0,
                         coupling           = nothing,
-                        cutoff::Real       = 1e-8,
+                        cutoff::Union{Nothing,Real} = nothing,
                         maxdim::Int        = 200)
+    # the default min(1e-8, 0.1/D), D the dimension of the 3-branch site space
+    cut = _mpo_cutoff(cutoff, 3 * _site_space_dim(H.sites), "add_tjunction!"; keyword="cutoff")
     isnothing(H.sublattice_s) && isnothing(H.layer_s) &&
         isnothing(H.spin_s)   && isnothing(H.nambu_s) ||
         error("add_tjunction! requires H with no existing auxiliary indices " *
@@ -134,8 +136,8 @@ function add_tjunction!(H::TBHamiltonian, t_j;
     H.geometry = let m = rs; i -> m[i, :]; end
 
     # --- Assemble and update struct -------------------------------------------
-    H.mpo          = +(H_intra, H_junc; cutoff=cutoff, maxdim=maxdim)
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cutoff)
+    H.mpo          = +(H_intra, H_junc; cutoff=cut, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cut)
     H.sites        = [pos_s; tj_s]
     H.sublattice_s = tj_s
     H.aux_side     = :post
@@ -150,7 +152,7 @@ end
 
 """
     tjunction_hamiltonian(L, t, t_j; junction_site=0, coupling=nothing,
-                          boundary=:open, cutoff=1e-8, maxdim=200)
+                          boundary=:open, cutoff=nothing, maxdim=200)
         -> TBHamiltonian
 
 Build a T/Y-junction Hamiltonian: three identical 1D nearest-neighbour chains
@@ -176,7 +178,8 @@ from the junction site (placed at the origin).  See `tjunction_positions`.
 - `coupling`      : custom 3×3 coupling matrix (default: symmetric Y-junction
                     `t_j * [0 1 1; 1 0 1; 1 1 0]`)
 - `boundary`      : `:open` (default) or `:periodic` for the intra-chain hoppings
-- `cutoff`        : MPO truncation cutoff
+- `cutoff`        : MPO truncation cutoff, by default `min(1e-8, 0.1/D)`, D = 3·2^L (`1e-8`
+                    up to L = 21; see "Large systems" in [`get_Hamiltonian`](@ref))
 - `maxdim`        : maximum MPO bond dimension
 
 Examples
@@ -196,7 +199,7 @@ function tjunction_hamiltonian(L::Int, t::Number, t_j::Number;
                                 junction_site::Int = 0,
                                 coupling           = nothing,
                                 boundary::Symbol   = :open,
-                                cutoff::Real       = 1e-8,
+                                cutoff::Union{Nothing,Real} = nothing,
                                 maxdim::Int        = 200)
     H = get_Hamiltonian("chain_1d", t; L=L, boundary=boundary)
     add_tjunction!(H, t_j;

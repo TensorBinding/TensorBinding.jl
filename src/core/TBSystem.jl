@@ -346,7 +346,7 @@ end
 # ============================================================
 
 """
-    get_Hamiltonian(geometry, params; L, scale=nothing, tol=1e-8, maxdim=15,
+    get_Hamiltonian(geometry, params; L, scale=nothing, tol=nothing, maxdim=15,
                     ref_sites=nothing, kwargs...) -> TBHamiltonian
 
 Build a `TBHamiltonian` from a named geometry and model parameters.
@@ -373,8 +373,8 @@ Projected position spaces (quasicrystals; `H.N` counts the admissible sites only
 | `"kbonacci"`      | `(A, B, C, …[, t, onsite])` or `(values=(a_1, …, a_k)[, t, onsite])` | `k` (required; `k=3` Tribonacci), `model`, `boundary`, `padding` |
 
 These call [`fibonacci_hamiltonian`](@ref), [`metallic_mean_hamiltonian`](@ref) and
-[`kbonacci_hamiltonian`](@ref) with `cutoff=tol` and `maxdim=maxdim`; they reject
-`ref_sites`.
+[`kbonacci_hamiltonian`](@ref) with `cutoff=tol` (`1e-8` by default, as up to v0.2.0) and
+`maxdim=maxdim`; they reject `ref_sites`.
 
 Preset models (routed through [`build_hamiltonian`](@ref) and `MODEL_REGISTRY`)
 -------------------------------------------------------------------------------
@@ -428,8 +428,11 @@ Common keyword arguments
                 (dense spectrum of the model at a small size), `:geometry`
                 (row-sum bound) or `:dmrg` (DMRG spectral bounds of `H`, which also
                 set `center`)
-- `tol`       : truncation cutoff of the built MPO (default `1e-8`); for `"custom"`
-                and `"haldane"` also the QTCI tolerance. The preset models take their
+- `tol`       : relative truncation cutoff of the built MPO; by default
+                `min(1e-8, 0.1/D)`, D the dimension of the site space, which is `1e-8`
+                (as up to v0.2.0) up to D = 2^23 (see "Large systems" below); the
+                projected spaces keep `1e-8`. For `"custom"` and `"haldane"` a given `tol`
+                is also the QTCI tolerance (default `1e-8`). The preset models take their
                 QTCI tolerance from `MODEL_REGISTRY` (`tol_quantics`: `1e-8`, `1e-9`
                 for `"qc2dsquare"`), which `params`/`mparams` override
 - `maxdim`    : maximum MPO bond dimension after construction (default `15`). It can
@@ -459,6 +462,25 @@ exceed it and is not computed. Every other geometry keeps its builder's default:
 the analytic bounds of `"haldane"`, `"chernhex"`, `"ssh_sublattice"` and the projected
 spaces. The centre is 0 except for the projected spaces.
 
+Large systems
+-------------
+`tol` is relative to the squared norm of the MPO, which grows with the dimension D of the
+site space, so a fixed cutoff drops a term carried by a single matrix element once the
+system is large enough. In a 1D chain the bond across the middle, `2^(L-1) - 1 → 2^(L-1)`,
+whose carry flips every qubit, is such a term. With the fixed `1e-8` of v0.2.0 the 1D
+models lost such bonds at L = 26 (`"chain_1d"`, `"uniform"`, `"aah"`, `"ssh_sublattice"`;
+`"ssh"` at L = 28), and from L = 28 the chain was cut every `2^26` sites; `"custom"` with
+nearest-neighbour hops threw, its self-check catching the missing bond. The default
+`min(1e-8, 0.1/D)` keeps such terms; it equals `1e-8` up to D = 2^23 (L = 23 for a spinless
+chain), so smaller systems build the same MPO as before. An explicit `tol` above `0.3/D` is
+used as given and warns once. [`add_hopping!`](@ref), [`add_onsite!`](@ref),
+[`add_spin!`](@ref), [`add_zeeman!`](@ref), [`add_soc!`](@ref) and
+[`add_superconductivity!`](@ref) have the same default; with `1e-8` each of them cut the
+chain again. In 2D a long carry repeats along a whole row or column, so `1e-8` keeps it
+until `Lx` or `Ly` reaches about 24 (estimated; checked at `Lx = Ly = 13`). The chain MPO
+of [`kinetic_1d_nn`](@ref) is itself exact up to L = 38 and loses the bond across the
+middle at L = 40, whatever `tol`.
+
 Examples
 --------
 ```julia
@@ -482,7 +504,7 @@ After construction, add further interaction terms with
 function get_Hamiltonian(geometry::String, params;
                          L::Int,
                          scale=nothing,
-                         tol=1e-8,
+                         tol=nothing,
                          maxdim=15,
                          ref_sites::Union{Nothing,Vector{<:Index}}=nothing,
                          kwargs...)
@@ -510,13 +532,13 @@ end
 
 function _build_chain_1d(t, L, N, sites;
                          scale=nothing,
-                         tol=1e-8,
+                         tol=nothing,
                          maxdim=15,
                          boundary::Symbol=:open,
                          bc=nothing)
     bc === nothing || (boundary = Symbol(bc))
     mpo = t * kinetic_1d_nn(L, sites; boundary=boundary)
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=_mpo_cutoff(tol, 2.0^L, "get_Hamiltonian"))
     sc  = something(scale, _estimate_scale("chain_1d", t))   # 2.5|t|
     return TBHamiltonian(; L, N, sites, mpo, geometry=_chain_geometry(), scale=sc)
 end
@@ -667,7 +689,9 @@ end
 _haldane_rowsum(t2, M) = 3.0 + 6.0 * abs(t2) + abs(M)
 
 function _build_haldane(params, L, N, sites;
-                        rs=nothing, scale=nothing, tol=1e-8, maxdim=15)
+                        rs=nothing, scale=nothing, tol=nothing, maxdim=15)
+    cut = _mpo_cutoff(tol, Float64(N), "get_Hamiltonian")
+    tol = something(tol, 1e-8)   # the QTCI tolerance
     @assert !isnothing(rs) "Haldane model requires keyword `rs` (N×2 position matrix). " *
                            "Generate it with `honeycomb_positions($L)`."
     _check_haldane_layout(rs, N)
@@ -684,7 +708,7 @@ function _build_haldane(params, L, N, sites;
     mpo = hopping2MPO(f, N, sites; tol=tol, type=ComplexF64, initial_positions=piv,
                       nrandominitpivot=0, nsearchglobalpivot=0)
     _check_haldane_mpo(mpo, sites, f, rsN, piv; tol=tol)
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cut)
     # Gershgorin bound, padded by 10% (nearly reached at phi = 0, π).
     sc  = something(scale, _SCALE_PADDING * _haldane_rowsum(t2, M))
     rs_f = let m = Float64.(rs); i -> m[i, :]; end
@@ -699,16 +723,17 @@ end
 function _build_custom(f, L, N, sites;
                        geometry=nothing,
                        scale=nothing,
-                       tol=1e-8,
+                       tol=nothing,
                        maxdim=15,
                        type=ComplexF64,
                        check::Bool=true)
     @assert !isnothing(scale) "`scale` must be provided for geometry=\"custom\"."
     geom_f = geometry isa Matrix ? (let m = Float64.(geometry); i -> m[i, :]; end) : geometry
+    cut = _mpo_cutoff(tol, Float64(N), "get_Hamiltonian")
     # The sampled self-check of hopping2MPO: the default QTCI pivots miss bond classes of
     # a sparse f; a build that passes is returned unchanged (see hopping2MPO).
-    mpo = hopping2MPO(f, N, sites; tol=tol, type=type, check=check)
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=tol)
+    mpo = hopping2MPO(f, N, sites; tol=something(tol, 1e-8), type=type, check=check)
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=cut)
     return TBHamiltonian(; L, N, sites, mpo, geometry=geom_f, scale=Float64(scale))
 end
 
@@ -742,7 +767,7 @@ end
 # ============================================================
 
 """
-    add_hopping!(H, f; nn=1, boundary=:open, bc=nothing, maxdim=15, tol=1e-8,
+    add_hopping!(H, f; nn=1, boundary=:open, bc=nothing, maxdim=15, tol=nothing,
                  type=ComplexF64, apply_kwargs=NamedTuple(), sublat=nothing,
                  sublat_from=nothing, sublat_to=nothing, check=true) -> H
 
@@ -778,8 +803,10 @@ Add a hopping term to `H`.
 
 - `boundary=:open` or `:periodic` (`bc` overrides it): boundary of the position
   shift for scalar and 1-arg `f` and for the inter-sublattice hops.
-- `maxdim`, `tol`: truncation of the summed MPO (`tol` is also the QTCI
-  tolerance of a 2-arg `f`).
+- `maxdim`, `tol`: truncation of the summed MPO; `tol` defaults to `min(1e-8, 0.1/D)`, D
+  the dimension of the site space (`1e-8` up to D = 2^23; see "Large systems" in
+  [`get_Hamiltonian`](@ref)). A given `tol` is also the QTCI tolerance of a 2-arg `f`
+  (default `1e-8`).
 - `type`: element type of the QTCI compression of a 2-arg `f`.
 - `check=true`: the sampled self-check of [`hopping2MPO`](@ref) for a 2-arg `f` (the
   default QTCI pivots miss bond classes of a sparse `f`; a build that passes it is kept).
@@ -798,7 +825,7 @@ function add_hopping!(H::TBHamiltonian, f;
                       boundary::Symbol = :open,
                       bc               = nothing,
                       maxdim           = 15,
-                      tol              = 1e-8,
+                      tol              = nothing,
                       type             = ComplexF64,
                       apply_kwargs     = NamedTuple(),
                       sublat           = nothing,
@@ -836,7 +863,8 @@ function add_hopping!(H::TBHamiltonian, f;
 
     pos_s = _pos_sites(H)
     sl_s  = H.sublattice_s
-    apkw  = isempty(apply_kwargs) ? (; cutoff=tol, maxdim=maxdim) : apply_kwargs
+    cut   = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_hopping!")
+    apkw  = isempty(apply_kwargs) ? (; cutoff=cut, maxdim=maxdim) : apply_kwargs
     bc === nothing || (boundary = Symbol(bc))
 
     # ── Build position-space hopping MPO (shared for all cases) ───────────────
@@ -848,7 +876,7 @@ function add_hopping!(H::TBHamiltonian, f;
             kineticNNN(H.L, pos_s, get_diagonal_mpo(H.L, pos_s, f), nn;
                        apply_kwargs=apply_kwargs, boundary=boundary)
         else
-            hopping2MPO(f, H.N, pos_s; tol=tol, type=type, check=check)
+            hopping2MPO(f, H.N, pos_s; tol=something(tol, 1e-8), type=type, check=check)
         end
     end
 
@@ -886,12 +914,12 @@ function add_hopping!(H::TBHamiltonian, f;
         else
             ku_nn, kd_nn = shift_pair_mpos(pos_s, nn; cyclic=_tb_periodic_boundary(boundary))
             +(extend_with_sublat(ku_nn, mat_fwd),
-              extend_with_sublat(kd_nn, mat_bwd); cutoff=tol)
+              extend_with_sublat(kd_nn, mat_bwd); cutoff=cut)
         end
     end
 
-    H.mpo = +(H.mpo, new_term; maxdim=maxdim, cutoff=tol)
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=tol)
+    H.mpo = +(H.mpo, new_term; maxdim=maxdim, cutoff=cut)
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cut)
     _invalidate_cache!(H)
     return H
 end
@@ -899,7 +927,7 @@ end
 
 """
     add_onsite!(H, f; layer=nothing, sublat=nothing, Lx=nothing,
-                tol=1e-8, maxdim=nothing, check=false) -> H
+                tol=nothing, maxdim=nothing, check=false) -> H
 
 Add a diagonal (on-site) potential to `H`.
 
@@ -943,11 +971,15 @@ For layered sublattice Hamiltonians, the onsite term is first built on the
 `position ⊗ sublattice` monolayer space, then wrapped with the selected layer
 projectors.
 
+`tol` is the relative cutoff of the sum, by default `min(1e-8, 0.1/D)`, D the dimension
+of the site space (`1e-8` up to D = 2^23; see "Large systems" in [`get_Hamiltonian`](@ref)).
+
 Invalidates all caches.
 """
 function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
-                     Lx=nothing, tol=1e-8, maxdim=nothing, check::Bool=false)
+                     Lx=nothing, tol=nothing, maxdim=nothing, check::Bool=false)
     _require_binary_position_space(H, "add_onsite!")
+    cut = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_onsite!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_onsite! currently supports layer/position/sublattice Hamiltonians only.")
@@ -971,12 +1003,12 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                         Lx=Lx, tol=tol, maxdim=maxdim, check=check)
             term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
             H_layered_term = H_layered_term === nothing ? term :
-                +(H_layered_term, term; cutoff=tol)
+                +(H_layered_term, term; cutoff=cut)
         end
 
         H.mpo = isnothing(maxdim) ?
-            +(H.mpo, H_layered_term; cutoff=tol) :
-            +(H.mpo, H_layered_term; cutoff=tol, maxdim=maxdim)
+            +(H.mpo, H_layered_term; cutoff=cut) :
+            +(H.mpo, H_layered_term; cutoff=cut, maxdim=maxdim)
         _invalidate_cache!(H)
         return H
     end
@@ -1042,8 +1074,8 @@ function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
     end
 
     H.mpo = isnothing(maxdim) ?
-        +(H.mpo, new_term; cutoff=tol) :
-        +(H.mpo, new_term; cutoff=tol, maxdim=maxdim)
+        +(H.mpo, new_term; cutoff=cut) :
+        +(H.mpo, new_term; cutoff=cut, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end

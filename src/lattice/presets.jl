@@ -36,7 +36,9 @@ function HUniform(L::Integer, t;
     hops_MPO   = qtt_mpo(L, xvals, sites, _ -> t;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
     iszero(v) && return kineticNNN(L, sites, hops_MPO, nn)
     onsite_MPO = qtt_mpo(L, xvals, sites, _ -> v;  tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    return +(kineticNNN(L, sites, hops_MPO, nn), onsite_MPO; cutoff=1e-8)
+    # 1e-8 up to 2^23 sites, 0.1/2^L above (the fixed 1e-8 of v0.2.0 dropped the bond
+    # across the middle of the chain from L = 26 on; see _default_mpo_cutoff)
+    return +(kineticNNN(L, sites, hops_MPO, nn), onsite_MPO; cutoff=_default_mpo_cutoff(2.0^L))
 end
 
 
@@ -77,7 +79,7 @@ function HAAH(L::Integer, V, phi, t;
     iszero(V) && return kineticNNN(L, sites, hops_MPO, 1)
     onsite_MPO = qtt_mpo(L, xvals, sites, x -> V * cos(2pi * b * x + phi);
                          tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-    return +(kineticNNN(L, sites, hops_MPO, 1), onsite_MPO; cutoff=1e-8)
+    return +(kineticNNN(L, sites, hops_MPO, 1), onsite_MPO; cutoff=_default_mpo_cutoff(2.0^L))   # as HUniform
 end
 
 

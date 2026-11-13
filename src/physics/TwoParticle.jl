@@ -12,11 +12,11 @@
 
 """
     exciton_hamiltonian(geometry, params, Ufunc; L, on_site=nothing, scale=nothing,
-        tol_quantics=1e-8, maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+        tol_quantics=1e-8, maxbonddim_quantics=100, tol=nothing, cutoff=1e-8,
         maxdim=200, kwargs...) -> TBHamiltonian
 
     exciton_hamiltonian(H_c, H_v, Ufunc; on_site=nothing, scale=nothing,
-        tol_quantics=1e-8, maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+        tol_quantics=1e-8, maxbonddim_quantics=100, tol=nothing, cutoff=1e-8,
         maxdim=200) -> TBHamiltonian
 
 Build an exciton Hamiltonian and wrap it in a `TBHamiltonian` for use with
@@ -57,9 +57,12 @@ TensorBinding's KPM, DMRG, and spectral tools.
                           term from `Ufunc` is interpolated at a fixed `1e-8`, see
                           `build_interaction_op_exciton`.)
 - `maxbonddim_quantics` : QTCI max bond dimension for `on_site`. Default `100`.
-- `tol`                 : MPO assembly truncation tolerance. Default `1e-8`. The
-                          geometry method also passes it to `get_Hamiltonian` for both
-                          sectors.
+- `tol`                 : MPO assembly truncation tolerance, by default
+                          `min(1e-8, 0.1/2^L)` (`1e-8` up to L = 23). The geometry
+                          method also passes it to `get_Hamiltonian` for both sectors,
+                          whose default is the same: with the fixed `1e-8` of v0.2.0 a 1D
+                          sector lost the bond across the middle of the chain from L = 26
+                          (see "Large systems" in [`get_Hamiltonian`](@ref)).
 - `maxdim`              : the geometry method passes it to `get_Hamiltonian` for both
                           sectors (default `200`, not `get_Hamiltonian`'s `15`); the
                           assembled exciton MPO itself is not truncated, so with
@@ -74,7 +77,7 @@ function exciton_hamiltonian(geometry::String, params, Ufunc;
                               scale                = nothing,
                               tol_quantics         = 1e-8,
                               maxbonddim_quantics  = 100,
-                              tol                  = 1e-8,
+                              tol                  = nothing,
                               cutoff               = 1e-8,
                               maxdim               = 200,
                               kwargs...)
@@ -93,7 +96,7 @@ function exciton_hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                               scale                = nothing,
                               tol_quantics         = 1e-8,
                               maxbonddim_quantics  = 100,
-                              tol                  = 1e-8,
+                              tol                  = nothing,
                               cutoff               = 1e-8,
                               maxdim               = 200)
     _require_binary_position_space(H_c, "exciton_hamiltonian")
@@ -120,7 +123,7 @@ end
 
 """
     Exciton_Hamiltonian(H_c, H_v, Ufunc; on_site=nothing, tol_quantics=1e-8,
-                        maxbonddim_quantics=100, tol=1e-8, cutoff=1e-8,
+                        maxbonddim_quantics=100, tol=nothing, cutoff=1e-8,
                         maxdim=200) -> MPO
 
 Build the exciton Hamiltonian on the interleaved 2L-site electron-hole space:
@@ -144,8 +147,9 @@ and `−V` to the valence sector, so that the hole also feels `+V` after the
 `H_c − H_v` subtraction (type-I semiconductor convention: both carriers confined).
 `tol_quantics` and `maxbonddim_quantics` control the QTCI compression of `V`.
 
-`tol` is the cutoff of the sums that add `V`; the keywords `cutoff` and `maxdim` are
-accepted but unused (the returned MPO is not truncated).
+`tol` is the cutoff of the sums that add `V`, by default `min(1e-8, 0.1/D)` with D the
+dimension of a sector's site space (`1e-8` up to D = 2^23); the keywords `cutoff` and
+`maxdim` are accepted but unused (the returned MPO is not truncated).
 
 Examples
 --------
@@ -166,7 +170,7 @@ function Exciton_Hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                               on_site              = nothing,
                               tol_quantics         = 1e-8,
                               maxbonddim_quantics  = 100,
-                              tol                  = 1e-8,
+                              tol                  = nothing,
                               cutoff               = 1e-8,
                               maxdim               = 200)
     @assert H_c.L == H_v.L "Electron and hole sectors must have the same system size"
@@ -184,8 +188,9 @@ function Exciton_Hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                         tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
         V_v   = qtt_mpo(L, xvals, H_v.sites, on_site;
                         tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-        mpo_c = +(mpo_c,       V_c; cutoff=tol)
-        mpo_v = +(mpo_v, -1.0*V_v; cutoff=tol)
+        cut   = _mpo_cutoff(tol, _site_space_dim(H_c.sites), "Exciton_Hamiltonian")
+        mpo_c = +(mpo_c,       V_c; cutoff=cut)
+        mpo_v = +(mpo_v, -1.0*V_v; cutoff=cut)
     end
 
     # Electron (H_c.sites) on the odd sites of sites_eh (interleave_mpo n = 1), hole

@@ -103,7 +103,7 @@ end
 
 """
     spin_hamiltonian(H_up, H_down, spin_s;
-                     H_Zeeman=nothing, cutoff=1e-8) -> MPO
+                     H_Zeeman=nothing, cutoff=nothing) -> MPO
 
 Build a spin-resolved Hamiltonian on `[spin_s; pos_sites…]`:
 
@@ -113,10 +113,16 @@ Build a spin-resolved Hamiltonian on `[spin_s; pos_sites…]`:
 spin-orbit coupling or magnetic exchange).  `H_Zeeman` is an optional
 position-MPO encoding a local magnetic field `h(x)`; it enters as
 `S_z ⊗ H_Zeeman` so spin-↑ gains `+½ h(x)` and spin-↓ gains `−½ h(x)`.
+
+`cutoff` is the relative cutoff of the sums, by default `min(1e-8, 0.1/D)`, D the dimension
+of the spinful site space (`1e-8` up to D = 2^23; see "Large systems" in
+[`get_Hamiltonian`](@ref)).
 """
 function spin_hamiltonian(H_up::MPO, H_down::MPO, spin_s::Index;
                           H_Zeeman::Union{MPO, Nothing} = nothing,
-                          cutoff::Real = 1e-8)
+                          cutoff::Union{Nothing,Real} = nothing)
+    cutoff = _mpo_cutoff(cutoff, dim(spin_s) * _site_space_dim(_mpo_ket_sites(H_up)),
+                         "spin_hamiltonian"; keyword="cutoff")
     H = +(prepend_spin(H_up,   spin_s, :Pup),
           prepend_spin(H_down, spin_s, :Pdn); cutoff=cutoff)
     isnothing(H_Zeeman) || (H = +(H, prepend_spin(H_Zeeman, spin_s, :Sz); cutoff=cutoff))
@@ -125,7 +131,7 @@ end
 
 
 """
-    bdg_hamiltonian(H_kin, H_pair, nambu_s; cutoff=1e-8) -> MPO
+    bdg_hamiltonian(H_kin, H_pair, nambu_s; cutoff=nothing) -> MPO
 
 Build a **spinless** Bogoliubov–de Gennes Hamiltonian on `[nambu_s; pos_sites…]`, in
 the Nambu basis `(c, c†)`:
@@ -152,9 +158,15 @@ H_pair = pairingNNN(L, sites, Δ * MPO(sites, "Id"), 1)   # Δ(i,i+1) = +Δ, Δ(
 `τ_- ⊗ H_pair†` is built automatically.  For a general `Δ(i,j)` use `pairing2MPO`.
 
 The result is Hermitian for any `H_kin = H_kin†` and any complex `H_pair`.
+
+`cutoff` is the relative cutoff of the sums, by default `min(1e-8, 0.1/D)`, D the dimension
+of the BdG site space (`1e-8` up to D = 2^23; see "Large systems" in
+[`get_Hamiltonian`](@ref)).
 """
 function bdg_hamiltonian(H_kin::MPO, H_pair::MPO, nambu_s::Index;
-                         cutoff::Real = 1e-8)
+                         cutoff::Union{Nothing,Real} = nothing)
+    cutoff = _mpo_cutoff(cutoff, dim(nambu_s) * _site_space_dim(_mpo_ket_sites(H_kin)),
+                         "bdg_hamiltonian"; keyword="cutoff")
     H_pair_adj = swapprime(dag(H_pair), 0, 1)
     return +(+(_nambu_normal_block(H_kin, nambu_s, :pre; cutoff=cutoff),
                prepend_nambu(H_pair,        nambu_s, :tp); cutoff=cutoff),
@@ -164,7 +176,7 @@ end
 
 """
     bdg_spin_hamiltonian(H_kin_up, H_kin_down, H_pair, spin_s, nambu_s;
-                         H_soc=nothing, cutoff=1e-8) -> MPO
+                         H_soc=nothing, cutoff=nothing) -> MPO
 
 Build a **spin-½ singlet** BdG Hamiltonian on `[nambu_s, spin_s; pos_sites…]`.
 
@@ -190,13 +202,20 @@ spin factor `i·σ_y = [[0,1],[−1,0]]`.  For on-site s-wave pairing, build
 `H_soc` (optional) adds an Ising-type spin-orbit coupling `N(S_z ⊗ H_soc)`.
 
 The result is Hermitian for real or complex `H_pair` and any `H_kin_up/dn`.
+
+`cutoff` is the relative cutoff of the sums, by default `min(1e-8, 0.1/D)`, D the dimension
+of the spinful BdG site space (`1e-8` up to D = 2^23; see "Large systems" in
+[`get_Hamiltonian`](@ref)).
 """
 function bdg_spin_hamiltonian(
     H_kin_up::MPO, H_kin_down::MPO, H_pair::MPO,
     spin_s::Index, nambu_s::Index;
     H_soc::Union{MPO, Nothing} = nothing,
-    cutoff::Real = 1e-8,
+    cutoff::Union{Nothing,Real} = nothing,
 )
+    cutoff = _mpo_cutoff(cutoff,
+                         dim(nambu_s) * dim(spin_s) * _site_space_dim(_mpo_ket_sites(H_kin_up)),
+                         "bdg_spin_hamiltonian"; keyword="cutoff")
     # N(P_↑ ⊗ H_kin_up) and N(P_↓ ⊗ H_kin_down): τ_z ⊗ … for real terms
     H = +(_nambu_normal_block(prepend_spin(H_kin_up,   spin_s, :Pup), nambu_s, :pre; cutoff=cutoff),
           _nambu_normal_block(prepend_spin(H_kin_down, spin_s, :Pdn), nambu_s, :pre; cutoff=cutoff);
