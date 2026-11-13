@@ -19,7 +19,7 @@
 # Main entry points: get_Hamiltonian, TBHamiltonian, add_hopping!, add_onsite!,
 # add_interaction!, truncate!, central_index, haldane_hoppingf.
 #
-# Depends on: Utils, Hamiltonian, geometry*, ModelRegistry*, NNNeighbor* (a *
+# Depends on: Utils, MPOTools (_mpo_cutoff), Hamiltonian, AuxDOF* (_lift_normal_term), geometry*, ModelRegistry*, NNNeighbor* (a *
 # marks a file included later; see the source map in TensorBinding.jl).
 
 # ============================================================
@@ -464,22 +464,30 @@ spaces. The centre is 0 except for the projected spaces.
 
 Large systems
 -------------
-`tol` is relative to the squared norm of the MPO, which grows with the dimension D of the
-site space, so a fixed cutoff drops a term carried by a single matrix element once the
-system is large enough. In a 1D chain the bond across the middle, `2^(L-1) - 1 → 2^(L-1)`,
-whose carry flips every qubit, is such a term. With the fixed `1e-8` of v0.2.0 the 1D
-models lost such bonds at L = 26 (`"chain_1d"`, `"uniform"`, `"aah"`, `"ssh_sublattice"`;
-`"ssh"` at L = 28), and from L = 28 the chain was cut every `2^26` sites; `"custom"` with
-nearest-neighbour hops threw, its self-check catching the missing bond. The default
-`min(1e-8, 0.1/D)` keeps such terms; it equals `1e-8` up to D = 2^23 (L = 23 for a spinless
-chain), so smaller systems build the same MPO as before. An explicit `tol` above `0.3/D` is
-used as given and warns once. [`add_hopping!`](@ref), [`add_onsite!`](@ref),
-[`add_spin!`](@ref), [`add_zeeman!`](@ref), [`add_soc!`](@ref) and
-[`add_superconductivity!`](@ref) have the same default; with `1e-8` each of them cut the
-chain again. In 2D a long carry repeats along a whole row or column, so `1e-8` keeps it
-until `Lx` or `Ly` reaches about 24 (estimated; checked at `Lx = Ly = 13`). The chain MPO
-of [`kinetic_1d_nn`](@ref) is itself exact up to L = 38 and loses the bond across the
-middle at L = 40, whatever `tol`.
+`tol` is relative to the squared norm of the MPO, `‖H‖² = D⟨h²⟩` with D the dimension of
+the site space and `⟨h²⟩` the mean squared norm of a row, so a fixed cutoff drops a term
+carried by a single matrix element once the system is large enough: an element `a`
+survives while the cutoff stays below about `|a|²/‖H‖²`. In a 1D chain the bond across the
+middle, `2^(L-1) - 1 → 2^(L-1)`, whose carry flips every qubit, is such a term. With the
+fixed `1e-8` of v0.2.0 the 1D models lost it at L = 26 (`"chain_1d"`, `"uniform"`, `"aah"`,
+`"ssh_sublattice"`; `"ssh"` at L = 28), and from L = 28 the chain was cut every `2^26`
+sites; `"custom"` with nearest-neighbour hops threw, its self-check catching the missing
+bond. The default is now `min(1e-8, 0.1/D)`. It equals `1e-8` up to D = 2^23 (L = 23 for a
+spinless chain), so smaller systems build the same MPO as before, and above it keeps every
+bond with `|t|² ≥ ⟨h²⟩/10`, such as the hops of a uniform chain (checked up to L = 30).
+
+It does not keep a bond that is weak next to the rest of its rows: beside on-site terms
+beyond about 4t (`"aah"` with V ≳ 4t, a large `add_onsite!` potential) or beside a much
+stronger bond (`"ssh_sublattice"` with `|t − d| < |t + d|/3`). There pass a `tol` below
+`|t|²/‖H‖²`; the fixed `1e-8` lost those bonds as well. An explicit `tol` above `0.3/D` is
+used as given and warns once. In 2D a long carry repeats along a whole row or column, so D
+is taken along the longer side: 2D models keep `1e-8` until that side has 2^23 sites.
+
+[`add_hopping!`](@ref), [`add_onsite!`](@ref), [`add_spin!`](@ref), [`add_zeeman!`](@ref),
+[`add_soc!`](@ref), [`add_superconductivity!`](@ref) and the non-Hermitian adders have the
+same default; with `1e-8` each of them cut the chain again. The 1D kinetic MPOs
+([`kinetic_1d_nn`](@ref), `kineticNNN`) summed with a fixed `1e-12`, which cut the bond at
+L = 39 (one direction) and 40; that sum is size-aware too.
 
 Examples
 --------
@@ -863,7 +871,7 @@ function add_hopping!(H::TBHamiltonian, f;
 
     pos_s = _pos_sites(H)
     sl_s  = H.sublattice_s
-    cut   = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_hopping!")
+    cut   = _mpo_cutoff(tol, _cutoff_dim(H), "add_hopping!")
     apkw  = isempty(apply_kwargs) ? (; cutoff=cut, maxdim=maxdim) : apply_kwargs
     bc === nothing || (boundary = Symbol(bc))
 
@@ -986,7 +994,7 @@ Invalidates all caches.
 function add_onsite!(H::TBHamiltonian, f; layer=nothing, sublat=nothing,
                      Lx=nothing, tol=nothing, maxdim=nothing, check::Bool=false)
     _require_binary_position_space(H, "add_onsite!")
-    cut = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_onsite!")
+    cut = _mpo_cutoff(tol, _cutoff_dim(H), "add_onsite!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_onsite! currently supports layer/position/sublattice Hamiltonians only.")
@@ -1141,6 +1149,18 @@ function _pos_sites(H::TBHamiltonian)
     isnothing(H.sublattice_s) || push!(aux, H.sublattice_s)
     aux_set = Set(aux)
     return filter(s -> s ∉ aux_set, H.sites)
+end
+
+# The dimension that the size-aware cutoff of a term added to H scales with
+# (_mpo_cutoff): the dimension of its site space in 1D; in 2D (H.Lx set, below H.L) that
+# divided by the number of sites along the shorter side, because a carry along x repeats
+# along every row and one along y along every column, so the weakest carry class weighs
+# 1/max(Nx, Ny) of what a 1D carry would. 2D results then keep 1e-8 until the longer side
+# reaches 2^23 sites, with no warning at the usual sizes.
+function _cutoff_dim(H)
+    D = _site_space_dim(H.sites)
+    (H.Lx === nothing || H.Lx >= H.L) && return D
+    return D / 2.0^min(H.Lx, H.L - H.Lx)
 end
 
 # An exciton Hamiltonian (exciton_hamiltonian): the interleaved 2L-site electron-hole

@@ -454,7 +454,14 @@ L = 26 (see "Large systems" in [`get_Hamiltonian`](@ref)).
 function ssh_sublattice_hamiltonian(L::Integer, t::Number = 1.0, d::Number = 0.0;
                                     cutoff::Union{Nothing,Real} = nothing,
                                     maxdim::Int  = 200)
-    cutoff = _mpo_cutoff(cutoff, 2 * 2.0^L, "ssh_sublattice_hamiltonian"; keyword="cutoff")
+    cut = _mpo_cutoff(cutoff, 2 * 2.0^L, "ssh_sublattice_hamiltonian"; keyword="cutoff")
+    return _ssh_sublattice_hamiltonian(L, t, d; cutoff=cut, maxdim=maxdim)
+end
+
+# ssh_sublattice_hamiltonian with a resolved cutoff (get_Hamiltonian resolves and warns
+# about its own tol, then builds through here).
+function _ssh_sublattice_hamiltonian(L::Integer, t::Number, d::Number;
+                                     cutoff::Real, maxdim::Int)
     # A 1D chain: the setup of a 2^L × 2^0 grid.
     S = _sublattice_setup(L, 0, 2, "SSH"; cutoff, maxdim)
 

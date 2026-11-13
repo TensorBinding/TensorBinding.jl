@@ -112,31 +112,58 @@ bugs without breaking the API.
   `cutoff_K` is used as given; it warns once when it is not below `η⁴` or when it is
   above `0.3·r²/D²`.
 - **Size-aware truncation cutoff of the Hamiltonian builders.** Their cutoff (`1e-8` up
-  to v0.2.0) is relative to the squared norm of the MPO, which grows with the dimension D
-  of the site space, so in large systems it dropped terms carried by a single matrix
-  element. The bond across the middle of a 1D chain, `2^(L-1) - 1 → 2^(L-1)`, whose carry
-  flips every qubit, is such a term: `"chain_1d"`, `"uniform"`, `"aah"` and
-  `"ssh_sublattice"` lost it at L = 26 (`"ssh"` at L = 28), from L = 28 the chain was cut
-  every `2^26` sites, and `"custom"` with nearest-neighbour hops threw (its self-check
-  caught the missing bond). `add_onsite!` and the other term adders cut a correct chain
-  again. The default is now `min(1e-8, 0.1/D)`: in `get_Hamiltonian` and
-  `estimate_scale` (`tol`), `add_hopping!`, `add_hopping_2D!`, `add_onsite!`,
-  `add_spin!` (`cutoff`), `add_zeeman!`, `add_soc!`, `add_superconductivity!`,
-  `exciton_hamiltonian` and `Exciton_Hamiltonian` (`tol`), `spin_hamiltonian`,
-  `bdg_hamiltonian`, `bdg_spin_hamiltonian`, `ssh_sublattice_hamiltonian`,
-  `add_tjunction!` and `tjunction_hamiltonian` (`cutoff`), and in the fixed truncations
-  inside `hopping2MPO`, `qtci_matrix_to_MPO` and the `"uniform"` and `"aah"` presets. It
-  equals `1e-8` up to D = 2^23 (L = 23 for a spinless chain, 22 spinful, 21 for spinful
-  BdG or three atoms per cell), so smaller systems build the same MPOs bit for bit (no
-  golden case moves); larger ones move at the truncation level, and the 1D ones are
-  right again (checked up to L = 30). A given value is used as given and warns once when
-  it is above `0.3/D`; a given `tol` is still also the QTCI tolerance where it was
-  (`"custom"`, `"haldane"`, two-argument terms), whose default stays `1e-8`. Not changed:
-  the 2D-only builders, where a long carry repeats along a whole row or column and `1e-8`
-  keeps it until `Lx` or `Ly` reaches about 24 (estimated; checked at `Lx = Ly = 13`);
-  the projected quasicrystal spaces (still `1e-8`, not checked at large L); the solvers.
-  At L = 40 the chain MPO of `kinetic_1d_nn` itself loses the bond across the middle,
-  whatever the cutoff.
+  to v0.2.0) is relative to the squared norm of the MPO, `‖H‖² = D⟨h²⟩`, with D the
+  dimension of the site space and `⟨h²⟩` the mean squared norm of a row. In large systems
+  it therefore dropped terms carried by a single matrix element, such as the bond across
+  the middle of a 1D chain, `2^(L-1) - 1 → 2^(L-1)`, whose carry flips every qubit:
+  - `"chain_1d"`, `"uniform"`, `"aah"` and `"ssh_sublattice"` lost it at L = 26
+    (`"ssh"` at L = 28), and from L = 28 the chain was cut every `2^26` sites;
+  - `"custom"` with nearest-neighbour hops threw, its self-check catching the missing bond;
+  - `add_onsite!` and the other term adders, the non-Hermitian ones included, cut a
+    correct chain again;
+  - the chain MPO of `kinetic_1d_nn` lost the bond at L = 39–40 through its own `1e-12`.
+
+  The default is now `min(1e-8, 0.1/D)` in:
+  - `get_Hamiltonian` and `estimate_scale` (`tol`);
+  - `add_hopping!`, `add_hopping_2D!`, `add_onsite!`, `add_spin!` (`cutoff`),
+    `add_zeeman!`, `add_soc!` and `add_superconductivity!`;
+  - `add_nh_onsite!`, `add_loss!`, `nh_nonreciprocal_hopping_mpo`,
+    `add_nh_nonreciprocal_hopping!` and `add_nh_skin_hopping!`;
+  - `exciton_hamiltonian` and `Exciton_Hamiltonian` (`tol`);
+  - `hermitized_hamiltonian` and `hermitize`, scaled by `r = min(1, ‖H‖²/‖zI − H‖²)` as
+    the block grows with `|z|` (the non-Hermitian KPM entry points pass their own
+    `cutoff` there; at large L pass a smaller one);
+  - `spin_hamiltonian`, `bdg_hamiltonian`,
+    `bdg_spin_hamiltonian`, `ssh_sublattice_hamiltonian`, `add_tjunction!` and
+    `tjunction_hamiltonian` (`cutoff`);
+  - the fixed truncations inside `hopping2MPO`, `qtci_matrix_to_MPO` and the `"uniform"`
+    and `"aah"` presets.
+
+  The `1e-12` of the 1D kinetic and p-wave sums (`kinetic_1d_nn`, `kineticNNN`,
+  `shift_hopping_mpo`, `pairingNNN`) became `min(1e-12, 0.1/D)`. In 2D a long carry repeats along a
+  whole row or column, so D is taken along the longer side and 2D results keep `1e-8`,
+  with no warning at the usual sizes. The default equals `1e-8` up to D = 2^23 (L = 23
+  for a spinless chain, 22 spinful, 21 for spinful BdG or three atoms per cell), so
+  smaller systems build the same MPOs bit for bit (apart from very weak T-junctions, see
+  below) and no golden case moves. Larger 1D
+  ones move at the truncation level and keep every bond with `|t|² ≥ ⟨h²⟩/10`, such as
+  the hops of a uniform chain (checked up to L = 30, the chain MPO at L = 40).
+
+  A bond that is weak next to the rest of its rows is still not kept, as it was not with
+  `1e-8`. That happens beside on-site terms beyond about 4t (`"aah"` with V ≳ 4t, a large
+  potential added by `add_onsite!`) or beside a much stronger bond (`"ssh_sublattice"`
+  with `|t − d| < |t + d|/3`); pass a smaller `tol` there. `add_tjunction!` keeps its
+  default below a tenth of the junction's weight, so a weak junction is no longer
+  removed: `t_j = 0.02t` at L = 16 was lost at `1e-8`. For `t_j² < 1e-7·2^L·t²` that
+  lowers the default below `1e-8` at any size.
+
+  A value you pass is used as given; it warns once when it is above `0.3/D`. A given
+  `tol` is still also the QTCI tolerance where it was (`"custom"`, `"haldane"`,
+  two-argument terms), and that default stays `1e-8`. Not changed:
+  - the 2D-only builders called directly (bilayer, twisted, flake, the 2D T-junction, the
+    multi-atom builders);
+  - the projected quasicrystal spaces (still `1e-8`, not checked at large L);
+  - the solvers.
 
 ### Fixed
 

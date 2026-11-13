@@ -105,7 +105,7 @@ end
 function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
                            cyclic::Bool=false,
                            maxdim::Int=typemax(Int),
-                           cutoff::Real=1e-12,
+                           cutoff::Real=min(1e-12, _default_mpo_cutoff(2.0^length(sites))),
                            apply_kwargs=NamedTuple())
     K, Kdag = shift_pair_mpos(sites, q; cyclic=cyclic)
     apkw = isempty(apply_kwargs) ?

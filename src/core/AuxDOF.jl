@@ -43,7 +43,7 @@
 #         methods' eight aux keywords, in one value)
 #   10.   _ldos_make_psi0 (← solvers/kpm/ldos.jl), probe_state
 #
-# Depends on: Utils, Hamiltonian, TBSystem, hopping2d*, Supercond* (a * marks a
+# Depends on: Utils, MPOTools (_mpo_cutoff), Hamiltonian, TBSystem, hopping2d*, Supercond* (a * marks a
 # file included later; see the source map in TensorBinding.jl).  Included right
 # after core/TBSystem.jl, this file needs only the ITensors types and
 # TBHamiltonian at definition time.  Its callees are resolved at run time: the
@@ -306,6 +306,16 @@ function add_spin!(H::TBHamiltonian; cutoff::Union{Nothing,Real}=nothing, maxdim
                    position::Symbol=:pre)
     _require_binary_position_space(H, "add_spin!")
     H.spin_s === nothing || return H
+    # the dimension once the spin index is added
+    cut = _mpo_cutoff(cutoff, 2 * _cutoff_dim(H), "add_spin!"; keyword="cutoff")
+    return _attach_spin!(H, cut; maxdim=maxdim, position=position)
+end
+
+# add_spin! with a resolved cutoff `cut`: add_zeeman! and add_soc! resolve their own `tol`
+# (and warn about it once, under their own name) and pass it here. No-op when H is
+# already spinful.
+function _attach_spin!(H::TBHamiltonian, cut::Real; maxdim::Int, position::Symbol)
+    H.spin_s === nothing || return H
     spin_s = spin_index()
     if position === :pre
         H.mpo   = prepend_spin(H.mpo, spin_s, :Id)
@@ -314,9 +324,7 @@ function add_spin!(H::TBHamiltonian; cutoff::Union{Nothing,Real}=nothing, maxdim
         H.mpo   = postpend_spin(H.mpo, spin_s, :Id)
         H.sites = [H.sites; spin_s]
     end
-    ITensorMPS.truncate!(H.mpo; maxdim=maxdim,
-                         cutoff=_mpo_cutoff(cutoff, _site_space_dim(H.sites), "add_spin!";
-                                            keyword="cutoff"))
+    ITensorMPS.truncate!(H.mpo; maxdim=maxdim, cutoff=cut)
     H.spin_s   = spin_s
     H.aux_side = position
     _invalidate_cache!(H)
@@ -367,8 +375,9 @@ function add_zeeman!(H::TBHamiltonian, h;
     direction in (:x, :y, :z) ||
         error("direction must be :x, :y, or :z; got :$direction")
     pos = something(position, H.aux_side)
-    add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
-    cut = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_zeeman!")
+    # one resolution, and at most one warning, for the spin step and the Zeeman term
+    cut = _mpo_cutoff(tol, (H.spin_s === nothing ? 2 : 1) * _cutoff_dim(H), "add_zeeman!")
+    _attach_spin!(H, cut; maxdim=maxdim, position=pos)
 
     spin_op = direction == :z ? :Sz : direction == :x ? :Sx : :Sy
     pos_s   = _pos_sites(H)
@@ -460,7 +469,7 @@ function add_superconductivity!(H::TBHamiltonian, Δ;
 
     pos   = something(position, H.aux_side)
     pos_s = _pos_sites(H)
-    cut   = _mpo_cutoff(tol, 2 * _site_space_dim(H.sites), "add_superconductivity!")
+    cut   = _mpo_cutoff(tol, 2 * _cutoff_dim(H), "add_superconductivity!")
 
     # ── Spinless + :swave redirect ───────────────────────────────────────────
     if H.spin_s === nothing && type === :swave
@@ -602,9 +611,10 @@ function add_soc!(H::TBHamiltonian, λ;
     _require_binary_position_space(H, "add_soc!")
     periodic = _tb_periodic_boundary(boundary)   # errors on an unsupported boundary
     pos = something(position, H.aux_side)
-    add_spin!(H; cutoff=tol, maxdim=maxdim, position=pos)
+    # one resolution, and at most one warning, for the spin step and the SOC term
+    cut = _mpo_cutoff(tol, (H.spin_s === nothing ? 2 : 1) * _cutoff_dim(H), "add_soc!")
+    _attach_spin!(H, cut; maxdim=maxdim, position=pos)
     pos_s = _pos_sites(H)
-    cut   = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_soc!")
 
     # The SOC term on the spin (op), the particle-hole structure on a Nambu site (τ_z for
     # a real term), the identity on any other aux site, each on the side H.sites puts it.

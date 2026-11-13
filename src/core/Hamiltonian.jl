@@ -9,7 +9,8 @@
 #
 # Main entry points: hopping2MPO, kinetic_1d_nn, kineticNNN.
 #
-# Depends on: Utils (shift_pair_mpos, shift_hopping_mpo, custom_mpo, fused_mpo).
+# Depends on: Utils (shift_pair_mpos, shift_hopping_mpo, custom_mpo, fused_mpo), MPOTools
+# (_default_mpo_cutoff).
 # The 2D kinetic builders are in lattice/hopping2d.jl.
 
 # ============================================================
@@ -35,7 +36,9 @@ function kinetic_1d_nn(L, sites; boundary::Symbol=:open, bc=nothing)
     @assert L == length(sites) "L must equal length(sites)"
     bc === nothing || (boundary = Symbol(bc))
     K, Kdag = shift_pair_mpos(sites, 1; cyclic=_tb_periodic_boundary(boundary))
-    return +(K, Kdag; cutoff=1e-12)
+    # 1e-12 up to L = 36, 0.1/2^L above: the fixed 1e-12 dropped the bond across the
+    # middle of the chain at L = 39 (one direction) and 40 (see _default_mpo_cutoff)
+    return +(K, Kdag; cutoff=min(1e-12, _default_mpo_cutoff(2.0^L)))
 end
 
 
@@ -273,6 +276,6 @@ function kineticNNN(L, sites, hopping::MPO, nn::Integer;
     bc === nothing || (boundary = Symbol(bc))
     return shift_hopping_mpo(hopping, sites, nn;
                              cyclic=_tb_periodic_boundary(boundary),
-                             cutoff=1e-12,
+                             cutoff=min(1e-12, _default_mpo_cutoff(2.0^L)),   # as kinetic_1d_nn
                              apply_kwargs=apply_kwargs)
 end

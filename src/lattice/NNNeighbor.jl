@@ -14,7 +14,7 @@
 #   _check_bravais_layout    - rejects geometries that are not Bravais in the cell index
 #   _resolve_layer_selection - the `layer` keyword of add_hopping_2D! as a list of layers
 #
-# Depends on: core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
+# Depends on: core/MPOTools.jl (_mpo_cutoff), core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
 # prepend_layer_projector), core/TBSystem.jl (TBHamiltonian, _pos_sites,
 # _invalidate_cache!), lattice/geometry.jl (_resolve_2d_geometry),
 # lattice/masks2d.jl (_row_break_mpo) and lattice/hopping2d.jl (generate_kin_u/d).
@@ -255,7 +255,7 @@ function add_hopping_2D!(H::TBHamiltonian, f;
                           geometry    = nothing,
                           maxdim::Int = 50,
                           tol::Union{Nothing,Real} = nothing)
-    cut = _mpo_cutoff(tol, _site_space_dim(H.sites), "add_hopping_2D!")
+    cut = _mpo_cutoff(tol, _site_space_dim(H.sites) / 2.0^min(Lx, Ly), "add_hopping_2D!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_hopping_2D! currently supports layer/position/sublattice Hamiltonians only.")

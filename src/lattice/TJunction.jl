@@ -83,6 +83,12 @@ See `tjunction_positions` for the atom index convention.
 After the call, `H.sublattice_s` stores the TJunction index and
 `H.aux_side = :post`.  All caches are invalidated.
 
+`cutoff` is the relative cutoff of the sum. The default is `min(1e-8, 0.1/D)`, D = 3·2^L
+(see "Large systems" in [`get_Hamiltonian`](@ref)), and at most a tenth of the junction's
+share of `‖H‖²`: the junction is a single-site term weighing `≈ (t_j/t)²/2^L`, and up to
+v0.2.0 the fixed `1e-8` removed a weak one entirely (`t_j = 0.02 t` at L = 16), leaving
+three decoupled chains.
+
 Examples
 --------
 ```julia
@@ -105,8 +111,9 @@ function add_tjunction!(H::TBHamiltonian, t_j;
                         coupling           = nothing,
                         cutoff::Union{Nothing,Real} = nothing,
                         maxdim::Int        = 200)
-    # the default min(1e-8, 0.1/D), D the dimension of the 3-branch site space
-    cut = _mpo_cutoff(cutoff, 3 * _site_space_dim(H.sites), "add_tjunction!"; keyword="cutoff")
+    # the default min(1e-8, 0.1/D), D the dimension of the 3-branch site space; capped
+    # below by the junction's weight once the term is built
+    cut = _mpo_cutoff(cutoff, 3 * _cutoff_dim(H), "add_tjunction!"; keyword="cutoff")
     isnothing(H.sublattice_s) && isnothing(H.layer_s) &&
         isnothing(H.spin_s)   && isnothing(H.nambu_s) ||
         error("add_tjunction! requires H with no existing auxiliary indices " *
@@ -127,6 +134,15 @@ function add_tjunction!(H::TBHamiltonian, t_j;
              t_j * [0.0 1.0 1.0; 1.0 0.0 1.0; 1.0 1.0 0.0] :
              coupling
     H_junc = postpend_op(P_junc, tj_s, J_mat)
+    # The junction P ⊗ J is a single-site term of weight ‖H_junc‖²/‖H‖² ≈ (t_j/t)²/2^L,
+    # its own singular vector: a relative cutoff above that removed it and left three
+    # decoupled chains (t_j = 0.02 at L = 16 with 1e-8, t_j ≤ 0.18 t at L ≥ 22 with
+    # 0.1/D). The default stays a tenth below it.
+    # (t_j = 0 or a zero coupling matrix: no junction to keep, so no cap)
+    if cutoff === nothing
+        wj, wi = real(inner(H_junc, H_junc)), real(inner(H_intra, H_intra))
+        wj > 0 && (cut = min(cut, 0.1 * wj / (wi + wj)))
+    end
 
     # --- Geometry: 2D Y-junction, branches at 0°, 120°, 240° -----------------
     # Atom index convention (branch-fast):
@@ -178,8 +194,8 @@ from the junction site (placed at the origin).  See `tjunction_positions`.
 - `coupling`      : custom 3×3 coupling matrix (default: symmetric Y-junction
                     `t_j * [0 1 1; 1 0 1; 1 1 0]`)
 - `boundary`      : `:open` (default) or `:periodic` for the intra-chain hoppings
-- `cutoff`        : MPO truncation cutoff, by default `min(1e-8, 0.1/D)`, D = 3·2^L (`1e-8`
-                    up to L = 21; see "Large systems" in [`get_Hamiltonian`](@ref))
+- `cutoff`        : MPO truncation cutoff, by default that of [`add_tjunction!`](@ref)
+                    (`min(1e-8, 0.1/D)`, D = 3·2^L, kept below the junction's weight)
 - `maxdim`        : maximum MPO bond dimension
 
 Examples

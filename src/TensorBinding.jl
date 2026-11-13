@@ -90,17 +90,19 @@ export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
 #
 # core/Utils.jl              qubit ops, basis MPS, eval_mps, diagonal/shift MPOs, sampling plans,
 #                            dense MPO matrices, deprecation helpers (_depwarn_once, _renamed_kw)
-#                            → Fibonacci*
+#                            → Fibonacci*, MPOTools*
 # core/MPOTools.jl           mpo_kron, interleave_mpo & co., compose_power, _site_projector_mpo,
-#                            sum_mpos, _checked_sum_mpos
+#                            sum_mpos, _checked_sum_mpos, the size-aware default cutoff of the builders
+#                            (_default_mpo_cutoff, _mpo_cutoff)
 #                            → Utils
 # core/Hamiltonian.jl        1D kinetic MPOs, the QTCI hopping builder hopping2MPO
-#                            → Utils
+#                            → Utils, MPOTools
 # core/TBSystem.jl           TBHamiltonian, position spaces, get_Hamiltonian, add_hopping!/add_onsite!
-#                            → Utils, Hamiltonian, geometry*, ModelRegistry*, NNNeighbor*
+#                            → Utils, MPOTools, Hamiltonian, AuxDOF*, geometry*, ModelRegistry*,
+#                              NNNeighbor*
 # core/AuxDOF.jl             spin/Nambu indices, add_spin! & co., project_aux, sector projectors,
 #                            the aux projection AuxProjection/_project_aux_sectors, probe_state
-#                            → Utils, Hamiltonian, TBSystem, hopping2d*, Supercond*
+#                            → Utils, MPOTools, Hamiltonian, TBSystem, hopping2d*, Supercond*
 # lattice/geometry.jl        i → position closures, *_positions tables, _resolve_2d_geometry
 #                            → TBSystem
 # position_spaces/Fibonacci.jl  Zeckendorf space, Fib* ops, constructors, conumbering
@@ -118,12 +120,12 @@ export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
 #                            → Utils, MPOTools, Hamiltonian, hopping2d
 # core/ModelRegistry.jl      model registry MODELS (MODEL_REGISTRY), build_hamiltonian, the
 #                            per-kind builders, the KPM scale maker estimate_scale
-#                            → Utils, TBSystem, geometry, Fibonacci, MetallicMean, KBonacci,
+#                            → Utils, MPOTools, TBSystem, geometry, Fibonacci, MetallicMean, KBonacci,
 #                              presets, sublattice*, DMRG*
 # lattice/sublattice.jl      kagome/Lieb/honeycomb/dice/SSH sublattice builders
 #                            → Utils, MPOTools, TBSystem, masks2d
 # lattice/NNNeighbor.jl      nth-neighbour hopping add_hopping_2D!, get_shell_disps
-#                            → Utils, TBSystem, geometry, masks2d, hopping2d
+#                            → Utils, MPOTools, TBSystem, geometry, masks2d, hopping2d
 # lattice/Flake.jl           signed-distance functions, QTCI flake masks
 #                            → Utils, TBSystem
 # lattice/Twisted.jl         twisted multilayer builders
@@ -184,7 +186,7 @@ export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
 # physics/Topology.jl        Chern/winding markers, valley operators, Thouless pump
 #                            → Utils, TBSystem, NNNeighbor, kpm/recursion, Purification
 # physics/nh/model.jl        NonHermitianHamiltonian, hermitize, add_loss!/add_nh_*
-#                            → Utils, TBSystem
+#                            → Utils, MPOTools, TBSystem
 # physics/nh/kpm.jl          NH KPM, spectral function, nh_spectrum_grid
 #                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion,
 #                              nh/model

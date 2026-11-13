@@ -327,9 +327,12 @@ end
 # fixed cutoff 1e-8 of v0.2.0 lost it from L = 26 on (a single site-space dimension of
 # 2^26), and from L = 28 every bond whose carry flips 27 qubits or more, which cut the
 # chain every 2^26 sites. The builders and term adders therefore default to
-# `_default_mpo_cutoff(D)`: 1e-8, as before, up to D = 2^23, and 0.1/D above, which
-# keeps every term with k ≥ 1 for z ≤ 10. In 2D a long carry repeats along a whole row or
-# column, so 1e-8 already kept it; the default changes nothing there below D = 2^23.
+# `_default_mpo_cutoff(D)`: 1e-8, as before, up to D = 2^23, and 0.1/D above, which keeps
+# a single element a while |a|² ≥ ‖H‖²/(10D), i.e. every hop of a uniform chain, but not a
+# bond that is weak next to the rest of its rows (on-site terms beyond ~4t, a 3x stronger
+# bond): that needs a cutoff that knows |a|, which a relative default cannot. In 2D a long
+# carry repeats along a whole row or column, so 2D callers pass D along the longer side
+# (_cutoff_dim in core/TBSystem.jl), which keeps 1e-8 there at every usual size.
 
 _default_mpo_cutoff(D::Real) = min(1e-8, 0.1 / Float64(D))
 
@@ -344,7 +347,8 @@ function _mpo_cutoff(value, D::Real, fname::AbstractString; keyword::AbstractStr
     value === nothing && return _default_mpo_cutoff(D)
     value > 0.3 / D &&
         @warn "$fname: $keyword = $value can drop a term carried by a single matrix element " *
-              "on this site space of dimension $(Float64(D)), such as the bond across the " *
-              "middle of a 1D chain; the default is min(1e-8, 0.1/D)." maxlog=1 _id=Symbol(fname, :_, keyword, :_size)
+              "at this size (D = $(Float64(D)), the site-space dimension, along the longer " *
+              "side in 2D), such as the bond across the middle of a 1D chain; the default is " *
+              "min(1e-8, 0.1/D)." maxlog=1 _id=Symbol(fname, :_, keyword, :_size)
     return value
 end

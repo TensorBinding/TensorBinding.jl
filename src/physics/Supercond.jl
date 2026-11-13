@@ -68,7 +68,8 @@ function pairingNNN(L, sites, hopping::MPO, nn::Integer; apply_kwargs = NamedTup
     An = compose_power(k1, nn; side=:right, apply_kwargs)
     Am = compose_power(k2, nn; side=:left,  apply_kwargs)
     return +(apply(hopping, An; apply_kwargs...),
-             -1.0 * apply(Am, dag(hopping); apply_kwargs...); cutoff=1e-12)
+             -1.0 * apply(Am, dag(hopping); apply_kwargs...);
+             cutoff=min(1e-12, _default_mpo_cutoff(2.0^L)))   # as kineticNNN
 end
 
 

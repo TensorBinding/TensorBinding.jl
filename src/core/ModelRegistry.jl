@@ -15,7 +15,7 @@
 # Main entry points: build_hamiltonian, estimate_scale; get_Hamiltonian
 # (core/TBSystem.jl) looks every geometry up in MODELS.
 #
-# Depends on: Utils (fix_sites, _mpo_ket_sites, _mpo_dense_matrix), TBSystem (TBHamiltonian, the chain,
+# Depends on: Utils (fix_sites, _mpo_ket_sites, _mpo_dense_matrix), MPOTools (_mpo_cutoff), TBSystem (TBHamiltonian, the chain,
 # Haldane and custom builders), geometry (the i -> position closures), Fibonacci,
 # MetallicMean, KBonacci (their get_Hamiltonian wrappers), presets (the H* builders,
 # looked up by Symbol at call time), sublattice* (builders and position tables, looked
@@ -182,16 +182,18 @@ function _build_preset(geometry, params, L, N, sites;
     # a NamedTuple or a Dict) becomes its mparam_dict.
     entry = MODELS[geometry]
     mparam_dict = _preset_param_dict(entry, params)
+    Dcut = 2.0^L   # the dimension the size-aware cutoff scales with (2D: the longer side)
     mpo = if entry.dim == 1
         build_hamiltonian(geometry, L; mparam_dict, kwargs...)
     else
         # 2D: expect Lx and Ly in kwargs, or factorise L equally
         Lx = get(kwargs, :Lx, L ÷ 2)
         Ly = get(kwargs, :Ly, L - Lx)
+        Dcut = 2.0^max(Lx, Ly)
         kw_filtered = Dict(k => v for (k, v) in kwargs if k ∉ (:Lx, :Ly))
         build_hamiltonian(geometry, Lx, Ly; mparam_dict, kw_filtered...)
     end
-    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=_mpo_cutoff(tol, 2.0^L, "get_Hamiltonian"))
+    ITensorMPS.truncate!(mpo; maxdim=maxdim, cutoff=_mpo_cutoff(tol, Dcut, "get_Hamiltonian"))
     # The model builders (HAAH, HSSH, …) create their own site indices internally,
     # so we extract the actual sites from the MPO rather than using the ones
     # created by get_Hamiltonian (which would be a different set).
@@ -216,7 +218,7 @@ function _build_sublattice(entry::ModelEntry, params, L;
     Lx = get(kwargs, :Lx, L ÷ 2)
     Ly = get(kwargs, :Ly, L - Lx)
     args = Tuple(_param(params, k, v; scalar = k === :t) for (k, v) in pairs(entry.defaults))
-    cut  = _mpo_cutoff(tol, entry.n_sub * 2.0^L, "get_Hamiltonian")
+    cut  = _mpo_cutoff(tol, entry.n_sub * 2.0^max(Lx, Ly), "get_Hamiltonian")   # 2D: the longer side (_cutoff_dim)
 
     H  = getfield(@__MODULE__, entry.builder)(Lx, Ly, args...; cutoff=cut, maxdim=maxdim)
     rs = getfield(@__MODULE__, entry.positions)(Lx, Ly)
@@ -242,9 +244,9 @@ function _build_ssh_sublattice(params, L; scale=nothing, tol=nothing, maxdim=15,
                                ref_sites=nothing)
     t = _param(params, :t, 1.0; scalar=true)
     d = _param(params, :d, 0.0)
-    H = ssh_sublattice_hamiltonian(L, t, d;
-                                   cutoff=_mpo_cutoff(tol, 2 * 2.0^L, "get_Hamiltonian"),
-                                   maxdim=maxdim)
+    H = _ssh_sublattice_hamiltonian(L, t, d;
+                                    cutoff=_mpo_cutoff(tol, 2 * 2.0^L, "get_Hamiltonian"),
+                                    maxdim=maxdim)
     isnothing(scale) || (H.scale = Float64(scale))
     ref_sites === nothing || _replace_pos_sites!(H, ref_sites, "ssh_sublattice")
     return H

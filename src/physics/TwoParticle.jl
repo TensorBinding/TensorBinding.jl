@@ -188,7 +188,7 @@ function Exciton_Hamiltonian(H_c::TBHamiltonian, H_v::TBHamiltonian, Ufunc;
                         tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
         V_v   = qtt_mpo(L, xvals, H_v.sites, on_site;
                         tol_quantics=tol_quantics, maxbonddim_quantics=maxbonddim_quantics)
-        cut   = _mpo_cutoff(tol, _site_space_dim(H_c.sites), "Exciton_Hamiltonian")
+        cut   = _mpo_cutoff(tol, _cutoff_dim(H_c), "Exciton_Hamiltonian")
         mpo_c = +(mpo_c,       V_c; cutoff=cut)
         mpo_v = +(mpo_v, -1.0*V_v; cutoff=cut)
     end
