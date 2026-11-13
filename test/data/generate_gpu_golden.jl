@@ -55,8 +55,20 @@ const R = GPUGoldenRunner
 const OUTFILE = joinpath(@__DIR__, "gpu_golden.jl")
 
 # `--only name1,name2,…`: rerun these cases, keep the stored entries of the others.
-const ONLY = let i = findfirst(==("--only"), ARGS)
-    i === nothing ? nothing : Set(String.(split(ARGS[i + 1], ',')))
+# (`--only=name1,…` works too.) Any other argument is an error, so that a mistyped option
+# cannot fall back to a full regeneration.
+const ONLY = let args = copy(ARGS), only = nothing
+    i = findfirst(a -> a == "--only" || startswith(a, "--only="), args)
+    if i !== nothing
+        bare = args[i] == "--only"
+        val  = bare ? (i < length(args) ? args[i + 1] : "") : args[i][8:end]
+        isempty(val) && error("--only needs a comma-separated list of case names")
+        only = Set(String.(split(val, ',')))
+        deleteat!(args, bare ? (i:i + 1) : (i:i))
+    end
+    isempty(args) || error("unknown argument(s): ", join(args, " "),
+                           " (the only option is --only name1,name2,...)")
+    only
 end
 
 function evaluate(c)
