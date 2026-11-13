@@ -50,6 +50,12 @@ bugs without breaking the API.
   do, with the Jackson moment count: `kernel=:jackson` with `Ncheb` moments is the
   textbook kernel for `Ncheb − 1` moments (the last weight is zero). Results are
   unchanged.
+- **2D bands documented as wrong.** In 2D, `get_bands` and `get_bands_gpu` take their
+  momenta from one QFT over the linear index `n = ix + iy·2^Lx`, not from a QFT along x
+  times one along y: ky is read from the x bits and kx from the y bits, with a shear, so
+  2D bands are not resolved by `(kx, ky)` and the `kpath` labels are not the points they
+  name. Both docstrings now say so; results are unchanged, and a separable 2D transform
+  is left for a later release. 1D is not affected.
 
 ### Changed results
 

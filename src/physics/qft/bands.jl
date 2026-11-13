@@ -248,6 +248,16 @@ an `ArgumentError` instead.
 
 # Returns
 `Matrix{Float64}` of shape `(Nω, num_x)`.
+
+!!! warning "2D: one QFT over the linear index"
+    In 2D the momenta come from one QFT over all position qubits (`conjugate_by_qft`),
+    i.e. over the linear index `n = ix + iy·2^Lx`, not from a QFT along x times one along
+    y. The label `(ky << Lx) | kx` of a k-group then reads ky from the x bits and kx from
+    the y bits, with a shear of `x/2^Ly` grid steps, so 2D bands are not resolved by
+    `(kx, ky)`: on a torus 50–72 % of the weight stays off the momentum diagonal, and along
+    Γ → X an anisotropic torus (`tx = 1`, `ty = 0.3`) follows the `ty` band (checked
+    against dense diagonalisation). 1D is not affected. Until a separable 2D transform is
+    added, use 1D cuts or a dense calculation for 2D bands.
 """
 function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           Ncheb::Int, D::Int, ω_vals;
@@ -502,6 +512,12 @@ Otherwise returns `Matrix{Float64}` as usual (backward-compatible).
 result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
 `1/π`, so each momentum state integrates to `1/π`; multiply by `π/H.scale` for physical
 units.
+
+!!! warning "2D bands"
+    In 2D (`D = 2`) the momenta are not those of a 2D Fourier transform: one QFT runs over
+    the linear index `n = ix + iy·2^Lx`, which mixes kx and ky (see the low-level method).
+    The `kpath` labels are therefore not the high-symmetry points they name. 1D is not
+    affected.
 """
 function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           kpath             = nothing,

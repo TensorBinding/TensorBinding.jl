@@ -54,6 +54,11 @@ heatmap(1:size(res.Ak,2), omega, res.Ak; xticks=(res.ticks, res.labels))
 result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
 `1/π`, so each momentum state integrates to `1/π`; multiply by `π/H.scale` for physical
 units.
+
+!!! warning "2D bands"
+    As in [`get_bands`](@ref): in 2D one QFT runs over the linear index
+    `n = ix + iy·2^Lx`, which mixes kx and ky, so 2D bands are not resolved by `(kx, ky)`
+    and the `kpath` labels are not the points they name. 1D is not affected.
 """
 function get_bands_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        kpath             = nothing,
