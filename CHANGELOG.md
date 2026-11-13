@@ -83,20 +83,21 @@ bugs without breaking the API.
   `(c↑, c↓, c†↓, −c†↑)`, in which its `iσ_y` pairing would vanish; it now names the basis
   the code uses. `H` must be Hermitian, as before: for a non-Hermitian `H` the hole block
   would be `−Hᵀ`, which neither build gives (now documented).
-- **`build_K` and `dmrg_spectral`: `cutoff_K` defaults to `min(1e-8, 1e-4·η⁴)`.** The
-  cutoff is relative to the squared norm of each sum and product, and `η² I` is the
-  smallest part of `K = (H − ω)² + η²`, so the fixed default `1e-8` truncated most of it
-  at small η: on a 5-qubit chain at η = 1e-2, ‖ΔK‖ = 9.7e-5 ≈ η² (now below 1e-7). The
-  default stays `1e-8` for η ≥ 0.1 and for η = 0, so those results are unchanged bit for
-  bit; below η = 0.1, K and the DMRG results built on it move. An explicit
-  `cutoff_K ≥ η⁴` is used as given and warns once. The default assumes eigenvalues of
-  `H − ω` of order one; pass a smaller `cutoff_K` for a wider spectrum.
-  It does not fix large systems: the norm of K grows like 2^L, and once `cutoff_K`
-  exceeds about `0.3·4^(−L)` the product drops terms that live on a few sites, such as the
-  end bond of an open chain (K wrong by t² there: from L ≈ 14 with the default at
-  η ≥ 0.1, the v0.2.0 behaviour, and at L = 20 with the default at η = 0.01). `build_K`
-  now warns once in that regime and uses the value as given; the docstring gives the
-  bound (a cutoff below it keeps K exact: errors of 1e-10 at L = 20 and 24).
+- **`build_K` and `dmrg_spectral`: `cutoff_K` defaults to `min(1e-8, 1e-4·η⁴, 0.1/D²)`**,
+  D the dimension of the site space (2^L for qubits). The cutoff is relative to the
+  squared norm of each sum and product, so the fixed default `1e-8` dropped the two
+  smallest parts of `K = (H − ω)² + η²`. At small η it truncated most of `η² I`: on a
+  5-qubit chain at η = 1e-2, ‖ΔK‖ = 9.7e-5 ≈ η² (now below 1e-7); the `1e-4·η⁴` bound
+  assumes eigenvalues of `H − ω` of order one, so pass a smaller `cutoff_K` for a wider
+  spectrum. In large systems it dropped the terms that live on a few sites, such as the
+  end bond of an open chain: the norm of K grows with D, and the product drops such a
+  term once `cutoff_K` exceeds about `0.5/D²`, so on a uniform chain `⟨0|K|0⟩` was 2.01
+  instead of 1.01 (K wrong by t² at both ends) from L = 13 on; with the new default K
+  stays within 2e-7 up to L = 30, the largest size tested, given an exact MPO of H. The
+  default stays `1e-8` for η ≥ 0.1 (and η = 0) up to L = 11, so those results are
+  unchanged bit for bit (no golden case moves); below η = 0.1, or from L = 12 on, K and
+  the DMRG results built on it move. An explicit `cutoff_K` is used as given and warns
+  once when it is not below `η⁴` or when it is above `0.3/D²`.
 
 ### Fixed
 
