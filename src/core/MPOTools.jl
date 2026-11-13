@@ -7,7 +7,8 @@
 # rank-1 site projector (_site_projector_mpo) and the left-to-right compressed
 # sum of MPO terms (sum_mpos) that the lattice builders assemble with, with its
 # checked variant _checked_sum_mpos (the sublattice builders) and its Frobenius
-# distance _mpo_distance.
+# distance _mpo_distance; and the size-aware default truncation cutoff of the
+# Hamiltonian builders and term adders (_default_mpo_cutoff, _mpo_cutoff).
 #
 # Main entry points: mpo_kron, interleave_mpo, interleave_mpo_tb, compose_power,
 #   sum_mpos.
@@ -311,4 +312,43 @@ function _mpo_distance(A::MPO, B::MPO)
     Δ = +(A, -1 * B; alg="directsum")
     orthogonalize!(Δ, 1)
     return norm(Δ[1])
+end
+
+
+# ============================================================
+# 7. Size-aware truncation cutoff of the Hamiltonian builders
+# ============================================================
+#
+# ITensors' cutoffs are relative to the squared Frobenius norm, which grows with the
+# dimension D of the site space: ‖H‖² ≈ z D t² for z hops of size t per row. A term
+# carried by k matrix elements of size t weighs about k/(zD) of it, and a truncation drops
+# it once the cutoff exceeds that. The bond across the middle of a 1D chain,
+# n = 2^(L-1) - 1 → 2^(L-1), whose carry flips every qubit, is such a term with k = 2: the
+# fixed cutoff 1e-8 of v0.2.0 lost it from L = 26 on (a single site-space dimension of
+# 2^26), and from L = 28 every bond whose carry flips 27 qubits or more, which cut the
+# chain every 2^26 sites. The builders and term adders therefore default to
+# `_default_mpo_cutoff(D)`: 1e-8, as before, up to D = 2^23, and 0.1/D above, which keeps
+# a single element a while |a|² ≥ ‖H‖²/(10D), i.e. every hop of a uniform chain, but not a
+# bond that is weak next to the rest of its rows (on-site terms beyond ~4t, a 3x stronger
+# bond): that needs a cutoff that knows |a|, which a relative default cannot. In 2D a long
+# carry repeats along a whole row or column, so 2D callers pass D along the longer side
+# (_cutoff_dim in core/TBSystem.jl), which keeps 1e-8 there at every usual size.
+
+_default_mpo_cutoff(D::Real) = min(1e-8, 0.1 / Float64(D))
+
+# The dimension of the site space of `sites`, a collection of Index.
+_site_space_dim(sites) = prod(s -> Float64(dim(s)), sites; init = 1.0)
+
+# The truncation cutoff of a builder or term adder on a site space of dimension D: the
+# default above when `value` is `nothing`, otherwise `value` as given, with a warning
+# (once per function) when it is above 0.3/D, where it can drop a term carried by a single
+# matrix element (the middle bond of a chain is lost from about 0.5/D on).
+function _mpo_cutoff(value, D::Real, fname::AbstractString; keyword::AbstractString = "tol")
+    value === nothing && return _default_mpo_cutoff(D)
+    value > 0.3 / D &&
+        @warn "$fname: $keyword = $value can drop a term carried by a single matrix element " *
+              "at this size (D = $(Float64(D)), the site-space dimension, along the longer " *
+              "side in 2D), such as the bond across the middle of a 1D chain; the default is " *
+              "min(1e-8, 0.1/D)." maxlog=1 _id=Symbol(fname, :_, keyword, :_size)
+    return value
 end

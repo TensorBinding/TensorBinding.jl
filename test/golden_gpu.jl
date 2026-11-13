@@ -784,12 +784,12 @@ const YF8 = (i, _) -> Float64(i ÷ 4)
 
 const CKW = (maxdim = 64, cutoff = 1e-10)
 
-function chern_case!(name, setup, xy, kw, ucs; cpu_rtol = 1e-4, cpu_atol = 1e-5)
+function chern_case!(name, setup, xy, kw, ucs; tol = TOL64, cpu_rtol = 1e-4, cpu_atol = 1e-5)
     case!(name, setup,
         H -> (C = ComplexF64[TB.chern_marker_gpu(H, xy...; kw...)(uc) for uc in ucs],),
         H -> (C = ComplexF64[TB.chern_marker(H, xy...; (k => v for (k, v) in pairs(kw) if k ∉ (:dtype,))...)(uc)
                              for uc in ucs],);
-        cpu_rtol = cpu_rtol, cpu_atol = cpu_atol)
+        tol = tol, cpu_rtol = cpu_rtol, cpu_atol = cpu_atol)
 end
 
 chern_case!("chern_chern8_mcweeny_c64", chern8, (XF8, YF8),
@@ -798,8 +798,13 @@ chern_case!("chern_chern8_sp2_flat_c64", chern8, (XF8, YF8),
     (; CKW..., method = :sp2, Nel = 7, quenched = false, dtype = ComplexF64), [2, 7])
 chern_case!("chern_chern8_kpm_lambda_c64", chern8, (XF8, YF8),
     (; CKW..., method = :kpm, Ncheb = 30, Lambda = 5, dtype = ComplexF64), [3, 10])
+# A near-zero marker (‖C‖ = 9e-5 over its two unit cells at L = 2): McWeeny iterates GPU
+# rounding into it. It moved by 1e-7 (relative 1e-3) since the data were generated, under
+# the CUDA 13.0 runtime (13.4 since), so it is pinned in absolute terms, at about a
+# hundredth of its size.
 chern_case!("chern_honeycomb_nnn_sublattice_geometry_c64", honeycomb_nnn, (),
-    (; CKW..., method = :mcweeny, dtype = ComplexF64), [1, 4])
+    (; CKW..., method = :mcweeny, dtype = ComplexF64), [1, 4];
+    tol = (rtol = 1e-8, atol = 1e-6))
 
 case!("chern_unknown_method_throws",
     chern8,

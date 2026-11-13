@@ -63,6 +63,11 @@ Chebyshev expansion cached in `H` by a prior `KPM_Tn` or `KPM_Tn_mps` call.
 - `maxdim`, `cutoff` — truncation of the MPO/MPS sums (modes `:diag`, `:mpo`).
 
 Physical energies are converted via `E = (ω_phys − H.center) / H.scale`.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy `E`
+times `1/π`, so each state integrates to `1/π`; multiply by `π/H.scale` for physical
+units. `kernel=:hodc` is normalised to 1 (multiply by `1/H.scale`).
 """
 function get_ldos(H::TBHamiltonian, ω_phys::Real;
                   mode::Symbol              = :diag,
@@ -158,6 +163,10 @@ ldos_vec = get_ldos_spectrum(H, ωlist)
 # Evaluate LDOS at site x=16 (0-indexed position 15) for each energy:
 ldos_at_16 = [l === nothing ? 0.0 : eval_mps(l, 15) for l in ldos_vec]
 ```
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each state integrates to `1/π`; multiply by `π/H.scale` for physical units.
 """
 function get_ldos_spectrum(H::TBHamiltonian, ω_phys_vals;
                             kernel::Symbol = :jackson,
@@ -191,7 +200,8 @@ Computes the KPM expansion of `⟨ψ₀|δ(E − H̃)|ψ₀⟩` with an extra fa
 
 where `gₙ` are the kernel damping weights normalised to `g₀ = 1` (Jackson by
 default), so `∫ A dE = 1/π` per state for these kernels. The `:hodc` weights
-carry the δ-function normalisation itself (`∫ A dE = 1`). Supported
+carry the δ-function normalisation itself (`∫ A dE = 1`). With `kernel=:jackson` the
+last moment gets weight zero (the textbook Jackson kernel for `N − 1` moments). Supported
 `kernel` values: `:jackson`, `:lorentz` (requires `lambda`), `:fejer`,
 `:dirichlet`, and `:hodc`, which hands over to `get_ldos_hodc_from_mun` with the
 contour broadening `eta` (default `1/(N+1)`) and order `m_order` (default `4`);

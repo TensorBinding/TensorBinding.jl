@@ -40,8 +40,11 @@ every 15 samples.
 **Normalization**
 
 - `dos_weighting=:trace` (default): returns the trace DOS. With
-  `normalize=false` this is the total spectral weight `Tr[δ(ω-H)]`; with
-  `normalize=true` it is divided by the traced Hilbert-space dimension.
+  `normalize=false` this is the total spectral weight per unit rescaled energy
+  `ω̃ = (ω − H.center)/H.scale`: `Tr[δ(ω̃ − H̃)]/π` with the convolution kernels (the
+  package's KPM convention, see [`get_ldos_from_mun`](@ref)) and `Tr[δ(ω̃ − H̃)]` with
+  `kernel=:hodc`; multiply by `π/H.scale` (`:hodc`: `1/H.scale`) for physical units.
+  With `normalize=true` it is divided by the traced Hilbert-space dimension.
 - `dos_weighting=:sample`: returns the unweighted sample signal. For exciton
   stratified runs this is `avg_full + avg_bound` (when `N_bound > 0`), with no
   phase-space factor multiplying the continuum. This is intended for
@@ -311,6 +314,12 @@ converted to an MPS and contracted with the product MPS `|1,1,...>`, giving
 For projected position spaces, `T_0` is `physical_projector(H)` and the trace is
 therefore over physical states only. `normalize=true` divides by `Tr(T_0)`;
 otherwise the spectral weight corresponds to the total traced state count.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_dos_trace(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                        normalize::Bool=false,

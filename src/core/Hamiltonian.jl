@@ -9,7 +9,8 @@
 #
 # Main entry points: hopping2MPO, kinetic_1d_nn, kineticNNN.
 #
-# Depends on: Utils (shift_pair_mpos, shift_hopping_mpo, custom_mpo, fused_mpo).
+# Depends on: Utils (shift_pair_mpos, shift_hopping_mpo, custom_mpo, fused_mpo), MPOTools
+# (_default_mpo_cutoff).
 # The 2D kinetic builders are in lattice/hopping2d.jl.
 
 # ============================================================
@@ -35,7 +36,9 @@ function kinetic_1d_nn(L, sites; boundary::Symbol=:open, bc=nothing)
     @assert L == length(sites) "L must equal length(sites)"
     bc === nothing || (boundary = Symbol(bc))
     K, Kdag = shift_pair_mpos(sites, 1; cyclic=_tb_periodic_boundary(boundary))
-    return +(K, Kdag; cutoff=1e-12)
+    # 1e-12 up to L = 36, 0.1/2^L above: the fixed 1e-12 dropped the bond across the
+    # middle of the chain at L = 39 (one direction) and 40 (see _default_mpo_cutoff)
+    return +(K, Kdag; cutoff=min(1e-12, _default_mpo_cutoff(2.0^L)))
 end
 
 
@@ -80,6 +83,10 @@ from the RNG. `get_Hamiltonian("custom", f)`, `add_hopping!(H, f)` with a two-ar
 `f`, `add_superconductivity!(H, Δ; type=:custom)` (through `pairing2MPO`) and
 `add_soc!(H, λ; type=:custom)` with a two-argument `λ` turn the check on (their keyword
 `check`); the default here is `false`.
+
+The QTCI output is truncated at a relative cutoff of `min(1e-8, 0.1/N)`: the fixed `1e-8`
+of v0.2.0 dropped bonds carried by a single matrix element from N = 2^26 on, such as the
+bond across the middle of a chain (see "Large systems" in [`get_Hamiltonian`](@ref)).
 """
 function hopping2MPO(f, N, sites; tol=1e-8, initial_positions=[], type=Float64,
                      unfoldingscheme=:interleaved, nrandominitpivot::Int=5,
@@ -136,7 +143,9 @@ function _hopping2MPO(f, N, sites; tol, initial_positions, type, unfoldingscheme
     @debug "hopping2MPO: QTCI tensor train converted to MPS"
     mpo  = unfoldingscheme == :fused ? fused_mpo(mps, sites) : custom_mpo(mps, sites)
     @debug "hopping2MPO: MPS turned into MPO"
-    ITensorMPS.truncate!(mpo; cutoff=1e-8)
+    # 1e-8 up to N = 2^23, 0.1/N above: the fixed 1e-8 of v0.2.0 dropped the bond across
+    # the middle of a chain from L = 26 on (see _default_mpo_cutoff)
+    ITensorMPS.truncate!(mpo; cutoff=_default_mpo_cutoff(N))
     return mpo
 end
 
@@ -236,7 +245,7 @@ function qtci_matrix_to_MPO(A_fun, L, sites;
     @debug "qtci_matrix_to_MPO: MPS built"
     mpo  = custom_mpo(mps, sites)
     @debug "qtci_matrix_to_MPO: MPO built"
-    ITensorMPS.truncate!(mpo; maxdim=20, cutoff=1e-8)
+    ITensorMPS.truncate!(mpo; maxdim=20, cutoff=_default_mpo_cutoff(Nc))   # see hopping2MPO
     return mpo
 end
 
@@ -267,6 +276,6 @@ function kineticNNN(L, sites, hopping::MPO, nn::Integer;
     bc === nothing || (boundary = Symbol(bc))
     return shift_hopping_mpo(hopping, sites, nn;
                              cyclic=_tb_periodic_boundary(boundary),
-                             cutoff=1e-12,
+                             cutoff=min(1e-12, _default_mpo_cutoff(2.0^L)),   # as kinetic_1d_nn
                              apply_kwargs=apply_kwargs)
 end

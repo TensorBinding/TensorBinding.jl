@@ -226,7 +226,7 @@ end
                                        component=:real, pointavg=:complex,
                                        normalize_each_step=false,
                                        maxdim=200, cutoff=1e-8,
-                                       reverse_step=false, outputlevel=0, nsite=2,
+                                       reverse_step=true, outputlevel=0, nsite=2,
                                        dtype=ComplexF32, printinfo=false,
                                        verbose=false)
         -> (amplitude, times, centers, groups, norms, maxlinkdims)
@@ -242,6 +242,8 @@ and initial state are uploaded once, the TDVP loop stays on GPU, and only
 sampled scalar amplitudes are copied back to CPU. `nsteps` and `dt` are
 required; `nsite`, `reverse_step`, `outputlevel` and `normalize_each_step` are
 passed to `tdvp` (with the last, `tdvp` renormalizes the state after every step).
+`reverse_step` is `true` by default, as in [`evolve_with_tdvp`](@ref); it was `false`
+up to v0.2.0, which is wrong at O(dt) per step and now warns.
 
 The returned `amplitude` matrix has rows = sampled positions and columns =
 sampled times. By default it stores `real(<x|psi(t)>)`; `component` may be
@@ -273,7 +275,7 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
                                             normalize_each_step::Bool = false,
                                             maxdim::Int = 200,
                                             cutoff::Real = 1e-8,
-                                            reverse_step::Bool = false,
+                                            reverse_step::Bool = true,
                                             outputlevel::Int = 0,
                                             nsite::Int = 2,
                                             dtype::Type{<:Complex} = ComplexF32,
@@ -286,6 +288,7 @@ function get_state_amplitude_trajectory_gpu(H, psi0::MPS;
     reduce in (:point, :block) || error("get_state_amplitude_trajectory_gpu: reduce must be :point or :block.")
     component in (:real, :imag, :abs, :abs2, :probability) ||
         error("get_state_amplitude_trajectory_gpu: unsupported component :$component.")
+    _warn_no_reverse_step("get_state_amplitude_trajectory_gpu", reverse_step)
 
     H_mpo = H isa TBHamiltonian ? H.mpo : H
     Lbits = length(psi0)

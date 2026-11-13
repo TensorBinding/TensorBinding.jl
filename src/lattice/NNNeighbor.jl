@@ -14,7 +14,7 @@
 #   _check_bravais_layout    - rejects geometries that are not Bravais in the cell index
 #   _resolve_layer_selection - the `layer` keyword of add_hopping_2D! as a list of layers
 #
-# Depends on: core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
+# Depends on: core/MPOTools.jl (_mpo_cutoff), core/Utils.jl (build_shift_mpo, get_diagonal_mpo, postpend_op,
 # prepend_layer_projector), core/TBSystem.jl (TBHamiltonian, _pos_sites,
 # _invalidate_cache!), lattice/geometry.jl (_resolve_2d_geometry),
 # lattice/masks2d.jl (_row_break_mpo) and lattice/hopping2d.jl (generate_kin_u/d).
@@ -186,7 +186,7 @@ end
 """
     add_hopping_2D!(H, f; Lx, Ly, nn=1, layer=nothing,
                     lattice=nothing, geometry=nothing,
-                    maxdim=50, tol=1e-8) -> H
+                    maxdim=50, tol=nothing) -> H
 
 Add the `nn`-th nearest-neighbor hopping to a 2D `TBHamiltonian`.
 
@@ -214,6 +214,9 @@ Add the `nn`-th nearest-neighbor hopping to a 2D `TBHamiltonian`.
   `:honeycomb`; `geometry` may be either a function `i -> r_i` or a coordinate
   matrix with one row per position site, or per atom when `H.sublattice_s` is set.
 - `nn`: neighbor shell index (1 = nearest, 2 = next-nearest, etc.).
+- `maxdim`, `tol`: truncation of the summed MPO; `tol` defaults to `min(1e-8, 0.1/D)`, D the
+  dimension of the site space (`1e-8` up to D = 2^23; see "Large systems" in
+  [`get_Hamiltonian`](@ref)).
 
 **Compatibility**
 Works on the 2D geometries whose `H.geometry` is a Bravais lattice in the cell index
@@ -251,7 +254,8 @@ function add_hopping_2D!(H::TBHamiltonian, f;
                           lattice     = nothing,
                           geometry    = nothing,
                           maxdim::Int = 50,
-                          tol::Real   = 1e-8)
+                          tol::Union{Nothing,Real} = nothing)
+    cut = _mpo_cutoff(tol, _site_space_dim(H.sites) / 2.0^min(Lx, Ly), "add_hopping_2D!")
     if H.layer_s !== nothing
         (H.spin_s === nothing && H.nambu_s === nothing) ||
             error("Layered add_hopping_2D! currently supports layer/position/sublattice Hamiltonians only.")
@@ -275,11 +279,11 @@ function add_hopping_2D!(H::TBHamiltonian, f;
                             maxdim=maxdim, tol=tol)
             term = prepend_layer_projector(H_pos.mpo, H.layer_s, ell)
             H_layered_term = H_layered_term === nothing ? term :
-                +(H_layered_term, term; cutoff=tol)
+                +(H_layered_term, term; cutoff=cut)
         end
 
-        H.mpo = +(H.mpo, H_layered_term; cutoff=tol, maxdim=maxdim)
-        ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+        H.mpo = +(H.mpo, H_layered_term; cutoff=cut, maxdim=maxdim)
+        ITensorMPS.truncate!(H.mpo; cutoff=cut, maxdim=maxdim)
         _invalidate_cache!(H)
         return H
     end
@@ -291,7 +295,7 @@ function add_hopping_2D!(H::TBHamiltonian, f;
         H.geometry = _resolve_2d_geometry(H, lattice, geometry, Lx, Ly)
     end
 
-    apkw   = (; cutoff=tol, maxdim=maxdim)
+    apkw   = (; cutoff=cut, maxdim=maxdim)
     n_sub  = H.sublattice_s === nothing ? 1 : dim(H.sublattice_s)
     pos_s  = _pos_sites(H)
     Nx     = 2^Lx
@@ -377,12 +381,12 @@ function add_hopping_2D!(H::TBHamiltonian, f;
             conj(amp) * postpend_op(K_bwd_m, H.sublattice_s, M_bwd)
         end
 
-        pair     = +(fwd, bwd; cutoff=tol)
-        new_term = new_term === nothing ? pair : +(new_term, pair; cutoff=tol)
+        pair     = +(fwd, bwd; cutoff=cut)
+        new_term = new_term === nothing ? pair : +(new_term, pair; cutoff=cut)
     end
 
-    H.mpo = +(H.mpo, new_term; cutoff=tol, maxdim=maxdim)
-    ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+    H.mpo = +(H.mpo, new_term; cutoff=cut, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; cutoff=cut, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end

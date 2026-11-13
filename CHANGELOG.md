@@ -5,7 +5,195 @@ reading of semantic versioning: before 1.0, a change in the minor number (0.1 �
 is breaking, and a change in the last number (0.1.0 → 0.1.1) adds features or fixes
 bugs without breaking the API.
 
-## [Unreleased]
+## [0.2.1] — 2026-11-13
+
+This release keeps the v0.2 API. Every entry under **Changed results** is a bug fix
+that moves numbers; reproduce an old result by pinning v0.2.0 or, where the entry names
+one, by passing its keyword.
+
+### Added
+
+- `add_soc!` keyword `boundary` for the Rashba term: `:periodic` (the default, as
+  before) or `:open`, which drops the bond between the last and the first site. The
+  default chain, `get_Hamiltonian("chain_1d", t; L)`, is open, so a Rashba term that
+  matches it needs `boundary=:open`.
+- **Diagonal profiles from vectors.** `get_mps`, `get_mpo`, `get_diagonal_mpo`,
+  `add_onsite!` and `add_zeeman!` accept the values themselves as a vector of length
+  `2^L` (`v[n+1]` at the 0-indexed point `n`), compressed by TT-SVD: exact up to `tol`,
+  with no sampling and no RNG. Functions keep the QTCI build, which can lose a narrow
+  feature depending on the RNG state (at L = 10 a 4-site box on a 0.1 background was lost
+  for 3 of 5 seeds) or throw "maxsamplevalue is zero!" on a profile that vanishes almost
+  everywhere.
+- **`check` keyword for the QTCI profiles** (`get_mps`, the one-argument `get_mpo`,
+  `get_diagonal_mpo`, `add_onsite!`; default `false`, the build of v0.2.0). With
+  `check=true` the QTCI build is compared with `f` and kept when no entry is off by more
+  than `√tol · max|f|`; up to 2^20 points every point is compared and a wrong build (or a
+  throw) is replaced by the TT-SVD of the values, above that a sample is compared (ends,
+  carry boundaries, a golden-ratio stride) and a wrong build is redone from the missed
+  points as pivots, then checked again (an error if it still fails); a feature between
+  the sampled points goes unchecked there, which an `@info` says once. As in
+  `hopping2MPO(...; check=true)`, a build that passes is returned unchanged.
+
+### Changed
+
+- `add_soc!(type=:rashba)` warns on a 2D Hamiltonian (`H.Lx` set): the term couples
+  neighbours along the linear position index only, i.e. along x and across the row
+  ends, with no y bonds. Results are unchanged.
+- **Documented conventions.** The spin table of `prepend_spin` states the factors:
+  `:Sx`, `:Sy` and `:Sz` are ½σ, but `:iSy` and `:miSy` are the full ±iσ_y, not i·S_y.
+  The qubit operators state their naming: `sigma_plus` = |0⟩⟨1| lowers the bit value
+  (spin naming with |0⟩ = ↑), the opposite of the bit naming in the companion paper,
+  whose τ̂⁺ is `sigma_minus`. The shift-MPO section of `core/Utils.jl` now says
+  `|n⟩ → |n + q⟩`, so `(Qψ)(x) = ψ(x − q)`; it said `(Q f)(x) = f(x + q)`.
+- **KPM normalisation documented.** With the convolution kernels every Hermitian KPM
+  spectrum is the spectral density per unit rescaled energy `(ω − H.center)/H.scale`
+  times `1/π`: one state integrates to `1/π`, and `π/H.scale` converts to physical
+  units. `kernel=:hodc` is normalised to 1, so switching kernel rescales the output by
+  `π`. Only `get_ldos_from_mun` said so; the docstrings of the LDOS, DOS, band, exciton
+  and QPI functions (CPU and GPU) and a new *Conventions* section on the Solvers page now
+  do, with the Jackson moment count: `kernel=:jackson` with `Ncheb` moments is the
+  textbook kernel for `Ncheb − 1` moments (the last weight is zero). Results are
+  unchanged.
+- **2D bands documented as wrong.** In 2D, `get_bands` and `get_bands_gpu` take their
+  momenta from one QFT over the linear index `n = ix + iy·2^Lx`, not from a QFT along x
+  times one along y: the low `Ly` bits of a momentum label are the true ky and the high
+  bits the true kx, plus a shear (for `Lx = Ly`, ky is read from the x bits), so
+  2D bands are not resolved by `(kx, ky)` and the `kpath` labels are not the points they
+  name. Their docstrings now say so, as do those of `get_qpi` (whose 2D map has the same
+  mix-up) and of the k-space diagonals `get_bubble_diag_cheb2d(_svd, _tucker)`; results
+  are unchanged, and a separable 2D transform is left for a later release. 1D is not
+  affected.
+
+### Changed results
+
+- **TDVP state evolution defaults to `reverse_step=true`.** `tdvp_evolve`,
+  `evolve_with_tdvp`, `evolve_with_tdvp_timedep`, `get_state_amplitude_trajectory_gpu`
+  and the reference step of `check_tdvp_vs_U_mpo` (`tdvp_reverse_step`) defaulted to
+  `false`, which skips TDVP's backward evolution of the bond tensor and counts terms of
+  `H` twice: every step was wrong at O(dt). On a full-rank state of a 3-site chain one
+  step of `dt = 0.05` was off by 0.07 in norm (0.21 after three steps); with the backward
+  step TDVP matches `exp(-iH dt)` to 1e-15. `build_tdvp_propagator_mpo` already defaulted
+  to `true` (since v0.1.1), and ITensorMPS does. Passing `reverse_step=false` reproduces
+  the old results and warns once per function. The example
+  `examples/dynamics/propagator_vs_tdvp_heatmaps.jl` now uses `true` as well.
+  Regenerated golden cases: the ten TDVP cases of `test/data/dynamics_golden.jl`
+  (`tdvp_evolve_*`, `evolve_with_tdvp_*`, and `basis_amplitude` and
+  `phase_aligned_distance`, whose states come from `tdvp_evolve`), moved by 0.04 to 0.26,
+  and the five `state_traj_*` cases of `test/data/gpu_golden.jl` (with the new
+  `--only` option of its generator, which reruns the named cases and keeps every other
+  stored entry).
+- **BdG hole block is `−H*`.** In the Nambu basis `(c↑, c↓, c†↑, c†↓)` of the package
+  (singlet pairing `iσ_y ⊗ Δ`) the hole block of a normal-state term `H` is `−H*`, but
+  `add_superconductivity!`, `bdg_hamiltonian`, `bdg_spin_hamiltonian` and the
+  equal-spin triplet BdG of the SCF built `τ_z ⊗ H`, whose hole block `−H` is wrong
+  whenever `H` has imaginary entries: a Zeeman field along y, Peierls phases, complex
+  hoppings. `add_zeeman!` and `add_soc!` on a Hamiltonian that already has a Nambu index
+  lifted their term the same way, so a y-field added after the doubling was wrong too.
+  On an L = 2 spinful chain with `h = 0.3` along y and `Δ = 0.25`, the BdG spectrum was
+  off by 1.4e-2. They now build `P_p ⊗ H + P_h ⊗ (−H*)`; a real `H` still gets the
+  one-term `τ_z ⊗ H` it got before, so every result with a real Hamiltonian is unchanged
+  bit for bit (no golden case moves). The `bdg_spin_hamiltonian` docstring named the basis
+  `(c↑, c↓, c†↓, −c†↑)`, in which its `iσ_y` pairing would vanish; it now names the basis
+  the code uses. `H` must be Hermitian, as before: for a non-Hermitian `H` the hole block
+  would be `−Hᵀ`, which neither build gives (now documented).
+- **`build_K` and `dmrg_spectral`: `cutoff_K` defaults to `min(1e-8, 1e-4·η⁴, 0.1·r²/D²)`**,
+  D the dimension of the site space (2^L for qubits) and `r = min(1, ‖H‖²/‖H − ω‖²)`.
+  The cutoff is relative to the squared norm of each sum and product, so the fixed
+  default `1e-8` dropped the two smallest parts of `K = (H − ω)² + η²`.
+  - **The `η² I` term at small η.** On a 5-qubit chain at η = 1e-2, ‖ΔK‖ = 9.7e-5 ≈ η²
+    (now below 1e-7). The `1e-4·η⁴` bound assumes eigenvalues of `H − ω` of order one,
+    so pass a smaller `cutoff_K` for a wider spectrum.
+  - **Terms that live on a few sites in large systems**, such as the end bond of an open
+    chain. The norm of K grows with D and with ω, and the product drops such a term once
+    `cutoff_K` exceeds about `0.5·r²/D²`. On a uniform chain `⟨0|K|0⟩` was 2.01 instead
+    of 1.01 (K wrong by t² at both ends) from L = 13 on at ω = 0.05, and from L = 12 at
+    ω = 1.7t. With the new default, and an exact MPO of H, K stays within 5e-7 for
+    |ω| ≤ 5t at L = 14–26 (2e-7 at ω = 0.05 up to L = 30).
+  - **Not protected: terms that are weak next to the rest of H.** With an on-site
+    potential of a few t, part of K is lost again (0.17 at V = 2t on a 14-qubit chain, as
+    with `1e-8`). There `cutoff_K = 1e-2/D²` (V ≲ 3t) or `1e-3/D²` (V ≲ 5t) is needed.
+
+  The default stays `1e-8` while `D ≤ 3162·r` (L ≤ 11 near the band centre, η ≥ 0.1 or
+  η = 0), so those results are unchanged bit for bit and no golden case moves. Below
+  η = 0.1, or for larger systems, K and the DMRG results built on it move. An explicit
+  `cutoff_K` is used as given; it warns once when it is not below `η⁴` or when it is
+  above `0.3·r²/D²`.
+- **Size-aware truncation cutoff of the Hamiltonian builders.** Their cutoff (`1e-8` up
+  to v0.2.0) is relative to the squared norm of the MPO, `‖H‖² = D⟨h²⟩`, with D the
+  dimension of the site space and `⟨h²⟩` the mean squared norm of a row. In large systems
+  it therefore dropped terms carried by a single matrix element, such as the bond across
+  the middle of a 1D chain, `2^(L-1) - 1 → 2^(L-1)`, whose carry flips every qubit:
+  - `"chain_1d"`, `"uniform"`, `"aah"` and `"ssh_sublattice"` lost it at L = 26
+    (`"ssh"` at L = 28), and from L = 28 the chain was cut every `2^26` sites;
+  - `"custom"` with nearest-neighbour hops threw, its self-check catching the missing bond;
+  - `add_onsite!` and the other term adders, the non-Hermitian ones included, cut a
+    correct chain again;
+  - the chain MPO of `kinetic_1d_nn` lost the bond at L = 39–40 through its own `1e-12`.
+
+  The default is now `min(1e-8, 0.1/D)` in:
+  - `get_Hamiltonian` and `estimate_scale` (`tol`);
+  - `add_hopping!`, `add_hopping_2D!`, `add_onsite!`, `add_spin!` (`cutoff`),
+    `add_zeeman!`, `add_soc!` and `add_superconductivity!`;
+  - `add_nh_onsite!`, `add_loss!`, `nh_nonreciprocal_hopping_mpo`,
+    `add_nh_nonreciprocal_hopping!` and `add_nh_skin_hopping!`;
+  - `exciton_hamiltonian` and `Exciton_Hamiltonian` (`tol`);
+  - `hermitized_hamiltonian` and `hermitize`, scaled by `r = min(1, ‖H‖²/‖zI − H‖²)` as
+    the block grows with `|z|` (the non-Hermitian KPM entry points pass their own
+    `cutoff` there; at large L pass a smaller one);
+  - `spin_hamiltonian`, `bdg_hamiltonian`,
+    `bdg_spin_hamiltonian`, `ssh_sublattice_hamiltonian`, `add_tjunction!` and
+    `tjunction_hamiltonian` (`cutoff`);
+  - the fixed truncations inside `hopping2MPO`, `qtci_matrix_to_MPO` and the `"uniform"`
+    and `"aah"` presets.
+
+  The `1e-12` of the 1D kinetic and p-wave sums (`kinetic_1d_nn`, `kineticNNN`,
+  `shift_hopping_mpo`, `pairingNNN`) became `min(1e-12, 0.1/D)`. In 2D a long carry repeats along a
+  whole row or column, so D is taken along the longer side and 2D results keep `1e-8`,
+  with no warning at the usual sizes. The default equals `1e-8` up to D = 2^23 (L = 23
+  for a spinless chain, 22 spinful, 21 for spinful BdG or three atoms per cell), so
+  smaller systems build the same MPOs bit for bit (apart from very weak T-junctions, see
+  below) and no golden case moves. Larger 1D
+  ones move at the truncation level and keep every bond with `|t|² ≥ ⟨h²⟩/10`, such as
+  the hops of a uniform chain (checked up to L = 30, the chain MPO at L = 40).
+
+  A bond that is weak next to the rest of its rows is still not kept, as it was not with
+  `1e-8`. That happens beside on-site terms beyond about 4t (`"aah"` with V ≳ 4t, a large
+  potential added by `add_onsite!`) or beside a much stronger bond (`"ssh_sublattice"`
+  with `|t − d| < |t + d|/3`); pass a smaller `tol` there. `add_tjunction!` keeps its
+  default below a tenth of the junction's weight, so a weak junction is no longer
+  removed: `t_j = 0.02t` at L = 16 was lost at `1e-8`. For `t_j² < 1e-7·2^L·t²` that
+  lowers the default below `1e-8` at any size.
+
+  A value you pass is used as given; it warns once when it is above `0.3/D`. A given
+  `tol` is still also the QTCI tolerance where it was (`"custom"`, `"haldane"`,
+  two-argument terms), and that default stays `1e-8`. Not changed:
+  - the 2D-only builders called directly (bilayer, twisted, flake, the 2D T-junction, the
+    multi-atom builders);
+  - the projected quasicrystal spaces (still `1e-8`, not checked at large L);
+  - the solvers.
+
+### Fixed
+
+- **`add_onsite!` on a spinful or BdG Hamiltonian** threw ("the input MPS or MPO do not
+  have the same site indices"): the potential was built on the position (and sublattice)
+  sites only, so it had to come before `add_spin!` and `add_superconductivity!`. It is
+  now the identity on the spin and `τ_z ⊗ V` on the Nambu index, the same matrix as
+  adding it before; a complex `V` on a BdG Hamiltonian is an error, since it is not
+  Hermitian. A layered Hamiltonian with spin or Nambu is still not supported. The
+  golden case `tbsystem/add_onsite!/spinful` of `test/data/scftopo_golden.jl`, which
+  pinned the old error, now pins the value.
+- The `add_soc!` docstring gave the Rashba term as `λ·(S_y ⊗ K_u − S_y ⊗ K_d)`, which
+  is not Hermitian; the code builds `λ·iσ_y ⊗ (K_u − K_d)`, as the docstring now says.
+- The `get_dos_stochastic` docstring called its `normalize=false` output the total
+  spectral weight `Tr[δ(ω − H)]`; with the convolution kernels it is
+  `Tr[δ(ω̃ − H̃)]/π` per unit rescaled energy (`:hodc`: without the `1/π`).
+- **Golden suites run with one BLAS thread.** `test/runtests.jl` sets
+  `BLAS.set_num_threads(1)` around the characterization suites (and restores the count),
+  as the generators prescribe. At OpenBLAS's default thread count 11 golden tests failed
+  on the reference machine (the kagome RPA bubble by 6e-3, Chern markers by 5e-8), with
+  no code change: every one passes with one thread, at v0.2.0 as now. The GPU case
+  `chern_honeycomb_nnn_sublattice_geometry_c64`, a near-zero marker that moved by 1e-7
+  under a newer CUDA runtime, is pinned at `atol = 1e-6`.
 
 ## [0.2.0] — 2026-10-05
 

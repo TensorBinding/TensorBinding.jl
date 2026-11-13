@@ -16,7 +16,10 @@
 # runaway to NaN, half the states as the default Nel), the four add_superconductivity!
 # scale fields, and the two density-cache cases (the cache answers only its own method).
 # The get_W/KPM_flat and KPM_quenched entries move at the 1e-11 level from one
-# regeneration to the next; they are kept at their old values.
+# regeneration to the next; they are kept at their old values. The 0.2.1 fix of
+# add_onsite! on spinful Hamiltonians regenerated tbsystem/add_onsite!/spinful, which
+# had pinned the v0.2.0 error; its new entry was spliced into the stored file, every
+# other entry kept, and the data header says so (this script has no --only).
 #
 # The cases themselves are defined in test/golden_scftopo.jl (module ScftopoGolden),
 # which this script includes with SCFTOPO_GOLDEN_GENERATOR defined so that only the

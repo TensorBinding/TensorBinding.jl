@@ -152,6 +152,10 @@ ldos = TensorBinding.get_ldos_spatial_gpu(H, 200, ωlist;
 ldos = TensorBinding.get_ldos_spatial_gpu(H, 200, ωlist;
     reduce=:block, num_x=128, num_y=128, sublattice=:average, maxdim=200)
 ```
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each state integrates to `1/π`; multiply by `π/H.scale` for physical units.
 """
 function get_ldos_spatial_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                x_groups         = nothing,
@@ -396,6 +400,12 @@ explicit-group sampling. Grid/window/box/block sampling, non-physical ordering,
 and auxiliary degrees of freedom (on `H` or requested through the projection
 keywords) are rejected with targeted errors. For those features use the MPO GPU
 path or the CPU `get_ldos_spatial` implementation.
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_ldos_spatial_mps_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                    x_groups         = nothing,
@@ -575,6 +585,12 @@ product states with `x_e != x_h` for the `N_sample` branch.
 normalisation, so no `√(1−ω²)` denominator is applied.  `eta=0` falls back to
 `1/(Ncheb+1)`.  Otherwise `kernel` is a convolution kernel (`:jackson` default,
 `:lorentz` with `lambda`, `:fejer`, `:dirichlet`).
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): with
+the convolution kernels the result is the spectral density per unit rescaled energy
+`(ω − H.center)/H.scale` times `1/π`, so each state integrates to `1/π`; multiply by
+`π/H.scale` for physical units. `kernel=:hodc` is normalised to 1 (multiply by
+`1/H.scale`).
 """
 function get_dos_stochastic_gpu(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                                   N_sample::Int            = 50,

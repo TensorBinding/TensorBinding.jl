@@ -459,8 +459,10 @@ function _triplet_equalspin_bdg(H0::TBHamiltonian, delta_up::MPS, delta_dn::MPS;
 
     spin_s = H0_work.spin_s
     nambu_s = nambu_index()
-    H = +(prepend_nambu(prepend_spin(Hkin_up, spin_s, :Pup), nambu_s, :tz),
-          prepend_nambu(prepend_spin(Hkin_dn, spin_s, :Pdn), nambu_s, :tz);
+    # particle block Hkin, hole block −Hkin* (τ_z ⊗ Hkin for a real Hkin, as up to v0.2.0
+    # for every Hkin; see _nambu_normal_block)
+    H = +(_nambu_normal_block(prepend_spin(Hkin_up, spin_s, :Pup), nambu_s, :pre; cutoff=cutoff),
+          _nambu_normal_block(prepend_spin(Hkin_dn, spin_s, :Pdn), nambu_s, :pre; cutoff=cutoff);
           cutoff=cutoff)
     H_tp = +(prepend_spin(P_up, spin_s, :Pup),
              prepend_spin(P_dn, spin_s, :Pdn); cutoff=cutoff)

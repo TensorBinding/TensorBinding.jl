@@ -112,6 +112,16 @@ H     = get_Hamiltonian("square_2d", 1.0; L=8, Lx=4)
 qpi   = get_qpi(H, 80, ωlist; V=2.0, window_fraction=0.8)
 # Reshape to 2D: reshape(qpi[1,:], 2^Lx, 2^Ly)'
 ```
+
+**Normalisation:** built from LDOS in the package's KPM convention (see
+[`get_ldos_from_mun`](@ref)): per unit rescaled energy `(ω − H.center)/H.scale` and
+times `1/π`; multiply by `π/H.scale` for physical units.
+
+!!! warning "2D maps"
+    As in [`get_bands`](@ref), the momenta come from one QFT over the linear index
+    `n = ix + iy·2^Lx`, not from a QFT along x times one along y, so the reshape above does
+    not give a `(kx, ky)` map: a modulation along x shows up along y, with a shear, and for
+    `Lx ≠ Ly` the map is scrambled. 1D is not affected.
 """
 function get_qpi(H::TBHamiltonian, Ncheb::Int, ω_phys_vals;
                  impurity_site::Union{Int,Nothing}  = nothing,

@@ -248,6 +248,19 @@ an `ArgumentError` instead.
 
 # Returns
 `Matrix{Float64}` of shape `(Nω, num_x)`.
+
+!!! warning "2D: one QFT over the linear index"
+    In 2D the momenta come from one QFT over all position qubits (`conjugate_by_qft`),
+    i.e. over the linear index `n = ix + iy·2^Lx`, not from a QFT along x times one along
+    y. The label `(ky << Lx) | kx` of a k-group is then misread: its low `Ly` bits are the
+    true ky and its high bits the true kx, plus a shear of `(label mod 2^Ly)/2^Ly` (for
+    `Lx = Ly`, ky comes from the x bits and kx from the y bits), so 2D bands are not
+    resolved by `(kx, ky)`. Along Γ → X an anisotropic 8×8 torus (`tx = 1`, `ty = 0.3`)
+    follows the `ty` band, and on 4×4 to 8×8 tori the off-diagonal part of the conjugated
+    Hamiltonian is 0.5–0.7 of its diagonal in Frobenius norm; that part decays with size,
+    the relabelling and the shear do not (checked against dense diagonalisation). 1D is not
+    affected. Until a separable 2D transform is added, use 1D cuts or a dense calculation
+    for 2D bands.
 """
 function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           Ncheb::Int, D::Int, ω_vals;
@@ -497,6 +510,17 @@ When `kpath` is set the return value is a `NamedTuple`:
   ```
 
 Otherwise returns `Matrix{Float64}` as usual (backward-compatible).
+
+**Normalisation:** the package's KPM convention (see [`get_ldos_from_mun`](@ref)): the
+result is the spectral density per unit rescaled energy `(ω − H.center)/H.scale` times
+`1/π`, so each momentum state integrates to `1/π`; multiply by `π/H.scale` for physical
+units.
+
+!!! warning "2D bands"
+    In 2D (`D = 2`) the momenta are not those of a 2D Fourier transform: one QFT runs over
+    the linear index `n = ix + iy·2^Lx`, which mixes kx and ky (see the low-level method).
+    The `kpath` labels are therefore not the high-symmetry points they name. 1D is not
+    affected.
 """
 function get_bands(H::TBHamiltonian, Ncheb::Int, D::Int, ω_phys_vals;
                           kpath             = nothing,

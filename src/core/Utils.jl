@@ -21,6 +21,12 @@
 # 1. Qubit operator extensions (defined once to avoid duplicate definitions)
 # ============================================================
 
+# Naming convention: spin flips with |0⟩ = ↑ (rows are outputs). sigma_plus = |0⟩⟨1|
+# therefore LOWERS the bit value (1 → 0) and sigma_minus = |1⟩⟨0| raises it; sigma_u and
+# sigma_d project on |0⟩ and |1⟩. The +1 shift is written with sigma_minus on the bit it
+# raises and sigma_plus on the less significant bits it clears (pairingNNN,
+# physics/Supercond.jl). The companion paper (arXiv:2607.00991, App. A) names the
+# operators by the bit value instead (↓ = 0, ↑ = 1): its τ̂⁺ = |1⟩⟨0| is sigma_minus here.
 ITensors.op(::OpName"sigma_plus", ::SiteType"Qubit") =
     [0 1
      0 0]
@@ -33,7 +39,7 @@ ITensors.op(::OpName"sigma_d",::SiteType"Qubit") = [0 0; 0 1]   # |1><1|
 ITensors.op(::OpName"sigma_u",::SiteType"Qubit") = [1 0; 0 0]   # |0><0|
 
 # ============================================================
-# 2. Shift MPOs: (Q f)(x) = f(x + q) on a binary-encoded chain
+# 2. Shift MPOs: |n⟩ → |n + q⟩ on a binary-encoded chain, so (Qψ)(x) = ψ(x − q)
 # ============================================================
 
 """
@@ -99,7 +105,7 @@ end
 function shift_hopping_mpo(hopping::MPO, sites, q::Integer;
                            cyclic::Bool=false,
                            maxdim::Int=typemax(Int),
-                           cutoff::Real=1e-12,
+                           cutoff::Real=min(1e-12, _default_mpo_cutoff(2.0^length(sites))),
                            apply_kwargs=NamedTuple())
     K, Kdag = shift_pair_mpos(sites, q; cyclic=cyclic)
     apkw = isempty(apply_kwargs) ?
@@ -1170,11 +1176,42 @@ function constant_mps(sites::Vector{<:Index}, value::Number)
 end
 
 """
-    get_mps(L, sites, f; type=Float64, tol=1e-8) -> MPS
+    get_mps(L, sites, f; type=Float64, tol=1e-8, check=false) -> MPS
+    get_mps(L, sites, v::AbstractVector; tol=1e-8) -> MPS
 
-Compress a scalar profile `f(n)` on `n = 0, ..., 2^L-1` into an MPS via QTCI.
+Compress a scalar profile `f(n)` on `n = 0, ..., 2^L-1` into an MPS via QTCI (site 1
+the most significant bit).
+
+QTCI samples `f` from a few pivots (the first point and five random ones, from the
+global RNG) and checks nothing afterwards, so a narrow feature on a flat background can
+be lost, depending on the RNG state, and a profile that vanishes almost everywhere can
+make it throw "maxsamplevalue is zero!" (L = 10: a 4-site box on a 0.1 background was
+lost for 3 of 5 seeds; a single nonzero site threw for 5 of 5). Two ways round it:
+
+- a vector `v` (`v[n+1] = f(n)`, length `2^L`) is compressed by TT-SVD: sequential SVDs,
+  exact up to about `tol · max|v|` per entry, with no sampling and no RNG;
+- `check=true` checks the QTCI build against `f` and returns it as it is when it passes;
+  an entry fails when it is off by more than `√tol · max|f|` (1e-4 of the largest value
+  at the default `tol`). Up to 2^20 points the check covers every point and a failed
+  build (or a throw) is replaced by the TT-SVD of those values. Above, it covers a
+  sample (both ends, the carry boundaries `2^k − 2 … 2^k + 1` and a golden-ratio stride of
+  4096 points), and a failed build is rebuilt by QTCI from the sampled points it missed as
+  pivots, without random pivots, then checked again; a second failure is an error.
+  Features between the sampled points cannot be checked there: pass a vector instead.
+
+`check=false` (the default) keeps the plain QTCI build of v0.2.0.
 """
-function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8)
+function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8, check::Bool=false)
+    check && return _checked_qtci_mps(L, sites, f; type=type, tol=tol)
+    return _qtci_mps(L, sites, f; type=type, tol=tol)
+end
+
+# A vector needs no check (TT-SVD samples nothing); `check` is accepted for generic callers.
+get_mps(L::Int, sites, v::AbstractVector; type=nothing, tol::Real=1e-8, check::Bool=false) =
+    _ttsvd_mps(L, sites, type === nothing ? v : convert(Vector{type}, collect(v)); tol=tol)
+
+# The QTCI build of get_mps (what it runs without `check`).
+function _qtci_mps(L::Int, sites, f; type, tol)
     if L == 1
         s = first(sites)
         T = ITensor(type, s)
@@ -1188,18 +1225,195 @@ function get_mps(L::Int, sites, f; type=Float64, tol::Real=1e-8)
     return MPS(tt; sites=collect(sites))
 end
 
+# The helpers below (TT-SVD, dense readout, single entries) work on plain arrays, site by
+# site: an order-L ITensor would make ITensors print a contraction warning from L = 14 on
+# and compile code for every tensor order.
+
+# A concrete number type for the values of a profile vector (an abstractly typed vector,
+# Vector{Any} or Vector{Real}, gets the promoted type of its entries).
+_profile_eltype(v::AbstractVector) =
+    float(isconcretetype(eltype(v)) ? eltype(v) : mapreduce(typeof, promote_type, v))
+
+# The number of singular values `S` (sorted, largest first) to keep so that the discarded
+# weight Σ S² stays within `cutoff` times the total, as ITensors' relative cutoff.
+function _svd_keep(S, cutoff)
+    total = sum(abs2, S)
+    χ = length(S)
+    iszero(total) && return 1
+    discarded = zero(total)
+    while χ > 1 && discarded + abs2(S[χ]) <= cutoff * total
+        discarded += abs2(S[χ])
+        χ -= 1
+    end
+    return χ
+end
+
+# TT-SVD of the 2^L values v (v[n+1] at n = 0 … 2^L-1, site 1 the most significant bit,
+# as the QTCI builders): sequential SVDs from site 1 with the relative cutoff tol²/2^L per
+# bond, so that the discarded weight stays below (L-1)·tol²·max|v|² and every entry within
+# about √L·tol·max|v|.
+function _ttsvd_mps(L::Int, sites, v::AbstractVector; tol::Real)
+    N = 2^L
+    length(v) == N ||
+        throw(DimensionMismatch("a profile on L = $L qubits needs 2^L = $N values, got $(length(v))"))
+    length(sites) == L ||
+        throw(DimensionMismatch("$(length(sites)) sites for L = $L"))
+    T = _profile_eltype(v)
+    vals = collect(T, v)
+    iszero(maximum(abs, vals)) && return constant_mps(collect(sites), zero(T))
+    L == 1 && return MPS([ITensor(vals, sites[1])])
+    # C[b_1, b_2, …, b_L]: dimension k is the bit of site k (v is stored with the least
+    # significant bit fastest), so each reshape below fuses (left link, bit k) with the
+    # link fastest, and the rest (b_{k+1}, …) with b_{k+1} fastest.
+    M = reshape(permutedims(reshape(vals, ntuple(_ -> 2, L)), L:-1:1), 2, :)
+    cutoff = tol^2 / N
+    tensors = ITensor[]
+    left = nothing
+    for k in 1:L-1
+        F = svd(M)
+        χ = _svd_keep(F.S, cutoff)
+        right = Index(χ, "Link,l=$k")
+        U = F.U[:, 1:χ]
+        push!(tensors, left === nothing ? ITensor(U, sites[k], right) :
+                                          ITensor(reshape(U, dim(left), 2, χ), left, sites[k], right))
+        R = Diagonal(F.S[1:χ]) * F.Vt[1:χ, :]             # (χ, rest), rest = (b_{k+1}, …)
+        M = reshape(R, 2χ, :)
+        left = right
+    end
+    push!(tensors, ITensor(reshape(M, dim(left), 2), left, sites[L]))
+    return MPS(tensors)
+end
+
+# The site tensors of an MPS on the qubit `sites` as arrays A[k][left, bit, right] (several
+# link indices on a bond merged; dimension 1 at the ends).
+function _mps_site_arrays(mps::MPS, sites)
+    n = length(mps)
+    links = [collect(commoninds(mps[k], mps[k + 1])) for k in 1:n - 1]
+    return map(1:n) do k
+        lk = k > 1 ? links[k - 1] : Index[]
+        rk = k < n ? links[k] : Index[]
+        reshape(Array(mps[k], lk..., sites[k], rk...),
+                prod(dim, lk; init=1), dim(sites[k]), prod(dim, rk; init=1))
+    end
+end
+
+# The entries of an MPS on qubit `sites` as a dense vector, v[n+1] at n = 0 … 2^L-1 (site
+# 1 the most significant bit; eval_mps keeps only the real part).
+function _mps_dense_vector(mps::MPS, sites)
+    A = _mps_site_arrays(mps, sites)
+    T = mapreduce(eltype, promote_type, A)
+    V = ones(T, 1, 1)                                     # (prefixes n_k, link)
+    for Ak in A
+        P = size(V, 1)
+        W = Array{T}(undef, size(Ak, 2), P, size(Ak, 3))
+        for b in axes(Ak, 2)
+            W[b, :, :] = V * Ak[:, b, :]
+        end
+        V = reshape(W, size(Ak, 2) * P, size(Ak, 3))      # row n_{k+1} = 2 n_k + bit
+    end
+    return vec(V)
+end
+
+# The entry at the 0-indexed n (site 1 the most significant bit) of an MPS, or of its site
+# arrays from _mps_site_arrays (to read many entries).
+_mps_entry(mps::MPS, sites, n::Integer) = _mps_entry(_mps_site_arrays(mps, sites), n)
+function _mps_entry(A::AbstractVector{<:AbstractArray}, n::Integer)
+    L = length(A)
+    v = A[1][:, ((n >> (L - 1)) & 1) + 1, :]
+    for k in 2:L
+        v = v * A[k][:, ((n >> (L - k)) & 1) + 1, :]
+    end
+    return only(v)
+end
+
+# The first entry of `got` off `want` by more than √tol·max|want|, as (index, got, want),
+# or nothing.
+function _profile_mismatch(got, want, tol)
+    bound = sqrt(tol) * maximum(abs, want; init=0.0)
+    i = findfirst(k -> abs(got[k] - want[k]) > bound, eachindex(got, want))
+    return i === nothing ? nothing : (i, got[i], want[i])
+end
+
+# The 0-indexed points get_mps(...; check=true) compares above the full-grid limit: both
+# ends, the carry boundaries 2^k − 2 … 2^k + 1 (k = 1 … L-1), and an odd golden-ratio
+# stride of `nbulk` points through the bulk.
+function _profile_sample_points(L::Int; nbulk::Int=4096)
+    N = 2^L
+    s = 2 * round(Int, 0.30901699437494745 * N) + 1
+    pts = [0; 1; 2; 3; [2^k + δ for k in 1:L-1 for δ in (-2, -1, 0, 1)]; N - 2; N - 1;
+           [mod(k * s, N) for k in 0:nbulk-1]]
+    return sort!(unique!(filter(n -> 0 <= n < N, pts)))
+end
+
+# Up to 2^20 points get_mps(...; check=true) compares every point.
+const _PROFILE_CHECK_FULL_MAXLEN = 2^20
+
+# get_mps(...; check=true): the QTCI build when it reproduces f on the checked points,
+# else a rebuild (see the get_mps docstring).
+function _checked_qtci_mps(L::Int, sites, f; type, tol)
+    N = 2^L
+    qtci = try
+        _qtci_mps(L, sites, f; type=type, tol=tol)
+    catch err
+        (err isa ErrorException && occursin("maxsamplevalue is zero", err.msg)) || rethrow()
+        nothing
+    end
+    if N <= _PROFILE_CHECK_FULL_MAXLEN
+        vals = type[f(n) for n in 0:N-1]
+        qtci !== nothing &&
+            _profile_mismatch(_mps_dense_vector(qtci, sites), vals, tol) === nothing && return qtci
+        return _ttsvd_mps(L, sites, vals; tol=tol)
+    end
+    pts  = _profile_sample_points(L)
+    @info "get_mps(...; check=true): above 2^20 points the check compares $(length(pts)) " *
+          "sampled points only, so a feature between them goes unchecked; pass the values " *
+          "as a vector for an exact build." maxlog=1
+    vals = type[f(n) for n in pts]
+    got  = qtci === nothing ? nothing : (A = _mps_site_arrays(qtci, sites); [_mps_entry(A, n) for n in pts])
+    got !== nothing && _profile_mismatch(got, vals, tol) === nothing && return qtci
+    all(iszero, vals) &&
+        error("get_mps: f vanishes at all $(length(pts)) sampled points and QTCI found no " *
+              "nonzero value either. If f is identically zero, leave the term out; otherwise " *
+              "pass the profile as a vector (compressed by TT-SVD).")
+    # pivots: the largest sampled |f|, then the sampled points the build missed (at most 64)
+    bound = sqrt(tol) * maximum(abs, vals)
+    missed = got === nothing ? findall(!iszero, vals) :
+                               findall(k -> abs(got[k] - vals[k]) > bound, eachindex(vals))
+    piv = unique([argmax(abs.(vals)); missed])
+    piv = piv[1:min(end, 64)]
+    xvals = range(1, N; length=N)
+    qtt, _, _ = quanticscrossinterpolate(type, x -> f(round(Int, x) - 1), [xvals],
+                                         [[pts[k] + 1] for k in piv];
+                                         nrandominitpivot=0, tolerance=tol)
+    mps = MPS(TensorCrossInterpolation.tensortrain(qtt.tci); sites=collect(sites))
+    A   = _mps_site_arrays(mps, sites)
+    bad = _profile_mismatch([_mps_entry(A, n) for n in pts], vals, tol)
+    bad === nothing && return mps
+    k, g, w = bad
+    error("get_mps: the QTCI-compressed profile is wrong at n = $(pts[k]): $g instead of $w, " *
+          "also when rebuilt from the sampled points it missed as pivots. Pass the profile " *
+          "as a vector (compressed by TT-SVD), or check=false to accept the approximate MPS.")
+end
+
 """
-    get_mpo(L, sites, f; type=Float64, tol=1e-8, kwargs...) -> MPO
+    get_mpo(L, sites, f; type=Float64, tol=1e-8, check=false, kwargs...) -> MPO
+    get_mpo(L, sites, v::AbstractVector; tol=1e-8) -> MPO
 
 Compress a function into an MPO via QTCI using 0-indexed coordinates
 `n = 0, ..., 2^L-1`. Dispatches on arity:
 
-- **1-argument** `f(n)`: builds a diagonal MPO (on-site potential).
+- **1-argument** `f(n)`: builds a diagonal MPO (on-site potential), through
+  [`get_mps`](@ref) (`check=true` checks it, see there).
 - **2-argument** `f(i, j)`: builds a full interaction MPO by 2D QTCI,
-  pairing the interleaved quantics legs into bra/ket via `custom_mpo`.
+  pairing the interleaved quantics legs into bra/ket via `custom_mpo`. `check` is not
+  available here (`hopping2MPO(f, N, sites; check=true)` checks a hopping matrix).
+
+A vector `v` (`v[n+1] = f(n)`) gives the diagonal MPO by TT-SVD, exact up to `tol`.
 """
-function get_mpo(L::Int, sites, f; type=Float64, tol::Real=1e-8, kwargs...)
+function get_mpo(L::Int, sites, f; type=Float64, tol::Real=1e-8, check::Bool=false, kwargs...)
     if applicable(f, 0, 0)
+        check && throw(ArgumentError("get_mpo: check=true is for a one-argument profile f(n); " *
+                                     "check a two-argument f with hopping2MPO(f, N, sites; check=true)"))
         N = 1 << L
         xvals = range(0, N - 1; length=N)
         kernel = (x, y) -> f(round(Int, x), round(Int, y))
@@ -1208,24 +1422,37 @@ function get_mpo(L::Int, sites, f; type=Float64, tol::Real=1e-8, kwargs...)
         tt = TensorCrossInterpolation.tensortrain(qtt.tci)
         return custom_mpo(MPS(tt), collect(sites))
     else
-        return mps2mpo(L, sites, get_mps(L, sites, f; type=type, tol=tol))
+        return mps2mpo(L, sites, get_mps(L, sites, f; type=type, tol=tol, check=check))
     end
 end
 
+get_mpo(L::Int, sites, v::AbstractVector; type=nothing, tol::Real=1e-8, check::Bool=false) =
+    mps2mpo(L, sites, get_mps(L, sites, v; type=type, tol=tol))
+
 """
-    get_diagonal_mpo(L, sites, f; type=Float64, tol=1e-8) -> MPO
+    get_diagonal_mpo(L, sites, f; type=Float64, tol=1e-8, check=false) -> MPO
+    get_diagonal_mpo(L, sites, v::AbstractVector; tol=1e-8) -> MPO
 
 Build a diagonal MPO with entry `f(x)` at 1-indexed site `x ∈ {1, ..., 2^L}`.
 Wraps `get_mpo` with a 1→0 index shift for backward compatibility.
 
+The QTCI build can lose narrow features (a box of a few sites, a single impurity) for
+some RNG states, or throw on a profile that vanishes almost everywhere; see
+[`get_mps`](@ref). A vector `v` (`v[x]` at site `x`, length `2^L`) is compressed exactly
+by TT-SVD instead, and `check=true` checks a function's build (and replaces a wrong one).
+
 # Example
 ```julia
 pot = get_diagonal_mpo(L, sites, x -> 0.01 * x)
+imp = get_diagonal_mpo(L, sites, [x == 37 ? 1.0 : 0.0 for x in 1:2^L])   # TT-SVD
 ```
 """
-function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8)
-    return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol)
+function get_diagonal_mpo(L, sites, f; type=Float64, tol::Real=1e-8, check::Bool=false)
+    return get_mpo(L, sites, n -> f(n + 1); type=type, tol=tol, check=check)
 end
+
+get_diagonal_mpo(L, sites, v::AbstractVector; type=nothing, tol::Real=1e-8, check::Bool=false) =
+    get_mpo(L, sites, v; type=type, tol=tol)
 
 
 # ============================================================

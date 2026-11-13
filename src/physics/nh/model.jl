@@ -7,7 +7,7 @@
 # Entry points: hermitize, hermitized_hamiltonian, NonHermitianHamiltonian,
 #   nh_block_index, add_nh_onsite!, loss_profile_mpo, add_loss!,
 #   nh_nonreciprocal_hopping_mpo, add_nh_nonreciprocal_hopping!, add_nh_skin_hopping!.
-# Depends on: core/Utils.jl, core/TBSystem.jl.
+# Depends on: core/Utils.jl, core/MPOTools.jl (_mpo_cutoff), core/TBSystem.jl (_cutoff_dim).
 #
 # The core construction here hermitizes a non-Hermitian single-particle MPO by
 # adding one dim-2 auxiliary block index:
@@ -79,7 +79,7 @@ with the existing KPM code paths.
 nh_block_index() = Index(2, "Qubit,NHBlock")
 
 """
-    hermitized_hamiltonian(H; z=0.0, block_s=nh_block_index(), cutoff=1e-8,
+    hermitized_hamiltonian(H; z=0.0, block_s=nh_block_index(), cutoff=nothing,
                            maxdim=200, scale=0.0, convention=:z_minus_H,
                            block_placement=:post) -> TBHamiltonian
 
@@ -96,7 +96,11 @@ block as written; `convention=:H_minus_z` uses `H - zI` instead.
 - `:post` (default) — site order `[H.sites...; block_s]`; position qubits occupy 1:L directly
 - `:pre`            — site order `[block_s; H.sites...]`; original layout before postpend change
 
-`scale=0.0` keeps the usual lazy KPM spectral-bound estimation.
+`scale=0.0` keeps the usual lazy KPM spectral-bound estimation. `cutoff` defaults to
+`min(1e-8, 0.1r/D)`, D the dimension of the block space and `r = min(1, ‖H‖²/‖zI − H‖²)`
+(the block grows with `|z|`; see "Large systems" in [`get_Hamiltonian`](@ref)). The
+non-Hermitian KPM entry points pass their own `cutoff` here; at large L pass a smaller one
+(an explicit value above `0.3r/D` warns).
 
 The result is a copy of `H` with the block operator as `mpo`, the extra site in
 `sites` and `aux_side = block_placement` (the side of the block index, the
@@ -108,7 +112,7 @@ do not know it.
 function hermitized_hamiltonian(H::TBHamiltonian;
                                 z::Number = 0.0,
                                 block_s::Index = nh_block_index(),
-                                cutoff::Real = 1e-8,
+                                cutoff::Union{Nothing,Real} = nothing,
                                 maxdim::Int = 200,
                                 scale::Real = 0.0,
                                 convention::Symbol = :z_minus_H,
@@ -117,6 +121,10 @@ function hermitized_hamiltonian(H::TBHamiltonian;
     convention in (:H_minus_z, :z_minus_H) ||
         error("convention must be :H_minus_z or :z_minus_H; got :$convention")
     I_H     = MPO(H.sites, "Id")
+    # the size-aware default on the block space (dimension 2D, see _mpo_cutoff), scaled by
+    # r = min(1, |H|^2/|zI - H|^2) since the block grows with |z| (as build_K with omega)
+    r = _herm_norm_ratio(H.mpo, I_H, z, _site_space_dim(H.sites))
+    cutoff = _mpo_cutoff(cutoff, 2 * _cutoff_dim(H) / r, "hermitized_hamiltonian"; keyword="cutoff")
     H_shift = convention === :H_minus_z ?
         +(H.mpo, -ComplexF64(z) * I_H; cutoff=cutoff) :
         +(ComplexF64(z) * I_H, -H.mpo; cutoff=cutoff)
@@ -141,16 +149,24 @@ function hermitized_hamiltonian(H::TBHamiltonian;
 end
 
 """
-    hermitize(H; z=0.0, cutoff=1e-8, maxdim=200, scale=0.0, convention=:z_minus_H,
+    hermitize(H; z=0.0, cutoff=nothing, maxdim=200, scale=0.0, convention=:z_minus_H,
               block_placement=:post) -> NonHermitianHamiltonian
 
 Build a `NonHermitianHamiltonian` wrapper without modifying `H`. It takes the
 keywords of `hermitized_hamiltonian` except `block_s` (a fresh `nh_block_index()`
 is used).
 """
+# r = min(1, ‖H‖²/‖zI − H‖²), ‖zI − H‖² = |z|²D − 2Re(z̄ tr H) + ‖H‖² (exact, from two MPO
+# inner products), for the default cutoff of hermitized_hamiltonian.
+function _herm_norm_ratio(Hm::MPO, I_H::MPO, z::Number, D::Real)
+    nH2 = real(inner(Hm, Hm))
+    nS2 = abs2(z) * D - 2 * real(conj(z) * inner(I_H, Hm)) + nH2
+    return nS2 > 0 ? min(1.0, nH2 / nS2) : 1.0
+end
+
 function hermitize(H::TBHamiltonian;
                    z::Number = 0.0,
-                   cutoff::Real = 1e-8,
+                   cutoff::Union{Nothing,Real} = nothing,
                    maxdim::Int = 200,
                    scale::Real = 0.0,
                    convention::Symbol = :z_minus_H,
@@ -169,7 +185,7 @@ function hermitize(H::TBHamiltonian;
 end
 
 """
-    hermitize(NH; z=NH.z, cutoff=1e-8, maxdim=200, scale=NH.scale,
+    hermitize(NH; z=NH.z, cutoff=nothing, maxdim=200, scale=NH.scale,
               convention=NH.convention, block_placement=NH.block_placement)
         -> NonHermitianHamiltonian
 
@@ -179,7 +195,7 @@ carry over unless passed; `cutoff` and `maxdim` take their defaults.
 """
 function hermitize(NH::NonHermitianHamiltonian;
                    z::Number = NH.z,
-                   cutoff::Real = 1e-8,
+                   cutoff::Union{Nothing,Real} = nothing,
                    maxdim::Int = 200,
                    scale::Real = NH.scale,
                    convention::Symbol = NH.convention,
@@ -250,7 +266,7 @@ function _nh_fullspace_diagonal_mpo(H::TBHamiltonian, f; Lx=nothing, type=Float6
 end
 
 """
-    add_nh_onsite!(H, v; Lx=nothing, tol=1e-8, maxdim=200, type=ComplexF64)
+    add_nh_onsite!(H, v; Lx=nothing, tol=nothing, maxdim=200, type=ComplexF64)
 
 Add a possibly complex onsite potential to a position-only `TBHamiltonian`.
 
@@ -260,18 +276,20 @@ Add a possibly complex onsite potential to a position-only `TBHamiltonian`.
 - `v(ix, iy)` with 0-indexed coordinates, requiring `Lx=...`
 
 This is the non-Hermitian counterpart of `add_onsite!`; unlike the generic
-version it preserves complex values by default.
+version it preserves complex values by default. `tol` is the relative cutoff of the sum, by default
+`min(1e-8, 0.1/D)` as for `add_onsite!` (see "Large systems" in [`get_Hamiltonian`](@ref)).
 """
 function add_nh_onsite!(H::TBHamiltonian, v;
                         Lx=nothing,
-                        tol::Real = 1e-8,
+                        tol::Union{Nothing,Real} = nothing,
                         maxdim::Int = 200,
                         type = ComplexF64)
     _require_binary_position_space(H, "add_nh_onsite!")
     pos_s = _nh_position_sites_only(H)
     term = _nh_diagonal_mpo(H.L, pos_s, v; Lx=Lx, type=type)
-    H.mpo = +(H.mpo, term; cutoff=tol, maxdim=maxdim)
-    ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+    cut  = _mpo_cutoff(tol, _cutoff_dim(H), "add_nh_onsite!")
+    H.mpo = +(H.mpo, term; cutoff=cut, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; cutoff=cut, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end
@@ -302,23 +320,25 @@ function loss_profile_mpo(H::TBHamiltonian, f;
 end
 
 """
-    add_loss!(H, f; coefficient=-1im, Lx=nothing, tol=1e-8, maxdim=200,
+    add_loss!(H, f; coefficient=-1im, Lx=nothing, tol=nothing, maxdim=200,
               type=Float64, space=:full)
 
 Add a loss/gain term `coefficient * diag(f)` to the original Hamiltonian MPO.
-This only modifies `H.mpo`; it does not create the hermitized NH block.
+This only modifies `H.mpo`; it does not create the hermitized NH block. `tol` is the
+relative cutoff of the sum, by default `min(1e-8, 0.1/D)` as for `add_onsite!`.
 """
 function add_loss!(H::TBHamiltonian, f;
                    coefficient::Number = -1im,
                    Lx=nothing,
-                   tol::Real = 1e-8,
+                   tol::Union{Nothing,Real} = nothing,
                    maxdim::Int = 200,
                    type = Float64,
                    space::Symbol = :full)
     _require_binary_position_space(H, "add_loss!")
     term = ComplexF64(coefficient) * loss_profile_mpo(H, f; Lx=Lx, type=type, space=space)
-    H.mpo = +(H.mpo, term; cutoff=tol, maxdim=maxdim)
-    ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+    cut  = _mpo_cutoff(tol, _cutoff_dim(H), "add_loss!")
+    H.mpo = +(H.mpo, term; cutoff=cut, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; cutoff=cut, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end
@@ -346,7 +366,7 @@ function _nh_directional_hop(pos_s, N::Int, amplitude, nn::Integer, direction::S
 end
 
 """
-    nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward; nn=1, tol=1e-8,
+    nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward; nn=1, tol=nothing,
                                  maxdim=200, type=ComplexF64)
 
 Build the position-space MPO
@@ -360,20 +380,27 @@ site-dependent one-argument functions `t(n)` with 0-indexed `n`.
 """
 function nh_nonreciprocal_hopping_mpo(H::TBHamiltonian, t_forward, t_backward;
                                       nn::Integer = 1,
-                                      tol::Real = 1e-8,
+                                      tol::Union{Nothing,Real} = nothing,
                                       maxdim::Int = 200,
                                       type = ComplexF64)
     _require_binary_position_space(H, "nh_nonreciprocal_hopping_mpo")
+    cut = _mpo_cutoff(tol, _cutoff_dim(H), "nh_nonreciprocal_hopping_mpo")
+    return _nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward; nn, cut, maxdim, type)
+end
+
+# nh_nonreciprocal_hopping_mpo with a resolved cutoff `cut`.
+function _nh_nonreciprocal_hopping_mpo(H::TBHamiltonian, t_forward, t_backward;
+                                       nn::Integer, cut::Real, maxdim::Int, type)
     pos_s = _nh_position_sites_only(H)
     Hf = _nh_directional_hop(pos_s, H.N, t_forward, nn, :forward;
-                             L=H.L, tol=tol, maxdim=maxdim, type=type)
+                             L=H.L, tol=cut, maxdim=maxdim, type=type)
     Hb = _nh_directional_hop(pos_s, H.N, t_backward, nn, :backward;
-                             L=H.L, tol=tol, maxdim=maxdim, type=type)
-    return +(Hf, Hb; cutoff=tol, maxdim=maxdim)
+                             L=H.L, tol=cut, maxdim=maxdim, type=type)
+    return +(Hf, Hb; cutoff=cut, maxdim=maxdim)
 end
 
 """
-    add_nh_nonreciprocal_hopping!(H, t_forward, t_backward; nn=1, tol=1e-8,
+    add_nh_nonreciprocal_hopping!(H, t_forward, t_backward; nn=1, tol=nothing,
                                   maxdim=200, type=ComplexF64)
 
 Add asymmetric hopping directly to `H`. This is the skin-effect helper:
@@ -381,19 +408,21 @@ choose, for example, `t_forward=t*exp(g)` and `t_backward=t*exp(-g)`.
 """
 function add_nh_nonreciprocal_hopping!(H::TBHamiltonian, t_forward, t_backward;
                                        nn::Integer = 1,
-                                       tol::Real = 1e-8,
+                                       tol::Union{Nothing,Real} = nothing,
                                        maxdim::Int = 200,
                                        type = ComplexF64)
-    term = nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward;
-                                        nn=nn, tol=tol, maxdim=maxdim, type=type)
-    H.mpo = +(H.mpo, term; cutoff=tol, maxdim=maxdim)
-    ITensorMPS.truncate!(H.mpo; cutoff=tol, maxdim=maxdim)
+    _require_binary_position_space(H, "add_nh_nonreciprocal_hopping!")
+    cut  = _mpo_cutoff(tol, _cutoff_dim(H), "add_nh_nonreciprocal_hopping!")
+    term = _nh_nonreciprocal_hopping_mpo(H, t_forward, t_backward;
+                                         nn=nn, cut=cut, maxdim=maxdim, type=type)
+    H.mpo = +(H.mpo, term; cutoff=cut, maxdim=maxdim)
+    ITensorMPS.truncate!(H.mpo; cutoff=cut, maxdim=maxdim)
     _invalidate_cache!(H)
     return H
 end
 
 """
-    add_nh_skin_hopping!(H, t, g; nn=1, convention=:exp, tol=1e-8, maxdim=200)
+    add_nh_skin_hopping!(H, t, g; nn=1, convention=:exp, tol=nothing, maxdim=200)
 
 Convenience wrapper for non-reciprocal skin hopping.
 
@@ -403,7 +432,7 @@ Convenience wrapper for non-reciprocal skin hopping.
 function add_nh_skin_hopping!(H::TBHamiltonian, t, g;
                               nn::Integer = 1,
                               convention::Symbol = :exp,
-                              tol::Real = 1e-8,
+                              tol::Union{Nothing,Real} = nothing,
                               maxdim::Int = 200)
     t_forward, t_backward = if convention === :exp
         (t * exp(g), t * exp(-g))

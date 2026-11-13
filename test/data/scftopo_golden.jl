@@ -4,6 +4,8 @@
 # Generated from src/ tree bf2cb816172e
 # with Julia 1.12.3. Regenerate only for an intentional behaviour change;
 # see the generator's header.
+# Entry tbsystem/add_onsite!/spinful regenerated for the 0.2.1 fix of add_onsite! on
+# spinful Hamiltonians (it no longer throws); every other entry kept its values.
 #
 # Each entry is (name, throws, expected): `name` selects a case of
 # ScftopoGolden.CASES (test/golden_scftopo.jl); `throws` is the name of the
@@ -11,7 +13,7 @@
 # is the case's value, or for a throwing case the first 60 characters of
 # its message (`message_prefix`, `nothing` when the exception has no message).
 #
-# 195 cases, 27 of them pinned as throwing.
+# 195 cases, 26 of them pinned as throwing.
 
 SCFTOPO_GOLDEN_CASES = Any[]
 
@@ -63,8 +65,8 @@ push!(SCFTOPO_GOLDEN_CASES, (name = "tbsystem/add_onsite!/layered_spinful", thro
 push!(SCFTOPO_GOLDEN_CASES, (name = "tbsystem/add_onsite!/unsupported_signature", throws = "ErrorException",
     expected = (message_prefix = "add_onsite!: unsupported f signature.",)))
 
-push!(SCFTOPO_GOLDEN_CASES, (name = "tbsystem/add_onsite!/spinful", throws = "ErrorException",
-    expected = (message_prefix = "In `+(::MPS/MPO...)`, the input `MPS` or `MPO` do not have t",)))
+push!(SCFTOPO_GOLDEN_CASES, (name = "tbsystem/add_onsite!/spinful", throws = nothing,
+    expected = (mpo = ComplexF64[0.09999999999999992 + 0.0im 0.999999999999999 + 0.0im 3.9252311466902396e-17 + 0.0im 6.960274364096636e-17 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im; 0.9999999999999981 + 0.0im 0.09999999999999996 + 0.0im 0.9999999999999992 + 0.0im 3.9252311466902415e-17 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im; 1.0188397731345939e-15 + 0.0im 0.999999999999999 + 0.0im 0.09999999999999999 + 0.0im 0.9999999999999994 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im; 2.496054612122747e-16 + 0.0im 1.0188397731345945e-15 + 0.0im 0.999999999999999 + 0.0im 0.10000000000000005 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im; 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.09999999999999995 + 0.0im 0.9999999999999997 + 0.0im 3.9252311466902415e-17 + 0.0im 1.6715578222594704e-16 + 0.0im; 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.9999999999999988 + 0.0im 0.1 + 0.0im 0.9999999999999998 + 0.0im 3.9252311466902433e-17 + 0.0im; 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 1.0188397731345945e-15 + 0.0im 0.9999999999999996 + 0.0im 0.10000000000000003 + 0.0im 0.9999999999999999 + 0.0im; 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 0.0 + 0.0im 2.3613619733473978e-16 + 0.0im 1.0188397731345949e-15 + 0.0im 0.9999999999999994 + 0.0im 0.10000000000000007 + 0.0im], sites_match = true, dims = [2, 2, 2], tags = ["\"Spin\"", "\"Qubit,Site,n=1\"", "\"Qubit,Site,n=2\""], L = 2, N = 4, Lx = nothing, scale = 0.0, center = 0.0, aux_side = :pre, spin_pos = 1, nambu_pos = nothing, layer_pos = nothing, sublattice_pos = nothing, geometry = [[1.0], [2.0], [3.0], [4.0]], geometry_uc = nothing, interaction = nothing, fock = nothing, tn_Ncheb = 0, has_tn_cache = false, has_density_cache = false, position_space = "BinaryPositionSpace")))
 
 push!(SCFTOPO_GOLDEN_CASES, (name = "tbsystem/add_hopping!/scalar_nn1", throws = nothing,
     expected = (mpo = [-5.437529463627866e-32 1.2999999999999998 6.283740653744388e-17 4.0548251590268217e-16 8.597516641367433e-32 -6.062191664034892e-16 1.8392485043977414e-33 -3.4845587547023205e-17; 1.2999999999999985 0.0 1.2999999999999998 0.0 1.1724620761327671e-15 0.0 3.205363112315146e-18 0.0; -6.283740653744385e-17 1.2999999999999985 -4.406349473567261e-33 1.2999999999999992 6.283740653744403e-17 -1.4191722272344514e-15 -7.890874125174856e-49 2.3280351284580695e-16; -7.558769489431313e-17 0.0 1.2999999999999994 0.0 1.300000000000001 0.0 2.32803512845807e-16 0.0; -1.3306450577230843e-32 -1.7545622953232885e-16 -6.283740653744394e-17 1.3000000000000003 -5.437529463627865e-32 1.2999999999999992 6.283740653744385e-17 3.864341002518903e-16; -4.507442578517701e-16 0.0 6.006217499225155e-17 0.0 1.299999999999998 0.0 1.2999999999999992 0.0; 1.3498274005765498e-34 8.317440638835377e-16 8.126672739537083e-49 -2.3976025108252067e-16 -6.283740653744384e-17 1.299999999999998 -4.4063494735672596e-33 1.2999999999999987; 8.345366292000327e-16 0.0 -2.397602510825207e-16 0.0 -2.516453564134826e-16 0.0 1.299999999999999 0.0], sites_match = true, dims = [2, 2, 2], tags = ["\"Qubit,Site,n=1\"", "\"Qubit,Site,n=2\"", "\"Qubit,Site,n=3\""], L = 3, N = 8, Lx = nothing, scale = 0.0, center = 0.0, aux_side = :pre, spin_pos = nothing, nambu_pos = nothing, layer_pos = nothing, sublattice_pos = nothing, geometry = [[1.0], [2.0], [3.0], [4.0], [5.0], [6.0], [7.0], [8.0]], geometry_uc = nothing, interaction = nothing, fock = nothing, tn_Ncheb = 0, has_tn_cache = false, has_density_cache = false, position_space = "BinaryPositionSpace")))
