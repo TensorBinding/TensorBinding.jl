@@ -625,6 +625,12 @@ is the sum of the results for the two spin sectors
 **Keyword arguments** — identical to `get_bubble_mpo_cheb2d`, plus:
 - `qft_tol`     : truncation tolerance inside `conjugate_by_qft`. Default `1e-9`.
 - `qft_maxdim`  : max bond dimension inside `conjugate_by_qft`. Default `100`.
+
+!!! warning "2D momenta"
+    The diagonal is taken after one QFT over the linear index `n = ix + iy·2^Lx`, as in
+    [`get_bands`](@ref), so on a 2D lattice it is not `χ₀(kx, ky, ω)`: kx and ky are mixed,
+    with a shear. The same holds for `get_bubble_diag_cheb2d_svd` and
+    `get_bubble_diag_cheb2d_tucker`. 1D is not affected.
 """
 function get_bubble_diag_cheb2d(H1::TBHamiltonian, H2::TBHamiltonian,
                                  ωlist::AbstractVector{<:Real};

@@ -252,12 +252,15 @@ an `ArgumentError` instead.
 !!! warning "2D: one QFT over the linear index"
     In 2D the momenta come from one QFT over all position qubits (`conjugate_by_qft`),
     i.e. over the linear index `n = ix + iy·2^Lx`, not from a QFT along x times one along
-    y. The label `(ky << Lx) | kx` of a k-group then reads ky from the x bits and kx from
-    the y bits, with a shear of `x/2^Ly` grid steps, so 2D bands are not resolved by
-    `(kx, ky)`: on a torus 50–72 % of the weight stays off the momentum diagonal, and along
-    Γ → X an anisotropic torus (`tx = 1`, `ty = 0.3`) follows the `ty` band (checked
-    against dense diagonalisation). 1D is not affected. Until a separable 2D transform is
-    added, use 1D cuts or a dense calculation for 2D bands.
+    y. The label `(ky << Lx) | kx` of a k-group is then misread: its low `Ly` bits are the
+    true ky and its high bits the true kx, plus a shear of `(label mod 2^Ly)/2^Ly` (for
+    `Lx = Ly`, ky comes from the x bits and kx from the y bits), so 2D bands are not
+    resolved by `(kx, ky)`. Along Γ → X an anisotropic 8×8 torus (`tx = 1`, `ty = 0.3`)
+    follows the `ty` band, and on 4×4 to 8×8 tori the off-diagonal part of the conjugated
+    Hamiltonian is 0.5–0.7 of its diagonal in Frobenius norm; that part decays with size,
+    the relabelling and the shear do not (checked against dense diagonalisation). 1D is not
+    affected. Until a separable 2D transform is added, use 1D cuts or a dense calculation
+    for 2D bands.
 """
 function get_bands(H_mpo::MPO, scale::Real, center::Real, sites,
                           Ncheb::Int, D::Int, ω_vals;
