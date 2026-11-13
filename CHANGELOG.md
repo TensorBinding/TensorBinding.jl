@@ -5,7 +5,11 @@ reading of semantic versioning: before 1.0, a change in the minor number (0.1 �
 is breaking, and a change in the last number (0.1.0 → 0.1.1) adds features or fixes
 bugs without breaking the API.
 
-## [Unreleased]
+## [0.2.1] — 2026-11-13
+
+This release keeps the v0.2 API. Every entry under **Changed results** is a bug fix
+that moves numbers; reproduce an old result by pinning v0.2.0 or, where the entry names
+one, by passing its keyword.
 
 ### Added
 
