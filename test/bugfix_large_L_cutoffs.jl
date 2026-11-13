@@ -56,11 +56,13 @@ _wrap(H)   = _el(H, 0, 2^H.L - 1)                     # zero on an open chain
     @test_logs min_level=Logging.Warn get_Hamiltonian("square_2d", 1.0; L, Lx=13, tol=1e-8)
     @test TensorBinding._cutoff_dim(get_Hamiltonian("square_2d", 1.0; L=8, Lx=3)) == 2.0^5
 
-    # kinetic_1d_nn's own sum: 1e-12 cut one direction of the bond at L = 39, both at 40
+    # kinetic_1d_nn's own sum: 1e-12 cut one direction of the bond at L = 39, both at 40.
+    # At L = 40 (‖H‖ ≈ 1.5e6) the kept bond carries rounding noise of ~5e-9 here and
+    # 1.7e-8 on Linux with Julia 1.10, so these checks use 1e-6; a cut bond is off by ≥ 0.5.
     H40 = get_Hamiltonian("chain_1d", 1.0; L=40)
     m40 = 2^39
-    @test _el(H40, m40 - 1, m40) ≈ 1.0 atol=1e-8
-    @test _el(H40, m40, m40 - 1) ≈ 1.0 atol=1e-8
+    @test _el(H40, m40 - 1, m40) ≈ 1.0 atol=1e-6
+    @test _el(H40, m40, m40 - 1) ≈ 1.0 atol=1e-6
 
     # a weak T-junction, a single-site term, is no longer truncated away (t_j = 0.02 at L = 16)
     Ht = TensorBinding.tjunction_hamiltonian(16, 1.0, 0.02)
@@ -80,5 +82,5 @@ _wrap(H)   = _el(H, 0, 2^H.L - 1)                     # zero on an open chain
     # pairingNNN summed at a fixed 1e-12, like kinetic_1d_nn
     s40 = H40.sites
     P40 = TensorBinding.pairingNNN(40, s40, 0.2 * MPO(s40, "Id"), 1)
-    @test _el(TensorBinding.TBHamiltonian(H40; mpo = P40), m40 - 1, m40) ≈ 0.2 atol=1e-8
+    @test _el(TensorBinding.TBHamiltonian(H40; mpo = P40), m40 - 1, m40) ≈ 0.2 atol=1e-6
 end
