@@ -79,17 +79,20 @@ end
     # A full-rank state, so TDVP's tangent space is the whole Hilbert space: with the
     # backward bond step it is exact (|Δψ| ~ 1e-15); without it, it counted terms of H
     # twice (|Δψ| = 0.07 per step at dt = 0.05, 0.21 after three). false was the default
-    # of these functions up to v0.2.0; it now warns.
+    # of these functions up to v0.2.0; it now warns. The exactness checks run without
+    # truncation (cutoff = 0): at the default cutoff = 1e-10 the two-site SVD can drop a
+    # singular value near the threshold, which with Julia 1.10's OpenBLAS cost
+    # |Δψ| = 3e-9 after three steps (1e-15 without truncation).
     dt = 0.05
     H  = get_Hamiltonian("chain_1d", 1.0; L = 3)
     seed!(7)
     ψ0 = normalize!(MPS(randn(ComplexF64, 2, 2, 2), H.sites))
     ex1, ex3 = _exact_evolve(H.mpo, ψ0, dt), _exact_evolve(H.mpo, ψ0, 3dt)
 
-    @test norm(tdvp_evolve(H, ψ0, dt; normalize = false) - ex1) < 1e-10
-    @test norm(tdvp_evolve(H, ψ0, dt; normalize = false, nsite = 1) - ex1) < 1e-10
-    @test norm(evolve_with_tdvp(H, ψ0, 3, dt; normalize_each_step = false)[end] - ex3) < 1e-10
-    st = evolve_with_tdvp_timedep(_ -> H.mpo, ψ0, 3, dt; normalize_each_step = false)
+    @test norm(tdvp_evolve(H, ψ0, dt; normalize = false, cutoff = 0.0) - ex1) < 1e-10
+    @test norm(tdvp_evolve(H, ψ0, dt; normalize = false, nsite = 1, cutoff = 0.0) - ex1) < 1e-10
+    @test norm(evolve_with_tdvp(H, ψ0, 3, dt; normalize_each_step = false, cutoff = 0.0)[end] - ex3) < 1e-10
+    st = evolve_with_tdvp_timedep(_ -> H.mpo, ψ0, 3, dt; normalize_each_step = false, cutoff = 0.0)
     @test norm(st[end] - ex3) < 1e-8
 
     @test_logs min_level = Logging.Warn tdvp_evolve(H, ψ0, dt)
