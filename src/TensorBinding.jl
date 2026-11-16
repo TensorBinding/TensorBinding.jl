@@ -153,7 +153,8 @@ export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
 #                            → Utils, TBSystem, AuxDOF, DMRG, kpm/kernels, kpm/recursion
 # solvers/kpm/exciton.jl     exciton LDOS
 #                            → Utils, TBSystem, DMRG, kpm/kernels, kpm/recursion
-# solvers/Krylov.jl          get_green_krylov, Haydock recursion (haydock_cf & co.)
+# solvers/Krylov.jl          get_green_krylov (GMRES or MINRES local solver), Haydock
+#                              recursion (haydock_cf & co.)
 #                            → Utils, MPOTools, TBSystem
 # solvers/Timeev.jl          TDVP/RK4 step and trajectory kernels, propagator MPO,
 #                            density-matrix RK4 and observables

@@ -5,6 +5,20 @@ reading of semantic versioning: before 1.0, a change in the minor number (0.1 �
 is breaking, and a change in the last number (0.1.0 → 0.1.1) adds features or fixes
 bugs without breaking the API.
 
+## [Unreleased]
+
+### Added
+
+- **MINRES for `get_green_krylov`**: keyword `solver`, `:gmres` (the default, KrylovKit's
+  GMRES as before) or `:minres`. Each local problem of the sweeps, (z − H_eff)x = b, is
+  a complex shift of a Hermitian matrix when H is Hermitian; MINRES solves it by a
+  three-term recurrence without restarts (the iterates of unrestarted GMRES), where
+  GMRES restarts every `krylovdim` products. The result is the same G in fewer products,
+  several times fewer at small η. MINRES takes `tol` and a budget of
+  `maxiter · krylovdim` products per local solve (the GMRES one); a non-Hermitian H
+  throws an `ArgumentError` (checked from ‖H − H†‖/‖H‖). With `solver=:minres` no
+  z·I − H is formed: z goes into `linsolve`'s coefficients.
+
 ## [0.2.1] — 2026-11-13
 
 This release keeps the v0.2 API. Every entry under **Changed results** is a bug fix
