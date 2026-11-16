@@ -49,8 +49,9 @@ functions need CUDA.jl to be loaded (see the README).
 - Model construction and mutation: `add_hopping!`, `add_hopping_2D!`, `add_interaction!`,
   `add_onsite!`, `add_soc!`, `add_spin!`, `add_superconductivity!`, `add_tjunction!`,
   `add_zeeman!`, `get_Hamiltonian`
-- Spectral functions: `get_dos_stochastic`, `get_dos_trace`, `get_green_krylov`,
-  `get_ldos_online`, `get_ldos_spatial`, `get_ldos_spectrum`, `KPM_Tn`, `KPM_Tn_mps`
+- Spectral functions: `get_correction_vector`, `get_dos_stochastic`, `get_dos_trace`,
+  `get_green_krylov`, `get_ldos_cv`, `get_ldos_online`, `get_ldos_spatial`,
+  `get_ldos_spectrum`, `KPM_Tn`, `KPM_Tn_mps`, `refine_bound_state`
 - Band structure and quasiparticle interference: `get_bands`, `get_qpi`
 - Density-matrix purification: `mcweeny_purify`, `sp2_purify`
 - Mean-field self-consistency: `get_scf`
@@ -59,7 +60,8 @@ functions need CUDA.jl to be loaded (see the README).
 - RPA response: `get_bubble_mpo`, `get_rpa_susceptibility`, `get_rpa_susceptibility_wynn`
 - Non-Hermitian models and spectra: `add_nh_nonreciprocal_hopping!`, `add_nh_onsite!`,
   `add_nh_skin_hopping!`, `nh_spectral_function`, `nh_spectrum_grid`
-- Excitons: `get_exciton_bands`, `get_exciton_continuum`, `get_exciton_ldos_spatial`
+- Excitons: `get_exciton_bands`, `get_exciton_continuum`, `get_exciton_ldos_cv`,
+  `get_exciton_ldos_spatial`
 - Time evolution: `build_tdvp_propagator_mpo`, `evolve_rk4_dm_nh`, `evolve_rk4_dm_timedep`,
   `evolve_with_propagator`, `evolve_with_tdvp`, `evolve_with_tdvp_timedep`
 - Sampling plans: `fibonacci_ldos_sampling_plan`, `kspace_sampling_plan`,

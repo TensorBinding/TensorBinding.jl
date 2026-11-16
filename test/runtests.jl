@@ -111,6 +111,7 @@ include("kbonacci.jl")
 include("kpm_moment_columns.jl")
 include("gpu_mps_ldos.jl")
 include("krylov_minres.jl")
+include("correction_vector.jl")
 
 # Regression tests for the bugs found in the 2026-09 code audit
 # (docs/dev/REORGANISATION_TODO.md, "Bugs").

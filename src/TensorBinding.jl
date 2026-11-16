@@ -42,8 +42,9 @@ export expect, inner, MPO, MPS, OpSum, siteinds
 export add_hopping!, add_hopping_2D!, add_interaction!, add_onsite!, add_soc!, add_spin!,
        add_superconductivity!, add_tjunction!, add_zeeman!, get_Hamiltonian
 # Spectral functions: KPM moments, LDOS, DOS, Krylov Green's function
-export get_dos_stochastic, get_dos_trace, get_green_krylov, get_ldos_online,
-       get_ldos_spatial, get_ldos_spectrum, KPM_Tn, KPM_Tn_mps
+export get_correction_vector, get_dos_stochastic, get_dos_trace, get_green_krylov,
+       get_ldos_cv, get_ldos_online, get_ldos_spatial, get_ldos_spectrum, KPM_Tn,
+       KPM_Tn_mps, refine_bound_state
 # Band structure and quasiparticle interference
 export get_bands, get_qpi
 # Density-matrix purification
@@ -59,7 +60,8 @@ export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_wynn
 export add_nh_nonreciprocal_hopping!, add_nh_onsite!, add_nh_skin_hopping!,
        nh_spectral_function, nh_spectrum_grid
 # Excitons
-export get_exciton_bands, get_exciton_continuum, get_exciton_ldos_spatial
+export get_exciton_bands, get_exciton_continuum, get_exciton_ldos_cv,
+       get_exciton_ldos_spatial
 # Time evolution
 export build_tdvp_propagator_mpo, evolve_rk4_dm_nh, evolve_rk4_dm_timedep,
        evolve_with_propagator, evolve_with_tdvp, evolve_with_tdvp_timedep
@@ -156,6 +158,9 @@ export chern_marker_gpu, get_bands_gpu, get_dos_stochastic_gpu,
 # solvers/Krylov.jl          get_green_krylov (GMRES or MINRES local solver), Haydock
 #                              recursion (haydock_cf & co.)
 #                            → Utils, MPOTools, TBSystem
+# solvers/CorrectionVector.jl correction vectors (ω + iη − H)⁻¹|b⟩ of a probe: site and
+#                              exciton LDOS, refinement of an isolated level
+#                            → Krylov, AuxDOF, Utils, TBSystem
 # solvers/Timeev.jl          TDVP/RK4 step and trajectory kernels, propagator MPO,
 #                            density-matrix RK4 and observables
 #                            → Utils, Hamiltonian, TBSystem
@@ -252,6 +257,7 @@ include("solvers/kpm/ldos.jl")
 include("solvers/kpm/dos.jl")
 include("solvers/kpm/exciton.jl")
 include("solvers/Krylov.jl")
+include("solvers/CorrectionVector.jl")
 include("solvers/Timeev.jl")
 include("physics/Purification.jl")
 include("physics/Supercond.jl")

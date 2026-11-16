@@ -34,6 +34,24 @@ bugs without breaking the API.
   32-site half-filled chain at U = 0.999 U_c (κ = 10³) χ is off by 5e-3 with a residual
   of 5e-2, so the check warns; `rpa_cutoff = 1e-12` gives 1e-7. The default cutoff is
   unchanged.
+- **Correction vectors** (`src/solvers/CorrectionVector.jl`, a new section of the
+  Solvers page): the resolvent of one probe state, x = (ω + iη − H)⁻¹|b⟩ and
+  G = ⟨b|x⟩, at a resolution set by η rather than by a number of KPM moments.
+  - `get_correction_vector(H, b, ω; eta, …)` returns `(; G, x, residual, converged,
+    maxlinkdim, sweeps, rounds)`. It starts from a Krylov seed b + Σₖ Hᵏb (from the
+    probe alone the two-site sweeps can stall on two-particle registers), sweeps until
+    G stops moving, checks the residual and, above `rtol` (0.02), expands x along the
+    residual for up to `rounds` rounds. `x0` warm-starts it, `eta_path` continues in η,
+    and `solver=:minres` uses the MINRES updater.
+  - `get_ldos_cv(H, X, ω_vals; eta, …)` and `get_exciton_ldos_cv(H, X, ω_vals; eta, …)`:
+    the LDOS of a site or of the exciton contact probe |X, X⟩ along a frequency grid,
+    each point warm-started from the previous one, as `(; ldos, G, residual, converged,
+    maxlinkdim)` in physical units (`ldos = −Im G/π`, one state integrates to 1;
+    `get_ldos_online(…) · π/H.scale` is in the same units). `get_ldos_cv` takes the
+    auxiliary projections of `get_ldos_online`.
+  - `refine_bound_state(H, b, ω0; eta_steps, …)`: the energy and probe weight of an
+    isolated level by Rayleigh-quotient iteration on the correction vector, to ~η² of
+    the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`).
 
 ### Changed results
 
