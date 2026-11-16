@@ -28,7 +28,8 @@
 
 """
     rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
-                         nsweeps=20, maxdim=400, cutoff=1e-8) -> MPS
+                         nsweeps=20, maxdim=400, cutoff=1e-8, return_info=false,
+                         residual_warn=1e-2) -> MPS
 
 Solve the RPA Dyson equation  (I − Π₀V) χ = Π₀  for the interacting
 susceptibility χ using DMRG-style linear solve.
@@ -41,9 +42,18 @@ the row index i on the odd sites, the column index j on the even ones (site n of
 `finalfinalsites` on sites 2n−1 and 2n), so that `custom_mpo(χ, finalfinalsites)` is
 χ as an MPO. The solve is [(I − Π₀V) ⊗ I] vec(χ) = vec(Π₀), with I − Π₀V on the odd
 sites, started from vec(Π₀).
+
+Near the RPA instability I − Π₀V is nearly singular and the truncation at `cutoff`
+limits the accuracy: on a 32-site half-filled chain with V = U·1 at U = 0.999 U_c
+(condition number 10³) the default `cutoff = 1e-8` gives χ to 5e-3, `1e-12` to 1e-7.
+The relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ of the solve (exact inner products) is
+checked: above `residual_warn` (default `1e-2`; `Inf` skips the check) a warning
+suggests a smaller `cutoff`. `return_info=true` returns `(; chi, residual,
+maxlinkdim)` instead of vec(χ).
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
-                               nsweeps=20, maxdim=400, cutoff=1e-8)
+                               nsweeps=20, maxdim=400, cutoff=1e-8,
+                               return_info::Bool=false, residual_warn::Real=1e-2)
     Id  = MPO(finalfinalsites, "Id")
     ΠV  = apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
     A   = Id - ΠV
@@ -57,8 +67,17 @@ function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
     b   = _vec_mps_from_mpo(Π, finalsites)
 
     x0 = deepcopy(b)
-    return ITensorMPS.linsolve(Aop, b, x0;
-                               nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
+    χ  = ITensorMPS.linsolve(Aop, b, x0;
+                             nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
+    (return_info || isfinite(residual_warn)) || return χ
+
+    res = _linsolve_residual(Aop, b, χ, 0.0, 1.0)
+    res > residual_warn &&
+        @warn "rpa_from_bubble_diag: the Dyson solve is not converged: relative residual " *
+              "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Close to the RPA " *
+              "instability lower `cutoff` (`rpa_cutoff`), e.g. to 1e-12; else raise " *
+              "`nsweeps` or `maxdim` (maxlinkdim reached: $(maxlinkdim(χ)))."
+    return return_info ? (; chi = χ, residual = res, maxlinkdim = maxlinkdim(χ)) : χ
 end
 
 
@@ -82,7 +101,8 @@ end
 
 """
     get_rpa_susceptibility(H::TBHamiltonian, MPOV, ω; mode=:charge, rpa_nsweeps=20,
-                           rpa_maxdim=400, rpa_cutoff=1e-8, <get_bubble_mpo keywords>) -> MPS
+                           rpa_maxdim=400, rpa_cutoff=1e-8, rpa_residual_warn=1e-2,
+                           return_info=false, <get_bubble_mpo keywords>) -> MPS
 
 Compute the RPA susceptibility χ(ω) for a system described by `H` with
 interaction MPO `MPOV`.  Returns χ = (I − Π₀V)⁻¹Π₀, the full response matrix
@@ -105,13 +125,20 @@ All `get_bubble_mpo` keyword arguments are accepted and forwarded.
 **Additional keywords (Dyson solve)**
 - `rpa_nsweeps` : sweeps for the RPA linsolve. Default `20`.
 - `rpa_maxdim`  : max bond dim for the RPA linsolve. Default `400`.
-- `rpa_cutoff`  : cutoff for the RPA linsolve. Default `1e-8`.
+- `rpa_cutoff`  : cutoff for the RPA linsolve. Default `1e-8`. Close to the RPA
+  instability use a smaller one (see `rpa_from_bubble_diag`).
+- `rpa_residual_warn` : warn when the relative residual of the Dyson solve exceeds
+  this value (`Inf`: no check). Default `1e-2`.
+- `return_info` : return `(; chi, residual, maxlinkdim)` of the Dyson solve instead of
+  vec(χ). Default `false`.
 """
 function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
                                  mode::Symbol          = :charge,
                                  rpa_nsweeps::Int      = 20,
                                  rpa_maxdim::Int       = 400,
                                  rpa_cutoff::Real      = 1e-8,
+                                 rpa_residual_warn::Real = 1e-2,
+                                 return_info::Bool     = false,
                                  ϵF::Real              = 0.0,
                                  P_method::Symbol      = :purification,
                                  GF_method::Symbol     = :kpm,
@@ -150,7 +177,8 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
     # one fewer than the spinful H.sites.
     finalsites = _rpa_pair_sites(out_sites)
     return rpa_from_bubble_diag(Π, MPOV, finalsites, out_sites;
-                                 nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
+                                 nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff,
+                                 residual_warn=rpa_residual_warn, return_info)
 end
 
 # ============================================================
@@ -384,7 +412,8 @@ end
 
 """
     get_magnon_susceptibility(H, MPOV, ω; rpa_nsweeps=20, rpa_maxdim=400,
-                              rpa_cutoff=1e-8, kwargs...) -> MPS
+                              rpa_cutoff=1e-8, rpa_residual_warn=1e-2,
+                              return_info=false, kwargs...) -> MPS
 
 RPA transverse spin susceptibility χ^{+−}_RPA(ω) for a spinful
 `TBHamiltonian`.
@@ -397,12 +426,16 @@ on the spin-projected sites (`H.sites` without the spin index), vectorized as in
 
 **Keyword arguments**
 - `rpa_nsweeps`, `rpa_maxdim`, `rpa_cutoff` : Dyson linsolve parameters.
+- `rpa_residual_warn`, `return_info` : the residual check of the Dyson solve, as
+  `residual_warn` and `return_info` of `rpa_from_bubble_diag`.
 - All `get_bubble_mpo` keywords forwarded via `kwargs...`.
 """
 function get_magnon_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
-                                   rpa_nsweeps::Int = 20,
-                                   rpa_maxdim::Int  = 400,
-                                   rpa_cutoff::Real = 1e-8,
+                                   rpa_nsweeps::Int         = 20,
+                                   rpa_maxdim::Int          = 400,
+                                   rpa_cutoff::Real         = 1e-8,
+                                   rpa_residual_warn::Real  = 1e-2,
+                                   return_info::Bool        = false,
                                    kwargs...)
     H.spin_s === nothing &&
         error("get_magnon_susceptibility: H is not spinful — call add_spin!(H) first")
@@ -412,7 +445,8 @@ function get_magnon_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
     # H.L counts position qubits only; H_up.sites also keeps any sublattice/layer index.
     finalsites = _rpa_pair_sites(H_up.sites)
     return rpa_from_bubble_diag(Π, MPOV, finalsites, H_up.sites;
-                                nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff)
+                                nsweeps=rpa_nsweeps, maxdim=rpa_maxdim, cutoff=rpa_cutoff,
+                                residual_warn=rpa_residual_warn, return_info)
 end
 
 

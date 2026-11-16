@@ -25,6 +25,15 @@ bugs without breaking the API.
   `(; G, residual, maxlinkdim)` instead of the MPO. On the chains of the next entry and
   on 16×16 square lattices the residual was 1–5 times the relative error of G, down to
   its noise floor of ~1e-7.
+- **The RPA Dyson solve checks its residual**: `rpa_from_bubble_diag` computes the
+  relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ and warns above `residual_warn` (default
+  `1e-2`); `return_info=true` returns `(; chi, residual, maxlinkdim)`.
+  `get_rpa_susceptibility` and `get_magnon_susceptibility` pass `rpa_residual_warn` and
+  `return_info` to it. Near the RPA instability the truncation limits χ to about
+  κ·1e-5 at the default `cutoff = 1e-8` (κ the condition number of I − Π₀V): on a
+  32-site half-filled chain at U = 0.999 U_c (κ = 10³) χ is off by 5e-3 with a residual
+  of 5e-2, so the check warns; `rpa_cutoff = 1e-12` gives 1e-7. The default cutoff is
+  unchanged.
 
 ### Changed results
 
