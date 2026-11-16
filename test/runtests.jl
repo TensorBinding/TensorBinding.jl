@@ -147,6 +147,7 @@ include("bugfix_build_K.jl")
 include("bugfix_qtci_profiles.jl")
 include("bugfix_large_L_cutoffs.jl")
 include("bugfix_onsite_aux.jl")
+include("bugfix_green_krylov_start.jl")
 
 # The 0.1 names and keywords renamed in 0.2: deprecated aliases with a one-time warning.
 include("deprecations.jl")

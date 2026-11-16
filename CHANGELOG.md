@@ -18,6 +18,37 @@ bugs without breaking the API.
   `maxiter · krylovdim` products per local solve (the GMRES one); a non-Hermitian H
   throws an `ArgumentError` (checked from ‖H − H†‖/‖H‖). With `solver=:minres` no
   z·I − H is formed: z goes into `linsolve`'s coefficients.
+- **`get_green_krylov` checks its residual**: the relative residual
+  ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the solve (from exact inner products) is computed after the
+  sweeps, and a warning says that G is not converged when it exceeds `residual_warn`
+  (default `1e-2`; `Inf` skips the check). `return_info=true` returns
+  `(; G, residual, maxlinkdim)` instead of the MPO. On the chains of the next entry and
+  on 16×16 square lattices the residual was 1–5 times the relative error of G, down to
+  its noise floor of ~1e-7.
+
+### Changed results
+
+- **`get_green_krylov` starts from a random state** (keywords `start` and `rng`). The
+  start was |I⟩⟩ with its bonds enlarged by a 2-vector global Krylov expansion, and the
+  two-site sweeps keep the rank their start spans: on a short-ranged G they stopped on the
+  G of the bulk, without the corrections near the chain ends or an impurity. At the
+  default settings, open chains were off by 6–20 % whenever ω lay outside the band (from
+  2^6 sites with an impurity, 2^7 without), and inside it at η = 0.1 from 2^10 sites
+  (at η = 0.03 too at 2^12), with nothing to show it. The start is now
+  |I⟩⟩ + 0.1·(a random MPS of bond dimension 8) with an 8-vector expansion, which gets
+  the same cases to 1e-11 (clean chain) and to the floor of the cutoff (impurity chain:
+  2e-6 at 2^8 sites, 1e-6–2e-4 at 2^10; `cutoff=1e-12` gives 3e-11–8e-7 there). The
+  random state comes from `rng`, by default a `Random.Xoshiro(1)` created at each call,
+  so results do not depend on the global RNG. The first sweep runs at the bond dimension
+  of the start (up to ~100), which costs the most when G has a small one: on these
+  chains a solve takes up to 30× longer (30 s instead of 1 s for a clean 2^8-site chain
+  at η = 0.03). `start=:identity` restores the old start; `x0_mpo` is unchanged. Regenerated golden cases: `krylov_green_raw`, `krylov_green_tbhamiltonian`
+  and `krylov_green_ishermitian_flag` of `test/data/dynamics_golden.jl` (moved by ~1e-14:
+  those small chains had converged), and the five Krylov cases of
+  `test/data/rpa_golden.jl` (`bubble_cplx_krylov` and the four `*_fwd_krylov_mcweeny_tol`
+  cases), which pin keyword forwarding at deliberately unconverged settings (2 sweeps,
+  `maxdim` 3–20) and so moved by their whole size. Every other RPA case reproduced
+  exactly; the file's header now records ITensors 0.9.32 and ITensorMPS 0.3.44.
 
 ## [0.2.1] — 2026-11-13
 

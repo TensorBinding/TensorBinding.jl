@@ -163,10 +163,40 @@ function _hermiticity_defect(H::MPO)
 end
 
 
+# ‖(a0 + a1·A)x − b‖ / ‖b‖ from exact inner products, with no MPO–MPS product. The
+# terms cancel to ~√eps of the largest one, so values below ~1e-7 are noise.
+function _linsolve_residual(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number)
+    nb2 = real(inner(b, b))
+    r2  = abs2(a0) * real(inner(x, x)) + abs2(a1) * real(inner(A, x, A, x)) + nb2 +
+          2real(conj(a0) * a1 * inner(x', A, x)) - 2real(conj(a0) * inner(x, b)) -
+          2real(conj(a1) * conj(inner(b', A, x)))
+    return sqrt(max(r2, 0.0) / nb2)
+end
+
+
+# Start of the linsolve sweeps of get_green_krylov. :random (from v0.2.2): |I⟩⟩ plus
+# 0.1·(a random MPS of bond dimension 8 from `rng`), with its bond bases enlarged by an
+# 8-vector global Krylov expansion along A. :identity (up to v0.2.1): |I⟩⟩ with a
+# 2-vector expansion. The two-site sweeps keep the rank their start spans: from the
+# :identity start they stalled on a short-ranged G (the bulk G without the end
+# corrections of an open chain; ω outside the band in 2D), wrong by 1e-3–0.2 with no
+# sign of it. The random part fills every bond, the expansion adds the directions of A.
+function _green_krylov_start(rhs::MPS, A::MPO, sites2::Vector{<:Index}, start::Symbol,
+                             rng::AbstractRNG, cutoff::Real)
+    start === :identity &&
+        return ITensorMPS.expand(rhs, A; alg="global_krylov", krylovdim=2, cutoff=cutoff)
+    r = random_mps(rng, ComplexF64, sites2; linkdims=8)
+    return ITensorMPS.expand(+(rhs, 0.1 * r; cutoff=1e-14), A; alg="global_krylov",
+                             krylovdim=8, cutoff=cutoff)
+end
+
+
 """
     get_green_krylov(H_mpo::MPO, sites, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
-                     cutoff=1e-8, x0_mpo=nothing, solver=:gmres, ishermitian=false,
-                     tol=1e-10, maxiter=600, krylovdim=30, verbose=false) -> MPO
+                     cutoff=1e-8, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
+                     solver=:gmres, ishermitian=false, tol=1e-10, maxiter=600,
+                     krylovdim=30, return_info=false, residual_warn=1e-2,
+                     verbose=false) -> MPO
 
 Low-level: compute the retarded Green's function G(ω) = (ω + iη − H)⁻¹ for a
 raw MPO `H_mpo` defined on `sites`, via the vectorized linear system
@@ -183,90 +213,83 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
                           maxdim::Int                = 100,
                           cutoff::Real               = 1e-8,
                           x0_mpo::Union{MPO,Nothing} = nothing,
+                          start::Symbol              = :random,
+                          rng::AbstractRNG           = Random.Xoshiro(1),
                           solver::Symbol             = :gmres,
                           ishermitian::Bool          = false,
                           tol::Real                  = 1e-10,
                           maxiter::Int               = 600,
                           krylovdim::Int             = 30,
+                          return_info::Bool          = false,
+                          residual_warn::Real        = 1e-2,
                           verbose::Bool              = false)
     solver in (:gmres, :minres) ||
         throw(ArgumentError("get_green_krylov: solver must be :gmres or :minres, got :$solver"))
-    solver === :minres &&
-        return _green_krylov_minres(H_mpo, sites, ω_phys; η, nsweeps, maxdim, cutoff,
-                                    x0_mpo, tol, maxiter, krylovdim, verbose)
+    start in (:random, :identity) ||
+        throw(ArgumentError("get_green_krylov: start must be :random or :identity, got :$start"))
     N      = length(sites)
     sites2 = siteinds("Qubit", 2N)
+    z      = ComplexF64(ω_phys + im * η)
+    rhs    = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
 
-    z     = ComplexF64(ω_phys + im * η)
-    ω_mpo = z * MPO(sites, "Id") - H_mpo
     # |G⟩⟩ holds G[r, c] with r on the odd and c on the even qubits (_vec_mps_from_mpo),
-    # and Lop acts on c: G(z − H) = I, i.e. (z − H)ᵀ on the column register, so the
-    # operator is embedded transposed (interleave_mpo embeds it as given).
-    Lop   = interleave_mpo(swapprime(ω_mpo, 0 => 1), sites2, 0)
-    rhs   = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
-    # Default start: |I⟩⟩ with its bond bases enlarged by a global Krylov expansion
-    # (ITensorMPS.expand, krylovdim = 2: directions Lop^k|I⟩⟩ folded in). From |I⟩⟩
-    # itself (bond dimension 1 between the sites of H) the two-site sweeps stalled on
-    # real two-register operators such as the bubble's H_eff = I⊗H₂ − H₁⊗I: residual
-    # ~0.9 and bonds capped below the solution's whatever nsweeps, a ~50 % error in G.
-    # Converged results elsewhere move by ~1e-14.
-    x0    = isnothing(x0_mpo) ?
-                ITensorMPS.expand(rhs, Lop; alg="global_krylov", krylovdim=2, cutoff=cutoff) :
-                _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
+    # and the operator acts on c: G(z − H) = I, i.e. (z − H)ᵀ on the column register, so
+    # it is embedded transposed (interleave_mpo embeds it as given). linsolve solves
+    # (a0 + a1·A)|G⟩⟩ = |I⟩⟩.
+    if solver === :minres
+        # A = I ⊗ Hᵀ, Hermitian when H is, with z in the coefficients: no z·I − H is formed.
+        defect = _hermiticity_defect(H_mpo)
+        defect <= 1e-6 || throw(ArgumentError(
+            "get_green_krylov(solver=:minres) needs a Hermitian H, but ‖H − H†‖/‖H‖ = " *
+            "$(round(defect; sigdigits=2)); use solver=:gmres"))
+        A, a0, a1 = interleave_mpo(swapprime(H_mpo, 0 => 1), sites2, 0), z, -1.0
+    else
+        ω_mpo = z * MPO(sites, "Id") - H_mpo
+        A, a0, a1 = interleave_mpo(swapprime(ω_mpo, 0 => 1), sites2, 0), 0.0, 1.0
+    end
+    x0 = isnothing(x0_mpo) ? _green_krylov_start(rhs, A, sites2, start, rng, cutoff) :
+                             _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
 
-    verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps)",
+    verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps",
+                       solver === :minres ? ", MINRES)" : ")",
                        isnothing(x0_mpo) ? "" : "  [KPM warm start]")
 
-    sol = ITensorMPS.linsolve(Lop, rhs, x0;
-                              nsweeps        = nsweeps,
-                              maxdim         = maxdim,
-                              cutoff         = cutoff,
-                              updater_kwargs = (; ishermitian, tol, maxiter, krylovdim))
-    return custom_mpo(sol, sites)
-end
+    if solver === :minres
+        stats = [0, 0, 0]
+        sol = ITensorMPS.linsolve(A, rhs, x0, a0, a1;
+                                  nsweeps        = nsweeps,
+                                  maxdim         = maxdim,
+                                  cutoff         = cutoff,
+                                  updater        = _minres_updater,
+                                  updater_kwargs = (; tol, maxiter = maxiter * krylovdim, stats))
+        verbose && println("  MINRES: $(stats[1]) local solves, $(stats[2]) products, ",
+                           "$(stats[3]) stopped above tol")
+    else
+        sol = ITensorMPS.linsolve(A, rhs, x0;
+                                  nsweeps        = nsweeps,
+                                  maxdim         = maxdim,
+                                  cutoff         = cutoff,
+                                  updater_kwargs = (; ishermitian, tol, maxiter, krylovdim))
+    end
+    G = custom_mpo(sol, sites)
+    (return_info || isfinite(residual_warn)) || return G
 
-
-# get_green_krylov with MINRES as the local solver. The operator is I ⊗ Hᵀ, Hermitian
-# when H is, and z goes into linsolve's coefficients: (z − I ⊗ Hᵀ)|G⟩⟩ = |I⟩⟩, so no
-# z·I − H is formed. The start is |I⟩⟩ expanded as in the GMRES path, here along the
-# Krylov space of I ⊗ Hᵀ, which is that of the shifted operator.
-function _green_krylov_minres(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
-                              η, nsweeps, maxdim, cutoff, x0_mpo, tol, maxiter,
-                              krylovdim, verbose)
-    defect = _hermiticity_defect(H_mpo)
-    defect <= 1e-6 || throw(ArgumentError(
-        "get_green_krylov(solver=:minres) needs a Hermitian H, but ‖H − H†‖/‖H‖ = " *
-        "$(round(defect; sigdigits=2)); use solver=:gmres"))
-    N      = length(sites)
-    sites2 = siteinds("Qubit", 2N)
-
-    z   = ComplexF64(ω_phys + im * η)
-    Aop = interleave_mpo(swapprime(H_mpo, 0 => 1), sites2, 0)
-    rhs = _vec_mps_from_mpo(MPO(sites, "Id"), sites2)
-    x0  = isnothing(x0_mpo) ?
-              ITensorMPS.expand(rhs, Aop; alg="global_krylov", krylovdim=2, cutoff=cutoff) :
-              _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
-
-    verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps, MINRES)",
-                       isnothing(x0_mpo) ? "" : "  [KPM warm start]")
-
-    stats = [0, 0, 0]
-    sol = ITensorMPS.linsolve(Aop, rhs, x0, z, -1.0;
-                              nsweeps        = nsweeps,
-                              maxdim         = maxdim,
-                              cutoff         = cutoff,
-                              updater        = _minres_updater,
-                              updater_kwargs = (; tol, maxiter = maxiter * krylovdim, stats))
-    verbose && println("  MINRES: $(stats[1]) local solves, $(stats[2]) products, ",
-                       "$(stats[3]) stopped above tol")
-    return custom_mpo(sol, sites)
+    res = _linsolve_residual(A, rhs, sol, a0, a1)
+    verbose && println("  relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ = $res")
+    res > residual_warn &&
+        @warn "get_green_krylov: G is not converged: relative residual " *
+              "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Raise maxdim " *
+              "or nsweeps, or lower cutoff (maxlinkdim reached: $(maxlinkdim(sol)))." ω_phys η
+    return return_info ? (; G, residual = res, maxlinkdim = maxlinkdim(sol)) : G
 end
 
 
 """
     get_green_krylov(H::TBHamiltonian, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
-                     cutoff=1e-8, x0_mpo=nothing, solver=:gmres, ishermitian=false,
-                     tol=1e-10, maxiter=600, krylovdim=30, verbose=false) -> MPO
+                     cutoff=1e-8, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
+                     solver=:gmres, ishermitian=false, tol=1e-10, maxiter=600,
+                     krylovdim=30, return_info=false, residual_warn=1e-2,
+                     verbose=false) -> MPO
 
 Compute the retarded Green's function
 
@@ -285,14 +308,26 @@ unscaled — no KPM Chebyshev expansion required.
 - `η`           : Lorentzian broadening. Default `1e-2`.
 - `nsweeps`     : Number of DMRG sweeps for the linear solver. Default `12`.
 - `maxdim`      : Maximum bond dimension of the solution MPS. Default `100`.
-- `cutoff`      : SVD truncation cutoff. Default `1e-8`.
+- `cutoff`      : SVD truncation cutoff, relative to ‖|G⟩⟩‖², which grows with the
+                  system. Default `1e-8`. It sets the accuracy floor of G, which the
+                  residual shows: on an open 2^10-site chain with one impurity the
+                  default leaves 1e-6–2e-4, `1e-12` 1e-11–1e-6.
 - `x0_mpo`      : Optional MPO initial guess for G(ω).  When provided it is
                   vectorized via `_vec_mps_from_mpo` and passed as `x0` to
-                  `linsolve`, replacing the default guess (the vectorized identity
-                  with its bonds enlarged by a global Krylov expansion,
-                  `ITensorMPS.expand`).
+                  `linsolve`, replacing the start chosen by `start`.
                   Typical use: pass a low-accuracy KPM Green's function to
                   warm-start the Krylov iteration.  Default `nothing`.
+- `start`       : The start of the sweeps when `x0_mpo` is not given.
+                  `:random` (default since v0.2.2): |I⟩⟩ + 0.1·(a random MPS of
+                  bond dimension 8, drawn from `rng`), with its bonds enlarged by
+                  an 8-vector global Krylov expansion (`ITensorMPS.expand`).
+                  `:identity`: |I⟩⟩ with a 2-vector expansion, the start up to
+                  v0.2.1, which stalls on a short-ranged G (an open chain's end
+                  corrections, ω outside the band) and returns a G wrong by
+                  1e-3–0.2. The sweeps keep the rank their start spans.
+- `rng`         : Random number generator of the `:random` start. Default
+                  `Random.Xoshiro(1)`, created anew at each call, so the result
+                  does not depend on the global RNG state.
 - `solver`      : Local solver of the sweeps. `:gmres` (default): KrylovKit's
                   GMRES, restarted every `krylovdim` products. `:minres`: MINRES,
                   for Hermitian H only (an `ArgumentError` otherwise, from
@@ -308,8 +343,15 @@ unscaled — no KPM Chebyshev expansion required.
                   residual). Default `1e-10`.
 - `maxiter`     : Maximum Krylov iterations per site (GMRES restarts). Default `600`.
 - `krylovdim`   : Krylov subspace dimension. Default `30`.
+- `return_info` : Return `(; G, residual, maxlinkdim)` instead of the MPO `G`.
+                  Default `false`.
+- `residual_warn`: Warn when the relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the
+                  solve exceeds this value: G is then not converged (`maxdim`,
+                  `nsweeps` or `cutoff` too coarse). The residual comes from exact
+                  inner products; values below ~1e-7 are rounding noise. `Inf`
+                  skips its computation unless `return_info=true`. Default `1e-2`.
 - `verbose`     : Print progress messages (with MINRES, also the number of local
-                  solves and products). Default `false`.
+                  solves and products) and the residual. Default `false`.
 
 **Usage**
 ```julia
@@ -335,15 +377,20 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
                           maxdim::Int                = 100,
                           cutoff::Real               = 1e-8,
                           x0_mpo::Union{MPO,Nothing} = nothing,
+                          start::Symbol              = :random,
+                          rng::AbstractRNG           = Random.Xoshiro(1),
                           solver::Symbol             = :gmres,
                           ishermitian::Bool          = false,
                           tol::Real                  = 1e-10,
                           maxiter::Int               = 600,
                           krylovdim::Int             = 30,
+                          return_info::Bool          = false,
+                          residual_warn::Real        = 1e-2,
                           verbose::Bool              = false)
     return get_green_krylov(H.mpo, H.sites, ω_phys;
-                            η, nsweeps, maxdim, cutoff, x0_mpo, solver, ishermitian,
-                            tol, maxiter, krylovdim, verbose)
+                            η, nsweeps, maxdim, cutoff, x0_mpo, start, rng, solver,
+                            ishermitian, tol, maxiter, krylovdim, return_info,
+                            residual_warn, verbose)
 end
 
 
