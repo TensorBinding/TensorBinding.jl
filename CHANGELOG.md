@@ -52,6 +52,19 @@ bugs without breaking the API.
   - `refine_bound_state(H, b, ω0; eta_steps, …)`: the energy and probe weight of an
     isolated level by Rayleigh-quotient iteration on the correction vector, to ~η² of
     the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`).
+- **`get_rpa_susceptibility_column(H, MPOV, ω, j; …)`**: one column x = χ|j⟩ of the RPA
+  susceptibility, from (I − Π₀V)x = Π₀|j⟩ on the L sites of Π₀ instead of the whole χ
+  on the 2L-site vectorized register; `j` is a basis state (a position for position-only
+  sites) or any MPS. The bubble keywords and defaults are those of
+  `get_rpa_susceptibility`, whose column it returns; the solve defaults are tighter
+  (`rpa_nsweeps = 40`, `rpa_cutoff = 1e-12`), which costs little on L sites. On a
+  256-site half-filled chain up to U = 0.999 U_c (condition number 10³) it gave χ_jj to
+  1e-7–2e-6 and the column to 3e-6 in about a second, against minutes for the whole χ.
+- **The Wynn-accelerated RPA warns near the instability**: the three Wynn drivers
+  estimate the spectral radius ρ of VΠ₀ from ‖Tₙ‖/‖Tₙ₋₁‖ of the Neumann terms and warn
+  when it exceeds 0.9. There the series converges slowly or diverges, and the default
+  `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from U ≈ 0.6 U_c
+  at finite ω and η). The returned values are unchanged.
 
 ### Changed results
 

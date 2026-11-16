@@ -181,6 +181,86 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
                                  residual_warn=rpa_residual_warn, return_info)
 end
 
+
+# The get_bubble_mpo keywords of get_rpa_susceptibility and their defaults there, for
+# get_rpa_susceptibility_column (which must give a column of the same χ).
+const _RPA_BUBBLE_DEFAULTS = (; ϵF = 0.0, P_method = :purification, GF_method = :kpm,
+    Ncheb = 150, maxdim = 200, cutoff = 1e-8, purify_method = :mcweeny, purify_maxdim = 40,
+    purify_maxiters = 30, purify_tol = 1e-5, η = 1e-3, krylov_nsweeps = 12,
+    krylov_maxdim = 100, krylov_cutoff = 1e-8, verbose = false)
+
+# One column of the Dyson solution: (I − Π₀V)x = Π₀|b⟩ on the L sites of Π₀, from x = Π₀|b⟩.
+function _rpa_column_solve(Π::MPO, MPOV::MPO, sites, b::MPS; nsweeps::Int, maxdim::Int,
+                           cutoff::Real, residual_warn::Real, return_info::Bool)
+    A   = MPO(sites, "Id") - apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
+    rhs = apply(Π, b; maxdim=maxdim, cutoff=min(cutoff, 1e-14))
+    x   = ITensorMPS.linsolve(A, rhs, deepcopy(rhs); nsweeps, maxdim, cutoff)
+    (return_info || isfinite(residual_warn)) || return x
+    res = _linsolve_residual(A, rhs, x, 0.0, 1.0)
+    res > residual_warn &&
+        @warn "get_rpa_susceptibility_column: the Dyson solve is not converged: relative " *
+              "residual $(round(res; sigdigits=2)) > rpa_residual_warn = $residual_warn. " *
+              "Lower `rpa_cutoff` or raise `rpa_nsweeps` / `rpa_maxdim` (maxlinkdim " *
+              "reached: $(maxlinkdim(x)))."
+    return return_info ? (; chi = x, residual = res, maxlinkdim = maxlinkdim(x)) : x
+end
+
+"""
+    get_rpa_susceptibility_column(H::TBHamiltonian, MPOV, ω, j; mode=:charge,
+                                  rpa_nsweeps=40, rpa_maxdim=400, rpa_cutoff=1e-12,
+                                  rpa_residual_warn=1e-2, return_info=false,
+                                  <get_bubble_mpo keywords>) -> MPS
+
+One column of the RPA susceptibility χ = (I − Π₀V)⁻¹Π₀: the L-site MPS x = χ|j⟩, with
+χ_ij = ⟨i|x⟩, from the Dyson equation (I − Π₀V)x = Π₀|j⟩ on the sites of Π₀. `j` is
+the 1-indexed basis state of those sites (`_basis_state_mps(j − 1, sites)`: the
+position `j` when they are position qubits only), or any MPS on them (then x = χ|j⟩).
+
+Where one site's response is enough (χ_jj, a local probe, one column of a real-space
+response) this is much cheaper than `get_rpa_susceptibility`, which solves for the
+whole χ on the 2L-site vectorized register, and it holds its accuracy close to the
+instability: on a 256-site half-filled chain up to U = 0.999 U_c (condition number
+10³), χ_jj to 1e-7–2e-6 and the column to 3e-6 in about a second, against minutes for
+the whole χ. The tighter defaults (`rpa_nsweeps = 40`, `rpa_cutoff = 1e-12`) cost
+little on L sites.
+
+The bubble is that of `get_rpa_susceptibility` with the same keywords and defaults
+(`mode`, `ϵF`, `P_method`, `GF_method`, `Ncheb`, `maxdim`, `cutoff`, `η`, …), so the
+result is column `j` of its χ. The residual check and `return_info` (returning
+`(; chi, residual, maxlinkdim)`) are those of `rpa_from_bubble_diag`.
+"""
+function get_rpa_susceptibility_column(H::TBHamiltonian, MPOV::MPO, ω::Real, j;
+                                       mode::Symbol            = :charge,
+                                       rpa_nsweeps::Int        = 40,
+                                       rpa_maxdim::Int         = 400,
+                                       rpa_cutoff::Real        = 1e-12,
+                                       rpa_residual_warn::Real = 1e-2,
+                                       return_info::Bool       = false,
+                                       kwargs...)
+    bubble_kw = merge(_RPA_BUBBLE_DEFAULTS, kwargs)
+    if mode == :charge
+        Π         = get_bubble_mpo(H, H, ω; bubble_kw...)
+        out_sites = H.sites
+    elseif mode == :magnetic
+        H.spin_s === nothing &&
+            error("get_rpa_susceptibility_column: mode=:magnetic requires a spinful H (call add_spin!(H) first)")
+        H_up      = _project_spin_sector(H, 1)
+        H_dn      = _project_spin_sector(H, 2)
+        Π         = get_bubble_mpo(H_up, H_dn, ω; bubble_kw...)
+        out_sites = H_up.sites
+    else
+        error("get_rpa_susceptibility_column: unknown mode=$mode. Choose :charge or :magnetic")
+    end
+    b = j isa MPS ? j : begin
+        D = prod(dim.(out_sites))
+        1 <= j <= D || throw(BoundsError(1:D, j))
+        _basis_state_mps(j - 1, out_sites)
+    end
+    return _rpa_column_solve(Π, MPOV, out_sites, b; nsweeps=rpa_nsweeps, maxdim=rpa_maxdim,
+                             cutoff=rpa_cutoff, residual_warn=rpa_residual_warn,
+                             return_info)
+end
+
 # ============================================================
 # 3. Wynn ε-algorithm accelerated RPA
 # ============================================================
@@ -232,6 +312,7 @@ function _rpa_wynn_series(bubble, items, MPOV::MPO; K_max::Int, maxdim_apply::In
 
     chi_partial = nothing
     chi_wynn    = nothing
+    slow        = Tuple{Int,Float64}[]          # (item, ρ estimate) of slow series
 
     for (i, x) in enumerate(items)
         verbose && println(label(i, x))
@@ -249,11 +330,19 @@ function _rpa_wynn_series(bubble, items, MPOV::MPO; K_max::Int, maxdim_apply::In
         # Individual term contributions: spect_terms[n+1, q]
         spect_terms       = zeros(Float64, K_max+1, nq)
         spect_terms[1, :] = s0
+        tnorm             = zeros(Float64, K_max+1)      # ‖Tₙ‖_F
+        tnorm[1]          = norm(term)
 
         for n in 1:K_max
             term                = apply(term, MPOV; maxdim=maxdim_apply, cutoff=cutoff_apply)
             term                = apply(term, Π0;   maxdim=maxdim_apply, cutoff=cutoff_apply)
             spect_terms[n+1, :] = -imag.(get_spect_k(term))
+            tnorm[n+1]          = norm(term)
+        end
+        # ‖Tₙ‖/‖Tₙ₋₁‖ tends to the spectral radius ρ of VΠ₀; over the last two steps:
+        if K_max >= 2 && tnorm[K_max-1] > 0
+            ρ = sqrt(tnorm[K_max+1] / tnorm[K_max-1])
+            ρ > 0.9 && push!(slow, (i, ρ))
         end
 
         # Partial sums (Wynn input)
@@ -271,6 +360,17 @@ function _rpa_wynn_series(bubble, items, MPOV::MPO; K_max::Int, maxdim_apply::In
         verbose && println("  done ($(K_max+1) terms, $n_wynn Wynn estimates)")
     end
 
+    # Near ρ(VΠ₀) = 1 (the RPA instability, and at finite ω, η already below it) the
+    # Neumann series converges slowly or diverges, and a few Wynn steps do not fix it:
+    # with K_max = 6 the estimate was 1–90 % off at ρ ≈ 1 on a half-filled chain.
+    if !isempty(slow)
+        ρmax = maximum(last, slow)
+        @warn "RPA Wynn series: ‖Tₙ‖/‖Tₙ₋₁‖ ≈ $(round(ρmax; sigdigits=3)) > 0.9 at " *
+              "$(length(slow)) of $nω frequencies (the spectral radius of VΠ₀): the Neumann " *
+              "series converges slowly or diverges there, and the Wynn estimates with " *
+              "K_max = $K_max can be off by tens of %. Use a larger K_max or the Dyson " *
+              "solve (get_rpa_susceptibility, get_rpa_susceptibility_column)."
+    end
     return chi_partial, chi_wynn
 end
 

@@ -55,7 +55,8 @@ export get_scf
 export chern_marker, get_thouless_pump, get_valley_operator, valley_chern_marker,
        winding_marker
 # RPA response
-export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_wynn
+export get_bubble_mpo, get_rpa_susceptibility, get_rpa_susceptibility_column,
+       get_rpa_susceptibility_wynn
 # Non-Hermitian models and spectra
 export add_nh_nonreciprocal_hopping!, add_nh_onsite!, add_nh_skin_hopping!,
        nh_spectral_function, nh_spectrum_grid

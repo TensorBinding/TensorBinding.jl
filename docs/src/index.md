@@ -57,7 +57,8 @@ functions need CUDA.jl to be loaded (see the README).
 - Mean-field self-consistency: `get_scf`
 - Topology: `chern_marker`, `get_thouless_pump`, `get_valley_operator`,
   `valley_chern_marker`, `winding_marker`
-- RPA response: `get_bubble_mpo`, `get_rpa_susceptibility`, `get_rpa_susceptibility_wynn`
+- RPA response: `get_bubble_mpo`, `get_rpa_susceptibility`,
+  `get_rpa_susceptibility_column`, `get_rpa_susceptibility_wynn`
 - Non-Hermitian models and spectra: `add_nh_nonreciprocal_hopping!`, `add_nh_onsite!`,
   `add_nh_skin_hopping!`, `nh_spectral_function`, `nh_spectrum_grid`
 - Excitons: `get_exciton_bands`, `get_exciton_continuum`, `get_exciton_ldos_cv`,
