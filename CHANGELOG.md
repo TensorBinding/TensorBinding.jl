@@ -45,15 +45,21 @@ bugs without breaking the API.
   susceptibility, from (I − Π₀V)x = Π₀|j⟩ on the L sites of Π₀ instead of the whole χ
   on the 2L-site vectorized register; `j` is a basis state (a position for position-only
   sites) or any MPS. The bubble keywords and defaults are those of
-  `get_rpa_susceptibility`, whose column it returns; the solve defaults are tighter
-  (`rpa_nsweeps = 40`, `rpa_cutoff = 1e-12`), which costs little on L sites. On a
-  256-site half-filled chain up to U = 0.999 U_c (condition number 10³) it gave χ_jj to
-  1e-7–2e-6 and the column to 3e-6 in about a second, against minutes for the whole χ.
+  `get_rpa_susceptibility`, whose column it returns, with the broadening and the Fermi
+  energy also under their ASCII names `eta` and `fermi`; the solve defaults are tighter
+  (`rpa_nsweeps = 40`, `rpa_cutoff = 1e-12`), which costs little on L sites, and Π₀V is
+  built at `min(rpa_cutoff, 1e-14)`. On a 256-site half-filled chain up to
+  U = 0.999 U_c (condition number 10³) the Dyson solve gave χ_jj to 1e-7 or better and
+  the column to 1e-6 in 1–4 s, against minutes for the whole χ. The bubble is computed
+  at each call, as in `get_rpa_susceptibility`.
 - **The Wynn-accelerated RPA warns near the instability**: the three Wynn drivers
-  estimate the spectral radius ρ of VΠ₀ from ‖Tₙ‖/‖Tₙ₋₁‖ of the Neumann terms and warn
-  when it exceeds 0.9. There the series converges slowly or diverges, and the default
-  `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from U ≈ 0.6 U_c
-  at finite ω and η). The returned values are unchanged.
+  estimate the spectral radius ρ of VΠ₀ from (‖T_K‖/‖T_{K−2}‖)^½ of the last Neumann
+  terms and warn when the series converges slowly or diverges (ρ ≳ 0.9), where the
+  default `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from
+  U ≈ 0.6 U_c at finite ω and η). The estimate is from below (1–6 % low at K = 6,
+  25–40 % at K = 2), so the threshold is 0.85 for `K_max ≥ 4` and 0.6 for 2 and 3;
+  `K_max < 2` has nothing to estimate from, and no check. The returned values are
+  unchanged.
 
 ### Changed
 
@@ -113,7 +119,8 @@ bugs without breaking the API.
   ends are lost again, with the warning: local quantities on such systems are for the
   correction vectors. Results up to 2^10 sites are unchanged, and `cutoff = 1e-8`
   restores the old behaviour at any size; `get_bubble_mpo` and the RPA drivers pass
-  their own `krylov_cutoff = 1e-8`, unchanged. The random part of the start (next
+  their own `krylov_cutoff = 1e-8`, unchanged (`krylov_cutoff = nothing` selects the
+  new default, on the doubled register of D² states). The random part of the start (next
   entry), which the truncated sum dropped beyond ~2^33 sites, is added by a direct sum
   beyond 2^30.
 - **`get_green_krylov` starts from a random state** (keywords `start` and `rng`). The
@@ -130,7 +137,13 @@ bugs without breaking the API.
   so results do not depend on the global RNG. The first sweep runs at the bond dimension
   of the start (up to ~100), which costs the most when G has a small one: on these
   chains a solve takes up to 30× longer (30 s instead of 1 s for a clean 2^8-site chain
-  at η = 0.03). `start=:identity` restores the old start; `x0_mpo` is unchanged. Regenerated golden cases: `krylov_green_raw`, `krylov_green_tbhamiltonian`
+  at η = 0.03). `start=:identity` restores the old start; `x0_mpo` is unchanged. The
+  bubble with `GF_method = :krylov` (`get_bubble_mpo` and every RPA driver built on it)
+  solves for its Green's function this way, so its results moved too and its solves
+  cost more; `krylov_start = :identity` restores the old start there, and
+  `krylov_residual_warn` (default `0.1`, `Inf` to skip) is the threshold of the
+  residual check of that solve. Regenerated golden cases: `krylov_green_raw`,
+  `krylov_green_tbhamiltonian`
   and `krylov_green_ishermitian_flag` of `test/data/dynamics_golden.jl` (moved by ~1e-14:
   those small chains had converged), and the five Krylov cases of
   `test/data/rpa_golden.jl` (`bubble_cplx_krylov` and the four `*_fwd_krylov_mcweeny_tol`

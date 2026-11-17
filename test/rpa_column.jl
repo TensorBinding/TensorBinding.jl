@@ -34,7 +34,7 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
         col = χx * dvec(bj, s)
         r = @test_logs _rpa_column_solve(Π, V, s, bj; nsweeps=40, maxdim=400, cutoff=1e-12,
                                          residual_warn=1e-2, return_info=true)
-        @test norm(dvec(r.chi, s) - col) / norm(col) < 1e-5
+        @test norm(dvec(r.chi, s) - col) / norm(col) < 1e-9
         @test r.residual < 1e-3
     end
 
@@ -44,10 +44,16 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
                                       return_info=true)
     @test r0.residual == 0 && norm(r0.chi) == 0
 
-    # The Wynn series warns where it converges slowly (‖Tₙ‖/‖Tₙ₋₁‖ ≈ ρ(VΠ₀) > 0.9).
+    # The Wynn series warns where it converges slowly: (‖T_K‖/‖T_{K−2}‖)^½ estimates
+    # ρ(VΠ₀) from below, 1–6 % low at K = 6 and 25–40 % low at K = 2, with a threshold for
+    # each. K_max < 2 has no ratio to take, and no check.
     @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=6)
     @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(
         [Π], 0.999Uc * MPO(s, "Id"); K_max=6)
+    @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=2)
+    @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(
+        [Π], 0.999Uc * MPO(s, "Id"); K_max=2)
+    @test_logs rpa_wynn_from_bubbles([Π], 0.999Uc * MPO(s, "Id"); K_max=1)
 
     # Through the bubble: column j of get_rpa_susceptibility's χ, on a 4-site chain with
     # the exact occupied-state projector cached (so the bubble itself is exact).
@@ -58,13 +64,42 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
     sc = Hc.sites
     kw = (; GF_method=:krylov, η=0.2, krylov_nsweeps=10, krylov_maxdim=64,
             krylov_cutoff=1e-12, cutoff=1e-12, maxdim=64)
-    V  = +(0.5 * MPO(sc, "Id"), 0.2 * MPO(sc, ["Z", "Id"]); cutoff=1e-14)
+    # A non-symmetric V, so that χ ≠ χᵀ and a column is told from a row (with a diagonal V
+    # and the symmetric Π₀ of a real chain, χ is symmetric and a transposed solve passes).
+    V  = mpo_of(0.5I + 0.2 * [0 1 0 0; 0 0 0 0; 0.3 0 0 1; 0 0 0 0], sc)
     χ  = dmat(custom_mpo(get_rpa_susceptibility(Hc, V, 0.3; kw..., rpa_nsweeps=6,
                                                 rpa_maxdim=64, rpa_cutoff=1e-12), sc), sc)
+    @test norm(χ - transpose(χ)) / norm(χ) > 0.01
     for jj in (1, 3)
-        x = get_rpa_susceptibility_column(Hc, V, 0.3, jj; kw...)
-        @test dvec(x, sc) ≈ χ * dvec(_basis_state_mps(jj - 1, sc), sc) rtol=1e-8
+        ej = dvec(_basis_state_mps(jj - 1, sc), sc)
+        x  = get_rpa_susceptibility_column(Hc, V, 0.3, jj; kw...)
+        @test dvec(x, sc) ≈ χ * ej rtol=1e-8
+        @test !isapprox(dvec(x, sc), transpose(χ) * ej; rtol=1e-3)
     end
+    # `j` as an MPS, return_info, and the ASCII names of the broadening and Fermi energy
+    b3 = _basis_state_mps(2, sc)
+    r3 = get_rpa_susceptibility_column(Hc, V, 0.3, b3; kw..., return_info=true)
+    @test dvec(r3.chi, sc) ≈ χ * dvec(b3, sc) rtol=1e-8
+    @test r3.residual < 1e-3 && r3.residual >= r3.residual_floor
+    kwa = Base.structdiff(kw, (; η=0))
+    xa  = get_rpa_susceptibility_column(Hc, V, 0.3, 3; kwa..., eta=0.2, fermi=0.0)
+    @test dvec(xa, sc) ≈ χ * dvec(b3, sc) rtol=1e-8
+    @test_throws ArgumentError get_rpa_susceptibility_column(Hc, V, 0.3, 3; kw..., eta=0.2)
+    @test_throws ArgumentError get_rpa_susceptibility_column(Hc, V, 0.3, 3; kw..., fermi=0.0,
+                                                             ϵF=0.0)
     @test_throws BoundsError get_rpa_susceptibility_column(Hc, V, 0.3, 5; kw...)
+    @test_throws BoundsError get_rpa_susceptibility_column(Hc, V, 0.3, 0; kw...)
     @test_throws ErrorException get_rpa_susceptibility_column(Hc, V, 0.3, 1; mode=:spin)
+
+    # The Krylov bubble takes the start and the residual threshold of get_green_krylov:
+    # the start of v0.2.1 is reachable, and the check can be silenced.
+    kwk = (; GF_method=:krylov, η=0.2, krylov_nsweeps=2, krylov_maxdim=4, cutoff=1e-12,
+             maxdim=64)
+    @test_logs (:warn, r"get_green_krylov: G is not converged") match_mode=:any get_bubble_mpo(
+        Hc, Hc, 0.3; kwk...)
+    Π1 = @test_logs get_bubble_mpo(Hc, Hc, 0.3; kwk..., krylov_residual_warn=Inf)
+    Π2 = @test_logs get_bubble_mpo(Hc, Hc, 0.3; kwk..., krylov_residual_warn=Inf,
+                                   krylov_start=:identity)
+    @test Π1 isa MPO && Π2 isa MPO
+    @test dmat(Π1, sc) != dmat(Π2, sc)
 end
