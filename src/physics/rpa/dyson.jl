@@ -53,6 +53,10 @@ maxlinkdim)` instead of vec(χ).
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=20, maxdim=400, cutoff=1e-8,
+                               # The default cutoff stays 1e-8 on purpose (0.2.2): its error
+                               # grows like κ·1e-5 near the instability (κ the condition number
+                               # of I − Π₀V) and the residual check warns there. A tighter default
+                               # would cost ~5× on every call and move every RPA result.
                                return_info::Bool=false, residual_warn::Real=1e-2)
     Id  = MPO(finalfinalsites, "Id")
     ΠV  = apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
@@ -136,6 +140,7 @@ function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
                                  mode::Symbol          = :charge,
                                  rpa_nsweeps::Int      = 20,
                                  rpa_maxdim::Int       = 400,
+                                 # 1e-8 on purpose, an accuracy floor: see rpa_from_bubble_diag.
                                  rpa_cutoff::Real      = 1e-8,
                                  rpa_residual_warn::Real = 1e-2,
                                  return_info::Bool     = false,
@@ -533,6 +538,7 @@ on the spin-projected sites (`H.sites` without the spin index), vectorized as in
 function get_magnon_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
                                    rpa_nsweeps::Int         = 20,
                                    rpa_maxdim::Int          = 400,
+                                   # 1e-8 on purpose, an accuracy floor: see rpa_from_bubble_diag.
                                    rpa_cutoff::Real         = 1e-8,
                                    rpa_residual_warn::Real  = 1e-2,
                                    return_info::Bool        = false,

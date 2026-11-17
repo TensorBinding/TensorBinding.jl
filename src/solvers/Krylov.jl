@@ -211,6 +211,12 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
                           η::Real                    = 1e-2,
                           nsweeps::Int               = 12,
                           maxdim::Int                = 100,
+                          # The default cutoff stays 1e-8 on purpose (0.2.2). It is relative to
+                          # ‖|G⟩⟩‖², so it is size-blind and sets the accuracy floor of G: 1e-6–2e-4
+                          # on an open impurity chain of 2^10 sites, up to 5e-4 at 2^12, which the
+                          # residual check reports. Pass cutoff = 1e-12 when G must be better
+                          # (1e-11–1e-6 there, at up to 2.5× the time) and read the residual with
+                          # return_info = true. A tighter default would move every result.
                           cutoff::Real               = 1e-8,
                           x0_mpo::Union{MPO,Nothing} = nothing,
                           start::Symbol              = :random,
@@ -375,6 +381,7 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
                           η::Real                    = 1e-2,
                           nsweeps::Int               = 12,
                           maxdim::Int                = 100,
+                          # 1e-8 on purpose, an accuracy floor: see the MPO method above.
                           cutoff::Real               = 1e-8,
                           x0_mpo::Union{MPO,Nothing} = nothing,
                           start::Symbol              = :random,
