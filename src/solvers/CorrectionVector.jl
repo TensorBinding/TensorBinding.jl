@@ -30,8 +30,10 @@ function _cv_krylov_seed(Hm::MPO, b::MPS, K::Int; maxdim::Int, cutoff::Real)
     acc = (1.0 + 0.0im) * b
     v   = b
     for _ in 1:K
-        v   = apply(Hm, v; maxdim, cutoff)
-        v   = v / norm(v)
+        v  = apply(Hm, v; maxdim, cutoff)
+        nv = norm(v)
+        nv > 0 || break                               # Hᵏb = 0 (a decoupled site): nothing to add
+        v   = v / nv
         acc = +(acc, v; maxdim, cutoff)
     end
     return acc
@@ -55,6 +57,9 @@ end
 # x ← x + 0.3‖x‖/‖r‖·r, r = (z − H)x − b (as an MPS), with 3 sweeps each, keeping the
 # best x. A two-site sweep can stop on a wrong vector that looks converged in G; the
 # residual shows it, and the expansion moves x out of the tangent space it is stuck in.
+# The residual is the upper bound of _linsolve_residual (never below its rounding floor,
+# exact where the floor would leave the comparison with rtol open); NaN, with
+# converged = false, when its contraction is too large to run.
 function _cv_point(Hm::MPO, b::MPS, x::MPS, z::Complex; nsweeps::Int, gtol::Real,
                    rtol::Real, rounds::Int, kw...)
     G = complex(NaN)
@@ -66,21 +71,24 @@ function _cv_point(Hm::MPO, b::MPS, x::MPS, z::Complex; nsweeps::Int, gtol::Real
         (n >= 2 && abs(Gn - G) <= gtol * abs(Gn)) && (G = Gn; break)
         G = Gn
     end
-    res = _linsolve_residual(Hm, b, x, z, -1.0)
+    info = _linsolve_residual(Hm, b, x, z, -1.0; threshold = rtol)
+    res  = info.residual
+    info.method === :skipped && _residual_skipped_info("get_correction_vector", x, Hm,
+        "It is reported as residual = NaN, converged = false.")
     k = 0
     while k < rounds && res > rtol
         k += 1
-        md = 2 * kw[:maxdim]
+        md = kw[:maxdim] > typemax(Int) ÷ 2 ? typemax(Int) : 2 * kw[:maxdim]
         r  = +(z * x, -1.0 * apply(Hm, x; cutoff = kw[:cutoff], maxdim = md), -1.0 * b;
                cutoff = kw[:cutoff], maxdim = md)
         x1 = +(x, (0.3 * norm(x) / norm(r)) * r; cutoff = kw[:cutoff], maxdim = md)
         x1 = _cv_sweeps(Hm, b, x1, z; nsweeps = 3, kw...)
         n += 3
-        r1 = _linsolve_residual(Hm, b, x1, z, -1.0)
-        r1 < res && ((x, res) = (x1, r1))
+        i1 = _linsolve_residual(Hm, b, x1, z, -1.0; threshold = rtol)
+        i1.residual < res && ((x, info, res) = (x1, i1, i1.residual))
     end
-    return (; G = inner(b, x), x, residual = res, converged = res <= rtol,
-              maxlinkdim = maxlinkdim(x), sweeps = n, rounds = k)
+    return (; G = inner(b, x), x, residual = res, residual_floor = info.floor,
+              converged = res <= rtol, maxlinkdim = maxlinkdim(x), sweeps = n, rounds = k)
 end
 
 function _cv_check_solver(Hm::MPO, solver::Symbol, fname::String)
@@ -100,7 +108,7 @@ end
                           solver=:gmres, maxdim=400, cutoff=1e-12, nsweeps=12,
                           gtol=1e-6, rtol=0.02, rounds=3, seed_krylov=40,
                           seed_maxdim=64, tol=1e-10, krylovdim=30, maxiter=30)
-        -> (; G, x, residual, converged, maxlinkdim, sweeps, rounds)
+        -> (; G, x, residual, residual_floor, converged, maxlinkdim, sweeps, rounds)
 
 The correction vector `x = (ω + iη − H)⁻¹|b⟩` of the probe `|b⟩` and
 `G = ⟨b|x⟩ = ⟨b|(ω + iη − H)⁻¹|b⟩`, the resolvent projected on the probe, with η =
@@ -121,10 +129,20 @@ until `|ΔG| ≤ gtol·|G|` (at least 2, at most `nsweeps`), from
   `seed_maxdim`. From the probe alone, a product state, the two-site sweeps stall on
   two-particle (interleaved) registers and return a wrong `x` that looks converged.
 
-Then the relative residual `‖(ω + iη − H)x − b‖/‖b‖` (exact inner products). Above
-`rtol`, up to `rounds` residual expansions `x ← x + 0.3‖x‖/‖r‖·r` with 3 sweeps each,
-keeping the best `x`. `converged = residual ≤ rtol`: when `false`, `G` is not to be
-trusted (raise `maxdim`, or warm-start).
+Then the relative residual `‖(ω + iη − H)x − b‖/‖b‖`. Above `rtol`, up to `rounds`
+residual expansions `x ← x + 0.3‖x‖/‖r‖·r` with 3 sweeps each, keeping the best `x`.
+`converged = residual ≤ rtol`: when `false`, `G` is not to be trusted (raise `maxdim`,
+or warm-start).
+
+The residual comes from inner products whose terms cancel to about
+`1e-7·(|ω| + ‖H‖)·‖x‖/‖b‖`, a rounding floor that grows as 1/η (and with a constant
+energy offset in `H`). `residual` is an upper bound that includes this floor
+(`residual_floor`); where the floor would leave the comparison with `rtol` open
+(η ≲ 1e-5 on a level, or an offset of 10³ at η = 1e-4) the residual is evaluated
+exactly instead, from the direct sum of its terms. The truncation sets a second
+floor, about `√cutoff·‖x‖/‖b‖`: at small η, `rtol` is reachable only with
+`cutoff ≲ (rtol·η)²`. Where the contraction of the check would hold more than 2^27
+numbers it is skipped with a message: `residual = NaN`, `converged = false`.
 
 `eta_path`: broadenings solved first, in order, each warm-starting the next and the
 last one `eta` (continuation in η at fixed ω). At small η a cold start can fail where
@@ -138,8 +156,8 @@ a path from a larger η converges, provided its first step converges.
 - `tol`, `krylovdim`, `maxiter`: of the local solver (GMRES restarts `maxiter`; MINRES
   takes `maxiter·krylovdim` products).
 
-Returns `x` and `G`, the residual, `converged`, the bond dimension of `x`, and the
-numbers of sweeps and expansion rounds.
+Returns `x` and `G`, the residual and its rounding floor, `converged`, the bond
+dimension of `x`, and the numbers of sweeps and expansion rounds.
 
 ```julia
 b = TensorBinding.probe_state(H, 17)                # site 17
@@ -203,7 +221,7 @@ function _cv_ldos_result(Gs, ress, χs, rtol, fname)
     G   = sum(Gs)
     res = reduce((a, b) -> max.(a, b), ress)
     χ   = reduce((a, b) -> max.(a, b), χs)
-    bad = count(>(rtol), res)
+    bad = count(r -> !(r <= rtol), res)               # a NaN residual counts
     bad > 0 && @warn "$fname: $bad of $(length(res)) frequencies not converged " *
                      "(residual > rtol = $rtol): raise maxdim or nsweeps, or use eta_path"
     return (; ldos = -imag.(G) ./ π, G, residual = res, converged = res .<= rtol,

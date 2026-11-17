@@ -38,6 +38,12 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
         @test r.residual < 1e-3
     end
 
+    # Π₀|j⟩ = 0: x = 0 with residual 0, and no warning (it was 0.89, "not converged")
+    r0 = @test_logs _rpa_column_solve(0.0 * Π, 0.3Uc * MPO(s, "Id"), s, bj; nsweeps=40,
+                                      maxdim=400, cutoff=1e-12, residual_warn=1e-2,
+                                      return_info=true)
+    @test r0.residual == 0 && norm(r0.chi) == 0
+
     # The Wynn series warns where it converges slowly (‖Tₙ‖/‖Tₙ₋₁‖ ≈ ρ(VΠ₀) > 0.9).
     @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=6)
     @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(

@@ -163,14 +163,109 @@ function _hermiticity_defect(H::MPO)
 end
 
 
-# ‖(a0 + a1·A)x − b‖ / ‖b‖ from exact inner products, with no MPO–MPS product. The
-# terms cancel to ~√eps of the largest one, so values below ~1e-7 are noise.
-function _linsolve_residual(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number)
+# The residual check holds the environment of ⟨Ax|Ax⟩ times one site: χ²w²d numbers
+# (χ, w the bond dimensions of x and A). Above this many it is skipped: 2^27 ComplexF64
+# are 2 GiB, and the contraction holds two or three such arrays at a time. (A Ref, so
+# that the tests can reach the skipped branch on small systems.)
+const _RESIDUAL_MAX_ELEMENTS = Ref(2.0^27)
+# Largest bond dimension, (w + 1)χ + χ_b, of the direct sum the exact evaluation
+# orthogonalizes.
+const _RESIDUAL_EXACT_MAXDIM = 2000
+# Rounding of the two evaluations, in units of eps and of the scale
+# S = (|a0| + |a1|σ)²‖x‖² + ‖b‖², σ = ‖A‖_F/√D the rms singular value of A: ‖r‖² from the
+# inner products is known to ± FLOOR_FACTOR·eps·S (measured: up to 5.8·eps·S), ‖r‖ from
+# the direct sum to ± EXACT_FLOOR_FACTOR·eps·√S (measured: up to 37·eps·√S), over
+# correction vectors at η = 1e-2…1e-8, Green's functions and Dyson systems of condition
+# number up to 1e5 (examples/nontracked/fixes_checks/review_022/residual_floor.jl).
+const _RESIDUAL_FLOOR_FACTOR       = 32.0
+const _RESIDUAL_EXACT_FLOOR_FACTOR = 64.0
+
+# ⟨Ax|Ax⟩ contracted one tensor at a time (environment · x · A · A† · x†): χ³w²d + χ²w³d²
+# per site, where ITensorMPS's inner(A, x, A, x) joins A[j]·x[j] and its conjugate first,
+# χ³w³d. The environment holds χ²w² numbers either way. The bra copies get their own
+# link indices and their own copy of the site index A acts on.
+function _norm2_Ax(A::MPO, x::MPS)
+    xb = sim(linkinds, dag(x))
+    Ab = sim(linkinds, dag(A))
+    E  = ITensor(1.0)
+    for j in eachindex(x)
+        s  = commonind(A[j], x[j])
+        sb = sim(s)
+        E  = ((E * x[j]) * A[j]) * replaceind(Ab[j], s, sb)
+        E  = E * replaceind(xb[j], s, sb)
+    end
+    return real(scalar(E))
+end
+
+# ‖(a0 + a1·A)x − b‖ read off the orthogonality centre of the direct sum
+# a0·x ⊕ a1·Ax ⊕ (−b), with Ax the untruncated product: accurate to ~eps of the largest
+# term, where the inner products cancel to ~√eps of it. `nothing` when the sum cannot be
+# formed (a bond of x or b without a link index; A may lack some, as interleave_mpo's
+# output does) or would exceed _RESIDUAL_EXACT_MAXDIM.
+function _linsolve_residual_exact(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number)
+    n = length(x)
+    n >= 2 || return nothing
+    haslinks(ψ) = all(j -> linkind(ψ, j) !== nothing, 1:n-1)
+    (haslinks(x) && haslinks(b)) || return nothing
+    χ, w = maxlinkdim(x), maxlinkdim(A)
+    (iszero(a0) ? w * χ : (w + 1) * χ) + maxlinkdim(b) <= _RESIDUAL_EXACT_MAXDIM ||
+        return nothing
+    Ax = apply(A, x; alg = "naive", truncate = false)
+    r  = iszero(a0) ? +(a1 * Ax, -1 * b; alg = "directsum") :
+                      +(a0 * x, a1 * Ax, -1 * b; alg = "directsum")
+    orthogonalize!(r, 1)
+    return norm(r[1])
+end
+
+# The relative residual ‖(a0 + a1·A)x − b‖/‖b‖ of a linsolve result, as
+# (; residual, floor, method).
+#
+# method = :inner: from exact inner products, with no MPO–MPS product,
+#     ‖r‖² = |a0|²⟨x|x⟩ + |a1|²⟨Ax|Ax⟩ + ⟨b|b⟩ + 2Re(ā0 a1⟨x|A|x⟩) − 2Re(ā0⟨x|b⟩) − 2Re(a1⟨b|A|x⟩).
+#   The terms cancel, and so do the products inside ⟨Ax|Ax⟩ where Ax is small next to
+#   ‖A‖‖x‖ (an ill-conditioned A): ‖r‖² is known to ± f² = _RESIDUAL_FLOOR_FACTOR·eps·S
+#   only, S = (|a0| + |a1|σ)²‖x‖² + ‖b‖² with σ = ‖A‖_F/√D standing for ‖A‖. That is a
+#   rounding floor f/‖b‖ ≈ 1e-7·(|a0| + |a1|σ)‖x‖/‖b‖, which grows with ‖x‖: as 1/η for a
+#   resolvent, with a constant energy offset in A, with the condition number of a Dyson
+#   solve. `residual` is the upper bound √(max(‖r‖², 0) + f²)/‖b‖, never below the floor:
+#   a converged solve reads as its floor, not as 0, and noise cannot pass for a small
+#   residual.
+# method = :exact: when the floor leaves the comparison with `threshold` open (the
+#   threshold lies between the lower and the upper bound), from the direct sum
+#   (_linsolve_residual_exact), where it is affordable; `floor` is then ~eps-sized.
+# method = :skipped: the contraction would hold more than _RESIDUAL_MAX_ELEMENTS numbers;
+#   `residual` and `floor` are NaN.
+function _linsolve_residual(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number;
+                            threshold::Real = Inf)
+    Float64(maxlinkdim(x))^2 * Float64(maxlinkdim(A))^2 * maximum(dim, siteinds(x)) >
+        _RESIDUAL_MAX_ELEMENTS[] && return (; residual = NaN, floor = NaN, method = :skipped)
     nb2 = real(inner(b, b))
-    r2  = abs2(a0) * real(inner(x, x)) + abs2(a1) * real(inner(A, x, A, x)) + nb2 +
-          2real(conj(a0) * a1 * inner(x', A, x)) - 2real(conj(a0) * inner(x, b)) -
-          2real(conj(a1) * conj(inner(b', A, x)))
-    return sqrt(max(r2, 0.0) / nb2)
+    nx2 = real(inner(x, x))
+    bAx = inner(b', A, x)
+    r2  = abs2(a1) * _norm2_Ax(A, x) + nb2 - 2real(a1 * bAx)
+    iszero(a0) || (r2 += abs2(a0) * nx2 + 2real(conj(a0) * a1 * inner(x', A, x)) -
+                         2real(conj(a0) * inner(x, b)))
+    r2  = max(r2, 0.0)
+    σ   = sqrt(real(inner(A, A)) / _site_space_dim(siteinds(x)))
+    S   = (abs(a0) + abs(a1) * σ)^2 * nx2 + nb2
+    f2  = _RESIDUAL_FLOOR_FACTOR * eps(Float64) * S
+    if isfinite(threshold) && r2 - f2 <= threshold^2 * nb2 < r2 + f2
+        rx = _linsolve_residual_exact(A, b, x, a0, a1)
+        rx === nothing ||
+            return (; residual = rx / sqrt(nb2), method = :exact,
+                      floor = _RESIDUAL_EXACT_FLOOR_FACTOR * eps(Float64) * sqrt(S / nb2))
+    end
+    return (; residual = sqrt((r2 + f2) / nb2), floor = sqrt(f2 / nb2), method = :inner)
+end
+
+# One line, once per session and function, when the residual check was skipped; `then`
+# says what the caller does about it.
+function _residual_skipped_info(fname::AbstractString, x::MPS, A::MPO, then::AbstractString)
+    @info "$fname: the residual check was skipped: at bond dimensions " *
+          "$(maxlinkdim(x)) (solution) and $(maxlinkdim(A)) (operator) its contraction " *
+          "would hold more than 2^27 numbers (2 GiB) at a time. $then" maxlog=1 _id=Symbol(
+          fname, :_residual_skipped)
+    return nothing
 end
 
 
@@ -280,13 +375,21 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
     G = custom_mpo(sol, sites)
     (return_info || isfinite(residual_warn)) || return G
 
-    res = _linsolve_residual(A, rhs, sol, a0, a1)
-    verbose && println("  relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ = $res")
-    res > residual_warn &&
-        @warn "get_green_krylov: G is not converged: relative residual " *
-              "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Raise maxdim " *
-              "or nsweeps, or lower cutoff (maxlinkdim reached: $(maxlinkdim(sol)))." ω_phys η
-    return return_info ? (; G, residual = res, maxlinkdim = maxlinkdim(sol)) : G
+    info = _linsolve_residual(A, rhs, sol, a0, a1; threshold = residual_warn)
+    res  = info.residual
+    if info.method === :skipped
+        isfinite(residual_warn) &&
+            _residual_skipped_info("get_green_krylov", sol, A,
+                "G is returned unchecked; residual_warn = Inf silences this.")
+    else
+        verbose && println("  relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ = $res")
+        res <= residual_warn ||
+            @warn "get_green_krylov: G is not converged: relative residual " *
+                  "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Raise maxdim " *
+                  "or nsweeps, or lower cutoff (maxlinkdim reached: $(maxlinkdim(sol)))." ω_phys η
+    end
+    return return_info ? (; G, residual = res, residual_floor = info.floor,
+                            maxlinkdim = maxlinkdim(sol)) : G
 end
 
 
@@ -349,13 +452,18 @@ unscaled — no KPM Chebyshev expansion required.
                   residual). Default `1e-10`.
 - `maxiter`     : Maximum Krylov iterations per site (GMRES restarts). Default `600`.
 - `krylovdim`   : Krylov subspace dimension. Default `30`.
-- `return_info` : Return `(; G, residual, maxlinkdim)` instead of the MPO `G`.
-                  Default `false`.
+- `return_info` : Return `(; G, residual, residual_floor, maxlinkdim)` instead of
+                  the MPO `G`. Default `false`.
 - `residual_warn`: Warn when the relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the
                   solve exceeds this value: G is then not converged (`maxdim`,
-                  `nsweeps` or `cutoff` too coarse). The residual comes from exact
-                  inner products; values below ~1e-7 are rounding noise. `Inf`
-                  skips its computation unless `return_info=true`. Default `1e-2`.
+                  `nsweeps` or `cutoff` too coarse). The residual comes from inner
+                  products, whose terms cancel: `residual` is an upper bound that
+                  includes the rounding floor of that evaluation (`residual_floor`,
+                  a few 1e-7 here), so a converged solve reads as its floor, not 0.
+                  The check costs about one sweep or less, and is skipped with a
+                  message when its contraction would hold more than 2^27 numbers
+                  (`residual` is then `NaN`). `Inf` skips its computation unless
+                  `return_info=true`. Default `1e-2`.
 - `verbose`     : Print progress messages (with MINRES, also the number of local
                   solves and products) and the residual. Default `false`.
 

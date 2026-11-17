@@ -18,31 +18,15 @@ bugs without breaking the API.
   `maxiter · krylovdim` products per local solve (the GMRES one); a non-Hermitian H
   throws an `ArgumentError` (checked from ‖H − H†‖/‖H‖). With `solver=:minres` no
   z·I − H is formed: z goes into `linsolve`'s coefficients.
-- **`get_green_krylov` checks its residual**: the relative residual
-  ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the solve (from exact inner products) is computed after the
-  sweeps, and a warning says that G is not converged when it exceeds `residual_warn`
-  (default `1e-2`; `Inf` skips the check). `return_info=true` returns
-  `(; G, residual, maxlinkdim)` instead of the MPO. On the chains of the next entry and
-  on 16×16 square lattices the residual was 1–5 times the relative error of G, down to
-  its noise floor of ~1e-7.
-- **The RPA Dyson solve checks its residual**: `rpa_from_bubble_diag` computes the
-  relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ and warns above `residual_warn` (default
-  `1e-2`); `return_info=true` returns `(; chi, residual, maxlinkdim)`.
-  `get_rpa_susceptibility` and `get_magnon_susceptibility` pass `rpa_residual_warn` and
-  `return_info` to it. Near the RPA instability the truncation limits χ to about
-  κ·1e-5 at the default `cutoff = 1e-8` (κ the condition number of I − Π₀V): on a
-  32-site half-filled chain at U = 0.999 U_c (κ = 10³) χ is off by 5e-3 with a residual
-  of 5e-2, so the check warns; `rpa_cutoff = 1e-12` gives 1e-7. The default cutoff is
-  unchanged.
 - **Correction vectors** (`src/solvers/CorrectionVector.jl`, a new section of the
   Solvers page): the resolvent of one probe state, x = (ω + iη − H)⁻¹|b⟩ and
   G = ⟨b|x⟩, at a resolution set by η rather than by a number of KPM moments.
-  - `get_correction_vector(H, b, ω; eta, …)` returns `(; G, x, residual, converged,
-    maxlinkdim, sweeps, rounds)`. It starts from a Krylov seed b + Σₖ Hᵏb (from the
-    probe alone the two-site sweeps can stall on two-particle registers), sweeps until
-    G stops moving, checks the residual and, above `rtol` (0.02), expands x along the
-    residual for up to `rounds` rounds. `x0` warm-starts it, `eta_path` continues in η,
-    and `solver=:minres` uses the MINRES updater.
+  - `get_correction_vector(H, b, ω; eta, …)` returns `(; G, x, residual,
+    residual_floor, converged, maxlinkdim, sweeps, rounds)`. It starts from a Krylov
+    seed b + Σₖ Hᵏb (from the probe alone the two-site sweeps can stall on two-particle
+    registers), sweeps until G stops moving, checks the residual and, above `rtol`
+    (0.02), expands x along the residual for up to `rounds` rounds. `x0` warm-starts
+    it, `eta_path` continues in η, and `solver=:minres` uses the MINRES updater.
   - `get_ldos_cv(H, X, ω_vals; eta, …)` and `get_exciton_ldos_cv(H, X, ω_vals; eta, …)`:
     the LDOS of a site or of the exciton contact probe |X, X⟩ along a frequency grid,
     each point warm-started from the previous one, as `(; ldos, G, residual, converged,
@@ -68,6 +52,35 @@ bugs without breaking the API.
 
 ### Changed
 
+- **`get_green_krylov` checks its residual**, on by default: the relative residual
+  ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the solve is computed after the sweeps, and a warning says
+  that G is not converged when it exceeds `residual_warn` (default `1e-2`).
+  `return_info=true` returns `(; G, residual, residual_floor, maxlinkdim)` instead of
+  the MPO. The check costs about one sweep or less; `residual_warn = Inf` skips it. On
+  the chains of the "random state" entry below and on 16×16 square lattices the residual
+  was 1–5 times the relative error of G.
+- **The RPA Dyson solve checks its residual**, on by default: `rpa_from_bubble_diag`
+  computes the relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ and warns above `residual_warn`
+  (default `1e-2`); `return_info=true` returns `(; chi, residual, residual_floor,
+  maxlinkdim)`. `get_rpa_susceptibility` and `get_magnon_susceptibility` pass
+  `rpa_residual_warn` and `return_info` to it. Near the RPA instability the truncation
+  limits χ to about κ·1e-5 at the default `cutoff = 1e-8` (κ the condition number of
+  I − Π₀V): on a 32-site half-filled chain at U = 0.999 U_c (κ = 10³) χ is off by 5e-3
+  with a residual of 3e-2, so the check warns; `rpa_cutoff = 1e-12` gives 1e-7. The
+  default cutoff is unchanged. The check contracts ⟨Aχ|Aχ⟩ once, χ³w² + χ²w³ operations
+  per site for bond dimensions χ of vec(χ) and w of I − Π₀V: less than a sweep for a
+  low-rank Π₀V, more for a high-rank one; `rpa_residual_warn = Inf` skips it. A bubble
+  Π₀ = 0 returns χ = 0 with residual 0.
+- **How these residuals are evaluated** (and those of the correction vectors): from
+  inner products, with ⟨Ax|Ax⟩ contracted one tensor at a time. Their terms cancel, so
+  the value is an upper bound that includes the rounding floor of the evaluation, about
+  1e-7·‖A‖‖x‖/‖b‖ (returned as `residual_floor`): a converged solve reads as its floor,
+  not as 0, and rounding noise cannot pass for a small residual. Where the floor leaves
+  the comparison with the threshold open (a correction vector at η ≲ 1e-5 on a level, a
+  constant energy offset of 10³ in H) the residual is evaluated exactly, from the direct
+  sum of its terms. A check whose contraction would hold more than 2^27 numbers (bond
+  dimensions χ of the solution and w of the operator with χ²w² > 6.7e7) is skipped with
+  one `@info` and reports `residual = NaN`.
 - **Dependencies:** ITensorMPS 0.3.26 to 0.3.44 (was 0.3.16 to 0.3.44). The MINRES
   solver and the correction vectors pass their own local solver to ITensorMPS's
   `linsolve`, and the suite was run at 0.3.26 and 0.3.44 only. The cap below 0.3.45

@@ -46,10 +46,15 @@ sites, started from vec(Π₀).
 Near the RPA instability I − Π₀V is nearly singular and the truncation at `cutoff`
 limits the accuracy: on a 32-site half-filled chain with V = U·1 at U = 0.999 U_c
 (condition number 10³) the default `cutoff = 1e-8` gives χ to 5e-3, `1e-12` to 1e-7.
-The relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ of the solve (exact inner products) is
-checked: above `residual_warn` (default `1e-2`; `Inf` skips the check) a warning
-suggests a smaller `cutoff`. `return_info=true` returns `(; chi, residual,
-maxlinkdim)` instead of vec(χ).
+The relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ of the solve is checked, for Π₀V as
+truncated at `cutoff`: above `residual_warn` (default `1e-2`) a warning suggests a
+smaller `cutoff`. `return_info=true` returns `(; chi, residual, residual_floor,
+maxlinkdim)` instead of vec(χ); `residual` is an upper bound that includes the
+rounding floor of its evaluation (`residual_floor`, about 1e-7 times the condition
+number). The check contracts ⟨Aχ|Aχ⟩ once, at χ³w² + χ²w³ operations per site for bond
+dimensions χ of vec(χ) and w of I − Π₀V: less than a sweep while w is small, more for a
+high-rank Π₀V. It is skipped, with a message and `residual = NaN`, when it would hold
+more than 2^27 numbers (χ²w² > 6.7e7); `residual_warn = Inf` skips it altogether.
 """
 function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
                                nsweeps=20, maxdim=400, cutoff=1e-8,
@@ -70,18 +75,30 @@ function rpa_from_bubble_diag(Π, MPOV, finalsites, finalfinalsites;
     Aop = interleave_mpo(A, finalsites, 1)
     b   = _vec_mps_from_mpo(Π, finalsites)
 
+    # Π₀ = 0: χ = 0, and a residual relative to ‖Π₀‖ is undefined.
+    iszero(norm(b)) &&
+        return return_info ? (; chi = b, residual = 0.0, residual_floor = 0.0,
+                                maxlinkdim = maxlinkdim(b)) : b
+
     x0 = deepcopy(b)
     χ  = ITensorMPS.linsolve(Aop, b, x0;
                              nsweeps=nsweeps, maxdim=maxdim, cutoff=cutoff)
     (return_info || isfinite(residual_warn)) || return χ
 
-    res = _linsolve_residual(Aop, b, χ, 0.0, 1.0)
-    res > residual_warn &&
-        @warn "rpa_from_bubble_diag: the Dyson solve is not converged: relative residual " *
-              "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Close to the RPA " *
-              "instability lower `cutoff` (`rpa_cutoff`), e.g. to 1e-12; else raise " *
-              "`nsweeps` or `maxdim` (maxlinkdim reached: $(maxlinkdim(χ)))."
-    return return_info ? (; chi = χ, residual = res, maxlinkdim = maxlinkdim(χ)) : χ
+    info = _linsolve_residual(Aop, b, χ, 0.0, 1.0; threshold = residual_warn)
+    res  = info.residual
+    if info.method === :skipped
+        isfinite(residual_warn) && _residual_skipped_info("rpa_from_bubble_diag", χ, Aop,
+            "χ is returned unchecked; residual_warn = Inf (rpa_residual_warn) silences this.")
+    else
+        res <= residual_warn ||
+            @warn "rpa_from_bubble_diag: the Dyson solve is not converged: relative residual " *
+                  "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Close to the RPA " *
+                  "instability lower `cutoff` (`rpa_cutoff`), e.g. to 1e-12; else raise " *
+                  "`nsweeps` or `maxdim` (maxlinkdim reached: $(maxlinkdim(χ)))."
+    end
+    return return_info ? (; chi = χ, residual = res, residual_floor = info.floor,
+                            maxlinkdim = maxlinkdim(χ)) : χ
 end
 
 
@@ -199,15 +216,26 @@ function _rpa_column_solve(Π::MPO, MPOV::MPO, sites, b::MPS; nsweeps::Int, maxd
                            cutoff::Real, residual_warn::Real, return_info::Bool)
     A   = MPO(sites, "Id") - apply(Π, MPOV; maxdim=maxdim, cutoff=cutoff)
     rhs = apply(Π, b; maxdim=maxdim, cutoff=min(cutoff, 1e-14))
+    # Π₀|b⟩ = 0: x = 0, and a residual relative to ‖Π₀|b⟩‖ is undefined.
+    iszero(norm(rhs)) &&
+        return return_info ? (; chi = rhs, residual = 0.0, residual_floor = 0.0,
+                                maxlinkdim = maxlinkdim(rhs)) : rhs
     x   = ITensorMPS.linsolve(A, rhs, deepcopy(rhs); nsweeps, maxdim, cutoff)
     (return_info || isfinite(residual_warn)) || return x
-    res = _linsolve_residual(A, rhs, x, 0.0, 1.0)
-    res > residual_warn &&
-        @warn "get_rpa_susceptibility_column: the Dyson solve is not converged: relative " *
-              "residual $(round(res; sigdigits=2)) > rpa_residual_warn = $residual_warn. " *
-              "Lower `rpa_cutoff` or raise `rpa_nsweeps` / `rpa_maxdim` (maxlinkdim " *
-              "reached: $(maxlinkdim(x)))."
-    return return_info ? (; chi = x, residual = res, maxlinkdim = maxlinkdim(x)) : x
+    info = _linsolve_residual(A, rhs, x, 0.0, 1.0; threshold = residual_warn)
+    res  = info.residual
+    if info.method === :skipped
+        isfinite(residual_warn) && _residual_skipped_info("get_rpa_susceptibility_column", x, A,
+            "The column is returned unchecked; rpa_residual_warn = Inf silences this.")
+    else
+        res <= residual_warn ||
+            @warn "get_rpa_susceptibility_column: the Dyson solve is not converged: relative " *
+                  "residual $(round(res; sigdigits=2)) > rpa_residual_warn = $residual_warn. " *
+                  "Lower `rpa_cutoff` or raise `rpa_nsweeps` / `rpa_maxdim` (maxlinkdim " *
+                  "reached: $(maxlinkdim(x)))."
+    end
+    return return_info ? (; chi = x, residual = res, residual_floor = info.floor,
+                            maxlinkdim = maxlinkdim(x)) : x
 end
 
 """

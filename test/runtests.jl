@@ -111,6 +111,7 @@ include("kbonacci.jl")
 include("kpm_moment_columns.jl")
 include("gpu_mps_ldos.jl")
 include("krylov_minres.jl")
+include("linsolve_residual.jl")
 include("correction_vector.jl")
 include("rpa_column.jl")
 

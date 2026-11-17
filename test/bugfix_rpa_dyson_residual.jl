@@ -45,4 +45,7 @@ using TensorBinding: get_Hamiltonian, rpa_from_bubble_diag, custom_mpo, _rpa_pai
     @test r.residual < 1e-3 && relerr(r, χx) < 1e-5
     # the default return is vec(χ) as before; residual_warn = Inf skips the check
     @test (@test_logs rpa_from_bubble_diag(Π, V, fs, s; residual_warn=Inf)) isa MPS
+    # Π₀ = 0: χ = 0 with residual 0 (it was NaN), and no warning
+    r0 = @test_logs rpa_from_bubble_diag(0.0 * Π, V, fs, s; return_info=true)
+    @test r0.residual == 0 && norm(r0.chi) == 0
 end
