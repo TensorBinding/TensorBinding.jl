@@ -17,7 +17,7 @@ TensorCrossInterpolation = "b261b2ec-6378-4871-b32e-9173bb050604"
 
 [compat]
 FFTW = "1"
-ITensorMPS = "0.3.16 - 0.3.44"
+ITensorMPS = "0.3.26 - 0.3.44"
 ITensors = "0.9"
 NDTensors = "0.4"
 Quantics = "0.4"

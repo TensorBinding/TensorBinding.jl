@@ -66,6 +66,13 @@ bugs without breaking the API.
   `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from U ≈ 0.6 U_c
   at finite ω and η). The returned values are unchanged.
 
+### Changed
+
+- **Dependencies:** ITensorMPS 0.3.26 to 0.3.44 (was 0.3.16 to 0.3.44). The MINRES
+  solver and the correction vectors pass their own local solver to ITensorMPS's
+  `linsolve`, and the suite was run at 0.3.26 and 0.3.44 only. The cap below 0.3.45
+  stays (see 0.2.0).
+
 ### Changed results
 
 - **`get_green_krylov` starts from a random state** (keywords `start` and `rng`). The
