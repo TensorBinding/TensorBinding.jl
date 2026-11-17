@@ -12,7 +12,7 @@
 #   refine_bound_state
 # Depends on: solvers/Krylov.jl (_minres_updater, _linsolve_residual,
 #   _hermiticity_defect), core/AuxDOF.jl (probe_state, _aux_projection,
-#   _probe_sectors), physics/TwoParticle.jl (mpsexciton), core/TBSystem.jl.
+#   _probe_sectors), core/Utils.jl (mpsexciton), core/TBSystem.jl.
 
 
 # ============================================================
@@ -154,7 +154,9 @@ a path from a larger η converges, provided its first step converges.
 - `maxdim`, `cutoff`: truncation of `x`. The default cutoff `1e-12` is tighter than
   elsewhere: the bound-state part of `x` grows as 1/η and the rest is small next to it.
 - `tol`, `krylovdim`, `maxiter`: of the local solver (GMRES restarts `maxiter`; MINRES
-  takes `maxiter·krylovdim` products).
+  takes `maxiter·krylovdim` products). `maxiter` is 30 here, 900 products per local
+  solve, where `get_green_krylov` has 600: a local solve that stops short is taken up
+  by the next sweep, and the residual shows what is left.
 
 Returns `x` and `G`, the residual and its rounding floor, `converged`, the bond
 dimension of `x`, and the numbers of sweeps and expansion rounds.
@@ -203,7 +205,11 @@ end
 # ============================================================
 
 # Correction vectors of one probe along ω_vals, each warm-started from the previous x.
-function _cv_scan(Hm::MPO, b::MPS, ω_vals, eta::Real; kwargs...)
+function _cv_scan(Hm::MPO, b::MPS, ω_vals, eta::Real, fname::String; kwargs...)
+    # a splatted x0 would replace the warm start at every frequency
+    haskey(kwargs, :x0) && throw(ArgumentError(
+        "$fname: `x0` is not a keyword of the scan, which warm-starts each frequency " *
+        "from the one before; use get_correction_vector for a single start"))
     n   = length(ω_vals)
     G   = zeros(ComplexF64, n)
     res = zeros(Float64, n)
@@ -225,23 +231,33 @@ function _cv_ldos_result(Gs, ress, χs, rtol, fname)
     bad > 0 && @warn "$fname: $bad of $(length(res)) frequencies not converged " *
                      "(residual > rtol = $rtol): raise maxdim or nsweeps, or use eta_path"
     return (; ldos = -imag.(G) ./ π, G, residual = res, converged = res .<= rtol,
-              maxlinkdim = χ)
+              maxlinkdims = χ)
 end
 
+# The result of a one-frequency scan as scalars.
+_cv_ldos_scalar(r) = (; ldos = r.ldos[1], G = r.G[1], residual = r.residual[1],
+                        converged = r.converged[1], maxlinkdim = r.maxlinkdims[1])
+
 """
-    get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals; eta=1e-2, <projection keywords>,
-                <get_correction_vector keywords>)
+    get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector; eta=1e-2,
+                <projection keywords>, <get_correction_vector keywords>)
+        -> (; ldos, G, residual, converged, maxlinkdims)
+    get_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; …)
         -> (; ldos, G, residual, converged, maxlinkdim)
 
 The local density of states at position `X` (1-indexed in `1:H.N`) from correction
 vectors: `ldos[i] = −Im⟨X|(ω_i + iη − H)⁻¹|X⟩/π`, a Lorentzian of width `eta` around
 each level, per unit **physical** energy (one state integrates to 1). The KPM
 functions return the density per unit rescaled energy times `1/π` (Solvers page,
-Conventions): `get_ldos_online(…) · π/H.scale` is in the units of `ldos` here.
+Conventions): with their default kernel, `get_ldos_online(…) · π/H.scale` is in the
+units of `ldos` here (with `kernel = :hodc`, which is normalised to 1, the factor is
+`1/H.scale`).
 
 The frequencies are solved in the given order, each correction vector warm-starting
 the next (only the first is seeded), so a fine grid is cheaper per point than a coarse
-one. Each point keeps its residual; a warning counts the points above `rtol`.
+one. Each point keeps its residual; a warning counts the points above `rtol`. The
+result holds one entry per frequency (`maxlinkdims`: the bond dimension of each
+correction vector); a single frequency `ω::Real` returns scalars.
 
 On an exciton Hamiltonian (two-particle register) the probe is the contact state
 |X, X⟩, as in `get_exciton_ldos_cv`. Auxiliary degrees of freedom are summed or
@@ -249,7 +265,7 @@ selected with the keywords of `get_ldos_online` (`spin_proj`, `proj_s`, `nambu_p
 `proj_nambu`, `layer_proj`, `proj_layer`, `sublat_proj`, `proj_sl`), one scan per
 sector. Every other keyword goes to `get_correction_vector`.
 """
-function get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
+function get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector{<:Real};
                      eta::Real         = 1e-2,
                      rtol::Real        = 0.02,
                      nambu_proj::Bool  = false,
@@ -266,28 +282,35 @@ function get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
                              layer_proj, proj_layer, sublat_proj, proj_sl)
     Gs = Vector{ComplexF64}[]; ress = Vector{Float64}[]; χs = Vector{Int}[]
     for σ in _probe_sectors(aux)
-        G, res, χ = _cv_scan(H.mpo, probe_state(H, X, σ), ω_vals, eta; rtol, kwargs...)
+        G, res, χ = _cv_scan(H.mpo, probe_state(H, X, σ), ω_vals, eta, "get_ldos_cv";
+                             rtol, kwargs...)
         push!(Gs, G); push!(ress, res); push!(χs, χ)
     end
     return _cv_ldos_result(Gs, ress, χs, rtol, "get_ldos_cv")
 end
 
+get_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; kwargs...) =
+    _cv_ldos_scalar(get_ldos_cv(H, X, [ω]; kwargs...))
+
 """
-    get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals; eta=1e-2,
+    get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector; eta=1e-2,
                         <get_correction_vector keywords>)
+        -> (; ldos, G, residual, converged, maxlinkdims)
+    get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; …)
         -> (; ldos, G, residual, converged, maxlinkdim)
 
 The exciton LDOS at the contact probe |X, X⟩ (electron and hole on position `X`,
 1-indexed in `1:H.N`; `mpsexciton`, the probe of `get_exciton_ldos`) from correction
 vectors, in the units and with the scan of `get_ldos_cv`: per unit physical energy,
-`ldos = −Im G/π`; `get_exciton_ldos(…) · π/H.scale` is in the same units.
+`ldos = −Im G/π`; with its default kernel, `get_exciton_ldos(…) · π/H.scale` is in the
+same units. A single frequency `ω::Real` returns scalars.
 
 The bound-exciton peaks of a contact probe are where correction vectors pay most: `x`
 stays at a small bond dimension down to small η, where KPM-MPS needs moments beyond
 its truncation floor. In the two-particle continuum `x` spreads and its bond
 dimension grows; check `converged`.
 """
-function get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
+function get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector{<:Real};
                              eta::Real  = 1e-2,
                              rtol::Real = 0.02,
                              kwargs...)
@@ -295,9 +318,13 @@ function get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
     length(H.sites) == 2 * H.L ||
         throw(ArgumentError("get_exciton_ldos_cv: H is not an exciton Hamiltonian " *
                             "(2L interleaved electron-hole sites); use get_ldos_cv"))
-    G, res, χ = _cv_scan(H.mpo, mpsexciton(X, H.sites), ω_vals, eta; rtol, kwargs...)
+    G, res, χ = _cv_scan(H.mpo, mpsexciton(X, H.sites), ω_vals, eta, "get_exciton_ldos_cv";
+                         rtol, kwargs...)
     return _cv_ldos_result([G], [res], [χ], rtol, "get_exciton_ldos_cv")
 end
+
+get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; kwargs...) =
+    _cv_ldos_scalar(get_exciton_ldos_cv(H, X, [ω]; kwargs...))
 
 
 # ============================================================
@@ -307,7 +334,7 @@ end
 """
     refine_bound_state(H, b::MPS, ω0; eta_steps=(0.05, 0.01, 1e-3, 1e-4), x0=nothing,
                        <get_correction_vector keywords>)
-        -> (; energy, weight, x, residual, converged, history)
+        -> (; energy, weight, x, residual, energy_step, converged, history)
 
 The energy `E` and the probe weight `w = |⟨ψ|b⟩|²/⟨b|b⟩` of an isolated eigenstate
 `ψ` near `ω0`, by Rayleigh-quotient iteration on the correction vector: for each η of
@@ -319,14 +346,30 @@ peak, which a spectrum at finite η only broadens. The other levels enter at ord
 accuracy: with the default 1e-4 and Δ of order one, E to ~1e-8.
 
 Start `ω0` within the peak's width at the first η (a coarse scan with `get_ldos_cv`
-at η ≈ 0.1–0.2 finds it). A level that is not isolated at the last η (another state
-within it) gives a mixed quotient; the history shows it as an energy that keeps
-moving. `history` holds `(; eta, omega, energy, weight, residual)` per step.
+at η ≈ 0.1–0.2 finds it). `history` holds `(; eta, omega, energy, weight, residual)`
+per step, and `energy_step` is the last move of the energy, `|E − ω|` of the last
+step.
+
+`converged` is `true` when the last correction vector is converged (its residual) and
+the energy has stopped moving: `energy_step` is at most the η of the step before the
+last, which holds once the level is resolved at that η. In a continuum the quotient
+keeps drifting from step to step and `converged` is `false`. Two levels closer than
+the last η are not told apart, and nothing shows it: the history looks like that of
+one level, `energy` is their weighted mean and `weight` the sum of their weights.
+Lower the last η below the splitting you need to resolve.
+
+The broadenings are those of `eta_steps` (`eta` is not a keyword here); every other
+keyword goes to `get_correction_vector`.
 """
 function refine_bound_state(H::Union{TBHamiltonian,MPO}, b::MPS, ω0::Real;
                             eta_steps = (0.05, 0.01, 1e-3, 1e-4),
                             x0::Union{MPS,Nothing} = nothing,
                             kwargs...)
+    isempty(eta_steps) &&
+        throw(ArgumentError("refine_bound_state: eta_steps is empty"))
+    # a splatted eta would win over the one of each step, at every step
+    haskey(kwargs, :eta) && throw(ArgumentError(
+        "refine_bound_state: `eta` is not a keyword here; the broadenings are eta_steps"))
     Hm = _cv_mpo(H)
     nb = real(inner(b, b))
     ω  = Float64(ω0)
@@ -343,6 +386,10 @@ function refine_bound_state(H::Union{TBHamiltonian,MPO}, b::MPS, ω0::Real;
         ω = E
     end
     last = history[end]
+    # The energy has stopped moving when its last step is within the η before the last
+    # (the only η for a single step): for an isolated level the step is ~η²/Δ.
+    energy_step = abs(last.energy - last.omega)
+    η_before    = history[max(end - 1, 1)].eta
     return (; energy = last.energy, weight = last.weight, x, residual = last.residual,
-              converged = r.converged, history)
+              energy_step, converged = r.converged && energy_step <= η_before, history)
 end

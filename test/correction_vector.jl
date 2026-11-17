@@ -1,7 +1,7 @@
 using TensorBinding, ITensors, ITensorMPS, LinearAlgebra, Logging, Test
-using TensorBinding: get_Hamiltonian, add_onsite!, exciton_hamiltonian, probe_state,
-                     mpsexciton, get_correction_vector, get_ldos_cv, get_exciton_ldos_cv,
-                     refine_bound_state
+using TensorBinding: get_Hamiltonian, add_onsite!, add_spin!, exciton_hamiltonian,
+                     probe_state, mpsexciton, get_correction_vector, get_ldos_cv,
+                     get_exciton_ldos_cv, get_ldos_online, refine_bound_state
 
 # Correction vectors x = (ω + iη − H)⁻¹|b⟩ against dense resolvents: a site of a chain, the
 # contact probe of an exciton, the residual check, and the Rayleigh-quotient refinement
@@ -31,11 +31,18 @@ using TensorBinding: get_Hamiltonian, add_onsite!, exciton_hamiltonian, probe_st
     r = get_correction_vector(H, b, -2.8; eta=1e-3, eta_path=(0.1, 0.01))
     @test r.G ≈ gref(Hd, bv, -2.8 + 1e-3im) rtol=1e-6
 
-    # the LDOS scan: −Im G/π per unit physical energy
+    # the LDOS scan: −Im G/π per unit physical energy, one entry per frequency
     ωs = range(-3.0, 3.0; length=7)
     res = get_ldos_cv(H, 20, ωs; eta=0.05)
     @test all(res.converged)
     @test res.ldos ≈ [-imag(gref(Hd, bv, ω + 0.05im)) / π for ω in ωs] rtol=1e-6
+    @test res.maxlinkdims isa Vector{Int} && length(res.maxlinkdims) == 7
+    # a single frequency returns scalars
+    one = get_ldos_cv(H, 20, 0.3; eta=0.05)
+    @test one.ldos isa Float64 && one.converged isa Bool && one.maxlinkdim isa Int
+    @test one.ldos ≈ -imag(gref(Hd, bv, 0.3 + 0.05im)) / π rtol=1e-6
+    # the scan warm-starts each frequency itself: x0 is refused, not silently reused
+    @test_throws ArgumentError get_ldos_cv(H, 20, ωs; eta=0.05, x0=b)
 
     # a forced failure (maxdim 2) is flagged, and the scan warns
     bad = get_correction_vector(H, b, 0.3; eta=0.05, maxdim=2, seed_maxdim=2, rounds=1)
@@ -49,6 +56,34 @@ using TensorBinding: get_Hamiltonian, add_onsite!, exciton_hamiltonian, probe_st
     rb = refine_bound_state(H, b, -2.7)
     @test rb.energy ≈ F.values[k] atol=1e-8
     @test rb.weight ≈ abs2(dot(F.vectors[:, k], bv)) rtol=1e-6
+    @test rb.converged && rb.energy_step < 1e-5
+    # in the continuum the quotient keeps moving, and `converged` says so although the
+    # last linear solve is converged
+    rc = refine_bound_state(H, b, 0.3)
+    @test !rc.converged && rc.residual < 0.02
+    @test rc.energy_step > 1e-3
+    # the broadenings are eta_steps: a stray `eta` would override every step
+    @test_throws ArgumentError refine_bound_state(H, b, -2.7; eta=1e-2)
+    @test_throws ArgumentError refine_bound_state(H, b, -2.7; eta_steps=())
+
+    # Units: per unit physical energy, one state integrates to 1; the KPM LDOS times
+    # π/H.scale is in the same units (16-site chain, both sum rules on one grid).
+    H4 = get_Hamiltonian("chain_1d", 1.0; L=4)
+    ωg = range(-6.0, 6.0; length=121)
+    dω = step(ωg)
+    cv = get_ldos_cv(H4, 5, ωg; eta=0.3)
+    @test all(cv.converged)
+    @test sum(cv.ldos) * dω ≈ 1 atol=0.06              # Lorentzian tails beyond ±6
+    kpm = get_ldos_online(H4, 60, 5, ωg)
+    @test sum(kpm) * dω * π / H4.scale ≈ 1 atol=0.02
+
+    # Auxiliary sites: on a spinful chain the default sums the two spin sectors, and a
+    # projection selects one.
+    Hs = get_Hamiltonian("chain_1d", 1.0; L=4)
+    add_spin!(Hs)
+    ref = get_ldos_cv(H4, 5, 0.4; eta=0.2).ldos
+    @test get_ldos_cv(Hs, 5, 0.4; eta=0.2).ldos ≈ 2ref rtol=1e-6
+    @test get_ldos_cv(Hs, 5, 0.4; eta=0.2, spin_proj=true, proj_s=1).ldos ≈ ref rtol=1e-6
 
     # Exciton: contact probe |X, X⟩ on a 16-site chain (4 qubits per particle, 8
     # interleaved), attractive contact U = 2: a bound exciton below the continuum.
@@ -61,6 +96,7 @@ using TensorBinding: get_Hamiltonian, add_onsite!, exciton_hamiltonian, probe_st
     re = get_exciton_ldos_cv(He, X, ωe; eta=0.05)
     @test all(re.converged)
     @test re.ldos ≈ [-imag(gref(Hed, bev, ω + 0.05im)) / π for ω in ωe] rtol=1e-6
+    @test get_exciton_ldos_cv(He, X, ωe[2]; eta=0.05).ldos ≈ re.ldos[2] rtol=1e-6
     # get_ldos_cv on an exciton Hamiltonian uses the same contact probe
     @test get_ldos_cv(He, X, ωe; eta=0.05).ldos ≈ re.ldos rtol=1e-8
     @test_throws ArgumentError get_exciton_ldos_cv(H, 3, [0.0])

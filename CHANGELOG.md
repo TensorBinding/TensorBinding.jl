@@ -30,12 +30,17 @@ bugs without breaking the API.
   - `get_ldos_cv(H, X, ω_vals; eta, …)` and `get_exciton_ldos_cv(H, X, ω_vals; eta, …)`:
     the LDOS of a site or of the exciton contact probe |X, X⟩ along a frequency grid,
     each point warm-started from the previous one, as `(; ldos, G, residual, converged,
-    maxlinkdim)` in physical units (`ldos = −Im G/π`, one state integrates to 1;
-    `get_ldos_online(…) · π/H.scale` is in the same units). `get_ldos_cv` takes the
-    auxiliary projections of `get_ldos_online`.
+    maxlinkdims)` with one entry per frequency, in physical units (`ldos = −Im G/π`,
+    one state integrates to 1; with the default KPM kernel,
+    `get_ldos_online(…) · π/H.scale` is in the same units). A single frequency
+    `ω::Real` returns scalars (`maxlinkdim` for the bond dimension). `get_ldos_cv`
+    takes the auxiliary projections of `get_ldos_online`.
   - `refine_bound_state(H, b, ω0; eta_steps, …)`: the energy and probe weight of an
     isolated level by Rayleigh-quotient iteration on the correction vector, to ~η² of
-    the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`).
+    the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`). `converged` asks for
+    a converged last solve and an energy that has stopped moving (`energy_step`, the
+    last move, within the η before the last): in a continuum it is `false`. Two levels
+    closer than the last η are not told apart (their mean energy, their summed weight).
 - **`get_rpa_susceptibility_column(H, MPOV, ω, j; …)`**: one column x = χ|j⟩ of the RPA
   susceptibility, from (I − Π₀V)x = Π₀|j⟩ on the L sites of Π₀ instead of the whole χ
   on the 2L-site vectorized register; `j` is a basis state (a position for position-only

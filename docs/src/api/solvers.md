@@ -51,7 +51,8 @@ energy and weight of an isolated level. When to use which route:
   and impurity lattices, ω outside the band).
 
 The correction-vector LDOS is per unit physical energy (one state integrates to 1);
-`get_ldos_online(…) · π/H.scale` is in the same units.
+with the default KPM kernel, `get_ldos_online(…) · π/H.scale` is in the same units
+(`1/H.scale` with `kernel = :hodc`, which is normalised to 1).
 
 ```@autodocs
 Modules = [TensorBinding]
