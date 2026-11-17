@@ -52,13 +52,18 @@ bugs without breaking the API.
 
 ### Changed
 
-- **`get_green_krylov` checks its residual**, on by default: the relative residual
-  ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the solve is computed after the sweeps, and a warning says
-  that G is not converged when it exceeds `residual_warn` (default `1e-2`).
-  `return_info=true` returns `(; G, residual, residual_floor, maxlinkdim)` instead of
-  the MPO. The check costs about one sweep or less; `residual_warn = Inf` skips it. On
-  the chains of the "random state" entry below and on 16×16 square lattices the residual
-  was 1–5 times the relative error of G.
+- **`get_green_krylov` checks its residual**, on by default: after the sweeps the
+  residual ‖G(z − H) − 1‖_F is computed, and a warning says that G is not converged when
+  it exceeds `residual_warn` (default `0.1`). `return_info=true` returns
+  `(; G, residual, residual_abs, residual_floor, maxlinkdim)` instead of the MPO:
+  `residual_abs` is that residual and `residual` = `residual_abs`/√D the one relative
+  to ‖|I⟩⟩‖ = √D, for D sites. The warning is on the absolute one because it bounds the
+  residual of every row of G, where the relative one is the root mean square over the
+  D rows and cannot show a wrong row on a large system (8e-4 for a 2^20-site chain whose
+  two end rows are bulk rows, 50 % off). Against dense inverses at 2^10 and 2^12 sites
+  the absolute residual was 1–8 times the relative error of the worst row, so the
+  threshold flags rows that are off by a few % or more. The check costs about one sweep
+  or less; `residual_warn = Inf` skips it.
 - **The RPA Dyson solve checks its residual**, on by default: `rpa_from_bubble_diag`
   computes the relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ and warns above `residual_warn`
   (default `1e-2`); `return_info=true` returns `(; chi, residual, residual_floor,
@@ -88,6 +93,24 @@ bugs without breaking the API.
 
 ### Changed results
 
+- **`get_green_krylov`: the default cutoff scales with the system beyond 2^10 sites.**
+  `cutoff` now defaults to `nothing`: `1e-8` up to 2^10 sites, as before, and
+  `1e-8·2^10/D` beyond for D sites, never below `1e-14`. The cutoff of the sweeps is
+  relative to ‖|G⟩⟩‖², which grows as D, so a fixed `1e-8` weighed D times more next to
+  one row of G and truncated away what sets that row apart from the others: an impurity
+  site was 2.6 % off from 2^14 sites, and from 2^20 the end rows of a clean open chain
+  came back as bulk rows (G_11 50 % off), with a relative residual of 8e-4. With the
+  new default, open chains of 2^14–2^30 sites, clean and with an impurity, gave the
+  chain ends, the middle bond and the impurity site to 4e-6 or better, for ω in and
+  outside the band, in the same time. Beyond 2^30 sites the floor binds: the same
+  elements to 1e-4 at 2^34–2^36 (0.3–2 % at a band edge, with the warning), and from
+  about 2^38 sites a single row is below double precision next to ‖|G⟩⟩‖², so the chain
+  ends are lost again, with the warning: local quantities on such systems are for the
+  correction vectors. Results up to 2^10 sites are unchanged, and `cutoff = 1e-8`
+  restores the old behaviour at any size; `get_bubble_mpo` and the RPA drivers pass
+  their own `krylov_cutoff = 1e-8`, unchanged. The random part of the start (next
+  entry), which the truncated sum dropped beyond ~2^33 sites, is added by a direct sum
+  beyond 2^30.
 - **`get_green_krylov` starts from a random state** (keywords `start` and `rng`). The
   start was |I⟩⟩ with its bonds enlarged by a 2-vector global Krylov expansion, and the
   two-site sweeps keep the rank their start spans: on a short-ranged G they stopped on the

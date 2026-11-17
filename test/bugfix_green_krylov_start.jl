@@ -6,7 +6,8 @@ using TensorBinding: get_Hamiltonian, add_onsite!, get_green_krylov
 # the band) of a chain with an impurity, the default settings returned the G without the
 # impurity's correction, 9 % off, with nothing to show it. The default start is now
 # |I⟩⟩ + 0.1·(random MPS, χ 8) with an 8-vector expansion, and the residual of the solve is
-# checked: above `residual_warn` (1e-2) a warning says that G is not converged.
+# checked: when ‖G(z − H) − 1‖_F exceeds `residual_warn` (0.1) a warning says that G is not
+# converged (bugfix_green_krylov_size.jl has the large-system side of the check).
 @testset "get_green_krylov: random start and residual check" begin
     dmat(M, s) = (D = prod(dim.(s)); reshape(Array(prod(M), prime.(s)..., s...), D, D))
     relerr(G, Gx, s) = norm(dmat(G, s) - Gx) / norm(Gx)
@@ -24,6 +25,7 @@ using TensorBinding: get_Hamiltonian, add_onsite!, get_green_krylov
                   H, ω; η, start=:identity, return_info=true)
         @test relerr(old.G, Gx, s) > 1e-2
         @test old.residual > 1e-2
+        @test old.residual_abs ≈ 8 * old.residual      # ‖|I⟩⟩‖ = √64
         # the new default start, with GMRES and with MINRES
         for solver in (:gmres, :minres)
             new = get_green_krylov(H, ω; η, solver, return_info=true)
@@ -32,11 +34,13 @@ using TensorBinding: get_Hamiltonian, add_onsite!, get_green_krylov
         end
     end
 
-    # The random start does not depend on the global RNG; `rng` changes it.
+    # The random start does not depend on the global RNG; `rng` changes it (another start,
+    # so another G within the accuracy of the solve).
     Random.seed!(1); G1 = get_green_krylov(H, 0.5; η=0.1)
     Random.seed!(2); G2 = get_green_krylov(H, 0.5; η=0.1)
     @test dmat(G1, s) ≈ dmat(G2, s) rtol=1e-12
     G3 = get_green_krylov(H, 0.5; η=0.1, rng=Random.Xoshiro(7))
+    @test dmat(G3, s) != dmat(G1, s)
     @test dmat(G3, s) ≈ inv((0.5 + 0.1im) * I - Hd) rtol=1e-6
 
     # residual_warn = Inf: no check, no warning, the plain MPO

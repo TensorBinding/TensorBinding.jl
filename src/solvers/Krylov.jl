@@ -276,21 +276,62 @@ end
 # :identity start they stalled on a short-ranged G (the bulk G without the end
 # corrections of an open chain; ω outside the band in 2D), wrong by 1e-3–0.2 with no
 # sign of it. The random part fills every bond, the expansion adds the directions of A.
+#
+# The weight of the random part is absolute: the random MPS has norm 1, a row of G a norm
+# of order 1, and |I⟩⟩ the norm √D (D the dimension of the site space). At 0.1 it is a
+# tenth of one row at every size, below what sets a row apart from the others. Scaled up
+# with √D (0.1·√D/64 was tried) it outweighs those rows: the ends of an open chain came
+# back as bulk rows from 2^20 sites. It must survive the truncations, though: next to
+# ‖|I⟩⟩‖² = D its weight is 0.01/D, above the default cutoff of the sweeps (1e-5/D beyond
+# 2^10 sites), but the sum |I⟩⟩ + 0.1·r at cutoff 1e-14 drops it from about 2^33 sites
+# (pure |I⟩⟩ at 2^36). Beyond 2^30 sites the sum is therefore a direct sum, which keeps
+# it; up to 2^30 it is the truncated sum, as before. From about 2^39 sites 0.01/D is
+# below the floor 1e-14 of the cutoff and the expansion drops it anyway: the start is
+# then |I⟩⟩, the sweeps stall, and the residual check says so (see _green_krylov_cutoff).
 function _green_krylov_start(rhs::MPS, A::MPO, sites2::Vector{<:Index}, start::Symbol,
-                             rng::AbstractRNG, cutoff::Real)
+                             rng::AbstractRNG, cutoff::Real, D::Real)
     start === :identity &&
         return ITensorMPS.expand(rhs, A; alg="global_krylov", krylovdim=2, cutoff=cutoff)
-    r = random_mps(rng, ComplexF64, sites2; linkdims=8)
-    return ITensorMPS.expand(+(rhs, 0.1 * r; cutoff=1e-14), A; alg="global_krylov",
-                             krylovdim=8, cutoff=cutoff)
+    r  = random_mps(rng, ComplexF64, sites2; linkdims=8)
+    x0 = D > 2.0^30 ? +(rhs, 0.1 * r; alg="directsum") : +(rhs, 0.1 * r; cutoff=1e-14)
+    return ITensorMPS.expand(x0, A; alg="global_krylov", krylovdim=8, cutoff=cutoff)
 end
+
+
+# The default cutoff of get_green_krylov on a site space of dimension D: 1e-8 up to 2^10
+# sites, as before, 1e-8·2^10/D beyond, and never below 1e-14. A cutoff is relative to
+# ‖|G⟩⟩‖² ∝ D, so a fixed one weighs D times more next to a single row of G as the system
+# grows, and what sets that row apart from the others (a chain end, an impurity) is
+# truncated away: at 1e-8 the end rows of a clean open chain came back as bulk rows from
+# 2^20 sites (G_11 50 % off) and an impurity site was 2.6 % off from 2^14. Scaled with
+# 1/D, the cutoff keeps the weight it has next to one row at 2^10 sites.
+#
+# The floor 1e-14 is that of double precision: below it the truncations of the start
+# (ITensorMPS.expand) cut nothing, and its bond dimensions and memory grew without bound
+# at 2^36 sites. It is reached at 2^30 sites; beyond, the cutoff weighs more and more
+# next to one row again (a row is 1/D of ‖|G⟩⟩‖²: 1.5e-11 at 2^36, 9e-13 at 2^40), which
+# the residual check reports.
+#
+# Measured at the default settings on open chains, clean and with one impurity (V = 2),
+# at ω = 2.3, 0.5 (η = 0.1), −2.05 (η = 0.05) and 1.0 (η = 0.03), against analytic
+# elements (examples/nontracked/fixes_checks/green_krylov_sizeaware_cutoff*.jl):
+#   2^14–2^30 sites: chain ends, middle bond (both directions) and impurity site to 4e-6
+#     or better; ‖G(z − H) − 1‖_F ≤ 4e-2; no warning.
+#   2^34, 2^36: the same elements to 1e-4, except the impurity chain at the band edge
+#     (0.3–2 %, ‖G(z − H) − 1‖_F = 0.10 and 0.19, with the warning).
+#   2^40: the chain ends are bulk rows (‖G(z − H) − 1‖_F = 0.9, with the warning).
+# Against the dense inverse at 2^10 and 2^12 sites, ‖G(z − H) − 1‖_F was 1–8 times the
+# relative error of the worst row. A looser 1e-8·2^13/D left rows 3 % off and diagonal
+# elements 1 % off at the band edge; tighter ones (down to 1e-8·2^3/D) did not lower
+# the worst rows reliably.
+_green_krylov_cutoff(D::Real) = max(1e-8 * min(1.0, 1024 / Float64(D)), 1e-14)
 
 
 """
     get_green_krylov(H_mpo::MPO, sites, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
-                     cutoff=1e-8, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
+                     cutoff=nothing, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
                      solver=:gmres, ishermitian=false, tol=1e-10, maxiter=600,
-                     krylovdim=30, return_info=false, residual_warn=1e-2,
+                     krylovdim=30, return_info=false, residual_warn=0.1,
                      verbose=false) -> MPO
 
 Low-level: compute the retarded Green's function G(ω) = (ω + iη − H)⁻¹ for a
@@ -306,13 +347,7 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
                           η::Real                    = 1e-2,
                           nsweeps::Int               = 12,
                           maxdim::Int                = 100,
-                          # The default cutoff stays 1e-8 on purpose (0.2.2). It is relative to
-                          # ‖|G⟩⟩‖², so it is size-blind and sets the accuracy floor of G: 1e-6–2e-4
-                          # on an open impurity chain of 2^10 sites, up to 5e-4 at 2^12, which the
-                          # residual check reports. Pass cutoff = 1e-12 when G must be better
-                          # (1e-11–1e-6 there, at up to 2.5× the time) and read the residual with
-                          # return_info = true. A tighter default would move every result.
-                          cutoff::Real               = 1e-8,
+                          cutoff::Union{Real,Nothing} = nothing,     # _green_krylov_cutoff
                           x0_mpo::Union{MPO,Nothing} = nothing,
                           start::Symbol              = :random,
                           rng::AbstractRNG           = Random.Xoshiro(1),
@@ -322,12 +357,14 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
                           maxiter::Int               = 600,
                           krylovdim::Int             = 30,
                           return_info::Bool          = false,
-                          residual_warn::Real        = 1e-2,
+                          residual_warn::Real        = 0.1,
                           verbose::Bool              = false)
     solver in (:gmres, :minres) ||
         throw(ArgumentError("get_green_krylov: solver must be :gmres or :minres, got :$solver"))
     start in (:random, :identity) ||
         throw(ArgumentError("get_green_krylov: start must be :random or :identity, got :$start"))
+    D      = _site_space_dim(sites)
+    cutoff = something(cutoff, _green_krylov_cutoff(D))
     N      = length(sites)
     sites2 = siteinds("Qubit", 2N)
     z      = ComplexF64(ω_phys + im * η)
@@ -348,7 +385,7 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
         ω_mpo = z * MPO(sites, "Id") - H_mpo
         A, a0, a1 = interleave_mpo(swapprime(ω_mpo, 0 => 1), sites2, 0), 0.0, 1.0
     end
-    x0 = isnothing(x0_mpo) ? _green_krylov_start(rhs, A, sites2, start, rng, cutoff) :
+    x0 = isnothing(x0_mpo) ? _green_krylov_start(rhs, A, sites2, start, rng, cutoff, D) :
                              _vec_mps_from_mpo(x0_mpo, sites2; cutoff=cutoff, maxdim=maxdim)
 
     verbose && println("Krylov GF: ω = $ω_phys + $(η)i  (N=$N, maxdim=$maxdim, nsweeps=$nsweeps",
@@ -375,29 +412,39 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
     G = custom_mpo(sol, sites)
     (return_info || isfinite(residual_warn)) || return G
 
-    info = _linsolve_residual(A, rhs, sol, a0, a1; threshold = residual_warn)
-    res  = info.residual
+    # ‖|I⟩⟩‖ = √D: the relative residual of the solve is the root mean square of the D row
+    # residuals ‖G_r(z − H) − e_r‖, so a wrong row costs it 1/√D and it cannot show one on
+    # a large system (a chain end returned as a bulk row: 8e-4 at 2^20 sites). The warning
+    # is on the absolute residual ‖G(z − H) − 1‖_F = √D × the relative one, which bounds
+    # the residual of every row.
+    nrhs = sqrt(D)
+    info = _linsolve_residual(A, rhs, sol, a0, a1; threshold = residual_warn / nrhs)
+    res, absres = info.residual, info.residual * nrhs
     if info.method === :skipped
         isfinite(residual_warn) &&
             _residual_skipped_info("get_green_krylov", sol, A,
                 "G is returned unchecked; residual_warn = Inf silences this.")
     else
-        verbose && println("  relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ = $res")
-        res <= residual_warn ||
-            @warn "get_green_krylov: G is not converged: relative residual " *
-                  "$(round(res; sigdigits=2)) > residual_warn = $residual_warn. Raise maxdim " *
-                  "or nsweeps, or lower cutoff (maxlinkdim reached: $(maxlinkdim(sol)))." ω_phys η
+        verbose && println("  residual ‖G(z − H) − 1‖_F = $absres (relative to ‖1‖_F: $res)")
+        absres <= residual_warn ||
+            @warn "get_green_krylov: G is not converged: ‖G(z − H) − 1‖_F = " *
+                  "$(round(absres; sigdigits=2)) > residual_warn = $residual_warn" *
+                  (info.floor * nrhs > residual_warn / 2 ?
+                   " (rounding floor of this residual: $(round(info.floor * nrhs; sigdigits=2)))" : "") *
+                  ". Some rows of G are off by about that much, relative to themselves: " *
+                  "lower cutoff, or raise maxdim or nsweeps (cutoff = $cutoff, maxlinkdim " *
+                  "reached: $(maxlinkdim(sol)))." ω_phys η
     end
-    return return_info ? (; G, residual = res, residual_floor = info.floor,
-                            maxlinkdim = maxlinkdim(sol)) : G
+    return return_info ? (; G, residual = res, residual_abs = absres,
+                            residual_floor = info.floor, maxlinkdim = maxlinkdim(sol)) : G
 end
 
 
 """
     get_green_krylov(H::TBHamiltonian, ω_phys; η=1e-2, nsweeps=12, maxdim=100,
-                     cutoff=1e-8, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
+                     cutoff=nothing, x0_mpo=nothing, start=:random, rng=Xoshiro(1),
                      solver=:gmres, ishermitian=false, tol=1e-10, maxiter=600,
-                     krylovdim=30, return_info=false, residual_warn=1e-2,
+                     krylovdim=30, return_info=false, residual_warn=0.1,
                      verbose=false) -> MPO
 
 Compute the retarded Green's function
@@ -417,19 +464,39 @@ unscaled — no KPM Chebyshev expansion required.
 - `η`           : Lorentzian broadening. Default `1e-2`.
 - `nsweeps`     : Number of DMRG sweeps for the linear solver. Default `12`.
 - `maxdim`      : Maximum bond dimension of the solution MPS. Default `100`.
-- `cutoff`      : SVD truncation cutoff, relative to ‖|G⟩⟩‖², which grows with the
-                  system. Default `1e-8`. It sets the accuracy floor of G, which the
-                  residual shows: on an open 2^10-site chain with one impurity the
-                  default leaves 1e-6–2e-4, `1e-12` 1e-11–1e-6.
+- `cutoff`      : SVD truncation cutoff of the sweeps, relative to ‖|G⟩⟩‖², which
+                  grows as the dimension D of the site space (the number of sites).
+                  Default `nothing`: `1e-8` up to 2^10 sites and `1e-8·2^10/D`
+                  beyond (never below `1e-14`), so that it weighs the same next to
+                  one row of G at every size. A fixed `1e-8` (the default up to
+                  v0.2.1, still available by passing it) truncates away what sets
+                  a row apart from the others on a large system: the end rows of
+                  a clean open chain came back as bulk rows from 2^20 sites.
+                  The cutoff sets the accuracy of G row by row. With the default,
+                  on open chains of 2^10–2^30 sites with one impurity, the chain
+                  ends, the middle bond and the impurity site were right to 4e-6
+                  or better and the rows with the largest error were off by a few
+                  1e-3 of their norm (‖G(z − H) − 1‖_F up to 4e-2). Beyond 2^30
+                  sites the floor `1e-14` binds and rows lose accuracy again:
+                  at 2^34–2^36 the same elements were right to 1e-4, or to
+                  0.3–2 % at a band edge, with the warning; from about 2^38
+                  sites a single row is below double precision next to
+                  ‖|G⟩⟩‖², and the ends of a chain come back as bulk rows, with
+                  the warning. For local quantities on such systems use the
+                  correction vectors (`get_ldos_cv`), which solve for one row.
 - `x0_mpo`      : Optional MPO initial guess for G(ω).  When provided it is
                   vectorized via `_vec_mps_from_mpo` and passed as `x0` to
                   `linsolve`, replacing the start chosen by `start`.
                   Typical use: pass a low-accuracy KPM Green's function to
-                  warm-start the Krylov iteration.  Default `nothing`.
+                  warm-start the Krylov iteration.  Default `nothing`. It is used
+                  as given, without the basis expansion of the two starts below:
+                  from a low-rank guess (a multiple of the identity) the sweeps
+                  stall as they do from `:identity`.
 - `start`       : The start of the sweeps when `x0_mpo` is not given.
                   `:random` (default since v0.2.2): |I⟩⟩ + 0.1·(a random MPS of
-                  bond dimension 8, drawn from `rng`), with its bonds enlarged by
-                  an 8-vector global Krylov expansion (`ITensorMPS.expand`).
+                  bond dimension 8 and norm 1, drawn from `rng`: a tenth of one
+                  row of G at every size), with its bonds enlarged by an
+                  8-vector global Krylov expansion (`ITensorMPS.expand`).
                   `:identity`: |I⟩⟩ with a 2-vector expansion, the start up to
                   v0.2.1, which stalls on a short-ranged G (an open chain's end
                   corrections, ω outside the band) and returns a G wrong by
@@ -440,7 +507,9 @@ unscaled — no KPM Chebyshev expansion required.
 - `solver`      : Local solver of the sweeps. `:gmres` (default): KrylovKit's
                   GMRES, restarted every `krylovdim` products. `:minres`: MINRES,
                   for Hermitian H only (an `ArgumentError` otherwise, from
-                  ‖H − H†‖/‖H‖). Each local problem (z − H_eff)x = b is a complex
+                  ‖H − H†‖/‖H‖ > 1e-6 in the Frobenius norm, which a non-Hermitian
+                  term on a single site passes beyond ~2^40 sites; the residual
+                  still shows a wrong G). Each local problem (z − H_eff)x = b is a complex
                   shift of a Hermitian matrix, which MINRES solves by a three-term
                   recurrence without restarts: the same G in fewer products, most
                   at small η, where restarted GMRES slows down. MINRES uses
@@ -452,18 +521,29 @@ unscaled — no KPM Chebyshev expansion required.
                   residual). Default `1e-10`.
 - `maxiter`     : Maximum Krylov iterations per site (GMRES restarts). Default `600`.
 - `krylovdim`   : Krylov subspace dimension. Default `30`.
-- `return_info` : Return `(; G, residual, residual_floor, maxlinkdim)` instead of
-                  the MPO `G`. Default `false`.
-- `residual_warn`: Warn when the relative residual ‖A|G⟩⟩ − |I⟩⟩‖/‖|I⟩⟩‖ of the
-                  solve exceeds this value: G is then not converged (`maxdim`,
-                  `nsweeps` or `cutoff` too coarse). The residual comes from inner
-                  products, whose terms cancel: `residual` is an upper bound that
-                  includes the rounding floor of that evaluation (`residual_floor`,
-                  a few 1e-7 here), so a converged solve reads as its floor, not 0.
-                  The check costs about one sweep or less, and is skipped with a
+- `return_info` : Return `(; G, residual, residual_abs, residual_floor, maxlinkdim)`
+                  instead of the MPO `G`: `residual_abs` = ‖G(z − H) − 1‖_F, and
+                  `residual` = `residual_abs`/√D, the residual of the solve
+                  relative to ‖|I⟩⟩‖ = √D. Default `false`.
+- `residual_warn`: Warn when the residual ‖G(z − H) − 1‖_F exceeds this value: G is
+                  then not converged (`cutoff`, `maxdim` or `nsweeps` too coarse).
+                  This residual bounds that of every row, ‖G_r(z − H) − e_r‖, and
+                  on open chains with an impurity it was 1–8 times the relative
+                  error of the worst row of G: the default `0.1` flags rows that
+                  are off by a few % or more (the bulk rows returned for the ends
+                  of a long chain give 0.9), where the default settings leave up
+                  to 4e-2. The relative residual cannot do that: it is the root
+                  mean square over the D rows, 8e-4 for those wrong end rows at
+                  2^20 sites. The residual comes from inner products whose terms
+                  cancel: it is an upper bound that includes the rounding floor
+                  of that evaluation (`residual_floor`, a few 1e-7 relative, i.e.
+                  times √D for the absolute one), so a converged solve reads as
+                  its floor, not 0; beyond ~2^32 sites, where that floor nears
+                  the threshold, the residual is evaluated exactly instead. The
+                  check costs about one sweep or less, and is skipped with a
                   message when its contraction would hold more than 2^27 numbers
-                  (`residual` is then `NaN`). `Inf` skips its computation unless
-                  `return_info=true`. Default `1e-2`.
+                  (the residuals are then `NaN`). `Inf` skips its computation
+                  unless `return_info=true`. Default `0.1`.
 - `verbose`     : Print progress messages (with MINRES, also the number of local
                   solves and products) and the residual. Default `false`.
 
@@ -489,8 +569,7 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
                           η::Real                    = 1e-2,
                           nsweeps::Int               = 12,
                           maxdim::Int                = 100,
-                          # 1e-8 on purpose, an accuracy floor: see the MPO method above.
-                          cutoff::Real               = 1e-8,
+                          cutoff::Union{Real,Nothing} = nothing,
                           x0_mpo::Union{MPO,Nothing} = nothing,
                           start::Symbol              = :random,
                           rng::AbstractRNG           = Random.Xoshiro(1),
@@ -500,7 +579,7 @@ function get_green_krylov(H::TBHamiltonian, ω_phys::Real;
                           maxiter::Int               = 600,
                           krylovdim::Int             = 30,
                           return_info::Bool          = false,
-                          residual_warn::Real        = 1e-2,
+                          residual_warn::Real        = 0.1,
                           verbose::Bool              = false)
     return get_green_krylov(H.mpo, H.sites, ω_phys;
                             η, nsweeps, maxdim, cutoff, x0_mpo, start, rng, solver,

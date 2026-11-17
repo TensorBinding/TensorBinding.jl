@@ -151,6 +151,7 @@ include("bugfix_qtci_profiles.jl")
 include("bugfix_large_L_cutoffs.jl")
 include("bugfix_onsite_aux.jl")
 include("bugfix_green_krylov_start.jl")
+include("bugfix_green_krylov_size.jl")
 include("bugfix_rpa_dyson_residual.jl")
 
 # The 0.1 names and keywords renamed in 0.2: deprecated aliases with a one-time warning.
