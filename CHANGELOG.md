@@ -38,9 +38,12 @@ bugs without breaking the API.
   - `refine_bound_state(H, b, ω0; eta_steps, …)`: the energy and probe weight of an
     isolated level by Rayleigh-quotient iteration on the correction vector, to ~η² of
     the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`). `converged` asks for
-    a converged last solve and an energy that has stopped moving (`energy_step`, the
-    last move, within the η before the last): in a continuum it is `false`. Two levels
-    closer than the last η are not told apart (their mean energy, their summed weight).
+    a converged last solve and for the last two steps to agree that there is a level:
+    a weight that does not change with η (in a continuum it is proportional to η) and
+    an energy that has stopped moving (`energy_step`, the last move, within the η
+    before the last). A single step cannot show that and is never reported as
+    converged. Two levels closer than the last η are not told apart (their mean energy,
+    their summed weight).
 - **`get_rpa_susceptibility_column(H, MPOV, ω, j; …)`**: one column x = χ|j⟩ of the RPA
   susceptibility, from (I − Π₀V)x = Π₀|j⟩ on the L sites of Π₀ instead of the whole χ
   on the 2L-site vectorized register; `j` is a basis state (a position for position-only
@@ -56,10 +59,12 @@ bugs without breaking the API.
   estimate the spectral radius ρ of VΠ₀ from (‖T_K‖/‖T_{K−2}‖)^½ of the last Neumann
   terms and warn when the series converges slowly or diverges (ρ ≳ 0.9), where the
   default `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from
-  U ≈ 0.6 U_c at finite ω and η). The estimate is from below (1–6 % low at K = 6,
-  25–40 % at K = 2), so the threshold is 0.85 for `K_max ≥ 4` and 0.6 for 2 and 3;
-  `K_max < 2` has nothing to estimate from, and no check. The returned values are
-  unchanged.
+  U ≈ 0.6 U_c at finite ω and η). The estimate is from below, further at small K and
+  on large systems (8 % low at K = 6 and 39 % at K = 2 on half-filled chains of
+  1024–4096 sites, 1 % and 25 % at 32 sites), so the threshold depends on `K_max`:
+  0.55, 0.70, 0.77, 0.81 for 2 to 5 and 0.83 from 6, calibrated on those chains
+  (another band structure or dimension shifts it). `K_max < 2` has nothing to estimate
+  from, and no check. The returned values are unchanged.
 
 ### Changed
 
@@ -90,13 +95,16 @@ bugs without breaking the API.
 - **How these residuals are evaluated** (and those of the correction vectors): from
   inner products, with ⟨Ax|Ax⟩ contracted one tensor at a time. Their terms cancel, so
   the value is an upper bound that includes the rounding floor of the evaluation, about
-  1e-7·‖A‖‖x‖/‖b‖ (returned as `residual_floor`): a converged solve reads as its floor,
-  not as 0, and rounding noise cannot pass for a small residual. Where the floor leaves
-  the comparison with the threshold open (a correction vector at η ≲ 1e-5 on a level, a
+  1e-7·‖A‖‖x‖/‖b‖ (returned as `residual_floor`; ‖A‖ from a few power iterations, so
+  that a strong local term counts): a converged solve reads as its floor, not as 0, and
+  rounding noise cannot pass for a small residual. Where the floor leaves the
+  comparison with the threshold open (a correction vector at η ≲ 1e-5 on a level, a
   constant energy offset of 10³ in H) the residual is evaluated exactly, from the direct
-  sum of its terms. A check whose contraction would hold more than 2^27 numbers (bond
-  dimensions χ of the solution and w of the operator with χ²w² > 6.7e7) is skipped with
-  one `@info` and reports `residual = NaN`.
+  sum of its terms, as long as that sum fits in memory (bond dimensions of the solution
+  up to about 100–300); beyond, the bound with its floor is what is reported. A check
+  whose contraction would hold more than 2^27 numbers (bond dimensions χ of the
+  solution and w of the operator with χ²w² > 6.7e7) is skipped with one `@info` and
+  reports `residual = NaN`.
 - **Dependencies:** ITensorMPS 0.3.26 to 0.3.44 (was 0.3.16 to 0.3.44). The MINRES
   solver and the correction vectors pass their own local solver to ITensorMPS's
   `linsolve`, and the suite was run at 0.3.26 and 0.3.44 only. The cap below 0.3.45

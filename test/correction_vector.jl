@@ -43,6 +43,8 @@ using TensorBinding: get_Hamiltonian, add_onsite!, add_spin!, exciton_hamiltonia
     @test one.ldos ≈ -imag(gref(Hd, bv, 0.3 + 0.05im)) / π rtol=1e-6
     # the scan warm-starts each frequency itself: x0 is refused, not silently reused
     @test_throws ArgumentError get_ldos_cv(H, 20, ωs; eta=0.05, x0=b)
+    # any collection of frequencies
+    @test get_ldos_cv(H, 20, (0.3, 0.5); eta=0.05).ldos[1] ≈ one.ldos rtol=1e-8
 
     # a forced failure (maxdim 2) is flagged, and the scan warns
     bad = get_correction_vector(H, b, 0.3; eta=0.05, maxdim=2, seed_maxdim=2, rounds=1)
@@ -57,11 +59,24 @@ using TensorBinding: get_Hamiltonian, add_onsite!, add_spin!, exciton_hamiltonia
     @test rb.energy ≈ F.values[k] atol=1e-8
     @test rb.weight ≈ abs2(dot(F.vectors[:, k], bv)) rtol=1e-6
     @test rb.converged && rb.energy_step < 1e-5
-    # in the continuum the quotient keeps moving, and `converged` says so although the
-    # last linear solve is converged
+    @test rb.weight ≈ rb.history[end-1].weight rtol=1e-3   # stationary on a level
+    # between the levels of this small chain (spacing ~0.1) the quotient crawls from step
+    # to step, and `converged` says so although the last linear solve is converged
     rc = refine_bound_state(H, b, 0.3)
     @test !rc.converged && rc.residual < 0.02
     @test rc.energy_step > 1e-3
+    # In a real continuum (2^16 sites, level spacing 1e-4) the energy step is about the
+    # last η whatever ω0, and shows nothing: E − ω = η·Re G/Im G. The weight does: it is
+    # proportional to η there, and stationary on a level.
+    H16  = get_Hamiltonian("chain_1d", 1.0; L=16)
+    rc16 = refine_bound_state(H16, probe_state(H16, 2^15 + 3), 0.3;
+                              eta_steps=(0.05, 0.01, 1e-3))
+    @test rc16.residual < 0.02 && rc16.energy_step < 0.01
+    @test rc16.weight / rc16.history[end-1].weight ≈ 0.1 rtol=0.05
+    @test !rc16.converged
+    # a single step, or two equal broadenings at the end, cannot show a level
+    @test !refine_bound_state(H, b, F.values[k]; eta_steps=(1e-3,)).converged
+    @test !refine_bound_state(H, b, -2.7; eta_steps=(0.01, 1e-3, 1e-3)).converged
     # the broadenings are eta_steps: a stray `eta` would override every step
     @test_throws ArgumentError refine_bound_state(H, b, -2.7; eta=1e-2)
     @test_throws ArgumentError refine_bound_state(H, b, -2.7; eta_steps=())

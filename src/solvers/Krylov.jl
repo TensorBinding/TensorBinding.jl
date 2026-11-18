@@ -168,17 +168,36 @@ end
 # are 2 GiB, and the contraction holds two or three such arrays at a time. (A Ref, so
 # that the tests can reach the skipped branch on small systems.)
 const _RESIDUAL_MAX_ELEMENTS = Ref(2.0^27)
-# Largest bond dimension, (w + 1)χ + χ_b, of the direct sum the exact evaluation
-# orthogonalizes.
-const _RESIDUAL_EXACT_MAXDIM = 2000
 # Rounding of the two evaluations, in units of eps and of the scale
-# S = (|a0| + |a1|σ)²‖x‖² + ‖b‖², σ = ‖A‖_F/√D the rms singular value of A: ‖r‖² from the
-# inner products is known to ± FLOOR_FACTOR·eps·S (measured: up to 5.8·eps·S), ‖r‖ from
-# the direct sum to ± EXACT_FLOOR_FACTOR·eps·√S (measured: up to 37·eps·√S), over
-# correction vectors at η = 1e-2…1e-8, Green's functions and Dyson systems of condition
-# number up to 1e5 (examples/nontracked/fixes_checks/review_022/residual_floor.jl).
+# S = (|a0| + |a1|σ)²‖x‖² + ‖b‖², with σ standing for ‖A‖: the larger of its rms singular
+# value ‖A‖_F/√D and a power-iteration estimate of its largest one (_opnorm_estimate).
+# ‖r‖² from the inner products is known to ± FLOOR_FACTOR·eps·S (measured: up to
+# 5.8·eps·S with the rms value alone), ‖r‖ from the direct sum to
+# ± EXACT_FLOOR_FACTOR·eps·√S (measured: up to 37·eps·√S), over correction vectors at
+# η = 1e-2…1e-8, Green's functions and Dyson systems of condition number up to 1e5
+# (examples/nontracked/fixes_checks/review_022/residual_floor.jl). The rms value alone
+# is too small a scale when A is large on a few states only: with one bond of strength
+# 1e3–1e5 on a chain the rounding reached 2e4·eps·S (review_022/rereview/b3_*).
 const _RESIDUAL_FLOOR_FACTOR       = 32.0
 const _RESIDUAL_EXACT_FLOOR_FACTOR = 64.0
+
+# A lower bound of the operator norm ‖A‖₂: the largest ‖Av‖/‖v‖ over a few power
+# iterations on a small MPS (bond dimension ≤ 16), from a fixed random state, so that it
+# is the same at every call and leaves the global RNG alone. It finds a term that is
+# large on a few states only (a strong local potential or bond: 100 on one site of 2^30
+# in six iterations), which the rms singular value averages away over the D states.
+function _opnorm_estimate(A::MPO, sites; iters::Int = 8)
+    v   = random_mps(Random.Xoshiro(0), ComplexF64, sites; linkdims = 4)
+    est = 0.0
+    for _ in 1:iters
+        v  = apply(A, v; maxdim = 16, cutoff = 1e-12)
+        nv = norm(v)
+        (isfinite(nv) && nv > 0) || break
+        est = max(est, nv)
+        v   = v / nv
+    end
+    return est
+end
 
 # ⟨Ax|Ax⟩ contracted one tensor at a time (environment · x · A · A† · x†): χ³w²d + χ²w³d²
 # per site, where ITensorMPS's inner(A, x, A, x) joins A[j]·x[j] and its conjugate first,
@@ -201,15 +220,17 @@ end
 # a0·x ⊕ a1·Ax ⊕ (−b), with Ax the untruncated product: accurate to ~eps of the largest
 # term, where the inner products cancel to ~√eps of it. `nothing` when the sum cannot be
 # formed (a bond of x or b without a link index; A may lack some, as interleave_mpo's
-# output does) or would exceed _RESIDUAL_EXACT_MAXDIM.
+# output does) or is too large: Ax and the sum are held for all n sites at the bond
+# dimension m = (w + 1)χ + χ_b, 2·n·m²·d numbers, under the bound of the inner-product
+# check (_RESIDUAL_MAX_ELEMENTS: m up to about 1300 on 20 qubits, 750 on 60).
 function _linsolve_residual_exact(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number)
     n = length(x)
     n >= 2 || return nothing
     haslinks(ψ) = all(j -> linkind(ψ, j) !== nothing, 1:n-1)
     (haslinks(x) && haslinks(b)) || return nothing
     χ, w = maxlinkdim(x), maxlinkdim(A)
-    (iszero(a0) ? w * χ : (w + 1) * χ) + maxlinkdim(b) <= _RESIDUAL_EXACT_MAXDIM ||
-        return nothing
+    m = Float64((iszero(a0) ? w * χ : (w + 1) * χ) + maxlinkdim(b))
+    2 * n * m^2 * maximum(dim, siteinds(x)) <= _RESIDUAL_MAX_ELEMENTS[] || return nothing
     Ax = apply(A, x; alg = "naive", truncate = false)
     r  = iszero(a0) ? +(a1 * Ax, -1 * b; alg = "directsum") :
                       +(a0 * x, a1 * Ax, -1 * b; alg = "directsum")
@@ -224,15 +245,19 @@ end
 #     ‖r‖² = |a0|²⟨x|x⟩ + |a1|²⟨Ax|Ax⟩ + ⟨b|b⟩ + 2Re(ā0 a1⟨x|A|x⟩) − 2Re(ā0⟨x|b⟩) − 2Re(a1⟨b|A|x⟩).
 #   The terms cancel, and so do the products inside ⟨Ax|Ax⟩ where Ax is small next to
 #   ‖A‖‖x‖ (an ill-conditioned A): ‖r‖² is known to ± f² = _RESIDUAL_FLOOR_FACTOR·eps·S
-#   only, S = (|a0| + |a1|σ)²‖x‖² + ‖b‖² with σ = ‖A‖_F/√D standing for ‖A‖. That is a
-#   rounding floor f/‖b‖ ≈ 1e-7·(|a0| + |a1|σ)‖x‖/‖b‖, which grows with ‖x‖: as 1/η for a
-#   resolvent, with a constant energy offset in A, with the condition number of a Dyson
-#   solve. `residual` is the upper bound √(max(‖r‖², 0) + f²)/‖b‖, never below the floor:
-#   a converged solve reads as its floor, not as 0, and noise cannot pass for a small
-#   residual.
+#   only, S = (|a0| + |a1|σ)²‖x‖² + ‖b‖² with σ standing for ‖A‖ (the larger of
+#   ‖A‖_F/√D and _opnorm_estimate). That is a rounding floor
+#   f/‖b‖ ≈ 1e-7·(|a0| + |a1|σ)‖x‖/‖b‖, which grows with ‖x‖: as 1/η for a resolvent,
+#   with a constant energy offset or a strong local term in A, with the condition number
+#   of a Dyson solve. A sum below −f² shows the estimate too small, and f² is then
+#   raised to it. `residual` is the upper bound √(max(‖r‖², 0) + f²)/‖b‖, never below
+#   the floor: a converged solve reads as its floor, not as 0, and noise cannot pass for
+#   a small residual.
 # method = :exact: when the floor leaves the comparison with `threshold` open (the
 #   threshold lies between the lower and the upper bound), from the direct sum
-#   (_linsolve_residual_exact), where it is affordable; `floor` is then ~eps-sized.
+#   (_linsolve_residual_exact), where it fits in memory; `floor` is then ~eps-sized.
+#   Where it does not fit, the :inner bound is returned: a converged x then reads as its
+#   floor, above the threshold.
 # method = :skipped: the contraction would hold more than _RESIDUAL_MAX_ELEMENTS numbers;
 #   `residual` and `floor` are NaN.
 function _linsolve_residual(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number;
@@ -245,10 +270,11 @@ function _linsolve_residual(A::MPO, b::MPS, x::MPS, a0::Number, a1::Number;
     r2  = abs2(a1) * _norm2_Ax(A, x) + nb2 - 2real(a1 * bAx)
     iszero(a0) || (r2 += abs2(a0) * nx2 + 2real(conj(a0) * a1 * inner(x', A, x)) -
                          2real(conj(a0) * inner(x, b)))
-    r2  = max(r2, 0.0)
-    σ   = sqrt(real(inner(A, A)) / _site_space_dim(siteinds(x)))
+    σ   = max(sqrt(real(inner(A, A)) / _site_space_dim(siteinds(x))),
+              _opnorm_estimate(A, siteinds(x)))
     S   = (abs(a0) + abs(a1) * σ)^2 * nx2 + nb2
-    f2  = _RESIDUAL_FLOOR_FACTOR * eps(Float64) * S
+    f2  = max(_RESIDUAL_FLOOR_FACTOR * eps(Float64) * S, -r2)    # r2 < −f²: f² was too small
+    r2  = max(r2, 0.0)
     if isfinite(threshold) && r2 - f2 <= threshold^2 * nb2 < r2 + f2
         rx = _linsolve_residual_exact(A, b, x, a0, a1)
         rx === nothing ||
@@ -318,8 +344,10 @@ end
 #   2^14–2^30 sites: chain ends, middle bond (both directions) and impurity site to 4e-6
 #     or better; ‖G(z − H) − 1‖_F ≤ 4e-2; no warning.
 #   2^34, 2^36: the same elements to 1e-4, except the impurity chain at the band edge
-#     (0.3–2 %, ‖G(z − H) − 1‖_F = 0.10 and 0.19, with the warning).
-#   2^40: the chain ends are bulk rows (‖G(z − H) − 1‖_F = 0.9, with the warning).
+#     (0.3–2 %, ‖G(z − H) − 1‖_F = 0.10 and 0.19, with the warning); at 2^36 the impurity
+#     chain at η = 0.03 warns too (0.36), with these elements right to 1e-5.
+#   2^40: the chain ends are bulk rows in all eight cases (‖G(z − H) − 1‖_F = 0.9–6, with
+#     the warning).
 # Against the dense inverse at 2^10 and 2^12 sites, ‖G(z − H) − 1‖_F was 1–8 times the
 # relative error of the worst row. A looser 1e-8·2^13/D left rows 3 % off and diagonal
 # elements 1 % off at the band edge; tighter ones (down to 1e-8·2^3/D) did not lower
@@ -432,8 +460,9 @@ function get_green_krylov(H_mpo::MPO, sites::Vector{<:Index}, ω_phys::Real;
                   (info.floor * nrhs > residual_warn / 2 ?
                    " (rounding floor of this residual: $(round(info.floor * nrhs; sigdigits=2)))" : "") *
                   ". Some rows of G are off by about that much, relative to themselves: " *
-                  "lower cutoff, or raise maxdim or nsweeps (cutoff = $cutoff, maxlinkdim " *
-                  "reached: $(maxlinkdim(sol)))." ω_phys η
+                  "lower cutoff, or raise maxdim or nsweeps (krylov_cutoff, krylov_maxdim, " *
+                  "krylov_nsweeps through get_bubble_mpo and the RPA drivers; cutoff = " *
+                  "$cutoff, maxlinkdim reached: $(maxlinkdim(sol)))." ω_phys η
     end
     return return_info ? (; G, residual = res, residual_abs = absres,
                             residual_floor = info.floor, maxlinkdim = maxlinkdim(sol)) : G

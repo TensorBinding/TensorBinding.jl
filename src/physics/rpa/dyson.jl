@@ -151,8 +151,8 @@ All `get_bubble_mpo` keyword arguments are accepted and forwarded.
   instability use a smaller one (see `rpa_from_bubble_diag`).
 - `rpa_residual_warn` : warn when the relative residual of the Dyson solve exceeds
   this value (`Inf`: no check). Default `1e-2`.
-- `return_info` : return `(; chi, residual, maxlinkdim)` of the Dyson solve instead of
-  vec(χ). Default `false`.
+- `return_info` : return `(; chi, residual, residual_floor, maxlinkdim)` of the Dyson
+  solve instead of vec(χ). Default `false`.
 """
 function get_rpa_susceptibility(H::TBHamiltonian, MPOV::MPO, ω::Real;
                                  mode::Symbol          = :charge,
@@ -223,13 +223,17 @@ const _RPA_BUBBLE_DEFAULTS = (; ϵF = 0.0, P_method = :purification, GF_method =
 function _rpa_column_solve(Π::MPO, MPOV::MPO, sites, b::MPS; nsweeps::Int, maxdim::Int,
                            cutoff::Real, residual_warn::Real, return_info::Bool)
     ΠV  = apply(Π, MPOV; maxdim=maxdim, cutoff=min(cutoff, 1e-14))
+    # (one site has no bond to sum over; linsolve refuses it below, with its own message)
     A   = length(sites) == 1 ? MPO(sites, "Id") - ΠV :
                                +(MPO(sites, "Id"), -1 * ΠV; alg="directsum")
     rhs = apply(Π, b; maxdim=maxdim, cutoff=min(cutoff, 1e-14))
-    # Π₀|b⟩ = 0: x = 0, and a residual relative to ‖Π₀|b⟩‖ is undefined.
-    iszero(norm(rhs)) &&
-        return return_info ? (; chi = rhs, residual = 0.0, residual_floor = 0.0,
-                                maxlinkdim = maxlinkdim(rhs)) : rhs
+    # Π₀|b⟩ = 0, to rounding (a Π₀ that annihilates |b⟩ leaves ~1e-15·‖Π₀‖‖b‖): x = 0, and
+    # a residual relative to ‖Π₀|b⟩‖ is undefined.
+    if norm(rhs) <= 100 * eps(Float64) * norm(Π) * norm(b)
+        x0 = 0.0 * rhs
+        return return_info ? (; chi = x0, residual = 0.0, residual_floor = 0.0,
+                                maxlinkdim = maxlinkdim(x0)) : x0
+    end
     x   = ITensorMPS.linsolve(A, rhs, deepcopy(rhs); nsweeps, maxdim, cutoff)
     (return_info || isfinite(residual_warn)) || return x
     info = _linsolve_residual(A, rhs, x, 0.0, 1.0; threshold = residual_warn)
@@ -295,12 +299,15 @@ function get_rpa_susceptibility_column(H::TBHamiltonian, MPOV::MPO, ω::Real,
         "get_rpa_susceptibility_column: pass `eta` or `η`, not both"))
     (fermi === nothing || !haskey(kwargs, :ϵF)) || throw(ArgumentError(
         "get_rpa_susceptibility_column: pass `fermi` or `ϵF`, not both"))
+    mode == :magnetic && H.spin_s === nothing &&
+        error("get_rpa_susceptibility_column: mode=:magnetic requires a spinful H (call add_spin!(H) first)")
     # the column index, before any bubble work (Π₀ lives on H.sites without the spin
     # index for :magnetic)
     if j isa Integer
-        n_out = mode == :magnetic && H.spin_s !== nothing ?
-                round(Int, _site_space_dim(H.sites) / dim(H.spin_s)) :
-                round(Int, _site_space_dim(H.sites))
+        j isa Bool && throw(ArgumentError(
+            "get_rpa_susceptibility_column: the column index j is an integer or an MPS, got a Bool"))
+        n_out = mode == :magnetic ? round(Int, _site_space_dim(H.sites) / dim(H.spin_s)) :
+                                    round(Int, _site_space_dim(H.sites))
         1 <= j <= n_out || throw(BoundsError(1:n_out, j))
     end
     bubble_kw = merge(_RPA_BUBBLE_DEFAULTS, values(kwargs),
@@ -359,6 +366,16 @@ function wynn_epsilon(s::AbstractVector{<:Number})
 end
 
 
+# Thresholds of the Wynn warning on the estimate (‖T_K‖/‖T_{K−2}‖)^½ of ρ(VΠ₀), for
+# K_max = 2, 3, 4, 5 and ≥ 6: 0.9 times the ratio estimate/ρ, so that the warning starts
+# at ρ ≈ 0.9. The ratios, 0.61, 0.77, 0.86, 0.90 and 0.92, are those of the dense
+# Lindhard bubble of half-filled chains and rings of 1024–4096 sites at ω = 0, η = 0.03,
+# V = U·1 (they fall with the size: 0.75, 0.90, 0.96, 0.98, 0.99 at 32 sites, where the
+# warning then starts at ρ ≈ 0.75–0.85). Another band structure, η or dimension shifts
+# them; only this family was measured
+# (examples/nontracked/fixes_checks/review_022/rereview/d1_wynn_estimate.*).
+const _WYNN_RHO_THRESHOLDS = (0.55, 0.70, 0.77, 0.81, 0.83)
+
 # The Wynn-accelerated Neumann series behind rpa_wynn_from_bubbles,
 # get_rpa_susceptibility_wynn and get_magnon_susceptibility_wynn. For the i-th entry x
 # of `items` (a bubble MPO or a frequency) it prints `label(i, x)` when verbose, takes
@@ -403,12 +420,11 @@ function _rpa_wynn_series(bubble, items, MPOV::MPO; K_max::Int, maxdim_apply::In
         end
         # (‖T_K‖/‖T_{K−2}‖)^½ tends to the spectral radius ρ of VΠ₀ from below: a Frobenius
         # norm weighs every eigenvalue of VΠ₀, so at finite K the ratio is a power mean
-        # of them. On half-filled chains of 2^5–2^9 sites it read 1–6 % low at K = 6 and
-        # 25–40 % low at K = 2, hence the two thresholds (ρ ≳ 0.9 in both cases). With
-        # K_max < 2 there is no ratio to take, and no check.
+        # of them (_WYNN_RHO_THRESHOLDS). With K_max < 2 there is no ratio to take, and
+        # no check.
         if K_max >= 2 && tnorm[K_max-1] > 0
             ρ = sqrt(tnorm[K_max+1] / tnorm[K_max-1])
-            ρ > (K_max >= 4 ? 0.85 : 0.6) && push!(slow, (i, ρ))
+            ρ > _WYNN_RHO_THRESHOLDS[min(K_max, 6) - 1] && push!(slow, (i, ρ))
         end
 
         # Partial sums (Wynn input)

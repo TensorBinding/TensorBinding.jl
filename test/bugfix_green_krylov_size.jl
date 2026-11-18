@@ -47,4 +47,21 @@ using TensorBinding: get_Hamiltonian, get_green_krylov, _green_krylov_cutoff
     @test el(old.G, s, 1, 1) ≈ g0 rtol=1e-3
     @test old.residual < 1e-2
     @test old.residual_abs > 0.1
+
+    # 2^36 sites. The start: the truncated sum |I⟩⟩ + 0.1·r drops the random part there,
+    # so it is a direct sum beyond 2^30 sites. The check: the rounding floor of the inner
+    # products (0.1 in ‖G(z − H) − 1‖_F) is at the threshold, so the residual is
+    # evaluated exactly, from a direct sum on an operator with a bond without link index.
+    # (KrylovKit may warn about a local solve that stops at 1.1e-10: only the warning of
+    # the check is looked for.)
+    L = 36; N = 2^L
+    H = get_Hamiltonian("chain_1d", 1.0; L)
+    s = H.sites
+    io = IOBuffer()
+    r = with_logger(() -> get_green_krylov(H, ω; η, return_info=true), SimpleLogger(io))
+    @test !occursin("G is not converged", String(take!(io)))
+    @test el(r.G, s, 1, 1) ≈ gs rtol=1e-6
+    @test el(r.G, s, N, N) ≈ gs rtol=1e-6
+    @test r.residual_abs < 0.01                    # the floor of the inner products: 0.1
+    @test r.residual_floor * sqrt(N) < 1e-4        # the exact evaluation's
 end

@@ -139,7 +139,9 @@ The residual comes from inner products whose terms cancel to about
 energy offset in `H`). `residual` is an upper bound that includes this floor
 (`residual_floor`); where the floor would leave the comparison with `rtol` open
 (η ≲ 1e-5 on a level, or an offset of 10³ at η = 1e-4) the residual is evaluated
-exactly instead, from the direct sum of its terms. The truncation sets a second
+exactly instead, from the direct sum of its terms, as long as that sum fits in memory
+(a bond dimension of `x` up to about 100–300 for the usual Hamiltonians; beyond, a
+converged `x` reads as its floor and `converged = false`). The truncation sets a second
 floor, about `√cutoff·‖x‖/‖b‖`: at small η, `rtol` is reachable only with
 `cutoff ≲ (rtol·η)²`. Where the contraction of the check would hold more than 2^27
 numbers it is skipped with a message: `residual = NaN`, `converged = false`.
@@ -239,7 +241,7 @@ _cv_ldos_scalar(r) = (; ldos = r.ldos[1], G = r.G[1], residual = r.residual[1],
                         converged = r.converged[1], maxlinkdim = r.maxlinkdims[1])
 
 """
-    get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector; eta=1e-2,
+    get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals; eta=1e-2,
                 <projection keywords>, <get_correction_vector keywords>)
         -> (; ldos, G, residual, converged, maxlinkdims)
     get_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; …)
@@ -265,7 +267,7 @@ selected with the keywords of `get_ldos_online` (`spin_proj`, `proj_s`, `nambu_p
 `proj_nambu`, `layer_proj`, `proj_layer`, `sublat_proj`, `proj_sl`), one scan per
 sector. Every other keyword goes to `get_correction_vector`.
 """
-function get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector{<:Real};
+function get_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
                      eta::Real         = 1e-2,
                      rtol::Real        = 0.02,
                      nambu_proj::Bool  = false,
@@ -293,7 +295,7 @@ get_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; kwargs...) =
     _cv_ldos_scalar(get_ldos_cv(H, X, [ω]; kwargs...))
 
 """
-    get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector; eta=1e-2,
+    get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals; eta=1e-2,
                         <get_correction_vector keywords>)
         -> (; ldos, G, residual, converged, maxlinkdims)
     get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω::Real; …)
@@ -310,7 +312,7 @@ stays at a small bond dimension down to small η, where KPM-MPS needs moments be
 its truncation floor. In the two-particle continuum `x` spreads and its bond
 dimension grows; check `converged`.
 """
-function get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals::AbstractVector{<:Real};
+function get_exciton_ldos_cv(H::TBHamiltonian, X::Int, ω_vals;
                              eta::Real  = 1e-2,
                              rtol::Real = 0.02,
                              kwargs...)
@@ -351,12 +353,21 @@ per step, and `energy_step` is the last move of the energy, `|E − ω|` of the 
 step.
 
 `converged` is `true` when the last correction vector is converged (its residual) and
-the energy has stopped moving: `energy_step` is at most the η of the step before the
-last, which holds once the level is resolved at that η. In a continuum the quotient
-keeps drifting from step to step and `converged` is `false`. Two levels closer than
-the last η are not told apart, and nothing shows it: the history looks like that of
-one level, `energy` is their weighted mean and `weight` the sum of their weights.
-Lower the last η below the splitting you need to resolve.
+the last two steps agree that there is a level:
+- the weight is stationary. On a level `w` does not depend on η; in a continuum
+  `x` spreads over the states within η and `w` is proportional to η. The change of `w`
+  over the last step must be within a tenth of the change a continuum would show,
+  `|1 − w_last/w_before| ≤ 0.1·|1 − η_last/η_before|`;
+- the energy has stopped moving: `energy_step` is at most the η of the step before the
+  last. (In a continuum the step is about η_last whatever ω, so this alone shows
+  nothing; it catches a quotient crawling between the levels of a small system.)
+So `eta_steps` needs two different broadenings at its end: a single step, or two equal
+ones, is never reported as converged. A level that is only resolved at the last η
+(its weight below about η_before times the background of the other states) is
+reported as not converged. Two levels closer than the last η are not told apart, and
+nothing shows it: the history looks like that of one level, `energy` is their weighted
+mean and `weight` the sum of their weights. Lower the last η below the splitting you
+need to resolve.
 
 The broadenings are those of `eta_steps` (`eta` is not a keyword here); every other
 keyword goes to `get_correction_vector`.
@@ -386,10 +397,21 @@ function refine_bound_state(H::Union{TBHamiltonian,MPO}, b::MPS, ω0::Real;
         ω = E
     end
     last = history[end]
-    # The energy has stopped moving when its last step is within the η before the last
-    # (the only η for a single step): for an isolated level the step is ~η²/Δ.
+    # A level, or a continuum? For x = (ω + iη − H)⁻¹b the quotient gives
+    # E − ω = η·Re G/Im G exactly, about η in a continuum whatever ω: the size of the
+    # energy step alone shows nothing there. The weight does: w = η|G|²/|Im G| is
+    # independent of η on a level and proportional to η in a continuum, so over the last
+    # step w_last/w_before is 1 or η_last/η_before. `drift` is the measured change in
+    # units of the continuum's (0 on a level, 1 in a continuum; NaN or Inf, hence not
+    # converged, for a single step or two equal η). The energy step still catches a
+    # quotient crawling between the levels of a small system.
     energy_step = abs(last.energy - last.omega)
-    η_before    = history[max(end - 1, 1)].eta
+    stationary  = false
+    if length(history) >= 2
+        before = history[end-1]
+        drift  = (1 - last.weight / before.weight) / (1 - last.eta / before.eta)
+        stationary = abs(drift) <= 0.1 && energy_step <= before.eta
+    end
     return (; energy = last.energy, weight = last.weight, x, residual = last.residual,
-              energy_step, converged = r.converged && energy_step <= η_before, history)
+              energy_step, converged = r.converged && stationary, history)
 end

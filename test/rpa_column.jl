@@ -38,11 +38,36 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
         @test r.residual < 1e-3
     end
 
-    # Π₀|j⟩ = 0: x = 0 with residual 0, and no warning (it was 0.89, "not converged")
-    r0 = @test_logs _rpa_column_solve(0.0 * Π, 0.3Uc * MPO(s, "Id"), s, bj; nsweeps=40,
-                                      maxdim=400, cutoff=1e-12, residual_warn=1e-2,
-                                      return_info=true)
-    @test r0.residual == 0 && norm(r0.chi) == 0
+    # Π₀|j⟩ = 0: x = 0 with residual 0, and no warning (it was 0.2–0.9, "not converged"),
+    # for Π₀ = 0 and for a Π₀ that annihilates |j⟩, where Π₀|j⟩ comes out at ~1e-15
+    ej = dvec(bj, s)
+    for Πz in (0.0 * Π, mpo_of(Πd * (I - ej * ej'), s))
+        r0 = @test_logs _rpa_column_solve(Πz, 0.3Uc * MPO(s, "Id"), s, bj; nsweeps=40,
+                                          maxdim=400, cutoff=1e-12, residual_warn=1e-2,
+                                          return_info=true)
+        @test r0.residual == 0 && norm(r0.chi) == 0
+    end
+
+    # The operator Π₀V is built at min(cutoff, 1e-14): at the solve cutoff 1e-12 it was
+    # off by √cutoff, which limited the column to 4e-7 here (128 sites, U = 0.999 U_c;
+    # the 32-site case above does not see it).
+    let H7 = get_Hamiltonian("chain_1d", 1.0; L=7)
+        s7 = H7.sites
+        E7, ψ7 = eigen(Hermitian(ITensors.@disable_warn_order dmat(H7.mpo, s7)))
+        D7 = length(E7)
+        f7 = Float64.(E7 .< 0)
+        W7 = reshape([ψ7[i, a] * conj(ψ7[i, b]) for i in 1:D7, a in 1:D7, b in 1:D7], D7, D7^2)
+        Π7d = W7 * Diagonal(vec([(f7[b] - f7[a]) / (0.03im - E7[b] + E7[a])
+                                 for a in 1:D7, b in 1:D7])) * W7'
+        μ7  = eigvals(Π7d)
+        U7  = 0.999 / real(μ7[argmax(abs.(real.(μ7)))])
+        b7  = _basis_state_mps(16, s7)
+        col = (I - U7 * Π7d) \ (Π7d * (ITensors.@disable_warn_order dvec(b7, s7)))
+        r7  = _rpa_column_solve((ITensors.@disable_warn_order mpo_of(Π7d, s7)),
+                                U7 * MPO(s7, "Id"), s7, b7; nsweeps=40, maxdim=400,
+                                cutoff=1e-12, residual_warn=1e-2, return_info=true)
+        @test norm((ITensors.@disable_warn_order dvec(r7.chi, s7)) - col) / norm(col) < 1e-7
+    end
 
     # The Wynn series warns where it converges slowly: (‖T_K‖/‖T_{K−2}‖)^½ estimates
     # ρ(VΠ₀) from below, 1–6 % low at K = 6 and 25–40 % low at K = 2, with a threshold for
@@ -50,9 +75,11 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
     @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=6)
     @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(
         [Π], 0.999Uc * MPO(s, "Id"); K_max=6)
-    @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=2)
-    @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(
-        [Π], 0.999Uc * MPO(s, "Id"); K_max=2)
+    for K in (2, 3, 4, 5)
+        @test_logs rpa_wynn_from_bubbles([Π], 0.3Uc * MPO(s, "Id"); K_max=K)
+        @test_logs (:warn, r"Wynn series") match_mode=:any rpa_wynn_from_bubbles(
+            [Π], 0.999Uc * MPO(s, "Id"); K_max=K)
+    end
     @test_logs rpa_wynn_from_bubbles([Π], 0.999Uc * MPO(s, "Id"); K_max=1)
 
     # Through the bubble: column j of get_rpa_susceptibility's χ, on a 4-site chain with
@@ -89,7 +116,10 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
                                                              ϵF=0.0)
     @test_throws BoundsError get_rpa_susceptibility_column(Hc, V, 0.3, 5; kw...)
     @test_throws BoundsError get_rpa_susceptibility_column(Hc, V, 0.3, 0; kw...)
+    @test_throws ArgumentError get_rpa_susceptibility_column(Hc, V, 0.3, true; kw...)
     @test_throws ErrorException get_rpa_susceptibility_column(Hc, V, 0.3, 1; mode=:spin)
+    # a spinless H in the magnetic channel is refused as such, whatever j
+    @test_throws ErrorException get_rpa_susceptibility_column(Hc, V, 0.3, 99; mode=:magnetic)
 
     # The Krylov bubble takes the start and the residual threshold of get_green_krylov:
     # the start of v0.2.1 is reachable, and the check can be silenced.
@@ -102,4 +132,8 @@ using TensorBinding: get_Hamiltonian, get_bubble_mpo, get_rpa_susceptibility,
                                    krylov_start=:identity)
     @test Π1 isa MPO && Π2 isa MPO
     @test dmat(Π1, sc) != dmat(Π2, sc)
+    # krylov_cutoff = nothing is the size-aware default of get_green_krylov, 1e-8 at this
+    # size (the doubled register has 2^4 states)
+    Π3 = get_bubble_mpo(Hc, Hc, 0.3; kwk..., krylov_residual_warn=Inf, krylov_cutoff=nothing)
+    @test dmat(Π3, sc) == dmat(Π1, sc)
 end
