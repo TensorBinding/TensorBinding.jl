@@ -5,7 +5,18 @@ reading of semantic versioning: before 1.0, a change in the minor number (0.1 �
 is breaking, and a change in the last number (0.1.0 → 0.1.1) adds features or fixes
 bugs without breaking the API.
 
-## [Unreleased]
+## [0.2.2] — 2026-11-18
+
+This release keeps the v0.2 API. It adds solvers for one probe or one column at a time
+(correction vectors, a column of the RPA susceptibility) and a MINRES local solver, and
+it makes the linear solves report on themselves. Two things change for existing calls:
+
+- The entries under **Changed results** move the output of `get_green_krylov`, and of
+  the polarization bubble with `GF_method = :krylov` that is built on it. Each names
+  the keyword that restores the old behaviour.
+- The residual checks under **Changed** are on by default: they add a warning, and
+  some time, to solves that ran silently before. `residual_warn = Inf` (`rpa_residual_warn`,
+  `krylov_residual_warn`) removes both.
 
 ### Added
 
