@@ -111,7 +111,13 @@ Compute the non-interacting polarization bubble Π₀(ω) on `H1.sites`.
 - `η`              : Lorentzian broadening for the GF. Default `1e-3`.
 - `krylov_nsweeps` : DMRG sweeps for Krylov solver. Default `12`.
 - `krylov_maxdim`  : Max bond dim for Krylov solver. Default `100`.
-- `krylov_cutoff`  : SVD cutoff for Krylov solver. Default `1e-8`.
+- `krylov_cutoff`  : SVD cutoff for Krylov solver. Default `1e-8`, at every size;
+  `nothing` takes the size-aware default of `get_green_krylov` (the solve is on the
+  doubled register, of dimension D² for D sites).
+- `krylov_start`   : start of the Krylov solve, `start` of `get_green_krylov`. Default
+  `:random` (since v0.2.2); `:identity` is the start up to v0.2.1.
+- `krylov_residual_warn` : `residual_warn` of `get_green_krylov`, the threshold of the
+  warning on the residual of G_eff. Default `0.1`; `Inf` skips the check and its cost.
 - `verbose`        : Print progress. Default `false`.
 """
 function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
@@ -128,7 +134,9 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
                         η::Real               = 1e-3,
                         krylov_nsweeps::Int   = 12,
                         krylov_maxdim::Int    = 100,
-                        krylov_cutoff::Real   = 1e-8,
+                        krylov_cutoff::Union{Real,Nothing} = 1e-8,
+                        krylov_start::Symbol  = :random,
+                        krylov_residual_warn::Real = 0.1,
                         verbose::Bool         = false)
 
     L1 = H1.L; L2 = H2.L
@@ -188,7 +196,8 @@ function get_bubble_mpo(H1::TBHamiltonian, H2::TBHamiltonian, ω::Real;
         GF_mpo = get_green_krylov(Heff, sites_combined, ω;
                                    η=η, nsweeps=krylov_nsweeps,
                                    maxdim=krylov_maxdim, cutoff=krylov_cutoff,
-                                   verbose=verbose)
+                                   start=krylov_start,
+                                   residual_warn=krylov_residual_warn, verbose=verbose)
     else
         error("Unknown GF_method: $GF_method. Choose :kpm or :krylov")
     end

@@ -1,6 +1,6 @@
 name = "TensorBinding"
 uuid = "3b6805fc-d418-45a2-b1ea-024139a4a543"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Tiago Antao, Anouar Moustaj, Yitao Sun"]
 
 [deps]
@@ -17,7 +17,7 @@ TensorCrossInterpolation = "b261b2ec-6378-4871-b32e-9173bb050604"
 
 [compat]
 FFTW = "1"
-ITensorMPS = "0.3.16 - 0.3.44"
+ITensorMPS = "0.3.26 - 0.3.44"
 ITensors = "0.9"
 NDTensors = "0.4"
 Quantics = "0.4"

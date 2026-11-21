@@ -5,6 +5,171 @@ reading of semantic versioning: before 1.0, a change in the minor number (0.1 �
 is breaking, and a change in the last number (0.1.0 → 0.1.1) adds features or fixes
 bugs without breaking the API.
 
+## [0.2.2] — 2026-11-18
+
+This release keeps the v0.2 API. It adds solvers for one probe or one column at a time
+(correction vectors, a column of the RPA susceptibility) and a MINRES local solver, and
+it makes the linear solves report on themselves. Two things change for existing calls:
+
+- The entries under **Changed results** move the output of `get_green_krylov`, and of
+  the polarization bubble with `GF_method = :krylov` that is built on it. Each names
+  the keyword that restores the old behaviour.
+- The residual checks under **Changed** are on by default: they add a warning, and
+  some time, to solves that ran silently before. `residual_warn = Inf` (`rpa_residual_warn`,
+  `krylov_residual_warn`) removes both.
+
+### Added
+
+- **MINRES for `get_green_krylov`**: keyword `solver`, `:gmres` (the default, KrylovKit's
+  GMRES as before) or `:minres`. Each local problem of the sweeps, (z − H_eff)x = b, is
+  a complex shift of a Hermitian matrix when H is Hermitian; MINRES solves it by a
+  three-term recurrence without restarts (the iterates of unrestarted GMRES), where
+  GMRES restarts every `krylovdim` products. The result is the same G in fewer products,
+  several times fewer at small η. MINRES takes `tol` and a budget of
+  `maxiter · krylovdim` products per local solve (the GMRES one); a non-Hermitian H
+  throws an `ArgumentError` (checked from ‖H − H†‖/‖H‖). With `solver=:minres` no
+  z·I − H is formed: z goes into `linsolve`'s coefficients.
+- **Correction vectors** (`src/solvers/CorrectionVector.jl`, a new section of the
+  Solvers page): the resolvent of one probe state, x = (ω + iη − H)⁻¹|b⟩ and
+  G = ⟨b|x⟩, at a resolution set by η rather than by a number of KPM moments.
+  - `get_correction_vector(H, b, ω; eta, …)` returns `(; G, x, residual,
+    residual_floor, converged, maxlinkdim, sweeps, rounds)`. It starts from a Krylov
+    seed b + Σₖ Hᵏb (from the probe alone the two-site sweeps can stall on two-particle
+    registers), sweeps until G stops moving, checks the residual and, above `rtol`
+    (0.02), expands x along the residual for up to `rounds` rounds. `x0` warm-starts
+    it, `eta_path` continues in η, and `solver=:minres` uses the MINRES updater.
+  - `get_ldos_cv(H, X, ω_vals; eta, …)` and `get_exciton_ldos_cv(H, X, ω_vals; eta, …)`:
+    the LDOS of a site or of the exciton contact probe |X, X⟩ along a frequency grid,
+    each point warm-started from the previous one, as `(; ldos, G, residual, converged,
+    maxlinkdims)` with one entry per frequency, in physical units (`ldos = −Im G/π`,
+    one state integrates to 1; with the default KPM kernel,
+    `get_ldos_online(…) · π/H.scale` is in the same units). A single frequency
+    `ω::Real` returns scalars (`maxlinkdim` for the bond dimension). `get_ldos_cv`
+    takes the auxiliary projections of `get_ldos_online`.
+  - `refine_bound_state(H, b, ω0; eta_steps, …)`: the energy and probe weight of an
+    isolated level by Rayleigh-quotient iteration on the correction vector, to ~η² of
+    the last step (default `eta_steps = (0.05, 0.01, 1e-3, 1e-4)`). `converged` asks for
+    a converged last solve and for the last two steps to agree that there is a level:
+    a weight that does not change with η (in a continuum it is proportional to η) and
+    an energy that has stopped moving (`energy_step`, the last move, within the η
+    before the last). A single step cannot show that and is never reported as
+    converged. Two levels closer than the last η are not told apart (their mean energy,
+    their summed weight).
+- **`get_rpa_susceptibility_column(H, MPOV, ω, j; …)`**: one column x = χ|j⟩ of the RPA
+  susceptibility, from (I − Π₀V)x = Π₀|j⟩ on the L sites of Π₀ instead of the whole χ
+  on the 2L-site vectorized register; `j` is a basis state (a position for position-only
+  sites) or any MPS. The bubble keywords and defaults are those of
+  `get_rpa_susceptibility`, whose column it returns, with the broadening and the Fermi
+  energy also under their ASCII names `eta` and `fermi`; the solve defaults are tighter
+  (`rpa_nsweeps = 40`, `rpa_cutoff = 1e-12`), which costs little on L sites, and Π₀V is
+  built at `min(rpa_cutoff, 1e-14)`. On a 256-site half-filled chain up to
+  U = 0.999 U_c (condition number 10³) the Dyson solve gave χ_jj to 1e-7 or better and
+  the column to 1e-6 in 1–4 s, against minutes for the whole χ. The bubble is computed
+  at each call, as in `get_rpa_susceptibility`.
+- **The Wynn-accelerated RPA warns near the instability**: the three Wynn drivers
+  estimate the spectral radius ρ of VΠ₀ from (‖T_K‖/‖T_{K−2}‖)^½ of the last Neumann
+  terms and warn when the series converges slowly or diverges (ρ ≳ 0.9), where the
+  default `K_max = 6` was 1–90 % off at ρ ≈ 1 on a half-filled chain (with ρ > 1 from
+  U ≈ 0.6 U_c at finite ω and η). The estimate is from below, further at small K and
+  on large systems (8 % low at K = 6 and 39 % at K = 2 on half-filled chains of
+  1024–4096 sites, 1 % and 25 % at 32 sites), so the threshold depends on `K_max`:
+  0.55, 0.70, 0.77, 0.81 for 2 to 5 and 0.83 from 6, calibrated on those chains
+  (another band structure or dimension shifts it). `K_max < 2` has nothing to estimate
+  from, and no check. The returned values are unchanged.
+
+### Changed
+
+- **`get_green_krylov` checks its residual**, on by default: after the sweeps the
+  residual ‖G(z − H) − 1‖_F is computed, and a warning says that G is not converged when
+  it exceeds `residual_warn` (default `0.1`). `return_info=true` returns
+  `(; G, residual, residual_abs, residual_floor, maxlinkdim)` instead of the MPO:
+  `residual_abs` is that residual and `residual` = `residual_abs`/√D the one relative
+  to ‖|I⟩⟩‖ = √D, for D sites. The warning is on the absolute one because it bounds the
+  residual of every row of G, where the relative one is the root mean square over the
+  D rows and cannot show a wrong row on a large system (8e-4 for a 2^20-site chain whose
+  two end rows are bulk rows, 50 % off). Against dense inverses at 2^10 and 2^12 sites
+  the absolute residual was 1–8 times the relative error of the worst row, so the
+  threshold flags rows that are off by a few % or more. The check costs about one sweep
+  or less; `residual_warn = Inf` skips it.
+- **The RPA Dyson solve checks its residual**, on by default: `rpa_from_bubble_diag`
+  computes the relative residual ‖(I − Π₀V)χ − Π₀‖/‖Π₀‖ and warns above `residual_warn`
+  (default `1e-2`); `return_info=true` returns `(; chi, residual, residual_floor,
+  maxlinkdim)`. `get_rpa_susceptibility` and `get_magnon_susceptibility` pass
+  `rpa_residual_warn` and `return_info` to it. Near the RPA instability the truncation
+  limits χ to about κ·1e-5 at the default `cutoff = 1e-8` (κ the condition number of
+  I − Π₀V): on a 32-site half-filled chain at U = 0.999 U_c (κ = 10³) χ is off by 5e-3
+  with a residual of 3e-2, so the check warns; `rpa_cutoff = 1e-12` gives 1e-7. The
+  default cutoff is unchanged. The check contracts ⟨Aχ|Aχ⟩ once, χ³w² + χ²w³ operations
+  per site for bond dimensions χ of vec(χ) and w of I − Π₀V: less than a sweep for a
+  low-rank Π₀V, more for a high-rank one; `rpa_residual_warn = Inf` skips it. A bubble
+  Π₀ = 0 returns χ = 0 with residual 0.
+- **How these residuals are evaluated** (and those of the correction vectors): from
+  inner products, with ⟨Ax|Ax⟩ contracted one tensor at a time. Their terms cancel, so
+  the value is an upper bound that includes the rounding floor of the evaluation, about
+  1e-7·‖A‖‖x‖/‖b‖ (returned as `residual_floor`; ‖A‖ from a few power iterations, so
+  that a strong local term counts): a converged solve reads as its floor, not as 0, and
+  rounding noise cannot pass for a small residual. Where the floor leaves the
+  comparison with the threshold open (a correction vector at η ≲ 1e-5 on a level, a
+  constant energy offset of 10³ in H) the residual is evaluated exactly, from the direct
+  sum of its terms, as long as that sum fits in memory (bond dimensions of the solution
+  up to about 100–300); beyond, the bound with its floor is what is reported. A check
+  whose contraction would hold more than 2^27 numbers (bond dimensions χ of the
+  solution and w of the operator with χ²w² > 6.7e7) is skipped with one `@info` and
+  reports `residual = NaN`.
+- **Dependencies:** ITensorMPS 0.3.26 to 0.3.44 (was 0.3.16 to 0.3.44). The MINRES
+  solver and the correction vectors pass their own local solver to ITensorMPS's
+  `linsolve`, and the suite was run at 0.3.26 and 0.3.44 only. The cap below 0.3.45
+  stays (see 0.2.0).
+
+### Changed results
+
+- **`get_green_krylov`: the default cutoff scales with the system beyond 2^10 sites.**
+  `cutoff` now defaults to `nothing`: `1e-8` up to 2^10 sites, as before, and
+  `1e-8·2^10/D` beyond for D sites, never below `1e-14`. The cutoff of the sweeps is
+  relative to ‖|G⟩⟩‖², which grows as D, so a fixed `1e-8` weighed D times more next to
+  one row of G and truncated away what sets that row apart from the others: an impurity
+  site was 2.6 % off from 2^14 sites, and from 2^20 the end rows of a clean open chain
+  came back as bulk rows (G_11 50 % off), with a relative residual of 8e-4. With the
+  new default, open chains of 2^14–2^30 sites, clean and with an impurity, gave the
+  chain ends, the middle bond and the impurity site to 4e-6 or better, for ω in and
+  outside the band, in the same time. Beyond 2^30 sites the floor binds: the same
+  elements to 1e-4 at 2^34–2^36 (0.3–2 % at a band edge, with the warning), and from
+  about 2^38 sites a single row is below double precision next to ‖|G⟩⟩‖², so the chain
+  ends are lost again, with the warning: local quantities on such systems are for the
+  correction vectors. Results up to 2^10 sites are unchanged, and `cutoff = 1e-8`
+  restores the old behaviour at any size; `get_bubble_mpo` and the RPA drivers pass
+  their own `krylov_cutoff = 1e-8`, unchanged (`krylov_cutoff = nothing` selects the
+  new default, on the doubled register of D² states). The random part of the start (next
+  entry), which the truncated sum dropped beyond ~2^33 sites, is added by a direct sum
+  beyond 2^30.
+- **`get_green_krylov` starts from a random state** (keywords `start` and `rng`). The
+  start was |I⟩⟩ with its bonds enlarged by a 2-vector global Krylov expansion, and the
+  two-site sweeps keep the rank their start spans: on a short-ranged G they stopped on the
+  G of the bulk, without the corrections near the chain ends or an impurity. At the
+  default settings, open chains were off by 6–20 % whenever ω lay outside the band (from
+  2^6 sites with an impurity, 2^7 without), and inside it at η = 0.1 from 2^10 sites
+  (at η = 0.03 too at 2^12), with nothing to show it. The start is now
+  |I⟩⟩ + 0.1·(a random MPS of bond dimension 8) with an 8-vector expansion, which gets
+  the same cases to 1e-11 (clean chain) and to the floor of the cutoff (impurity chain:
+  2e-6 at 2^8 sites, 1e-6–2e-4 at 2^10; `cutoff=1e-12` gives 3e-11–8e-7 there). The
+  random state comes from `rng`, by default a `Random.Xoshiro(1)` created at each call,
+  so results do not depend on the global RNG. The first sweep runs at the bond dimension
+  of the start (up to ~100), which costs the most when G has a small one: on these
+  chains a solve takes up to 30× longer (30 s instead of 1 s for a clean 2^8-site chain
+  at η = 0.03). `start=:identity` restores the old start; `x0_mpo` is unchanged. The
+  bubble with `GF_method = :krylov` (`get_bubble_mpo` and every RPA driver built on it)
+  solves for its Green's function this way, so its results moved too and its solves
+  cost more; `krylov_start = :identity` restores the old start there, and
+  `krylov_residual_warn` (default `0.1`, `Inf` to skip) is the threshold of the
+  residual check of that solve. Regenerated golden cases: `krylov_green_raw`,
+  `krylov_green_tbhamiltonian`
+  and `krylov_green_ishermitian_flag` of `test/data/dynamics_golden.jl` (moved by ~1e-14:
+  those small chains had converged), and the five Krylov cases of
+  `test/data/rpa_golden.jl` (`bubble_cplx_krylov` and the four `*_fwd_krylov_mcweeny_tol`
+  cases), which pin keyword forwarding at deliberately unconverged settings (2 sweeps,
+  `maxdim` 3–20) and so moved by their whole size. Every other RPA case reproduced
+  exactly; the file's header now records ITensors 0.9.32 and ITensorMPS 0.3.44.
+
 ## [0.2.1] — 2026-11-13
 
 This release keeps the v0.2 API. Every entry under **Changed results** is a bug fix

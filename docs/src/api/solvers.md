@@ -36,6 +36,29 @@ Modules = [TensorBinding]
 Pages   = ["solvers/Krylov.jl"]
 ```
 
+## Correction Vectors
+
+The resolvent of one probe state, `(ω + iη − H)⁻¹|b⟩`, by a DMRG-like linear solve:
+site and exciton LDOS at a resolution set by η instead of a number of moments, and the
+energy and weight of an isolated level. When to use which route:
+
+- **One site, one probe, a few frequencies, small η:** correction vectors. They cost
+  far less than the full Green's function and resolve isolated peaks and gaps that KPM
+  needs thousands of moments for. Check `converged` (the residual).
+- **Many frequencies, a continuum, or a spectrum over a whole window:** KPM, whose one
+  recursion serves every ω and η.
+- **The whole G(ω) as an MPO:** `get_green_krylov`, cheap when G has a low rank (clean
+  and impurity lattices, ω outside the band).
+
+The correction-vector LDOS is per unit physical energy (one state integrates to 1);
+with the default KPM kernel, `get_ldos_online(…) · π/H.scale` is in the same units
+(`1/H.scale` with `kernel = :hodc`, which is normalised to 1).
+
+```@autodocs
+Modules = [TensorBinding]
+Pages   = ["solvers/CorrectionVector.jl"]
+```
+
 ## DMRG
 
 ```@autodocs
